@@ -205,20 +205,13 @@ async def main():
     """Run the MCP server."""
     server_instance = SemanticAnalysisServer()
     
-    # Initialize server capabilities
-    server_instance.server.request_handlers[InitializeResult] = lambda: InitializeResult(
-        protocolVersion="2024-11-05",
-        capabilities=ServerCapabilities(
-            tools=ToolsCapability()
-        ),
-        serverInfo={"name": "semantic-analysis", "version": "1.0.0"}
-    )
-    
     logger.info("Starting Simple Semantic Analysis MCP Server...")
     
-    # Run the server
-    async with stdio_server(server_instance.server) as server:
-        await server.run()
+    # Run the server using stdio_server
+    async with stdio_server(server_instance.server) as (read_stream, write_stream):
+        await server_instance.server.run(
+            read_stream, write_stream, server_instance.server.request_handlers, server_instance.server.notification_handlers
+        )
 
 if __name__ == "__main__":
     asyncio.run(main())

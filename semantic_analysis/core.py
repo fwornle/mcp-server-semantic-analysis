@@ -138,10 +138,23 @@ class SemanticAnalysisSystem:
     
     async def _initialize_workflows(self):
         """Initialize workflow definitions."""
-        workflow_definitions = self.config.get_workflow_definitions()
+        # Import Graphite workflow registry
+        from workflows import get_workflow_registry
         
-        for workflow_name, workflow_def in workflow_definitions.items():
-            self.logger.info(f"Registering workflow: {workflow_name}")
+        # Get workflow registry
+        workflow_registry = get_workflow_registry()
+        
+        # Register all Graphite workflows
+        graphite_workflows = workflow_registry.list_workflows()
+        for workflow_name, workflow_info in graphite_workflows.items():
+            self.logger.info(f"Registering Graphite workflow: {workflow_name}")
+            workflow_def = workflow_registry.get_workflow(workflow_name)
+            self.workflows[workflow_name] = workflow_def
+        
+        # Also register any custom workflow definitions from config
+        config_workflows = self.config.get_workflow_definitions()
+        for workflow_name, workflow_def in config_workflows.items():
+            self.logger.info(f"Registering config workflow: {workflow_name}")
             self.workflows[workflow_name] = workflow_def
     
     async def _start_background_tasks(self):
@@ -219,28 +232,28 @@ class SemanticAnalysisSystem:
     
     async def analyze_repository(self, repository_path: str, **kwargs) -> Dict[str, Any]:
         """Convenience method for repository analysis."""
-        return await self.execute_workflow("repository_analysis", {
+        return await self.execute_workflow("repository-analysis", {
             "repository": repository_path,
             **kwargs
         })
     
     async def analyze_conversation(self, conversation_path: str, **kwargs) -> Dict[str, Any]:
         """Convenience method for conversation analysis.""" 
-        return await self.execute_workflow("conversation_analysis", {
-            "conversation_path": conversation_path,
+        return await self.execute_workflow("conversation-analysis", {
+            "conversation_file": conversation_path,
             **kwargs
         })
     
     async def complete_semantic_analysis(self, repository_path: str, **kwargs) -> Dict[str, Any]:
         """Convenience method for complete semantic analysis."""
-        return await self.execute_workflow("complete_semantic_analysis", {
+        return await self.execute_workflow("complete-analysis", {
             "repository": repository_path,
             **kwargs
         })
     
     async def incremental_analysis(self, repository_path: str, **kwargs) -> Dict[str, Any]:
         """Convenience method for incremental analysis."""
-        return await self.execute_workflow("incremental_analysis", {
+        return await self.execute_workflow("incremental-analysis", {
             "repository": repository_path,
             **kwargs
         })

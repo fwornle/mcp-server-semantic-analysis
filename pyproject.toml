@@ -25,7 +25,7 @@ classifiers = [
 
 dependencies = [
     # Core framework
-    "grafi>=1.0.0",  # Graphite framework for multi-agent systems
+    "grafi>=0.0.18",  # Graphite framework for multi-agent systems
     
     # LLM providers
     "anthropic>=0.25.0",  # Claude API
@@ -49,6 +49,7 @@ dependencies = [
     
     # Web search capabilities
     "requests>=2.31.0",   # HTTP client
+    "aiohttp>=3.8.0",     # Async HTTP client
     "beautifulsoup4>=4.12.0", # HTML parsing
     
     # File and data handling

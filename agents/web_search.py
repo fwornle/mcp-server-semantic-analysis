@@ -158,6 +158,210 @@ class WebSearchAgent(BaseAgent):
         except Exception as e:
             return {"text": "", "error": str(e)}
     
+    async def search_documentation(self, query: str, context: str = "", max_results: int = 5, search_provider: str = "duckduckgo") -> Dict[str, Any]:
+        """Perform context-aware search for documentation."""
+        try:
+            # Enhance query with context
+            enhanced_query = f"{query} {context}".strip() if context else query
+            
+            # Add documentation-specific terms
+            doc_query = f"{enhanced_query} documentation api guide tutorial"
+            
+            search_result = await self.search(doc_query, search_provider)
+            
+            if search_result.get("success"):
+                results = search_result["results"][:max_results]
+                
+                # Filter for documentation-like results
+                filtered_results = []
+                doc_indicators = ['docs', 'documentation', 'api', 'guide', 'tutorial', 'reference', 'manual']
+                
+                for result in results:
+                    url_lower = result["url"].lower()
+                    title_lower = result["title"].lower()
+                    
+                    # Prioritize results that look like documentation
+                    is_doc = any(indicator in url_lower or indicator in title_lower for indicator in doc_indicators)
+                    
+                    filtered_results.append({
+                        **result,
+                        "is_documentation": is_doc,
+                        "relevance_score": self._calculate_relevance(result, query, context)
+                    })
+                
+                # Sort by documentation likelihood and relevance
+                filtered_results.sort(key=lambda x: (x["is_documentation"], x["relevance_score"]), reverse=True)
+                
+                return {
+                    "success": True,
+                    "query": query,
+                    "context": context,
+                    "enhanced_query": doc_query,
+                    "results": filtered_results[:max_results],
+                    "provider": search_provider
+                }
+            else:
+                return search_result
+                
+        except Exception as e:
+            self.logger.error("Documentation search failed", error=str(e))
+            return {
+                "success": False,
+                "error": str(e),
+                "query": query
+            }
+    
+    def _calculate_relevance(self, result: Dict[str, Any], query: str, context: str) -> float:
+        """Calculate relevance score for a search result."""
+        score = 0.0
+        query_lower = query.lower()
+        context_lower = context.lower()
+        
+        title_lower = result["title"].lower()
+        snippet_lower = result["snippet"].lower()
+        url_lower = result["url"].lower()
+        
+        # Query term matches
+        if query_lower in title_lower:
+            score += 0.4
+        if query_lower in snippet_lower:
+            score += 0.2
+        if query_lower in url_lower:
+            score += 0.1
+        
+        # Context term matches
+        if context and context_lower in title_lower:
+            score += 0.2
+        if context and context_lower in snippet_lower:
+            score += 0.1
+        
+        # Documentation indicators
+        doc_indicators = ['api', 'docs', 'documentation', 'guide', 'tutorial', 'reference']
+        for indicator in doc_indicators:
+            if indicator in url_lower:
+                score += 0.1
+                break
+        
+        return min(score, 1.0)
+    
+    async def extract_web_content(self, urls: List[str], content_type: str = "all") -> Dict[str, Any]:
+        """Extract content from multiple web URLs."""
+        results = []
+        
+        for url in urls:
+            try:
+                content_result = await self.extract_content(url)
+                
+                if content_result.get("success"):
+                    content = content_result["content"]
+                    
+                    # Filter content based on type
+                    if content_type == "text":
+                        filtered_content = {"text": content.get("text", "")}
+                    elif content_type == "code":
+                        filtered_content = {"code": content.get("code", [])}
+                    elif content_type == "documentation":
+                        # For documentation, prioritize text and code
+                        filtered_content = {
+                            "text": content.get("text", ""),
+                            "code": content.get("code", []),
+                            "links": content.get("links", [])[:10]  # Limit links
+                        }
+                    else:  # "all"
+                        filtered_content = content
+                    
+                    results.append({
+                        "url": url,
+                        "success": True,
+                        "content": filtered_content,
+                        "content_type": content_type
+                    })
+                else:
+                    results.append({
+                        "url": url,
+                        "success": False,
+                        "error": content_result.get("error", "Unknown error")
+                    })
+                    
+            except Exception as e:
+                results.append({
+                    "url": url,
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        # Calculate success metrics
+        successful = sum(1 for r in results if r.get("success", False))
+        
+        return {
+            "success": True,
+            "urls_processed": len(urls),
+            "successful_extractions": successful,
+            "failed_extractions": len(urls) - successful,
+            "content_type": content_type,
+            "results": results
+        }
+    
+    async def validate_references(self, references: List[str], check_accessibility: bool = True) -> Dict[str, Any]:
+        """Validate documentation references and URLs."""
+        results = []
+        
+        for reference in references:
+            validation_result = {
+                "reference": reference,
+                "is_url": self._is_url(reference),
+                "accessible": None,
+                "status_code": None,
+                "redirect_url": None,
+                "error": None
+            }
+            
+            # Check if it's a URL
+            if validation_result["is_url"] and check_accessibility:
+                try:
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                        async with session.get(reference, allow_redirects=True) as response:
+                            validation_result["accessible"] = response.status < 400
+                            validation_result["status_code"] = response.status
+                            
+                            # Check for redirects
+                            if str(response.url) != reference:
+                                validation_result["redirect_url"] = str(response.url)
+                                
+                except Exception as e:
+                    validation_result["accessible"] = False
+                    validation_result["error"] = str(e)
+            
+            results.append(validation_result)
+        
+        # Calculate summary statistics
+        total_references = len(references)
+        urls_count = sum(1 for r in results if r["is_url"])
+        accessible_count = sum(1 for r in results if r.get("accessible") is True)
+        inaccessible_count = sum(1 for r in results if r.get("accessible") is False)
+        
+        return {
+            "success": True,
+            "total_references": total_references,
+            "urls_found": urls_count,
+            "accessible_urls": accessible_count,
+            "inaccessible_urls": inaccessible_count,
+            "check_accessibility": check_accessibility,
+            "results": results
+        }
+    
+    def _is_url(self, reference: str) -> bool:
+        """Check if a reference is a URL."""
+        url_pattern = re.compile(
+            r'^https?://'  # http:// or https://
+            r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
+            r'localhost|'  # localhost...
+            r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
+            r'(?::\d+)?'  # optional port
+            r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+        
+        return bool(url_pattern.match(reference))
+    
     # Event handlers
     async def _handle_search(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle search requests."""

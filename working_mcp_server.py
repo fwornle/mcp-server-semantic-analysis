@@ -8,6 +8,7 @@ import json
 import sys
 import os
 import asyncio
+import time
 from typing import Any, Dict, Optional
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -728,37 +729,16 @@ class AgentManager:
             }
         
         try:
-            # Get workflow definition from configuration
             if CONFIG_AVAILABLE:
-                workflow_definitions = agent_config.get_workflow_definitions()
-                if workflow_name not in workflow_definitions:
-                    return {
-                        "success": False,
-                        "error": f"Unknown workflow: {workflow_name}",
-                        "available_workflows": list(workflow_definitions.keys())
-                    }
-                
-                workflow_def = workflow_definitions[workflow_name]
-                
-                # Execute workflow through coordinator
-                result = await self.coordinator.execute_workflow(
-                    workflow_name=workflow_name,
-                    workflow_def=workflow_def,
-                    parameters=parameters or {}
-                )
-                
-                return {
-                    "success": True,
-                    "workflow": workflow_name,
-                    "workflow_id": result["workflow_id"],
-                    "status": result["status"],
-                    "steps": result["steps"],
-                    "message": f"Workflow '{workflow_name}' started successfully"
-                }
+                # Get workflow definitions and execute through coordinator
+                result = await self.coordinator.handle_event("execute_workflow", {
+                    "workflow_name": workflow_name,
+                    "parameters": parameters or {}
+                })
+                return result
             else:
-                # Fallback implementation for simple workflows
+                # Simple fallback workflow execution
                 return await self._execute_simple_workflow(workflow_name, parameters or {})
-                
         except Exception as e:
             return {
                 "success": False,
@@ -768,75 +748,47 @@ class AgentManager:
     
     async def _execute_simple_workflow(self, workflow_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Simple workflow execution when configuration is not available."""
-        if workflow_name == "complete-analysis":
-            steps_completed = []
-            
-            # Step 1: Semantic Analysis
-            if 'semantic_analysis' in self.agents:
-                try:
-                    result = await self.agents['semantic_analysis'].analyze(
-                        analysis_type="repository_analysis",
-                        content="Complete semantic analysis workflow",
-                        options=parameters
-                    )
-                    steps_completed.append({"step": "semantic_analysis", "status": "completed", "result": result.get("success", False)})
-                except Exception as e:
-                    steps_completed.append({"step": "semantic_analysis", "status": "failed", "error": str(e)})
-            
-            # Step 2: Knowledge Graph Update
-            if 'knowledge_graph' in self.agents:
-                try:
-                    result = await self.agents['knowledge_graph'].update_knowledge_graph(
-                        entities=[{"name": "WorkflowExecution", "entity_type": "Process", "observations": [f"Executed {workflow_name} workflow"]}]
-                    )
-                    steps_completed.append({"step": "knowledge_graph", "status": "completed", "result": result.get("success", False)})
-                except Exception as e:
-                    steps_completed.append({"step": "knowledge_graph", "status": "failed", "error": str(e)})
-            
-            # Step 3: Synchronization
-            if 'synchronization' in self.agents:
-                try:
-                    result = await self.agents['synchronization'].sync_all_sources()
-                    steps_completed.append({"step": "synchronization", "status": "completed", "result": result.get("success", False)})
-                except Exception as e:
-                    steps_completed.append({"step": "synchronization", "status": "failed", "error": str(e)})
-            
-            return {
-                "success": True,
-                "workflow": workflow_name,
-                "workflow_id": f"simple_{workflow_name}_{int(time.time())}",
-                "status": "completed",
-                "steps_completed": steps_completed,
-                "message": f"Simple workflow '{workflow_name}' executed"
-            }
+        steps_completed = []
         
-        elif workflow_name == "lele" or workflow_name == "lessons-learned":
-            # Lessons learned workflow
-            if 'documentation' in self.agents:
-                try:
-                    result = await self.agents['documentation'].handle_event("generate_lessons_learned", {
-                        "analysis_result": {"insights": ["Workflow execution completed"], "patterns": ["Simple workflow pattern"]},
-                        "title": "Lessons Learned from Workflow Execution"
-                    })
-                    return {
-                        "success": True,
-                        "workflow": workflow_name,
-                        "workflow_id": f"lele_{int(time.time())}",
-                        "status": "completed",
-                        "result": result,
-                        "message": "Lessons learned document generated"
-                    }
-                except Exception as e:
-                    return {
-                        "success": False,
-                        "error": str(e),
-                        "workflow": workflow_name
-                    }
+        # Step 1: Semantic Analysis (if available)
+        if 'semantic_analysis' in self.agents:
+            try:
+                content = parameters.get("code", parameters.get("content", ""))
+                result = await self.agents['semantic_analysis'].analyze(
+                    analysis_type="workflow_analysis", 
+                    content=content,
+                    options=parameters
+                )
+                steps_completed.append({"step": "semantic_analysis", "status": "completed", "result": result.get("success", False)})
+            except Exception as e:
+                steps_completed.append({"step": "semantic_analysis", "status": "failed", "error": str(e)})
+        
+        # Step 2: Knowledge Graph Update
+        if 'knowledge_graph' in self.agents:
+            try:
+                result = await self.agents['knowledge_graph'].update_knowledge_graph(
+                    entities=[{"name": "WorkflowExecution", "entity_type": "Process", "observations": [f"Executed {workflow_name} workflow"]}]
+                )
+                steps_completed.append({"step": "knowledge_graph", "status": "completed", "result": result.get("success", False)})
+            except Exception as e:
+                steps_completed.append({"step": "knowledge_graph", "status": "failed", "error": str(e)})
+        
+        # Step 3: Synchronization  
+        if 'synchronization' in self.agents:
+            try:
+                result = await self.agents['synchronization'].sync_all_sources()
+                steps_completed.append({"step": "synchronization", "status": "completed", "result": result.get("success", False)})
+            except Exception as e:
+                steps_completed.append({"step": "synchronization", "status": "failed", "error": str(e)})
         
         return {
-            "success": False,
-            "error": f"Unknown simple workflow: {workflow_name}",
-            "available_workflows": ["complete-analysis", "lele", "lessons-learned"]
+            "success": True,
+            "workflow": workflow_name,
+            "workflow_id": f"simple-{workflow_name}-{int(time.time())}",
+            "status": "completed",
+            "steps": len(steps_completed),
+            "steps_completed": steps_completed,
+            "message": f"Simple workflow '{workflow_name}' executed with {len(steps_completed)} steps"
         }
     
     async def analyze_repository(self, path: str, options: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -850,10 +802,10 @@ class AgentManager:
         
         try:
             agent = self.agents['semantic_analysis']
-            # Use the agent's analyze method with correct parameters
+            # Use the agent's analyze method
             result = await agent.analyze(
                 analysis_type="repository_analysis",
-                content=f"Analyze repository structure and patterns. Repository path: {path}",
+                content=f"Repository path: {path}",
                 options=options or {}
             )
             return result
@@ -878,7 +830,7 @@ class AgentManager:
             agent = self.agents['semantic_analysis']
             result = await agent.analyze(
                 analysis_type="pattern_extraction",
-                content=f"Extract design patterns and architectural patterns from this {language} code:\n\n{code}",
+                content=code,
                 options={"language": language}
             )
             return result
@@ -1122,379 +1074,6 @@ async def main():
                     "required": ["analysis_result"],
                     "additionalProperties": False
                 }
-            ),
-            # KnowledgeGraphAgent tools
-            Tool(
-                name="update_knowledge_graph",
-                description="Create/update entities and relations in the knowledge graph",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "entities": {
-                            "type": "array",
-                            "description": "List of entities to create/update",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "name": {"type": "string"},
-                                    "entity_type": {"type": "string"},
-                                    "significance": {"type": "integer", "minimum": 1, "maximum": 10},
-                                    "observations": {"type": "array", "items": {"type": "string"}},
-                                    "metadata": {"type": "object", "additionalProperties": True}
-                                },
-                                "required": ["name", "entity_type"]
-                            }
-                        },
-                        "relations": {
-                            "type": "array",
-                            "description": "List of relations to create",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "from_entity": {"type": "string"},
-                                    "to_entity": {"type": "string"},
-                                    "relation_type": {"type": "string"},
-                                    "metadata": {"type": "object", "additionalProperties": True}
-                                },
-                                "required": ["from_entity", "to_entity", "relation_type"]
-                            }
-                        }
-                    },
-                    "additionalProperties": False
-                }
-            ),
-            Tool(
-                name="search_knowledge_graph",
-                description="Search entities in the knowledge graph by query",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query for entities"
-                        },
-                        "entity_type": {
-                            "type": "string",
-                            "description": "Filter by entity type (optional)"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of results",
-                            "default": 10
-                        }
-                    },
-                    "required": ["query"],
-                    "additionalProperties": False
-                }
-            ),
-            Tool(
-                name="sync_knowledge_sources",
-                description="Sync knowledge graph with shared-memory files",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "source_files": {
-                            "type": "array",
-                            "description": "List of shared-memory files to sync",
-                            "items": {"type": "string"}
-                        },
-                        "direction": {
-                            "type": "string",
-                            "description": "Sync direction: 'import', 'export', or 'bidirectional'",
-                            "enum": ["import", "export", "bidirectional"],
-                            "default": "bidirectional"
-                        }
-                    },
-                    "additionalProperties": False
-                }
-            ),
-            Tool(
-                name="get_entity_relations",
-                description="Get relationships for specific entities",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "entity_names": {
-                            "type": "array",
-                            "description": "List of entity names to get relations for",
-                            "items": {"type": "string"}
-                        },
-                        "relation_types": {
-                            "type": "array",
-                            "description": "Filter by relation types (optional)",
-                            "items": {"type": "string"}
-                        },
-                        "depth": {
-                            "type": "integer",
-                            "description": "Depth of relationship traversal",
-                            "default": 1,
-                            "minimum": 1,
-                            "maximum": 3
-                        }
-                    },
-                    "required": ["entity_names"],
-                    "additionalProperties": False
-                }
-            ),
-            # WebSearchAgent tools
-            Tool(
-                name="search_documentation",
-                description="Perform context-aware web searches for documentation",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query"
-                        },
-                        "context": {
-                            "type": "string",
-                            "description": "Context to guide the search"
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "description": "Maximum number of results",
-                            "default": 5,
-                            "minimum": 1,
-                            "maximum": 20
-                        },
-                        "search_provider": {
-                            "type": "string",
-                            "description": "Search provider to use",
-                            "enum": ["duckduckgo", "google"],
-                            "default": "duckduckgo"
-                        }
-                    },
-                    "required": ["query"],
-                    "additionalProperties": False
-                }
-            ),
-            Tool(
-                name="extract_web_content",
-                description="Extract content from web URLs",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "urls": {
-                            "type": "array",
-                            "description": "List of URLs to extract content from",
-                            "items": {"type": "string", "format": "uri"}
-                        },
-                        "content_type": {
-                            "type": "string",
-                            "description": "Type of content to extract",
-                            "enum": ["text", "code", "documentation", "all"],
-                            "default": "all"
-                        }
-                    },
-                    "required": ["urls"],
-                    "additionalProperties": False
-                }
-            ),
-            Tool(
-                name="validate_references",
-                description="Validate documentation references and URLs",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "references": {
-                            "type": "array",
-                            "description": "List of references to validate",
-                            "items": {"type": "string"}
-                        },
-                        "check_accessibility": {
-                            "type": "boolean",
-                            "description": "Check if URLs are accessible",
-                            "default": True
-                        }
-                    },
-                    "required": ["references"],
-                    "additionalProperties": False
-                }
-            ),
-            # SynchronizationAgent tools
-            Tool(
-                name="sync_all_sources",
-                description="Sync between MCP Memory, shared-memory files, and other sources",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "sources": {
-                            "type": "array",
-                            "description": "List of sources to sync",
-                            "items": {
-                                "type": "string",
-                                "enum": ["mcp_memory", "shared_memory_files", "graphology_db", "ukb"]
-                            },
-                            "default": ["mcp_memory", "shared_memory_files"]
-                        },
-                        "direction": {
-                            "type": "string",
-                            "description": "Sync direction",
-                            "enum": ["import", "export", "bidirectional"],
-                            "default": "bidirectional"
-                        },
-                        "backup": {
-                            "type": "boolean",
-                            "description": "Create backup before sync",
-                            "default": True
-                        }
-                    },
-                    "additionalProperties": False
-                }
-            ),
-            Tool(
-                name="resolve_conflicts",
-                description="Handle synchronization conflicts between sources",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "conflict_entities": {
-                            "type": "array",
-                            "description": "List of conflicting entity names",
-                            "items": {"type": "string"}
-                        },
-                        "resolution_strategy": {
-                            "type": "string",
-                            "description": "Strategy for conflict resolution",
-                            "enum": ["newest", "manual", "merge", "priority_source"],
-                            "default": "newest"
-                        },
-                        "priority_source": {
-                            "type": "string",
-                            "description": "Priority source for resolution (if using priority_source strategy)",
-                            "enum": ["mcp_memory", "shared_memory_files", "graphology_db", "ukb"]
-                        }
-                    },
-                    "required": ["conflict_entities"],
-                    "additionalProperties": False
-                }
-            ),
-            Tool(
-                name="backup_knowledge",
-                description="Create backups of knowledge sources",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "sources": {
-                            "type": "array",
-                            "description": "Sources to backup",
-                            "items": {
-                                "type": "string",
-                                "enum": ["mcp_memory", "shared_memory_files", "graphology_db", "all"]
-                            },
-                            "default": ["all"]
-                        },
-                        "backup_location": {
-                            "type": "string",
-                            "description": "Backup directory path"
-                        },
-                        "include_metadata": {
-                            "type": "boolean",
-                            "description": "Include metadata in backup",
-                            "default": True
-                        }
-                    },
-                    "additionalProperties": False
-                }
-            ),
-            # DeduplicationAgent tools
-            Tool(
-                name="detect_duplicates",
-                description="Find similar/duplicate entities in the knowledge graph",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "entity_types": {
-                            "type": "array",
-                            "description": "Entity types to check for duplicates",
-                            "items": {"type": "string"}
-                        },
-                        "similarity_threshold": {
-                            "type": "number",
-                            "description": "Similarity threshold (0.0-1.0)",
-                            "default": 0.85,
-                            "minimum": 0.0,
-                            "maximum": 1.0
-                        },
-                        "comparison_method": {
-                            "type": "string",
-                            "description": "Method for similarity comparison",
-                            "enum": ["semantic", "text", "both"],
-                            "default": "both"
-                        }
-                    },
-                    "additionalProperties": False
-                }
-            ),
-            Tool(
-                name="merge_entities",
-                description="Merge duplicate entities into single entities",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "entity_groups": {
-                            "type": "array",
-                            "description": "Groups of entities to merge",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "entities": {
-                                        "type": "array",
-                                        "items": {"type": "string"}
-                                    },
-                                    "target_name": {"type": "string"},
-                                    "merge_strategy": {
-                                        "type": "string",
-                                        "enum": ["combine", "priority", "newest"],
-                                        "default": "combine"
-                                    }
-                                },
-                                "required": ["entities", "target_name"]
-                            }
-                        },
-                        "preserve_history": {
-                            "type": "boolean",
-                            "description": "Preserve merge history",
-                            "default": True
-                        }
-                    },
-                    "required": ["entity_groups"],
-                    "additionalProperties": False
-                }
-            ),
-            Tool(
-                name="deduplicate_insights",
-                description="Remove duplicate insights and observations",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "scope": {
-                            "type": "string",
-                            "description": "Scope of deduplication",
-                            "enum": ["global", "entity_specific", "type_specific"],
-                            "default": "global"
-                        },
-                        "entity_filter": {
-                            "type": "array",
-                            "description": "Entity names to filter (for entity_specific scope)",
-                            "items": {"type": "string"}
-                        },
-                        "type_filter": {
-                            "type": "array",
-                            "description": "Entity types to filter (for type_specific scope)",
-                            "items": {"type": "string"}
-                        },
-                        "similarity_threshold": {
-                            "type": "number",
-                            "description": "Similarity threshold for insights",
-                            "default": 0.9,
-                            "minimum": 0.0,
-                            "maximum": 1.0
-                        }
-                    },
-                    "additionalProperties": False
-                }
             )
         ]
     
@@ -1517,7 +1096,7 @@ async def main():
                 try:
                     result = await agent_manager.agents['semantic_analysis'].analyze(
                         analysis_type="code_analysis",
-                        content=f"Analyze this {language} code for patterns, issues, and architectural insights:\n\n{code}",
+                        content=code,
                         options={"language": language}
                     )
                     
@@ -1836,355 +1415,6 @@ async def main():
                 return [TextContent(
                     type="text",
                     text=f"UKB entity creation error:\n{json.dumps(error_result, indent=2)}"
-                )]
-        
-        # KnowledgeGraphAgent tool handlers
-        elif name == "update_knowledge_graph":
-            entities = arguments.get("entities", [])
-            relations = arguments.get("relations", [])
-            
-            if 'knowledge_graph' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['knowledge_graph'].update_knowledge_graph(
-                        entities=entities,
-                        relations=relations
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Knowledge graph update result:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Knowledge graph update error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Knowledge graph agent not available"
-                )]
-        
-        elif name == "search_knowledge_graph":
-            query = arguments.get("query", "")
-            entity_type = arguments.get("entity_type")
-            limit = arguments.get("limit", 10)
-            
-            if 'knowledge_graph' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['knowledge_graph'].search_entities(
-                        query=query,
-                        entity_type=entity_type,
-                        limit=limit
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Knowledge graph search results:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Knowledge graph search error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Knowledge graph agent not available"
-                )]
-        
-        elif name == "sync_knowledge_sources":
-            source_files = arguments.get("source_files", [])
-            direction = arguments.get("direction", "bidirectional")
-            
-            if 'knowledge_graph' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['knowledge_graph'].sync_knowledge_sources(
-                        source_files=source_files,
-                        direction=direction
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Knowledge source sync result:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Knowledge source sync error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Knowledge graph agent not available"
-                )]
-        
-        elif name == "get_entity_relations":
-            entity_names = arguments.get("entity_names", [])
-            relation_types = arguments.get("relation_types")
-            depth = arguments.get("depth", 1)
-            
-            if 'knowledge_graph' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['knowledge_graph'].get_entity_relations(
-                        entity_names=entity_names,
-                        relation_types=relation_types,
-                        depth=depth
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Entity relations result:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Entity relations error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Knowledge graph agent not available"
-                )]
-        
-        # WebSearchAgent tool handlers
-        elif name == "search_documentation":
-            query = arguments.get("query", "")
-            context = arguments.get("context", "")
-            max_results = arguments.get("max_results", 5)
-            search_provider = arguments.get("search_provider", "duckduckgo")
-            
-            if 'web_search' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['web_search'].search_documentation(
-                        query=query,
-                        context=context,
-                        max_results=max_results,
-                        search_provider=search_provider
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Documentation search results:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Documentation search error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Web search agent not available"
-                )]
-        
-        elif name == "extract_web_content":
-            urls = arguments.get("urls", [])
-            content_type = arguments.get("content_type", "all")
-            
-            if 'web_search' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['web_search'].extract_web_content(
-                        urls=urls,
-                        content_type=content_type
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Web content extraction results:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Web content extraction error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Web search agent not available"
-                )]
-        
-        elif name == "validate_references":
-            references = arguments.get("references", [])
-            check_accessibility = arguments.get("check_accessibility", True)
-            
-            if 'web_search' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['web_search'].validate_references(
-                        references=references,
-                        check_accessibility=check_accessibility
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Reference validation results:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Reference validation error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Web search agent not available"
-                )]
-        
-        # SynchronizationAgent tool handlers
-        elif name == "sync_all_sources":
-            sources = arguments.get("sources", ["mcp_memory", "shared_memory_files"])
-            direction = arguments.get("direction", "bidirectional")
-            backup = arguments.get("backup", True)
-            
-            if 'synchronization' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['synchronization'].sync_all_sources(
-                        sources=sources,
-                        direction=direction,
-                        backup=backup
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Source synchronization result:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Source synchronization error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Synchronization agent not available"
-                )]
-        
-        elif name == "resolve_conflicts":
-            conflict_entities = arguments.get("conflict_entities", [])
-            resolution_strategy = arguments.get("resolution_strategy", "newest")
-            priority_source = arguments.get("priority_source")
-            
-            if 'synchronization' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['synchronization'].resolve_conflicts(
-                        conflict_entities=conflict_entities,
-                        resolution_strategy=resolution_strategy,
-                        priority_source=priority_source
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Conflict resolution result:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Conflict resolution error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Synchronization agent not available"
-                )]
-        
-        elif name == "backup_knowledge":
-            sources = arguments.get("sources", ["all"])
-            backup_location = arguments.get("backup_location", "")
-            include_metadata = arguments.get("include_metadata", True)
-            
-            if 'synchronization' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['synchronization'].backup_knowledge(
-                        sources=sources,
-                        backup_location=backup_location,
-                        include_metadata=include_metadata
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Knowledge backup result:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Knowledge backup error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Synchronization agent not available"
-                )]
-        
-        # DeduplicationAgent tool handlers
-        elif name == "detect_duplicates":
-            entity_types = arguments.get("entity_types", [])
-            similarity_threshold = arguments.get("similarity_threshold", 0.85)
-            comparison_method = arguments.get("comparison_method", "both")
-            
-            if 'deduplication' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['deduplication'].detect_duplicates(
-                        entity_types=entity_types,
-                        similarity_threshold=similarity_threshold,
-                        comparison_method=comparison_method
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Duplicate detection result:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Duplicate detection error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Deduplication agent not available"
-                )]
-        
-        elif name == "merge_entities":
-            entity_groups = arguments.get("entity_groups", [])
-            preserve_history = arguments.get("preserve_history", True)
-            
-            if 'deduplication' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['deduplication'].merge_entities(
-                        entity_groups=entity_groups,
-                        preserve_history=preserve_history
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Entity merge result:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Entity merge error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Deduplication agent not available"
-                )]
-        
-        elif name == "deduplicate_insights":
-            scope = arguments.get("scope", "global")
-            entity_filter = arguments.get("entity_filter", [])
-            type_filter = arguments.get("type_filter", [])
-            similarity_threshold = arguments.get("similarity_threshold", 0.9)
-            
-            if 'deduplication' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['deduplication'].deduplicate_insights(
-                        scope=scope,
-                        entity_filter=entity_filter,
-                        type_filter=type_filter,
-                        similarity_threshold=similarity_threshold
-                    )
-                    return [TextContent(
-                        type="text",
-                        text=f"Insight deduplication result:\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    return [TextContent(
-                        type="text",
-                        text=f"Insight deduplication error: {str(e)}"
-                    )]
-            else:
-                return [TextContent(
-                    type="text",
-                    text="Deduplication agent not available"
                 )]
         
         else:

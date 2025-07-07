@@ -631,13 +631,21 @@ class AgentManager:
                     # Initialize DocumentationAgent
                     if 'documentation' in agent_definitions:
                         doc_def = agent_definitions['documentation']
+                        print(f"🔍 DEBUG: Creating documentation agent with config: {doc_def.config}", file=sys.stderr)
                         self.agents['documentation'] = DocumentationAgent(
                             name=doc_def.name,
                             config=doc_def.config,
                             system=self
                         )
-                        await self.agents['documentation'].initialize()
-                        print("✅ Documentation agent initialized", file=sys.stderr)
+                        print(f"🔍 DEBUG: About to initialize documentation agent...", file=sys.stderr)
+                        try:
+                            await self.agents['documentation'].initialize()
+                            print(f"🔍 DEBUG: Documentation agent event handlers: {list(self.agents['documentation']._event_handlers.keys())}", file=sys.stderr)
+                            print("✅ Documentation agent initialized", file=sys.stderr)
+                        except Exception as e:
+                            print(f"❌ ERROR initializing documentation agent: {e}", file=sys.stderr)
+                            import traceback
+                            traceback.print_exc(file=sys.stderr)
                     
                     # Initialize KnowledgeGraphAgent
                     if 'knowledge_graph' in agent_definitions:
@@ -1081,6 +1089,10 @@ async def main():
     async def call_tool(name: str, arguments: Dict[str, Any]) -> list[TextContent]:
         """Handle tool calls."""
         
+        # Debug: Log all tool calls
+        with open("/tmp/mcp_debug.log", "a") as f:
+            f.write(f"🔍 DEBUG: call_tool called with name={name}, arguments={arguments}\n")
+        
         if name == "test_connection":
             return [TextContent(
                 type="text", 
@@ -1252,16 +1264,36 @@ async def main():
                 )]
         
         elif name == "generate_documentation":
+            # Debug: Log that we're entering this function
+            with open("/tmp/mcp_debug.log", "a") as f:
+                f.write(f"🔍 DEBUG: generate_documentation called with args: {arguments}\n")
+                f.write(f"🔍 DEBUG: Available agents: {list(agent_manager.agents.keys())}\n")
+            
             analysis_result = arguments.get("analysis_result", {})
             metadata = arguments.get("metadata", {})
             
             try:
                 if 'documentation' in agent_manager.agents:
                     doc_agent = agent_manager.agents['documentation']
+                    # Debug to file
+                    with open("/tmp/mcp_debug.log", "a") as f:
+                        f.write(f"🔍 DEBUG: DocumentationAgent found: {doc_agent}\n")
+                        f.write(f"🔍 DEBUG: Event handlers: {list(doc_agent._event_handlers.keys())}\n")
+                    
                     result = await doc_agent.handle_event("generate_analysis_doc", {
                         "analysis_result": analysis_result,
                         "metadata": metadata
                     })
+                    
+                    # Debug to file
+                    with open("/tmp/mcp_debug.log", "a") as f:
+                        f.write(f"🔍 DEBUG: Result type: {type(result)}\n")
+                        f.write(f"🔍 DEBUG: Result value: {result}\n")
+                    
+                    print(f"🔍 DEBUG: DocumentationAgent found: {doc_agent}", file=sys.stderr)
+                    print(f"🔍 DEBUG: Event handlers: {list(doc_agent._event_handlers.keys())}", file=sys.stderr)
+                    print(f"🔍 DEBUG: Result type: {type(result)}", file=sys.stderr)
+                    print(f"🔍 DEBUG: Result value: {result}", file=sys.stderr)
                     
                     return [TextContent(
                         type="text",
@@ -1327,7 +1359,7 @@ async def main():
                         "analysis_result": analysis_result
                     })
                     
-                    if diagram_result.get("success"):
+                    if diagram_result and diagram_result.get("success"):
                         # Convert to PNG
                         png_result = await doc_agent.handle_event("convert_puml_to_png", {
                             "puml_file": diagram_result["puml_file"]
@@ -1338,7 +1370,7 @@ async def main():
                             "png_conversion": png_result
                         }
                     else:
-                        result = diagram_result
+                        result = diagram_result or {"success": False, "error": "Diagram generation failed"}
                     
                     return [TextContent(
                         type="text",

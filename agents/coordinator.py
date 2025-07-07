@@ -227,27 +227,34 @@ class CoordinatorAgent(BaseAgent):
         self.register_event_handler("cancel_workflow", self._handle_cancel_workflow)
         self.register_event_handler("validate_output", self._handle_validate_output)
     
-    async def execute_workflow(self, workflow_name: str, workflow_def: Any, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_workflow(self, workflow_name: str, workflow_def: Any = None, parameters: Dict[str, Any] = None) -> Dict[str, Any]:
         """Execute a workflow with the given definition and parameters."""
+        parameters = parameters or {}
+        
+        # Handle missing workflow definition by creating a default one
+        if workflow_def is None:
+            workflow_def = self._create_default_workflow_def(workflow_name, parameters)
+        
         # Create workflow execution
         workflow_id = str(uuid.uuid4())
         execution = WorkflowExecution(
             id=workflow_id,
             name=workflow_name,
-            description=workflow_def.description,
+            description=getattr(workflow_def, 'description', f"Auto-generated workflow: {workflow_name}"),
             parameters=parameters,
-            config=workflow_def.config,
+            config=getattr(workflow_def, 'config', {}),
             start_time=time.time()
         )
         
         # Convert workflow definition steps to execution steps
+        steps = getattr(workflow_def, 'steps', [])
         execution.steps = [
             WorkflowStep(
                 agent=step["agent"],
                 action=step["action"],
                 timeout=step.get("timeout", 60)
             )
-            for step in workflow_def.steps
+            for step in steps
         ]
         
         # Add to active workflows
@@ -495,6 +502,32 @@ class CoordinatorAgent(BaseAgent):
             except Exception as e:
                 self.logger.error("Workflow monitor error", error=str(e))
                 await asyncio.sleep(60)
+    
+    def _create_default_workflow_def(self, workflow_name: str, parameters: Dict[str, Any]):
+        """Create a default workflow definition when none is provided."""
+        class DefaultWorkflowDef:
+            def __init__(self, name: str, params: Dict[str, Any]):
+                self.description = f"Default workflow for {name}"
+                self.config = {}
+                
+                # Create default steps based on workflow name
+                if name in ["complete-analysis", "full-analysis"]:
+                    self.steps = [
+                        {"agent": "semantic_analysis", "action": "analyze", "timeout": 120},
+                        {"agent": "knowledge_graph", "action": "update", "timeout": 60},
+                        {"agent": "documentation", "action": "generate", "timeout": 60}
+                    ]
+                elif name in ["simple-analysis", "quick-analysis"]:
+                    self.steps = [
+                        {"agent": "semantic_analysis", "action": "analyze", "timeout": 60}
+                    ]
+                else:
+                    # Generic workflow
+                    self.steps = [
+                        {"agent": "semantic_analysis", "action": "analyze", "timeout": 60}
+                    ]
+        
+        return DefaultWorkflowDef(workflow_name, parameters)
     
     # Event handlers
     async def _handle_execute_workflow(self, data: Dict[str, Any]) -> Dict[str, Any]:

@@ -65,15 +65,18 @@ class UKBIntegration:
                 temp_file = f.name
             
             try:
-                # Execute UKB command
-                cmd = [self.ukb_path, "--add-entity", "--file", temp_file]
+                # Execute UKB command using interactive mode
+                input_text = f"{entity_data['name']}\n{entity_data['entityType']}\n{entity_data['significance']}\n{entity_data['observations'][0]}"
+                
+                cmd = [self.ukb_path, "--interactive"]
                 result = await asyncio.create_subprocess_exec(
                     *cmd,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
                 
-                stdout, stderr = await result.communicate()
+                stdout, stderr = await result.communicate(input=input_text.encode())
                 
                 if result.returncode == 0:
                     return {

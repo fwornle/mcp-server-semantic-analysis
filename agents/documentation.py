@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import time
@@ -48,7 +49,7 @@ class DocumentationAgent(BaseAgent):
     
     async def on_initialize(self):
         """Initialize documentation agent."""
-        self.logger.info("Initializing documentation agent...")
+        self.logger.info("CRITICAL DEBUG: DocumentationAgent.on_initialize() called")
         
         # Create template directory if it doesn't exist
         self.template_dir.mkdir(parents=True, exist_ok=True)
@@ -63,10 +64,14 @@ class DocumentationAgent(BaseAgent):
         # Check PlantUML availability
         await self._check_plantuml_availability()
         
+        self.logger.info("CRITICAL DEBUG: About to register event handlers...")
         self._register_event_handlers()
+        self.logger.info(f"CRITICAL DEBUG: Event handlers registered: {list(self._event_handlers.keys())}")
+        self.logger.info(f"CRITICAL DEBUG: Total handlers count: {len(self._event_handlers)}")
     
     def _register_event_handlers(self):
         """Register event handlers."""
+        self.logger.info(f"DEBUG: DocumentationAgent._register_event_handlers called")
         self.register_event_handler("generate_report", self._handle_generate_report)
         self.register_event_handler("generate_analysis_doc", self._handle_generate_analysis_doc)
         self.register_event_handler("generate_workflow_doc", self._handle_generate_workflow_doc)
@@ -79,6 +84,7 @@ class DocumentationAgent(BaseAgent):
         self.register_event_handler("create_insight_document", self._handle_create_insight_document)
         self.register_event_handler("create_ukb_entity_with_insight", self._handle_create_ukb_entity_with_insight)
         self.register_event_handler("generate_lessons_learned", self._handle_generate_lessons_learned)
+        self.logger.info(f"DEBUG: DocumentationAgent registered {len(self._event_handlers)} event handlers")
     
     async def _create_default_templates(self):
         """Create default documentation templates."""
@@ -501,7 +507,8 @@ ${recent_entities}
     
     async def _handle_generate_analysis_doc(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle analysis document generation requests."""
-        analysis_results = data["analysis_results"]
+        # Handle both analysis_results and analysis_result keys for compatibility
+        analysis_results = data.get("analysis_results") or data.get("analysis_result", {})
         metadata = data.get("metadata", {})
         
         return await self.generate_analysis_report(analysis_results, metadata)
@@ -579,6 +586,10 @@ ${recent_entities}
         try:
             if not self.plantuml_available:
                 return {"success": False, "error": "PlantUML not available"}
+            
+            # Ensure analysis_result is a dict
+            if analysis_result is None:
+                analysis_result = {}
             
             # Generate diagram content based on type
             puml_content = await self._generate_diagram_content(diagram_type, content, analysis_result)
@@ -1007,14 +1018,25 @@ end note
                     temp_file = f.name
                 
                 try:
-                    # Execute UKB command
-                    result = await asyncio.create_subprocess_exec(
-                        self.ukb_command, command, "--file", temp_file,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    
-                    stdout, stderr = await result.communicate()
+                    # Execute UKB command using interactive mode with input data
+                    if command == "--interactive":
+                        with open(temp_file, 'r') as f:
+                            input_data = f.read()
+                        result = await asyncio.create_subprocess_exec(
+                            self.ukb_command, "--interactive",
+                            stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await result.communicate(input=input_data.encode())
+                    else:
+                        # For other commands, use direct execution
+                        result = await asyncio.create_subprocess_exec(
+                            self.ukb_command, command,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await result.communicate()
                     
                     return {
                         "success": result.returncode == 0,

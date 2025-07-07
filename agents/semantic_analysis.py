@@ -430,15 +430,18 @@ class SemanticAnalysisAgent(BaseAgent):
                 temp_file = f.name
             
             try:
-                # Execute UKB command
-                cmd = [ukb_path, "--add-entity", "--file", temp_file]
+                # Execute UKB command using interactive mode
+                input_text = f"{entity_data['name']}\n{entity_data['entityType']}\n{entity_data['significance']}\n{entity_data['observations'][0]}"
+                
+                cmd = [ukb_path, "--interactive"]
                 result = await asyncio.create_subprocess_exec(
                     *cmd,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
                 
-                stdout, stderr = await result.communicate()
+                stdout, stderr = await result.communicate(input=input_text.encode())
                 
                 if result.returncode == 0:
                     return {
@@ -480,7 +483,7 @@ class SemanticAnalysisAgent(BaseAgent):
         
         return {
             "name": f"{analysis_type}_fallback_{timestamp}",
-            "entityType": "FallbackAnalysis",
+            "entityType": "TechnicalPattern",
             "significance": options.get("significance", 5),
             "observations": [
                 f"Analysis type: {analysis_type}",
@@ -608,11 +611,90 @@ Structure insights with applicability and significance."""
     
     # Helper methods
     async def _extract_code_content(self, repository: str, options: Dict[str, Any]) -> str:
-        """Extract code content from repository for analysis."""
+        """Extract comprehensive code content from repository for analysis."""
         try:
-            # Use git to get recent commits
-            depth = options.get("depth", 10)
-            cmd = ["git", "-C", repository, "log", "--oneline", f"-{depth}"]
+            # Perform comprehensive repository analysis
+            git_analysis = await self._analyze_git_history(repository, options)
+            session_analysis = await self._analyze_session_logs(repository, options)
+            code_structure = await self._analyze_code_structure(repository, options)
+            
+            # Combine all analysis
+            combined_content = f"""
+# Comprehensive Repository Analysis for: {repository}
+
+## Git History Analysis
+{git_analysis}
+
+## Session Logs Analysis  
+{session_analysis}
+
+## Code Structure Analysis
+{code_structure}
+"""
+            return combined_content
+                
+        except Exception as e:
+            return f"Repository analysis for: {repository}\nError: {str(e)}"
+
+    async def _analyze_git_history(self, repository: str, options: Dict[str, Any]) -> str:
+        """Perform comprehensive git history analysis."""
+        try:
+            depth = options.get("depth", 50)
+            since_date = options.get("since_date", "1 month ago")
+            
+            # Get comprehensive git log with stats
+            cmd = [
+                "git", "-C", repository, "log", 
+                f"--since={since_date}",
+                f"-{depth}",
+                "--stat",
+                "--format=fuller", 
+                "--show-notes"
+            ]
+            
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode != 0:
+                return f"Error accessing git history: {stderr.decode()}"
+            
+            git_log = stdout.decode()
+            
+            # Get commit authors and stats
+            author_stats = await self._get_git_author_stats(repository, since_date)
+            file_changes = await self._get_git_file_changes(repository, since_date)
+            branch_info = await self._get_git_branch_info(repository)
+            
+            return f"""
+### Git Commit History ({depth} commits since {since_date})
+{git_log}
+
+### Author Statistics
+{author_stats}
+
+### File Change Patterns
+{file_changes}
+
+### Branch Information
+{branch_info}
+"""
+                
+        except Exception as e:
+            return f"Git history analysis error: {str(e)}"
+
+    async def _get_git_author_stats(self, repository: str, since_date: str) -> str:
+        """Get git author statistics."""
+        try:
+            cmd = [
+                "git", "-C", repository, "shortlog", 
+                f"--since={since_date}",
+                "-sn"
+            ]
             
             result = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -625,11 +707,246 @@ Structure insights with applicability and significance."""
             if result.returncode == 0:
                 return stdout.decode()
             else:
-                # Fallback to directory listing
-                return f"Repository analysis for: {repository}\nError accessing git history: {stderr.decode()}"
+                return f"Error getting author stats: {stderr.decode()}"
                 
         except Exception as e:
-            return f"Repository analysis for: {repository}\nError: {str(e)}"
+            return f"Author stats error: {str(e)}"
+
+    async def _get_git_file_changes(self, repository: str, since_date: str) -> str:
+        """Get git file change patterns."""
+        try:
+            cmd = [
+                "git", "-C", repository, "log", 
+                f"--since={since_date}",
+                "--name-status",
+                "--pretty=format:"
+            ]
+            
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                return stdout.decode()
+            else:
+                return f"Error getting file changes: {stderr.decode()}"
+                
+        except Exception as e:
+            return f"File changes error: {str(e)}"
+
+    async def _get_git_branch_info(self, repository: str) -> str:
+        """Get git branch information."""
+        try:
+            cmd = ["git", "-C", repository, "branch", "-a", "-v"]
+            
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                return stdout.decode()
+            else:
+                return f"Error getting branch info: {stderr.decode()}"
+                
+        except Exception as e:
+            return f"Branch info error: {str(e)}"
+
+    async def _analyze_session_logs(self, repository: str, options: Dict[str, Any]) -> str:
+        """Analyze .specstory session logs for insights."""
+        try:
+            from pathlib import Path
+            import glob
+            
+            specstory_dir = Path(repository) / ".specstory" / "history"
+            
+            if not specstory_dir.exists():
+                return "No .specstory/history directory found"
+            
+            # Get recent session logs
+            days_back = options.get("session_days_back", 7)
+            import time
+            cutoff_time = time.time() - (days_back * 24 * 60 * 60)
+            
+            session_files = []
+            for md_file in specstory_dir.glob("*.md"):
+                if md_file.stat().st_mtime > cutoff_time:
+                    session_files.append(md_file)
+            
+            if not session_files:
+                return f"No session logs found in last {days_back} days"
+            
+            # Sort by modification time (newest first)
+            session_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            
+            # Analyze recent sessions
+            session_analysis = []
+            max_sessions = options.get("max_sessions", 5)
+            
+            for session_file in session_files[:max_sessions]:
+                try:
+                    with open(session_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Extract key insights from session content
+                    insights = await self._extract_session_insights(content)
+                    session_analysis.append(f"""
+### Session: {session_file.name}
+Modified: {time.ctime(session_file.stat().st_mtime)}
+{insights}
+""")
+                except Exception as e:
+                    session_analysis.append(f"Error reading {session_file.name}: {str(e)}")
+            
+            return "\n".join(session_analysis)
+                
+        except Exception as e:
+            return f"Session logs analysis error: {str(e)}"
+
+    async def _extract_session_insights(self, session_content: str) -> str:
+        """Extract key insights from session log content."""
+        try:
+            # Extract key patterns from session logs
+            lines = session_content.split('\n')
+            
+            # Look for technical decisions, errors, solutions
+            insights = []
+            current_section = None
+            
+            for line in lines:
+                line = line.strip()
+                
+                # Look for exchange markers
+                if line.startswith('## Exchange'):
+                    current_section = line
+                    continue
+                
+                # Look for user/assistant indicators  
+                if line.startswith('**User:**') or line.startswith('**Assistant:**'):
+                    continue
+                
+                # Look for key technical content
+                if any(keyword in line.lower() for keyword in [
+                    'error', 'fix', 'issue', 'problem', 'solution', 
+                    'implementation', 'pattern', 'architecture', 'design',
+                    'performance', 'optimization', 'refactor'
+                ]):
+                    insights.append(f"- {line}")
+            
+            if insights:
+                return "\n".join(insights[:10])  # Limit to top 10 insights
+            else:
+                return "No specific technical insights extracted"
+                
+        except Exception as e:
+            return f"Session insight extraction error: {str(e)}"
+
+    async def _analyze_code_structure(self, repository: str, options: Dict[str, Any]) -> str:
+        """Analyze code structure and patterns."""
+        try:
+            from pathlib import Path
+            
+            repo_path = Path(repository)
+            
+            # Analyze file types and structure
+            file_analysis = await self._analyze_file_structure(repo_path)
+            
+            # Look for configuration files
+            config_analysis = await self._analyze_config_files(repo_path)
+            
+            # Analyze documentation
+            docs_analysis = await self._analyze_documentation(repo_path)
+            
+            return f"""
+### File Structure Analysis
+{file_analysis}
+
+### Configuration Analysis
+{config_analysis}
+
+### Documentation Analysis
+{docs_analysis}
+"""
+                
+        except Exception as e:
+            return f"Code structure analysis error: {str(e)}"
+
+    async def _analyze_file_structure(self, repo_path: Path) -> str:
+        """Analyze repository file structure."""
+        try:
+            # Count files by type
+            file_counts = {}
+            total_files = 0
+            
+            for file_path in repo_path.rglob("*"):
+                if file_path.is_file() and not any(part.startswith('.') for part in file_path.parts):
+                    total_files += 1
+                    suffix = file_path.suffix.lower()
+                    file_counts[suffix] = file_counts.get(suffix, 0) + 1
+            
+            # Sort by count
+            sorted_types = sorted(file_counts.items(), key=lambda x: x[1], reverse=True)
+            
+            structure_info = [f"Total files: {total_files}"]
+            structure_info.extend([f"{ext or 'no extension'}: {count}" for ext, count in sorted_types[:10]])
+            
+            return "\n".join(structure_info)
+                
+        except Exception as e:
+            return f"File structure analysis error: {str(e)}"
+
+    async def _analyze_config_files(self, repo_path: Path) -> str:
+        """Analyze configuration files."""
+        try:
+            config_files = []
+            
+            # Common config file patterns
+            config_patterns = [
+                "package.json", "requirements.txt", "Cargo.toml", "pom.xml",
+                "Dockerfile", "docker-compose.yml", ".gitignore", "README*",
+                "CLAUDE.md", "*.config.js", "*.config.json", "*.yml", "*.yaml"
+            ]
+            
+            for pattern in config_patterns:
+                for config_file in repo_path.glob(pattern):
+                    if config_file.is_file():
+                        config_files.append(config_file.name)
+            
+            if config_files:
+                return "Configuration files found:\n" + "\n".join([f"- {f}" for f in config_files])
+            else:
+                return "No common configuration files found"
+                
+        except Exception as e:
+            return f"Config analysis error: {str(e)}"
+
+    async def _analyze_documentation(self, repo_path: Path) -> str:
+        """Analyze documentation files."""
+        try:
+            doc_files = []
+            
+            # Look for documentation
+            doc_patterns = ["*.md", "*.rst", "*.txt", "docs/*", "documentation/*"]
+            
+            for pattern in doc_patterns:
+                for doc_file in repo_path.glob(pattern):
+                    if doc_file.is_file():
+                        doc_files.append(doc_file.relative_to(repo_path))
+            
+            if doc_files:
+                return "Documentation found:\n" + "\n".join([f"- {f}" for f in doc_files[:10]])
+            else:
+                return "No documentation files found"
+                
+        except Exception as e:
+            return f"Documentation analysis error: {str(e)}"
     
     async def _read_file(self, file_path: str) -> str:
         """Read file content asynchronously."""

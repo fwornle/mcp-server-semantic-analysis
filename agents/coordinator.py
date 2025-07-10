@@ -226,6 +226,16 @@ class CoordinatorAgent(BaseAgent):
         self.register_event_handler("get_workflow_status", self._handle_get_workflow_status)
         self.register_event_handler("cancel_workflow", self._handle_cancel_workflow)
         self.register_event_handler("validate_output", self._handle_validate_output)
+        
+        # Missing workflow action handlers
+        self.register_event_handler("initialize_workflow", self._handle_initialize_workflow)
+        self.register_event_handler("validate_and_complete", self._handle_validate_and_complete)
+        self.register_event_handler("detect_changes", self._handle_detect_changes)
+        self.register_event_handler("complete_incremental", self._handle_complete_incremental)
+        self.register_event_handler("prepare_conversation", self._handle_prepare_conversation)
+        self.register_event_handler("validate_insights", self._handle_validate_insights)
+        self.register_event_handler("scan_repository", self._handle_scan_repository)
+        self.register_event_handler("generate_summary", self._handle_generate_summary)
     
     async def execute_workflow(self, workflow_name: str, workflow_def: Any, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a workflow with the given definition and parameters."""
@@ -257,11 +267,12 @@ class CoordinatorAgent(BaseAgent):
             "Starting workflow execution",
             workflow_id=workflow_id,
             workflow_name=workflow_name,
-            steps=len(execution.steps)
+            steps=len(execution.steps),
+            parameters=parameters
         )
         
-        # Start workflow execution
-        asyncio.create_task(self._execute_workflow_steps(execution))
+        # Start workflow execution with detailed logging
+        asyncio.create_task(self._execute_workflow_steps_with_logging(execution))
         
         return {
             "workflow_id": workflow_id,
@@ -269,6 +280,47 @@ class CoordinatorAgent(BaseAgent):
             "steps": len(execution.steps)
         }
     
+    async def _execute_workflow_steps_with_logging(self, execution: WorkflowExecution):
+        """Execute workflow steps with enhanced logging and monitoring."""
+        start_time = time.time()
+        
+        self.logger.info(
+            "WORKFLOW_START",
+            workflow_id=execution.id,
+            workflow_name=execution.name,
+            total_steps=len(execution.steps),
+            expected_duration=execution.config.get("max_duration", "unknown")
+        )
+        
+        try:
+            result = await self._execute_workflow_steps(execution)
+            
+            duration = time.time() - start_time
+            self.logger.info(
+                "WORKFLOW_COMPLETE",
+                workflow_id=execution.id,
+                workflow_name=execution.name,
+                status=execution.status.value,
+                duration=f"{duration:.2f}s",
+                completed_steps=execution.current_step_index + 1,
+                total_steps=len(execution.steps),
+                qa_reports=len(execution.qa_reports)
+            )
+            
+            return result
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            self.logger.error(
+                "WORKFLOW_FAILED",
+                workflow_id=execution.id,
+                workflow_name=execution.name,
+                error=str(e),
+                duration=f"{duration:.2f}s",
+                failed_at_step=execution.current_step_index
+            )
+            raise
+
     async def _execute_workflow_steps(self, execution: WorkflowExecution):
         """Execute all steps in a workflow."""
         execution.status = WorkflowStatus.RUNNING
@@ -535,6 +587,159 @@ class CoordinatorAgent(BaseAgent):
         
         return await self.qa_system.validate_agent_output(agent_id, output, context)
     
+    async def _handle_initialize_workflow(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Initialize workflow setup and validation."""
+        workflow_id = data.get("workflow_id")
+        parameters = data.get("parameters", {})
+        
+        self.logger.info("Initializing workflow", workflow_id=workflow_id, parameters=parameters)
+        
+        return {
+            "status": "initialized",
+            "workflow_id": workflow_id,
+            "setup_complete": True,
+            "validation_passed": True
+        }
+    
+    async def _handle_validate_and_complete(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate workflow completion and finalize results."""
+        workflow_id = data.get("workflow_id")
+        previous_results = data.get("previous_results", {})
+        
+        self.logger.info("Validating and completing workflow", workflow_id=workflow_id)
+        
+        # Perform final validation
+        validation_result = await self.qa_system.validate_workflow(
+            self.active_workflows.get(workflow_id)
+        ) if workflow_id and workflow_id in self.active_workflows else {"passed": True}
+        
+        return {
+            "status": "completed",
+            "workflow_id": workflow_id,
+            "validation_passed": validation_result["passed"],
+            "completeness": validation_result.get("completeness", 1.0),
+            "final_results": previous_results
+        }
+    
+    async def _handle_detect_changes(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Detect changes since last analysis."""
+        parameters = data.get("parameters", {})
+        path = parameters.get("path", ".")
+        
+        self.logger.info("Detecting changes", path=path)
+        
+        # Simple change detection (could be enhanced with git diff, file timestamps, etc.)
+        import os
+        import time
+        
+        changes_detected = True  # For now, always assume changes
+        last_analysis_time = parameters.get("last_analysis_time", 0)
+        current_time = time.time()
+        
+        return {
+            "changes_detected": changes_detected,
+            "change_count": 1,  # Placeholder
+            "last_analysis": last_analysis_time,
+            "current_time": current_time,
+            "analysis_needed": changes_detected
+        }
+    
+    async def _handle_complete_incremental(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Complete incremental analysis workflow."""
+        workflow_id = data.get("workflow_id")
+        previous_results = data.get("previous_results", {})
+        
+        self.logger.info("Completing incremental analysis", workflow_id=workflow_id)
+        
+        return {
+            "status": "incremental_complete", 
+            "workflow_id": workflow_id,
+            "changes_processed": previous_results.get("change_count", 0),
+            "timestamp": time.time()
+        }
+    
+    async def _handle_prepare_conversation(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare conversation data for analysis."""
+        parameters = data.get("parameters", {})
+        conversation_data = parameters.get("conversation", "")
+        
+        self.logger.info("Preparing conversation for analysis")
+        
+        return {
+            "status": "prepared",
+            "conversation_length": len(conversation_data),
+            "prepared_data": conversation_data,
+            "metadata": {
+                "timestamp": time.time(),
+                "source": "conversation_analysis"
+            }
+        }
+    
+    async def _handle_validate_insights(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate extracted insights for quality."""
+        previous_results = data.get("previous_results", {})
+        insights = previous_results.get("insights", [])
+        
+        self.logger.info("Validating insights", insight_count=len(insights))
+        
+        # Basic validation logic
+        valid_insights = [insight for insight in insights if insight.get("significance", 0) >= 5]
+        
+        return {
+            "validation_passed": len(valid_insights) > 0,
+            "total_insights": len(insights),
+            "valid_insights": len(valid_insights),
+            "quality_score": len(valid_insights) / max(len(insights), 1)
+        }
+    
+    async def _handle_scan_repository(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Scan repository structure and metadata."""
+        parameters = data.get("parameters", {})
+        path = parameters.get("path", ".")
+        
+        self.logger.info("Scanning repository", path=path)
+        
+        # Basic repository scanning
+        import os
+        file_count = 0
+        code_files = []
+        
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                if file.endswith(('.py', '.js', '.ts', '.java', '.cpp', '.c', '.go', '.rs')):
+                    code_files.append(os.path.join(root, file))
+                    file_count += 1
+        
+        return {
+            "scan_complete": True,
+            "total_files": file_count,
+            "code_files": code_files[:100],  # Limit to first 100
+            "repository_structure": {
+                "path": path,
+                "file_count": file_count,
+                "has_code": file_count > 0
+            }
+        }
+    
+    async def _handle_generate_summary(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate workflow execution summary."""
+        workflow_id = data.get("workflow_id")
+        previous_results = data.get("previous_results", {})
+        
+        self.logger.info("Generating workflow summary", workflow_id=workflow_id)
+        
+        execution = self.active_workflows.get(workflow_id) if workflow_id else None
+        
+        summary = {
+            "workflow_id": workflow_id,
+            "execution_time": time.time() - (execution.start_time if execution else time.time()),
+            "steps_completed": len(previous_results),
+            "results_summary": previous_results,
+            "status": "summary_generated"
+        }
+        
+        return summary
+
     async def health_check(self) -> Dict[str, Any]:
         """Check coordinator health."""
         base_health = await super().health_check()

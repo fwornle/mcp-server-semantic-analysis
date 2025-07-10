@@ -30,10 +30,15 @@ class DocumentationAgent(BaseAgent):
         
         # PlantUML and diagram configuration
         self.plantuml_config = config.get("plantuml", {})
-        self.insights_dir = Path(self.plantuml_config.get("insights_dir", "../../../knowledge-management/insights"))
+        # Use absolute path to avoid working directory issues
+        default_insights_dir = Path(__file__).parent.parent.parent.parent / "knowledge-management" / "insights"
+        insights_path = self.plantuml_config.get("insights_dir", str(default_insights_dir))
+        self.insights_dir = Path(insights_path).resolve()
         self.puml_dir = self.insights_dir / "puml"
         self.images_dir = self.insights_dir / "images"
-        self.standard_style_path = Path(self.plantuml_config.get("standard_style", "../../../docs/puml/_standard-style.puml"))
+        default_style_path = Path(__file__).parent.parent.parent.parent / "docs" / "puml" / "_standard-style.puml"
+        style_path = self.plantuml_config.get("standard_style", str(default_style_path))
+        self.standard_style_path = Path(style_path).resolve()
         
         # UKB integration configuration  
         self.ukb_config = config.get("ukb_integration", {})
@@ -1007,14 +1012,25 @@ end note
                     temp_file = f.name
                 
                 try:
-                    # Execute UKB command
-                    result = await asyncio.create_subprocess_exec(
-                        self.ukb_command, command, "--file", temp_file,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    
-                    stdout, stderr = await result.communicate()
+                    # Execute UKB command using interactive mode with data
+                    if command == "--add-entity":
+                        # Use interactive mode for entity creation
+                        input_data = f"{data.get('name', 'Unknown')}\n{data.get('entity_type', 'Unknown')}\n{data.get('significance', 5)}\n{data.get('observation', 'Auto-generated from analysis')}\n"
+                        result = await asyncio.create_subprocess_exec(
+                            self.ukb_command, "--interactive",
+                            stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await result.communicate(input=input_data.encode())
+                    else:
+                        # Execute UKB command without --file
+                        result = await asyncio.create_subprocess_exec(
+                            self.ukb_command, command,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await result.communicate()
                     
                     return {
                         "success": result.returncode == 0,

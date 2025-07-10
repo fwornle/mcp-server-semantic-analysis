@@ -36,17 +36,23 @@ class DeduplicationAgent(BaseAgent):
         await self._initialize_embedding_model()
         
         self._register_event_handlers()
+        
+        self.logger.info("Deduplication agent initialized successfully")
     
     async def _initialize_embedding_model(self):
         """Initialize the embedding model for similarity detection."""
         try:
-            model_name = self.similarity_config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
+            # For now, skip embedding model initialization to avoid hanging
+            # This will use simple text similarity instead
+            self.logger.info("Using simple text similarity (embedding model disabled for stability)")
+            self.embedding_model = None
+            return
             
-            # Import sentence-transformers
-            from sentence_transformers import SentenceTransformer
-            
-            self.embedding_model = SentenceTransformer(model_name)
-            self.logger.info(f"Initialized embedding model: {model_name}")
+            # TODO: Re-enable once sentence-transformers dependency is properly configured
+            # model_name = self.similarity_config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
+            # from sentence_transformers import SentenceTransformer
+            # self.embedding_model = SentenceTransformer(model_name)
+            # self.logger.info(f"Initialized embedding model: {model_name}")
             
         except ImportError:
             self.logger.warning("sentence-transformers not available, using simple text similarity")
@@ -61,6 +67,10 @@ class DeduplicationAgent(BaseAgent):
         self.register_event_handler("merge_entities", self._handle_merge_entities)
         self.register_event_handler("calculate_similarity", self._handle_calculate_similarity)
         self.register_event_handler("resolve_duplicates", self._handle_resolve_duplicates)
+        
+        # Missing workflow action handlers
+        self.register_event_handler("merge_similar_entities", self._handle_merge_similar_entities)
+        self.register_event_handler("consolidate_patterns", self._handle_consolidate_patterns)
     
     async def detect_duplicates(self, entity_types: List[str] = None, similarity_threshold: float = 0.85, comparison_method: str = "both") -> Dict[str, Any]:
         """Find similar/duplicate entities in the knowledge graph."""
@@ -513,6 +523,38 @@ class DeduplicationAgent(BaseAgent):
     async def _handle_resolve_duplicates(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle complete duplicate resolution requests."""
         return await self.resolve_all_duplicates()
+    
+    async def _handle_merge_similar_entities(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle workflow request to merge similar entities."""
+        duplicate_groups = data.get("duplicate_groups", [])
+        return await self.merge_similar_entities(duplicate_groups)
+    
+    async def _handle_consolidate_patterns(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle workflow request to consolidate patterns."""
+        # Find duplicate patterns and consolidate them
+        detection_result = await self.detect_duplicates(
+            entity_types=["Pattern", "TransferablePattern", "WorkflowPattern"],
+            similarity_threshold=0.8
+        )
+        
+        if not detection_result["success"] or not detection_result["duplicate_groups"]:
+            return {
+                "success": True,
+                "message": "No pattern duplicates found to consolidate",
+                "patterns_processed": 0,
+                "patterns_consolidated": 0
+            }
+        
+        # Merge the duplicate patterns
+        merge_result = await self.merge_similar_entities(detection_result["duplicate_groups"])
+        
+        return {
+            "success": merge_result["success"],
+            "patterns_processed": detection_result["total_entities"],
+            "patterns_consolidated": merge_result["merged_count"],
+            "duplicate_groups": len(detection_result["duplicate_groups"]),
+            "errors": merge_result.get("errors", [])
+        }
     
     async def health_check(self) -> Dict[str, Any]:
         """Check deduplication agent health."""

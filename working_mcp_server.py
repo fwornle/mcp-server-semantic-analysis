@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/Users/q284340/Agentic/coding/integrations/mcp-server-semantic-analysis/venv/bin/python
 """
 Enhanced MCP Server for Semantic Analysis
 Integrates the 7-agent system: Step 2 - SemanticAnalysisAgent integration
@@ -11,6 +11,57 @@ import asyncio
 from typing import Any, Dict, Optional
 from abc import ABC, abstractmethod
 from pathlib import Path
+from dotenv import load_dotenv
+import datetime
+import hashlib
+
+# Version and startup tracking
+VERSION = "1.4.0"
+STARTUP_TIME = datetime.datetime.now().isoformat()
+CODE_FILE = __file__
+CODE_HASH = hashlib.md5(open(__file__, 'rb').read()).hexdigest()[:8]
+
+# Load environment variables IMMEDIATELY at module import
+# This ensures API keys are available regardless of how the module is loaded
+coding_env_path = Path(__file__).parent.parent.parent / ".env"  # /Users/q284340/Agentic/coding/.env
+parent_env_path = Path(__file__).parent.parent.parent.parent / ".env"
+local_env_path = Path(__file__).parent / ".env"
+
+# CRITICAL: The API keys might already be in environment from MCP config
+# Only load from .env if they're not already set
+if not (os.getenv('ANTHROPIC_API_KEY') and os.getenv('OPENAI_API_KEY')):
+    # Try coding .env first (most likely location)
+    if coding_env_path.exists():
+        load_dotenv(coding_env_path, override=False)  # Don't override existing env vars
+        print(f"✅ Loaded environment from: {coding_env_path}", file=sys.stderr)
+    elif parent_env_path.exists():
+        load_dotenv(parent_env_path, override=False)
+        print(f"✅ Loaded environment from: {parent_env_path}", file=sys.stderr)
+    elif local_env_path.exists():
+        load_dotenv(local_env_path, override=False)
+        print(f"✅ Loaded environment from: {local_env_path}", file=sys.stderr)
+    else:
+        print(f"⚠️  No .env file found at {coding_env_path}, {parent_env_path} or {local_env_path}", file=sys.stderr)
+        print("⚠️  API keys must be set as environment variables", file=sys.stderr)
+else:
+    print(f"✅ API keys already in environment (from MCP config)", file=sys.stderr)
+
+# CRITICAL: Log Python executable information for venv verification
+print(f"🐍 PYTHON EXECUTABLE VERIFICATION:", file=sys.stderr)
+print(f"   Current Python: {sys.executable}", file=sys.stderr)
+print(f"   Python version: {sys.version.split()[0]}", file=sys.stderr)
+print(f"   Virtual env: {os.getenv('VIRTUAL_ENV', 'Not detected')}", file=sys.stderr)
+print(f"   Is venv Python: {'✅ YES' if 'venv' in sys.executable else '❌ NO - SYSTEM PYTHON'}", file=sys.stderr)
+print(f"   Executable path contains 'venv': {'✅ YES' if 'venv' in sys.executable else '❌ NO'}", file=sys.stderr)
+
+# Log current API key status for debugging
+print(f"📋 Environment check at module load:", file=sys.stderr)
+print(f"  Python executable: {sys.executable}", file=sys.stderr)
+print(f"  Is venv: {sys.prefix != sys.base_prefix}", file=sys.stderr)
+print(f"  ANTHROPIC_API_KEY: {'✅ Set' if os.getenv('ANTHROPIC_API_KEY') else '❌ Not set'}", file=sys.stderr)
+print(f"  OPENAI_API_KEY: {'✅ Set' if os.getenv('OPENAI_API_KEY') else '❌ Not set'}", file=sys.stderr)
+print(f"  OPENAI_BASE_URL: {'✅ Set' if os.getenv('OPENAI_BASE_URL') else '❌ Not set'}", file=sys.stderr)
+print(f"  VIRTUAL_ENV: {os.getenv('VIRTUAL_ENV', 'Not set')}", file=sys.stderr)
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
@@ -614,6 +665,8 @@ class AgentManager:
                             system=self  # Pass self as the system reference
                         )
                         await self.coordinator.initialize()
+                        # Add coordinator to agents dictionary so it's accessible
+                        self.agents['coordinator'] = self.coordinator
                         print("✅ Coordinator agent initialized", file=sys.stderr)
                     
                     # Initialize semantic analysis agent
@@ -894,15 +947,44 @@ class AgentManager:
 async def main():
     """Main entry point for the MCP server."""
     
-    # Create the server and agent manager
-    server = Server("semantic-analysis")
-    agent_manager = AgentManager()
+    try:
+        # ===== STARTUP LOGGING =====
+        print(f"🚀 ====== SEMANTIC ANALYSIS SERVER STARTUP ======", file=sys.stderr)
+        print(f"📅 Startup Time: {STARTUP_TIME}", file=sys.stderr)
+        print(f"📝 Version: {VERSION}", file=sys.stderr)
+        print(f"📁 Code File: {CODE_FILE}", file=sys.stderr)
+        print(f"🔢 Code Hash: {CODE_HASH}", file=sys.stderr)
+        print(f"🐍 Python Version: {sys.version}", file=sys.stderr)
+        print(f"📋 Working Directory: {os.getcwd()}", file=sys.stderr)
+        print(f"🆔 Process ID: {os.getpid()}", file=sys.stderr)
+        print(f"=================================================", file=sys.stderr)
+        
+        # Environment variables already loaded at module level
+        print(f"📋 Environment check in main():", file=sys.stderr)
+        print(f"  ANTHROPIC_API_KEY: {'✅ Set' if os.getenv('ANTHROPIC_API_KEY') else '❌ Not set'}", file=sys.stderr)
+        print(f"  OPENAI_API_KEY: {'✅ Set' if os.getenv('OPENAI_API_KEY') else '❌ Not set'}", file=sys.stderr)
+        print(f"  OPENAI_BASE_URL: {'✅ Set' if os.getenv('OPENAI_BASE_URL') else '❌ Not set'}", file=sys.stderr)
+        
+        # Create the server and agent manager
+        server = Server("semantic-analysis")
+        agent_manager = AgentManager()
+        
+        # Initialize the agent manager (which includes the fallback engine)
+        print("🔄 Initializing agent manager...", file=sys.stderr)
+        await agent_manager.initialize()
+        print("✅ Agent manager initialized successfully", file=sys.stderr)
     
-    # Initialize the agent manager (which includes the fallback engine)
-    await agent_manager.initialize()
+    except Exception as e:
+        print(f"❌ Error during initialization: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        # Continue with limited functionality
+        server = Server("semantic-analysis")
+        agent_manager = None
+        print("🔄 Running in limited mode without agents", file=sys.stderr)
     
     # Get the analysis engine for backward compatibility
-    analysis_engine = agent_manager.get_fallback_engine()
+    analysis_engine = agent_manager.get_fallback_engine() if agent_manager else None
     
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -1512,93 +1594,132 @@ async def main():
             code = arguments.get("code", "")
             language = arguments.get("language", "unknown")
             
-            # Try to use the semantic analysis agent first
-            if 'semantic_analysis' in agent_manager.agents:
-                try:
-                    result = await agent_manager.agents['semantic_analysis'].analyze(
-                        analysis_type="code_analysis",
-                        content=f"Analyze this {language} code for patterns, issues, and architectural insights:\n\n{code}",
-                        options={"language": language}
-                    )
-                    
-                    return [TextContent(
-                        type="text",
-                        text=f"Enhanced code analysis (via agent):\n{json.dumps(result, indent=2)}"
-                    )]
-                except Exception as e:
-                    print(f"⚠️  Agent analysis failed, falling back: {e}", file=sys.stderr)
-            
-            # Fallback to LLM-powered analysis
-            prompt = f"Analyze this {language} code for patterns, issues, and architectural insights:"
-            
+            # Route through coordinator workflow
             try:
-                llm_result = await analysis_engine.analyze_with_llm(prompt, code, "code")
-                
-                analysis = {
-                    "language": language,
-                    "lines": len(code.split('\n')),
-                    "characters": len(code),
-                    "llm_analysis": llm_result.get("result", "No LLM analysis available"),
-                    "provider_used": llm_result.get("provider", "unknown"),
-                    "status": "analyzed"
-                }
+                result = await agent_manager.execute_workflow(
+                    "code-analysis", 
+                    {
+                        "code": code,
+                        "language": language,
+                        "analysis_type": "code_analysis"
+                    }
+                )
                 
                 return [TextContent(
                     type="text",
-                    text=f"Enhanced code analysis complete:\n{json.dumps(analysis, indent=2)}"
+                    text=f"Code analysis workflow result:\n{json.dumps(result, indent=2)}"
                 )]
                 
             except Exception as e:
-                # Fallback to simple analysis
-                analysis = {
-                    "language": language,
-                    "lines": len(code.split('\n')),
-                    "characters": len(code),
-                    "error": str(e),
-                    "status": "fallback_analysis"
-                }
+                print(f"⚠️  Workflow execution failed, falling back: {e}", file=sys.stderr)
                 
-                return [TextContent(
-                    type="text",
-                    text=f"Code analysis (fallback):\n{json.dumps(analysis, indent=2)}"
-                )]
+                # Fallback to direct agent if coordinator unavailable
+                if 'semantic_analysis' in agent_manager.agents:
+                    try:
+                        result = await agent_manager.agents['semantic_analysis'].analyze(
+                            analysis_type="code_analysis",
+                            content=f"Analyze this {language} code for patterns, issues, and architectural insights:\n\n{code}",
+                            options={"language": language}
+                        )
+                        
+                        return [TextContent(
+                            type="text",
+                            text=f"Enhanced code analysis (via agent fallback):\n{json.dumps(result, indent=2)}"
+                        )]
+                    except Exception as e2:
+                        print(f"⚠️  Agent analysis failed, falling back to LLM: {e2}", file=sys.stderr)
+                
+                # Final fallback to LLM-powered analysis
+                prompt = f"Analyze this {language} code for patterns, issues, and architectural insights:"
+                
+                try:
+                    llm_result = await analysis_engine.analyze_with_llm(prompt, code, "code")
+                    
+                    analysis = {
+                        "language": language,
+                        "lines": len(code.split('\n')),
+                        "characters": len(code),
+                        "llm_analysis": llm_result.get("result", "No LLM analysis available"),
+                        "provider_used": llm_result.get("provider", "unknown"),
+                        "status": "analyzed",
+                        "execution_method": "llm_fallback"
+                    }
+                    
+                    return [TextContent(
+                        type="text",
+                        text=f"Enhanced code analysis complete (fallback):\n{json.dumps(analysis, indent=2)}"
+                    )]
+                    
+                except Exception as e3:
+                    # Ultimate fallback to simple analysis
+                    analysis = {
+                        "language": language,
+                        "lines": len(code.split('\n')),
+                        "characters": len(code),
+                        "error": str(e3),
+                        "status": "fallback_analysis"
+                    }
+                    
+                    return [TextContent(
+                        type="text",
+                        text=f"Code analysis (ultimate fallback):\n{json.dumps(analysis, indent=2)}"
+                    )]
         
         elif name == "determine_insights":
             context = arguments.get("context", "")
             
-            # Enhanced LLM-powered insight generation
-            prompt = "Generate actionable insights from this analysis context:"
-            
+            # Route through coordinator workflow
             try:
-                llm_result = await analysis_engine.analyze_with_llm(prompt, context, "insight_generation")
-                
-                insight = {
-                    "context": context,
-                    "llm_insights": llm_result.get("result", "No LLM insights available"),
-                    "provider_used": llm_result.get("provider", "unknown"),
-                    "confidence": 0.95,
-                    "status": "complete"
-                }
+                result = await agent_manager.execute_workflow(
+                    "insight-generation", 
+                    {
+                        "context": context,
+                        "analysis_type": "insight_generation"
+                    }
+                )
                 
                 return [TextContent(
-                    type="text", 
-                    text=f"Enhanced insights determined:\n{json.dumps(insight, indent=2)}"
+                    type="text",
+                    text=f"Insight generation workflow result:\n{json.dumps(result, indent=2)}"
                 )]
                 
             except Exception as e:
-                # Fallback to simple insight
-                insight = {
-                    "context": context,
-                    "insight": "Enhanced MCP server with LLM integration",
-                    "error": str(e),
-                    "confidence": 0.5,
-                    "status": "fallback"
-                }
+                print(f"⚠️  Insight workflow execution failed, falling back: {e}", file=sys.stderr)
                 
-                return [TextContent(
-                    type="text", 
-                    text=f"Insights (fallback):\n{json.dumps(insight, indent=2)}"
-                )]
+                # Fallback to direct LLM analysis
+                prompt = "Generate actionable insights from this analysis context:"
+                
+                try:
+                    llm_result = await analysis_engine.analyze_with_llm(prompt, context, "insight_generation")
+                    
+                    insight = {
+                        "context": context,
+                        "llm_insights": llm_result.get("result", "No LLM insights available"),
+                        "provider_used": llm_result.get("provider", "unknown"),
+                        "confidence": 0.95,
+                        "status": "complete",
+                        "execution_method": "llm_fallback"
+                    }
+                    
+                    return [TextContent(
+                        type="text", 
+                        text=f"Enhanced insights determined (fallback):\n{json.dumps(insight, indent=2)}"
+                    )]
+                    
+                except Exception as e2:
+                    # Ultimate fallback to simple insight
+                    insight = {
+                        "context": context,
+                        "insight": "Enhanced MCP server with LLM integration",
+                        "error": str(e2),
+                        "confidence": 0.5,
+                        "status": "fallback"
+                    }
+                    
+                    return [TextContent(
+                        type="text", 
+                        text=f"Insights (ultimate fallback):\n{json.dumps(insight, indent=2)}"
+                    )]
         
         elif name == "execute_workflow":
             workflow_name = arguments.get("workflow_name", "")
@@ -2193,13 +2314,53 @@ async def main():
                 text=f"Unknown tool: {name}"
             )]
     
-    # Run the server with proper async context
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream, 
-            write_stream, 
-            server.create_initialization_options()
-        )
+    # Log Python executable verification to the log file
+    log_file_path = Path(__file__).parent / "logs" / "semantic_analysis.log"
+    log_file_path.parent.mkdir(exist_ok=True)
+    
+    startup_log_entry = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "level": "info",
+        "event": "MCP Server Startup - Python Executable Verification",
+        "python_executable": sys.executable,
+        "python_version": sys.version.split()[0],
+        "virtual_env": os.getenv('VIRTUAL_ENV', 'Not detected'),
+        "is_venv_python": 'venv' in sys.executable,
+        "executable_contains_venv": 'venv' in sys.executable,
+        "startup_verification": "✅ VENV PYTHON" if 'venv' in sys.executable else "❌ SYSTEM PYTHON",
+        "logger": "mcp_server_startup"
+    }
+    
+    try:
+        with open(log_file_path, 'a') as f:
+            f.write(f"[info     ] {json.dumps(startup_log_entry)} [mcp_server_startup]\n")
+    except Exception as e:
+        print(f"⚠️  Could not write to log file: {e}", file=sys.stderr)
+
+    # Run the server with proper async context and error handling
+    try:
+        print("🚀 Starting MCP server...", file=sys.stderr)
+        async with stdio_server() as (read_stream, write_stream):
+            print("✅ MCP server stdio transport established", file=sys.stderr)
+            await server.run(
+                read_stream, 
+                write_stream, 
+                server.create_initialization_options()
+            )
+    except KeyboardInterrupt:
+        print("🔄 Received shutdown signal", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ MCP server error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+    finally:
+        if agent_manager:
+            print("🔄 Shutting down agents...", file=sys.stderr)
+            try:
+                await agent_manager.shutdown()
+                print("✅ Agents shutdown complete", file=sys.stderr)
+            except Exception as e:
+                print(f"⚠️  Error during shutdown: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

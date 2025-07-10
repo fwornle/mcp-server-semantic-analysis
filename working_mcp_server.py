@@ -1584,6 +1584,8 @@ async def main():
     async def call_tool(name: str, arguments: Dict[str, Any]) -> list[TextContent]:
         """Handle tool calls."""
         
+        print(f"🔧 Tool call received: {name} with args: {arguments}", file=sys.stderr)
+        
         if name == "test_connection":
             return [TextContent(
                 type="text", 

@@ -30,13 +30,13 @@ class DocumentationAgent(BaseAgent):
         
         # PlantUML and diagram configuration
         self.plantuml_config = config.get("plantuml", {})
-        # Use absolute path to avoid working directory issues
-        default_insights_dir = Path(__file__).parent.parent.parent.parent / "knowledge-management" / "insights"
+        # Use absolute path to avoid working directory issues - fix path resolution
+        default_insights_dir = Path(__file__).parent.parent.parent / "knowledge-management" / "insights"
         insights_path = self.plantuml_config.get("insights_dir", str(default_insights_dir))
         self.insights_dir = Path(insights_path).resolve()
         self.puml_dir = self.insights_dir / "puml"
         self.images_dir = self.insights_dir / "images"
-        default_style_path = Path(__file__).parent.parent.parent.parent / "docs" / "puml" / "_standard-style.puml"
+        default_style_path = Path(__file__).parent.parent.parent / "docs" / "puml" / "_standard-style.puml"
         style_path = self.plantuml_config.get("standard_style", str(default_style_path))
         self.standard_style_path = Path(style_path).resolve()
         

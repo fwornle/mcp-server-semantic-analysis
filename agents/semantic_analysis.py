@@ -5,6 +5,7 @@ Core LLM-powered analysis with 3-tier API key fallback system
 
 import asyncio
 import os
+import sys
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union
@@ -44,7 +45,10 @@ class ClaudeProvider(LLMProvider):
         self.api_key = os.getenv("ANTHROPIC_API_KEY")
         
     def validate_config(self) -> bool:
-        return bool(self.api_key and self.api_key != "your-anthropic-api-key")
+        is_valid = bool(self.api_key and self.api_key != "your-anthropic-api-key")
+        if not is_valid:
+            print(f"⚠️  Claude provider validation failed: api_key={bool(self.api_key)}, is_placeholder={self.api_key == 'your-anthropic-api-key' if self.api_key else 'N/A'}", file=sys.stderr)
+        return is_valid
     
     async def analyze(self, prompt: str, content: str, options: Dict[str, Any] = None) -> Dict[str, Any]:
         """Analyze content using Claude API."""
@@ -304,11 +308,19 @@ class SemanticAnalysisAgent(BaseAgent):
         self.logger.info(
             "API key status",
             has_ai=status["has_ai_providers"],
-            chain=status["fallback_chain"]
+            chain=status["fallback_chain"],
+            provider_details=status["provider_details"]
         )
         
         if not status["has_ai_providers"]:
-            self.logger.warning("No AI providers available - using UKB-CLI fallback mode")
+            self.logger.warning(
+                "🔴 FALLBACK TRIGGER: No AI providers available - using UKB-CLI fallback mode",
+                reason="No valid API keys found",
+                provider_details=status["provider_details"],
+                env_vars_checked=["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"],
+                cwd=os.getcwd(),
+                env_path=os.getenv("PATH", "NOT SET")
+            )
             return
         
         # Initialize providers in order of preference
@@ -332,9 +344,14 @@ class SemanticAnalysisAgent(BaseAgent):
                     if not self.primary_provider:
                         self.primary_provider = provider
                         self.logger.info(f"Primary provider: {provider_type.value}")
+                        print(f"✅ Primary provider set: {provider_type.value}", file=sys.stderr)
                     elif not self.fallback_provider:
                         self.fallback_provider = provider
                         self.logger.info(f"Fallback provider: {provider_type.value}")
+                        print(f"✅ Fallback provider set: {provider_type.value}", file=sys.stderr)
+                else:
+                    self.logger.warning(f"Provider {provider_type.value} failed validation")
+                    print(f"❌ Provider {provider_type.value} failed validation", file=sys.stderr)
                 
             except Exception as e:
                 self.logger.warning(f"Failed to initialize {provider_type.value} provider", error=str(e))
@@ -346,6 +363,13 @@ class SemanticAnalysisAgent(BaseAgent):
         self.register_event_handler("extract_patterns", self._handle_pattern_extraction)
         self.register_event_handler("score_significance", self._handle_significance_scoring)
         self.register_event_handler("generate_insights", self._handle_insight_generation)
+        
+        # Missing workflow action handlers
+        self.register_event_handler("analyze_repository", self._handle_analyze_repository)
+        self.register_event_handler("analyze_changes", self._handle_analyze_changes)
+        self.register_event_handler("extract_insights", self._handle_extract_insights)
+        self.register_event_handler("analyze_patterns", self._handle_analyze_patterns)
+        self.register_event_handler("analyze_insights", self._handle_analyze_insights)
     
     async def analyze(self, analysis_type: str, content: str, options: Dict[str, Any] = None) -> Dict[str, Any]:
         """
@@ -379,10 +403,21 @@ class SemanticAnalysisAgent(BaseAgent):
                     }
                     return result
                 else:
-                    self.logger.warning("Primary provider failed", error=result.get("error"))
+                    self.logger.warning(
+                        "🟡 FALLBACK TRIGGER: Primary provider failed",
+                        provider=self.primary_provider.get_info()["name"],
+                        error=result.get("error"),
+                        reason="Primary provider returned unsuccessful result"
+                    )
                     
             except Exception as e:
-                self.logger.warning("Primary provider exception", error=str(e))
+                self.logger.warning(
+                    "🟡 FALLBACK TRIGGER: Primary provider exception",
+                    provider=self.primary_provider.get_info()["name"],
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    reason="Exception during primary provider execution"
+                )
         
         # Try fallback provider
         if self.fallback_provider:
@@ -404,7 +439,15 @@ class SemanticAnalysisAgent(BaseAgent):
                 self.logger.warning("Fallback provider exception", error=str(e))
         
         # Final fallback to UKB-CLI mode
-        self.logger.info("Using UKB-CLI fallback mode")
+        self.logger.warning(
+            "🔴 FINAL FALLBACK TRIGGER: Using UKB-CLI fallback mode",
+            reason="All AI providers failed or unavailable",
+            analysis_type=analysis_type,
+            content_length=len(content),
+            primary_available=bool(self.primary_provider),
+            fallback_available=bool(self.fallback_provider),
+            options=options
+        )
         return await self._ukb_fallback_analysis(analysis_type, content, options)
     
     async def _ukb_fallback_analysis(self, analysis_type: str, content: str, options: Dict[str, Any]) -> Dict[str, Any]:
@@ -431,9 +474,9 @@ class SemanticAnalysisAgent(BaseAgent):
             
             try:
                 # Execute UKB command using interactive mode
-                input_text = f"{entity_data['name']}\n{entity_data['entityType']}\n{entity_data['significance']}\n{entity_data['observations'][0]}"
+                input_data = f"{entity_data['name']}\n{entity_data['entityType']}\n{entity_data['significance']}\n{entity_data.get('observation', 'Analysis from semantic agent')}\n"
                 
-                cmd = [ukb_path, "--interactive"]
+                cmd = [ukb_path, "--add-entity"]
                 result = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdin=asyncio.subprocess.PIPE,
@@ -441,7 +484,7 @@ class SemanticAnalysisAgent(BaseAgent):
                     stderr=asyncio.subprocess.PIPE
                 )
                 
-                stdout, stderr = await result.communicate(input=input_text.encode())
+                stdout, stderr = await result.communicate(input=input_data.encode())
                 
                 if result.returncode == 0:
                     return {
@@ -613,340 +656,26 @@ Structure insights with applicability and significance."""
     async def _extract_code_content(self, repository: str, options: Dict[str, Any]) -> str:
         """Extract comprehensive code content from repository for analysis."""
         try:
-            # Perform comprehensive repository analysis
-            git_analysis = await self._analyze_git_history(repository, options)
-            session_analysis = await self._analyze_session_logs(repository, options)
-            code_structure = await self._analyze_code_structure(repository, options)
+            # Use git to get recent commits
+            depth = options.get("depth", 10)
+            cmd = ["git", "-C", repository, "log", "--oneline", f"-{depth}"]
             
-            # Combine all analysis
-            combined_content = f"""
-# Comprehensive Repository Analysis for: {repository}
-
-## Git History Analysis
-{git_analysis}
-
-## Session Logs Analysis  
-{session_analysis}
-
-## Code Structure Analysis
-{code_structure}
-"""
-            return combined_content
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                return stdout.decode()
+            else:
+                # Fallback to directory listing
+                return f"Repository analysis for: {repository}\nError accessing git history: {stderr.decode()}"
                 
         except Exception as e:
             return f"Repository analysis for: {repository}\nError: {str(e)}"
-
-    async def _analyze_git_history(self, repository: str, options: Dict[str, Any]) -> str:
-        """Perform comprehensive git history analysis."""
-        try:
-            depth = options.get("depth", 50)
-            since_date = options.get("since_date", "1 month ago")
-            
-            # Get comprehensive git log with stats
-            cmd = [
-                "git", "-C", repository, "log", 
-                f"--since={since_date}",
-                f"-{depth}",
-                "--stat",
-                "--format=fuller", 
-                "--show-notes"
-            ]
-            
-            result = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await result.communicate()
-            
-            if result.returncode != 0:
-                return f"Error accessing git history: {stderr.decode()}"
-            
-            git_log = stdout.decode()
-            
-            # Get commit authors and stats
-            author_stats = await self._get_git_author_stats(repository, since_date)
-            file_changes = await self._get_git_file_changes(repository, since_date)
-            branch_info = await self._get_git_branch_info(repository)
-            
-            return f"""
-### Git Commit History ({depth} commits since {since_date})
-{git_log}
-
-### Author Statistics
-{author_stats}
-
-### File Change Patterns
-{file_changes}
-
-### Branch Information
-{branch_info}
-"""
-                
-        except Exception as e:
-            return f"Git history analysis error: {str(e)}"
-
-    async def _get_git_author_stats(self, repository: str, since_date: str) -> str:
-        """Get git author statistics."""
-        try:
-            cmd = [
-                "git", "-C", repository, "shortlog", 
-                f"--since={since_date}",
-                "-sn"
-            ]
-            
-            result = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await result.communicate()
-            
-            if result.returncode == 0:
-                return stdout.decode()
-            else:
-                return f"Error getting author stats: {stderr.decode()}"
-                
-        except Exception as e:
-            return f"Author stats error: {str(e)}"
-
-    async def _get_git_file_changes(self, repository: str, since_date: str) -> str:
-        """Get git file change patterns."""
-        try:
-            cmd = [
-                "git", "-C", repository, "log", 
-                f"--since={since_date}",
-                "--name-status",
-                "--pretty=format:"
-            ]
-            
-            result = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await result.communicate()
-            
-            if result.returncode == 0:
-                return stdout.decode()
-            else:
-                return f"Error getting file changes: {stderr.decode()}"
-                
-        except Exception as e:
-            return f"File changes error: {str(e)}"
-
-    async def _get_git_branch_info(self, repository: str) -> str:
-        """Get git branch information."""
-        try:
-            cmd = ["git", "-C", repository, "branch", "-a", "-v"]
-            
-            result = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await result.communicate()
-            
-            if result.returncode == 0:
-                return stdout.decode()
-            else:
-                return f"Error getting branch info: {stderr.decode()}"
-                
-        except Exception as e:
-            return f"Branch info error: {str(e)}"
-
-    async def _analyze_session_logs(self, repository: str, options: Dict[str, Any]) -> str:
-        """Analyze .specstory session logs for insights."""
-        try:
-            from pathlib import Path
-            import glob
-            
-            specstory_dir = Path(repository) / ".specstory" / "history"
-            
-            if not specstory_dir.exists():
-                return "No .specstory/history directory found"
-            
-            # Get recent session logs
-            days_back = options.get("session_days_back", 7)
-            import time
-            cutoff_time = time.time() - (days_back * 24 * 60 * 60)
-            
-            session_files = []
-            for md_file in specstory_dir.glob("*.md"):
-                if md_file.stat().st_mtime > cutoff_time:
-                    session_files.append(md_file)
-            
-            if not session_files:
-                return f"No session logs found in last {days_back} days"
-            
-            # Sort by modification time (newest first)
-            session_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-            
-            # Analyze recent sessions
-            session_analysis = []
-            max_sessions = options.get("max_sessions", 5)
-            
-            for session_file in session_files[:max_sessions]:
-                try:
-                    with open(session_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    # Extract key insights from session content
-                    insights = await self._extract_session_insights(content)
-                    session_analysis.append(f"""
-### Session: {session_file.name}
-Modified: {time.ctime(session_file.stat().st_mtime)}
-{insights}
-""")
-                except Exception as e:
-                    session_analysis.append(f"Error reading {session_file.name}: {str(e)}")
-            
-            return "\n".join(session_analysis)
-                
-        except Exception as e:
-            return f"Session logs analysis error: {str(e)}"
-
-    async def _extract_session_insights(self, session_content: str) -> str:
-        """Extract key insights from session log content."""
-        try:
-            # Extract key patterns from session logs
-            lines = session_content.split('\n')
-            
-            # Look for technical decisions, errors, solutions
-            insights = []
-            current_section = None
-            
-            for line in lines:
-                line = line.strip()
-                
-                # Look for exchange markers
-                if line.startswith('## Exchange'):
-                    current_section = line
-                    continue
-                
-                # Look for user/assistant indicators  
-                if line.startswith('**User:**') or line.startswith('**Assistant:**'):
-                    continue
-                
-                # Look for key technical content
-                if any(keyword in line.lower() for keyword in [
-                    'error', 'fix', 'issue', 'problem', 'solution', 
-                    'implementation', 'pattern', 'architecture', 'design',
-                    'performance', 'optimization', 'refactor'
-                ]):
-                    insights.append(f"- {line}")
-            
-            if insights:
-                return "\n".join(insights[:10])  # Limit to top 10 insights
-            else:
-                return "No specific technical insights extracted"
-                
-        except Exception as e:
-            return f"Session insight extraction error: {str(e)}"
-
-    async def _analyze_code_structure(self, repository: str, options: Dict[str, Any]) -> str:
-        """Analyze code structure and patterns."""
-        try:
-            from pathlib import Path
-            
-            repo_path = Path(repository)
-            
-            # Analyze file types and structure
-            file_analysis = await self._analyze_file_structure(repo_path)
-            
-            # Look for configuration files
-            config_analysis = await self._analyze_config_files(repo_path)
-            
-            # Analyze documentation
-            docs_analysis = await self._analyze_documentation(repo_path)
-            
-            return f"""
-### File Structure Analysis
-{file_analysis}
-
-### Configuration Analysis
-{config_analysis}
-
-### Documentation Analysis
-{docs_analysis}
-"""
-                
-        except Exception as e:
-            return f"Code structure analysis error: {str(e)}"
-
-    async def _analyze_file_structure(self, repo_path: Path) -> str:
-        """Analyze repository file structure."""
-        try:
-            # Count files by type
-            file_counts = {}
-            total_files = 0
-            
-            for file_path in repo_path.rglob("*"):
-                if file_path.is_file() and not any(part.startswith('.') for part in file_path.parts):
-                    total_files += 1
-                    suffix = file_path.suffix.lower()
-                    file_counts[suffix] = file_counts.get(suffix, 0) + 1
-            
-            # Sort by count
-            sorted_types = sorted(file_counts.items(), key=lambda x: x[1], reverse=True)
-            
-            structure_info = [f"Total files: {total_files}"]
-            structure_info.extend([f"{ext or 'no extension'}: {count}" for ext, count in sorted_types[:10]])
-            
-            return "\n".join(structure_info)
-                
-        except Exception as e:
-            return f"File structure analysis error: {str(e)}"
-
-    async def _analyze_config_files(self, repo_path: Path) -> str:
-        """Analyze configuration files."""
-        try:
-            config_files = []
-            
-            # Common config file patterns
-            config_patterns = [
-                "package.json", "requirements.txt", "Cargo.toml", "pom.xml",
-                "Dockerfile", "docker-compose.yml", ".gitignore", "README*",
-                "CLAUDE.md", "*.config.js", "*.config.json", "*.yml", "*.yaml"
-            ]
-            
-            for pattern in config_patterns:
-                for config_file in repo_path.glob(pattern):
-                    if config_file.is_file():
-                        config_files.append(config_file.name)
-            
-            if config_files:
-                return "Configuration files found:\n" + "\n".join([f"- {f}" for f in config_files])
-            else:
-                return "No common configuration files found"
-                
-        except Exception as e:
-            return f"Config analysis error: {str(e)}"
-
-    async def _analyze_documentation(self, repo_path: Path) -> str:
-        """Analyze documentation files."""
-        try:
-            doc_files = []
-            
-            # Look for documentation
-            doc_patterns = ["*.md", "*.rst", "*.txt", "docs/*", "documentation/*"]
-            
-            for pattern in doc_patterns:
-                for doc_file in repo_path.glob(pattern):
-                    if doc_file.is_file():
-                        doc_files.append(doc_file.relative_to(repo_path))
-            
-            if doc_files:
-                return "Documentation found:\n" + "\n".join([f"- {f}" for f in doc_files[:10]])
-            else:
-                return "No documentation files found"
-                
-        except Exception as e:
-            return f"Documentation analysis error: {str(e)}"
     
     async def _read_file(self, file_path: str) -> str:
         """Read file content asynchronously."""
@@ -956,6 +685,146 @@ Modified: {time.ctime(session_file.stat().st_mtime)}
         except Exception as e:
             raise ValueError(f"Failed to read file {file_path}: {str(e)}")
     
+    async def _handle_analyze_repository(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze entire repository structure and content."""
+        parameters = data.get("parameters", {})
+        path = parameters.get("path", ".")
+        
+        self.logger.info("Starting repository analysis", path=path)
+        
+        # Use existing analyze method for repository analysis
+        try:
+            import os
+            # Collect all code files
+            code_content = []
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    if file.endswith(('.py', '.js', '.ts', '.java', '.cpp', '.c', '.go', '.rs')):
+                        file_path = os.path.join(root, file)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                                code_content.append(f"File: {file_path}\n{content}\n\n")
+                        except Exception:
+                            continue
+            
+            combined_content = "\n".join(code_content[:50])  # Limit to first 50 files
+            result = await self.analyze("repository", combined_content, {
+                "analysis_type": "repository",
+                "path": path
+            })
+            
+            return {
+                "status": "repository_analyzed",
+                "files_analyzed": len(code_content),
+                "analysis_result": result,
+                "path": path
+            }
+            
+        except Exception as e:
+            return {
+                "status": "analysis_failed",
+                "error": str(e),
+                "path": path
+            }
+    
+    async def _handle_analyze_changes(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze changes detected in the repository."""
+        parameters = data.get("parameters", {})
+        previous_results = data.get("previous_results", {})
+        
+        self.logger.info("Analyzing detected changes")
+        
+        # For now, use the change detection results from coordinator
+        changes_detected = previous_results.get("changes_detected", True)
+        change_count = previous_results.get("change_count", 1)
+        
+        if not changes_detected:
+            return {
+                "status": "no_changes",
+                "change_count": 0,
+                "analysis_skipped": True
+            }
+        
+        # Perform incremental analysis
+        path = parameters.get("path", ".")
+        result = await self.analyze("changes", f"Analyzing {change_count} changes in {path}", {
+            "analysis_type": "incremental",
+            "change_count": change_count
+        })
+        
+        return {
+            "status": "changes_analyzed",
+            "change_count": change_count,
+            "analysis_result": result
+        }
+    
+    async def _handle_extract_insights(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract insights from conversation or analysis data."""
+        parameters = data.get("parameters", {})
+        previous_results = data.get("previous_results", {})
+        
+        # Get prepared conversation data
+        conversation_data = previous_results.get("prepared_data", "")
+        if not conversation_data:
+            conversation_data = parameters.get("conversation", "")
+        
+        self.logger.info("Extracting insights from conversation")
+        
+        # Use existing insight generation handler
+        return await self._handle_insight_generation({
+            "content": conversation_data,
+            "context": previous_results
+        })
+    
+    async def _handle_analyze_patterns(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze patterns from repository or conversation data."""
+        parameters = data.get("parameters", {})
+        previous_results = data.get("previous_results", {})
+        
+        self.logger.info("Analyzing patterns")
+        
+        # Get content to analyze patterns from
+        analysis_result = previous_results.get("analysis_result", {})
+        content = str(analysis_result) if analysis_result else ""
+        
+        # Use existing pattern extraction handler
+        return await self._handle_pattern_extraction({
+            "content": content,
+            "context": previous_results
+        })
+    
+    async def _handle_analyze_insights(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze and score insights for significance."""
+        parameters = data.get("parameters", {})
+        previous_results = data.get("previous_results", {})
+        
+        self.logger.info("Analyzing insights for significance")
+        
+        # Get insights from previous results
+        insights = previous_results.get("insights", [])
+        if not insights:
+            insights = previous_results.get("analysis_result", {}).get("insights", [])
+        
+        # Score each insight
+        scored_insights = []
+        for insight in insights:
+            score_result = await self._handle_significance_scoring({
+                "content": str(insight),
+                "context": previous_results
+            })
+            scored_insights.append({
+                "insight": insight,
+                "significance": score_result.get("significance", 5)
+            })
+        
+        return {
+            "status": "insights_analyzed",
+            "total_insights": len(insights),
+            "scored_insights": scored_insights,
+            "average_significance": sum(i["significance"] for i in scored_insights) / max(len(scored_insights), 1)
+        }
+
     async def health_check(self) -> Dict[str, Any]:
         """Check agent health including provider status."""
         base_health = await super().health_check()

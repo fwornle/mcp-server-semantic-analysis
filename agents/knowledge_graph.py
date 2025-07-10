@@ -59,44 +59,32 @@ class UKBIntegration:
         }
         
         try:
-            # Create temporary file for entity data
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-                json.dump(entity_data, f, indent=2)
-                temp_file = f.name
+            # Execute UKB command using interactive mode with piped input
+            # Create input for UKB interactive mode (entity creation format)
+            input_data = f"{entity_data['name']}\n{entity_data['entityType']}\n{entity_data['significance']}\n{entity_data['observations'][0] if entity_data['observations'] else 'No observations'}\n"
             
-            try:
-                # Execute UKB command using interactive mode
-                input_text = f"{entity_data['name']}\n{entity_data['entityType']}\n{entity_data['significance']}\n{entity_data['observations'][0]}"
-                
-                cmd = [self.ukb_path, "--interactive"]
-                result = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                
-                stdout, stderr = await result.communicate(input=input_text.encode())
-                
-                if result.returncode == 0:
-                    return {
-                        "success": True,
-                        "entity": entity_data,
-                        "ukb_output": stdout.decode() if stdout else ""
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "error": stderr.decode() if stderr else "Unknown UKB error",
-                        "entity": entity_data
-                    }
-                    
-            finally:
-                # Clean up temp file
-                try:
-                    os.unlink(temp_file)
-                except:
-                    pass
+            cmd = [self.ukb_path, "--add-entity"]
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await result.communicate(input=input_data.encode())
+            
+            if result.returncode == 0:
+                return {
+                    "success": True,
+                    "entity": entity_data,
+                    "ukb_output": stdout.decode() if stdout else ""
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": stderr.decode() if stderr else "Unknown UKB error",
+                    "entity": entity_data
+                }
                     
         except Exception as e:
             return {
@@ -139,7 +127,7 @@ class UKBIntegration:
     async def search_entities(self, query: str, limit: int = 10) -> Dict[str, Any]:
         """Search for entities in the UKB system."""
         try:
-            cmd = [self.ukb_path, "--search", query, "--limit", str(limit)]
+            cmd = [self.ukb_path, "--search-entities", query]
             result = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -274,6 +262,13 @@ class KnowledgeGraphAgent(BaseAgent):
         self.register_event_handler("create_entities", self._handle_create_entities)
         self.register_event_handler("create_relation", self._handle_create_relation)
         self.register_event_handler("search_entities", self._handle_search_entities)
+        
+        # Missing workflow action handlers
+        # self.register_event_handler("process_entities", self._handle_process_entities)  # TODO: Implement
+        # self.register_event_handler("update_entities", self._handle_update_entities)  # TODO: Implement
+        # self.register_event_handler("map_architecture", self._handle_map_architecture)  # TODO: Implement
+        # self.register_event_handler("extract_patterns", self._handle_extract_patterns)  # TODO: Implement
+        # self.register_event_handler("create_insight_entities", self._handle_create_insight_entities)  # TODO: Implement
         self.register_event_handler("merge_entities", self._handle_merge_entities)
         self.register_event_handler("sync_with_ukb", self._handle_sync_with_ukb)
         self.register_event_handler("get_entity", self._handle_get_entity)

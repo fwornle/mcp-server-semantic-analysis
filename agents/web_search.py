@@ -38,6 +38,10 @@ class WebSearchAgent(BaseAgent):
         self.register_event_handler("search", self._handle_search)
         self.register_event_handler("extract_content", self._handle_extract_content)
         self.register_event_handler("validate_urls", self._handle_validate_urls)
+        
+        # Missing workflow action handlers
+        self.register_event_handler("gather_context", self._handle_gather_context)
+        self.register_event_handler("research_technologies", self._handle_research_technologies)
     
     async def search(self, query: str, provider: str = None) -> Dict[str, Any]:
         """Perform web search."""
@@ -398,3 +402,90 @@ class WebSearchAgent(BaseAgent):
                 })
         
         return {"results": results}
+    
+    async def _handle_gather_context(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Gather context information from web sources."""
+        parameters = data.get("parameters", {})
+        previous_results = data.get("previous_results", {})
+        
+        # Get analysis results to inform context search
+        analysis_result = previous_results.get("analysis_result", {})
+        repository_info = previous_results.get("repository_structure", {})
+        
+        self.logger.info("Gathering context from web sources")
+        
+        # Generate search queries based on analysis results
+        search_queries = []
+        
+        # Add technology-specific searches
+        if "technologies" in str(analysis_result):
+            search_queries.append("software architecture patterns best practices")
+        
+        # Add repository-specific searches
+        if repository_info.get("has_code"):
+            search_queries.append("code analysis semantic patterns")
+        
+        # Default context search
+        if not search_queries:
+            search_queries = ["semantic analysis tools", "software engineering best practices"]
+        
+        context_results = []
+        for query in search_queries[:3]:  # Limit to 3 searches
+            try:
+                search_result = await self.search(query)
+                context_results.append({
+                    "query": query,
+                    "results": search_result.get("results", [])[:3]  # Top 3 results per query
+                })
+            except Exception as e:
+                self.logger.warning(f"Context search failed for query '{query}'", error=str(e))
+        
+        return {
+            "status": "context_gathered",
+            "search_queries": search_queries,
+            "context_results": context_results,
+            "total_sources": sum(len(r["results"]) for r in context_results)
+        }
+    
+    async def _handle_research_technologies(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Research specific technologies found in analysis."""
+        parameters = data.get("parameters", {})
+        previous_results = data.get("previous_results", {})
+        
+        # Extract technologies from analysis results
+        analysis_result = previous_results.get("analysis_result", {})
+        technologies = []
+        
+        # Simple technology extraction (could be enhanced)
+        content_str = str(analysis_result)
+        common_technologies = [
+            "python", "javascript", "typescript", "react", "vue", "angular",
+            "node.js", "django", "flask", "fastapi", "express", "spring",
+            "docker", "kubernetes", "aws", "azure", "gcp", "mongodb", "postgresql"
+        ]
+        
+        for tech in common_technologies:
+            if tech.lower() in content_str.lower():
+                technologies.append(tech)
+        
+        self.logger.info("Researching technologies", technologies=technologies)
+        
+        technology_research = []
+        for tech in technologies[:5]:  # Limit to 5 technologies
+            try:
+                query = f"{tech} best practices documentation latest 2024"
+                search_result = await self.search(query)
+                technology_research.append({
+                    "technology": tech,
+                    "query": query,
+                    "results": search_result.get("results", [])[:2]  # Top 2 results per tech
+                })
+            except Exception as e:
+                self.logger.warning(f"Technology research failed for {tech}", error=str(e))
+        
+        return {
+            "status": "technologies_researched",
+            "technologies_found": technologies,
+            "research_results": technology_research,
+            "total_resources": sum(len(r["results"]) for r in technology_research)
+        }

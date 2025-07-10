@@ -6,10 +6,13 @@ Handles automated documentation generation and template management
 import asyncio
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import time
 from string import Template
+import uuid
+import re
 
 from .base import BaseAgent
 
@@ -25,9 +28,28 @@ class DocumentationAgent(BaseAgent):
         self.template_dir = Path(self.generation_config.get("template_dir", "templates"))
         self.output_format = self.generation_config.get("output_format", "markdown")
         
+        # PlantUML and diagram configuration
+        self.plantuml_config = config.get("plantuml", {})
+        # Use absolute path to avoid working directory issues - fix path resolution
+        default_insights_dir = Path(__file__).parent.parent.parent / "knowledge-management" / "insights"
+        insights_path = self.plantuml_config.get("insights_dir", str(default_insights_dir))
+        self.insights_dir = Path(insights_path).resolve()
+        self.puml_dir = self.insights_dir / "puml"
+        self.images_dir = self.insights_dir / "images"
+        default_style_path = Path(__file__).parent.parent.parent / "docs" / "puml" / "_standard-style.puml"
+        style_path = self.plantuml_config.get("standard_style", str(default_style_path))
+        self.standard_style_path = Path(style_path).resolve()
+        
+        # UKB integration configuration  
+        self.ukb_config = config.get("ukb_integration", {})
+        self.ukb_command = self.ukb_config.get("ukb_command", "ukb")
+        
         self.register_capability("document_generation")
         self.register_capability("template_management")
         self.register_capability("auto_documentation")
+        self.register_capability("plantuml_generation")
+        self.register_capability("ukb_integration")
+        self.register_capability("insight_generation")
     
     async def on_initialize(self):
         """Initialize documentation agent."""
@@ -36,8 +58,15 @@ class DocumentationAgent(BaseAgent):
         # Create template directory if it doesn't exist
         self.template_dir.mkdir(parents=True, exist_ok=True)
         
+        # Create PlantUML and insight directories
+        self.puml_dir.mkdir(parents=True, exist_ok=True)
+        self.images_dir.mkdir(parents=True, exist_ok=True)
+        
         # Create default templates
         await self._create_default_templates()
+        
+        # Check PlantUML availability
+        await self._check_plantuml_availability()
         
         self._register_event_handlers()
     
@@ -48,6 +77,13 @@ class DocumentationAgent(BaseAgent):
         self.register_event_handler("generate_workflow_doc", self._handle_generate_workflow_doc)
         self.register_event_handler("create_template", self._handle_create_template)
         self.register_event_handler("list_templates", self._handle_list_templates)
+        
+        # PlantUML and insight generation handlers
+        self.register_event_handler("generate_plantuml_diagram", self._handle_generate_plantuml_diagram)
+        self.register_event_handler("convert_puml_to_png", self._handle_convert_puml_to_png)
+        self.register_event_handler("create_insight_document", self._handle_create_insight_document)
+        self.register_event_handler("create_ukb_entity_with_insight", self._handle_create_ukb_entity_with_insight)
+        self.register_event_handler("generate_lessons_learned", self._handle_generate_lessons_learned)
     
     async def _create_default_templates(self):
         """Create default documentation templates."""
@@ -520,6 +556,570 @@ ${recent_entities}
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    # ========== NEW PLANTUML AND UKB INTEGRATION METHODS ==========
+    
+    async def _check_plantuml_availability(self):
+        """Check if PlantUML is available on the system."""
+        try:
+            result = await asyncio.create_subprocess_exec(
+                "plantuml", "-version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await result.communicate()
+            
+            if result.returncode == 0:
+                self.logger.info("PlantUML is available")
+                self.plantuml_available = True
+            else:
+                self.logger.warning("PlantUML not available - diagram generation will be disabled")
+                self.plantuml_available = False
+                
+        except Exception as e:
+            self.logger.warning(f"Could not check PlantUML availability: {e}")
+            self.plantuml_available = False
+    
+    async def generate_plantuml_diagram(self, diagram_type: str, content: str, name: str, analysis_result: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Generate a PlantUML diagram from content."""
+        try:
+            if not self.plantuml_available:
+                return {"success": False, "error": "PlantUML not available"}
+            
+            # Generate diagram content based on type
+            puml_content = await self._generate_diagram_content(diagram_type, content, analysis_result)
+            
+            # Create filename
+            safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name.lower())
+            puml_filename = f"{safe_name}-{diagram_type}.puml"
+            puml_path = self.puml_dir / puml_filename
+            
+            # Save PlantUML file
+            with open(puml_path, 'w') as f:
+                f.write(puml_content)
+            
+            self.logger.info(f"Generated PlantUML diagram: {puml_filename}")
+            
+            return {
+                "success": True,
+                "puml_file": str(puml_path),
+                "puml_filename": puml_filename,
+                "diagram_type": diagram_type,
+                "content": puml_content
+            }
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def convert_puml_to_png(self, puml_file: str) -> Dict[str, Any]:
+        """Convert PlantUML file to PNG image."""
+        try:
+            if not self.plantuml_available:
+                return {"success": False, "error": "PlantUML not available"}
+            
+            puml_path = Path(puml_file)
+            if not puml_path.exists():
+                return {"success": False, "error": f"PlantUML file not found: {puml_file}"}
+            
+            # Output PNG to images directory
+            png_filename = puml_path.stem + ".png"
+            png_path = self.images_dir / png_filename
+            
+            # Run PlantUML to generate PNG
+            result = await asyncio.create_subprocess_exec(
+                "plantuml", "-tpng", "-o", str(self.images_dir), str(puml_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0 and png_path.exists():
+                self.logger.info(f"Generated PNG: {png_filename}")
+                return {
+                    "success": True,
+                    "png_file": str(png_path),
+                    "png_filename": png_filename
+                }
+            else:
+                error_msg = stderr.decode() if stderr else "Unknown PlantUML error"
+                return {"success": False, "error": f"PlantUML conversion failed: {error_msg}"}
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _generate_diagram_content(self, diagram_type: str, content: str, analysis_result: Dict[str, Any] = None) -> str:
+        """Generate PlantUML diagram content based on type."""
+        
+        # Include standard styling
+        style_include = f"!include {self.standard_style_path.resolve()}"
+        
+        if diagram_type == "architecture":
+            return f"""@startuml architecture
+{style_include}
+title {content} - Architecture
+
+' Auto-generated architecture diagram
+package "Core System" {{
+  component "Analysis Engine" <<core>>
+  component "Knowledge Graph" <<storage>>
+  component "Documentation" <<util>>
+}}
+
+package "Agents" {{
+  component "Coordinator" <<agent>>
+  component "Semantic Analysis" <<agent>>
+  component "Documentation" <<agent>>
+}}
+
+package "External" {{
+  component "UKB System" <<external>>
+  component "PlantUML" <<external>>
+}}
+
+[Analysis Engine] --> [Knowledge Graph] : stores
+[Documentation] --> [PlantUML] : generates
+[Knowledge Graph] --> [UKB System] : syncs
+
+@enduml"""
+        
+        elif diagram_type == "sequence":
+            return f"""@startuml sequence
+{style_include}
+title {content} - Workflow Sequence
+
+actor User
+participant "Coordinator" as coord
+participant "SemanticAnalysis" as semantic
+participant "KnowledgeGraph" as kg
+participant "Documentation" as doc
+
+User -> coord : execute_workflow
+coord -> semantic : analyze_repository
+semantic -> kg : create_entities
+kg -> doc : generate_documentation
+doc -> coord : documentation_complete
+coord -> User : workflow_result
+
+@enduml"""
+        
+        elif diagram_type == "use-cases":
+            return f"""@startuml use-cases
+{style_include}
+title {content} - Use Cases
+
+left to right direction
+
+actor "Developer" as dev
+actor "Team Lead" as lead
+
+rectangle "Semantic Analysis System" {{
+  usecase "Analyze Repository" as analyze
+  usecase "Generate Insights" as insights
+  usecase "Update Knowledge" as update
+  usecase "Generate Documentation" as docs
+}}
+
+dev --> analyze
+dev --> insights
+lead --> update
+lead --> docs
+
+analyze .> insights : includes
+insights .> update : includes
+update .> docs : includes
+
+@enduml"""
+        
+        elif diagram_type == "class":
+            return f"""@startuml class
+{style_include}
+title {content} - Class Structure
+
+class BaseAgent {{
+  +name: str
+  +config: Dict
+  +initialize()
+  +shutdown()
+  +health_check()
+}}
+
+class DocumentationAgent {{
+  +generate_plantuml_diagram()
+  +convert_puml_to_png()
+  +create_insight_document()
+}}
+
+class KnowledgeGraphAgent {{
+  +create_entity()
+  +search_entities()
+  +merge_entities()
+}}
+
+class CoordinatorAgent {{
+  +execute_workflow()
+  +validate_output()
+}}
+
+BaseAgent <|-- DocumentationAgent
+BaseAgent <|-- KnowledgeGraphAgent
+BaseAgent <|-- CoordinatorAgent
+
+@enduml"""
+        
+        else:
+            # Default diagram
+            return f"""@startuml default
+{style_include}
+title {content} - System Overview
+
+note as N1
+  Generated from semantic analysis
+  Content: {content[:100]}...
+end note
+
+@enduml"""
+    
+    async def create_insight_document(self, analysis_result: Dict[str, Any], metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Create a comprehensive insight document with PlantUML diagrams."""
+        try:
+            metadata = metadata or {}
+            
+            # Generate insight name and filename
+            insight_name = metadata.get("insight_name") or self._generate_insight_name(analysis_result)
+            safe_name = re.sub(r'[^a-zA-Z0-9_-]', '', insight_name.replace(' ', ''))
+            
+            # Generate PlantUML diagrams
+            diagrams = []
+            diagram_types = ["architecture", "sequence", "use-cases", "class"]
+            
+            for diagram_type in diagram_types:
+                diagram_result = await self.generate_plantuml_diagram(
+                    diagram_type, insight_name, safe_name, analysis_result
+                )
+                
+                if diagram_result["success"]:
+                    # Convert to PNG
+                    png_result = await self.convert_puml_to_png(diagram_result["puml_file"])
+                    if png_result["success"]:
+                        diagrams.append({
+                            "type": diagram_type,
+                            "puml_file": diagram_result["puml_filename"],
+                            "png_file": png_result["png_filename"]
+                        })
+            
+            # Generate insight document content
+            insight_content = await self._generate_insight_content(
+                insight_name, analysis_result, diagrams, metadata
+            )
+            
+            # Save insight document
+            insight_filename = f"{safe_name}.md"
+            insight_path = self.insights_dir / insight_filename
+            
+            with open(insight_path, 'w') as f:
+                f.write(insight_content)
+            
+            self.logger.info(f"Generated insight document: {insight_filename}")
+            
+            return {
+                "success": True,
+                "insight_file": str(insight_path),
+                "insight_filename": insight_filename,
+                "insight_name": insight_name,
+                "diagrams": diagrams
+            }
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def _generate_insight_content(self, insight_name: str, analysis_result: Dict[str, Any], 
+                                      diagrams: List[Dict[str, Any]], metadata: Dict[str, Any]) -> str:
+        """Generate the content for an insight document."""
+        
+        # Generate table of contents
+        toc = """## Table of Contents
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Implementation](#implementation)
+- [Workflow Sequence](#workflow-sequence)
+- [Use Cases](#use-cases)
+- [Technical Details](#technical-details)
+"""
+        
+        # Generate diagram sections
+        diagram_sections = ""
+        for diagram in diagrams:
+            diagram_type = diagram["type"]
+            png_file = diagram["png_file"]
+            section_title = diagram_type.replace("-", " ").title()
+            
+            diagram_sections += f"""
+## {section_title}
+
+![{section_title} Diagram](images/{png_file})
+
+{self._generate_diagram_description(diagram_type, analysis_result)}
+"""
+        
+        # Generate main content
+        overview = self._extract_overview(analysis_result)
+        technical_details = self._extract_technical_details(analysis_result, metadata)
+        
+        content = f"""# {insight_name}
+
+{toc}
+
+## Overview
+
+{overview}
+
+{diagram_sections}
+
+## Technical Details
+
+{technical_details}
+
+---
+*Generated by Semantic Analysis Documentation Agent*  
+*Date: {time.strftime("%Y-%m-%d %H:%M:%S")}*
+"""
+        
+        return content
+    
+    def _generate_insight_name(self, analysis_result: Dict[str, Any]) -> str:
+        """Generate an insight name from analysis results."""
+        # Try to extract meaningful name from analysis
+        if "result" in analysis_result and isinstance(analysis_result["result"], dict):
+            result = analysis_result["result"]
+            if "analysis" in result:
+                # Extract first significant line
+                lines = result["analysis"].split('\n')
+                for line in lines:
+                    if line.strip() and len(line.strip()) > 10:
+                        # Clean and shorten
+                        name = line.strip()[:50]
+                        return re.sub(r'[^\w\s-]', '', name).title()
+        
+        # Fallback to timestamp-based name
+        return f"SemanticAnalysis_{int(time.time())}"
+    
+    def _extract_overview(self, analysis_result: Dict[str, Any]) -> str:
+        """Extract overview content from analysis results."""
+        if "result" in analysis_result and isinstance(analysis_result["result"], dict):
+            result = analysis_result["result"]
+            if "analysis" in result:
+                # Extract first paragraph
+                text = result["analysis"]
+                paragraphs = text.split('\n\n')
+                if paragraphs:
+                    return paragraphs[0][:500] + ("..." if len(paragraphs[0]) > 500 else "")
+        
+        return "Comprehensive analysis of codebase patterns and architectural insights."
+    
+    def _extract_technical_details(self, analysis_result: Dict[str, Any], metadata: Dict[str, Any]) -> str:
+        """Extract technical details from analysis results."""
+        details = []
+        
+        if "significance" in analysis_result:
+            details.append(f"- **Significance**: {analysis_result['significance']}")
+        
+        if metadata.get("entity_count"):
+            details.append(f"- **Entities Created**: {metadata['entity_count']}")
+        
+        if metadata.get("duration"):
+            details.append(f"- **Analysis Duration**: {metadata['duration']}")
+        
+        if metadata.get("repository"):
+            details.append(f"- **Repository**: {metadata['repository']}")
+        
+        details.append(f"- **Analysis Date**: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        details.append(f"- **Agent**: Semantic Analysis Documentation Agent")
+        
+        return '\n'.join(details)
+    
+    def _generate_diagram_description(self, diagram_type: str, analysis_result: Dict[str, Any]) -> str:
+        """Generate description for diagram sections."""
+        descriptions = {
+            "architecture": "The architecture diagram shows the high-level system components and their relationships, illustrating how different agents interact within the semantic analysis system.",
+            "sequence": "The sequence diagram depicts the workflow execution flow, showing the interaction between components during a typical semantic analysis operation.",
+            "use-cases": "The use case diagram illustrates the different ways users can interact with the semantic analysis system and the relationships between various use cases.",
+            "class": "The class diagram shows the object-oriented structure of the system, including inheritance relationships and key methods of the main agent classes."
+        }
+        
+        return descriptions.get(diagram_type, f"This {diagram_type} diagram provides additional insight into the system structure.")
+    
+    async def create_ukb_entity_with_insight(self, analysis_result: Dict[str, Any], metadata: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Create a UKB entity with a link to a detailed insight document."""
+        try:
+            # First create the insight document
+            insight_result = await self.create_insight_document(analysis_result, metadata)
+            
+            if not insight_result["success"]:
+                return {"success": False, "error": f"Failed to create insight document: {insight_result['error']}"}
+            
+            # Extract entity information
+            insight_name = insight_result["insight_name"]
+            insight_filename = insight_result["insight_filename"]
+            
+            # Create short observation for UKB entity
+            short_observation = self._generate_short_observation(analysis_result, metadata)
+            
+            # Create UKB entity with insight link
+            entity_data = {
+                "name": insight_name,
+                "entityType": metadata.get("entity_type", "SemanticInsight"),
+                "significance": analysis_result.get("significance", 7),
+                "observations": [
+                    short_observation,
+                    f"Details: insights/{insight_filename}"
+                ]
+            }
+            
+            # Execute UKB command to create entity
+            ukb_result = await self._execute_ukb_command("--add-entity", entity_data)
+            
+            return {
+                "success": True,
+                "entity_name": insight_name,
+                "insight_document": insight_result,
+                "ukb_result": ukb_result
+            }
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _generate_short_observation(self, analysis_result: Dict[str, Any], metadata: Dict[str, Any]) -> str:
+        """Generate a short observation for the UKB entity."""
+        # Extract key insight in one sentence
+        overview = self._extract_overview(analysis_result)
+        # Take first sentence or first 150 characters
+        first_sentence = overview.split('.')[0]
+        if len(first_sentence) > 150:
+            first_sentence = first_sentence[:150] + "..."
+        
+        return first_sentence + "."
+    
+    async def _execute_ukb_command(self, command: str, data: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Execute UKB command with data."""
+        try:
+            if data:
+                # Create temporary file for data
+                import tempfile
+                import json
+                
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                    json.dump(data, f, indent=2)
+                    temp_file = f.name
+                
+                try:
+                    # Execute UKB command using interactive mode with data
+                    if command == "--add-entity":
+                        # Use interactive mode for entity creation
+                        input_data = f"{data.get('name', 'Unknown')}\n{data.get('entity_type', 'Unknown')}\n{data.get('significance', 5)}\n{data.get('observation', 'Auto-generated from analysis')}\n"
+                        result = await asyncio.create_subprocess_exec(
+                            self.ukb_command, "--interactive",
+                            stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await result.communicate(input=input_data.encode())
+                    else:
+                        # Execute UKB command without --file
+                        result = await asyncio.create_subprocess_exec(
+                            self.ukb_command, command,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await result.communicate()
+                    
+                    return {
+                        "success": result.returncode == 0,
+                        "output": stdout.decode() if stdout else "",
+                        "error": stderr.decode() if stderr else ""
+                    }
+                    
+                finally:
+                    # Clean up temp file
+                    try:
+                        os.unlink(temp_file)
+                    except:
+                        pass
+            else:
+                # Execute UKB command without data
+                result = await asyncio.create_subprocess_exec(
+                    self.ukb_command, command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                stdout, stderr = await result.communicate()
+                
+                return {
+                    "success": result.returncode == 0,
+                    "output": stdout.decode() if stdout else "",
+                    "error": stderr.decode() if stderr else ""
+                }
+                
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    # ========== EVENT HANDLERS FOR NEW CAPABILITIES ==========
+    
+    async def _handle_generate_plantuml_diagram(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle PlantUML diagram generation requests."""
+        try:
+            # Ensure data is not None and has required fields
+            if not data or not isinstance(data, dict):
+                return {"success": False, "error": "Invalid data provided"}
+            
+            diagram_type = data.get("diagram_type", "architecture")
+            content = data.get("content", "Unknown")
+            name = data.get("name", "diagram")
+            analysis_result = data.get("analysis_result", {})
+            
+            # Ensure analysis_result is a dict
+            if analysis_result is None:
+                analysis_result = {}
+            
+            return await self.generate_plantuml_diagram(
+                diagram_type=diagram_type,
+                content=content,
+                name=name,
+                analysis_result=analysis_result
+            )
+        except Exception as e:
+            return {"success": False, "error": f"PlantUML generation handler error: {str(e)}"}
+    
+    async def _handle_convert_puml_to_png(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle PlantUML to PNG conversion requests."""
+        return await self.convert_puml_to_png(data["puml_file"])
+    
+    async def _handle_create_insight_document(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle insight document creation requests."""
+        return await self.create_insight_document(
+            analysis_result=data["analysis_result"],
+            metadata=data.get("metadata")
+        )
+    
+    async def _handle_create_ukb_entity_with_insight(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle UKB entity creation with insight document."""
+        return await self.create_ukb_entity_with_insight(
+            analysis_result=data["analysis_result"],
+            metadata=data.get("metadata")
+        )
+    
+    async def _handle_generate_lessons_learned(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle lessons learned generation (specialized insight document)."""
+        # Add lessons learned specific metadata
+        metadata = data.get("metadata", {})
+        metadata["entity_type"] = "LessonsLearned"
+        metadata["insight_name"] = data.get("title", "Lessons Learned")
+        
+        return await self.create_ukb_entity_with_insight(
+            analysis_result=data["analysis_result"],
+            metadata=metadata
+        )
+    
     async def health_check(self) -> Dict[str, Any]:
         """Check documentation agent health."""
         base_health = await super().health_check()
@@ -531,5 +1131,10 @@ ${recent_entities}
             "template_dir": str(self.template_dir),
             "template_count": template_count,
             "output_format": self.output_format,
-            "auto_generation_enabled": self.auto_generation_config.get("on_workflow_completion", False)
+            "auto_generation_enabled": self.auto_generation_config.get("on_workflow_completion", False),
+            "plantuml_available": getattr(self, 'plantuml_available', False),
+            "insights_dir": str(self.insights_dir),
+            "puml_dir": str(self.puml_dir),
+            "images_dir": str(self.images_dir),
+            "ukb_command": self.ukb_command
         }

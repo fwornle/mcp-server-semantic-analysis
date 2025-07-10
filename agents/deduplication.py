@@ -36,17 +36,23 @@ class DeduplicationAgent(BaseAgent):
         await self._initialize_embedding_model()
         
         self._register_event_handlers()
+        
+        self.logger.info("Deduplication agent initialized successfully")
     
     async def _initialize_embedding_model(self):
         """Initialize the embedding model for similarity detection."""
         try:
-            model_name = self.similarity_config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
+            # For now, skip embedding model initialization to avoid hanging
+            # This will use simple text similarity instead
+            self.logger.info("Using simple text similarity (embedding model disabled for stability)")
+            self.embedding_model = None
+            return
             
-            # Import sentence-transformers
-            from sentence_transformers import SentenceTransformer
-            
-            self.embedding_model = SentenceTransformer(model_name)
-            self.logger.info(f"Initialized embedding model: {model_name}")
+            # TODO: Re-enable once sentence-transformers dependency is properly configured
+            # model_name = self.similarity_config.get("embedding_model", "sentence-transformers/all-MiniLM-L6-v2")
+            # from sentence_transformers import SentenceTransformer
+            # self.embedding_model = SentenceTransformer(model_name)
+            # self.logger.info(f"Initialized embedding model: {model_name}")
             
         except ImportError:
             self.logger.warning("sentence-transformers not available, using simple text similarity")
@@ -61,42 +67,279 @@ class DeduplicationAgent(BaseAgent):
         self.register_event_handler("merge_entities", self._handle_merge_entities)
         self.register_event_handler("calculate_similarity", self._handle_calculate_similarity)
         self.register_event_handler("resolve_duplicates", self._handle_resolve_duplicates)
+        
+        # Missing workflow action handlers
+        self.register_event_handler("merge_similar_entities", self._handle_merge_similar_entities)
+        self.register_event_handler("consolidate_patterns", self._handle_consolidate_patterns)
     
-    async def detect_duplicates(self, entities: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Detect duplicate entities using similarity analysis."""
-        # Get entities from knowledge graph if not provided
-        if entities is None:
+    async def detect_duplicates(self, entity_types: List[str] = None, similarity_threshold: float = 0.85, comparison_method: str = "both") -> Dict[str, Any]:
+        """Find similar/duplicate entities in the knowledge graph."""
+        try:
+            # Get entities from knowledge graph
             kg_agent = self.system.agents.get("knowledge_graph")
             if not kg_agent:
                 return {"success": False, "error": "Knowledge graph agent not available"}
             
-            entities = [
-                {
-                    "name": entity.name,
-                    "type": entity.entity_type,
-                    "observations": entity.observations,
-                    "significance": entity.significance
+            # Filter entities by type if specified
+            entities = []
+            for entity in kg_agent.entities.values():
+                if entity_types is None or entity.entity_type in entity_types:
+                    entities.append({
+                        "name": entity.name,
+                        "type": entity.entity_type,
+                        "observations": entity.observations,
+                        "significance": entity.significance,
+                        "metadata": entity.metadata
+                    })
+            
+            if len(entities) < 2:
+                return {
+                    "success": True,
+                    "duplicate_groups": [],
+                    "total_entities": len(entities),
+                    "message": "Not enough entities to compare"
                 }
-                for entity in kg_agent.entities.values()
-            ]
-        
-        if len(entities) < 2:
-            return {"success": True, "duplicates": [], "message": "Not enough entities to compare"}
-        
-        duplicates = []
-        
-        # Compare entities in batches
-        for i in range(0, len(entities), self.batch_size):
-            batch = entities[i:i + self.batch_size]
-            batch_duplicates = await self._find_duplicates_in_batch(batch, entities)
-            duplicates.extend(batch_duplicates)
-        
-        return {
-            "success": True,
-            "duplicates": duplicates,
-            "total_entities": len(entities),
-            "duplicate_groups": len(duplicates)
-        }
+            
+            # Override threshold if provided
+            original_threshold = self.similarity_threshold
+            self.similarity_threshold = similarity_threshold
+            
+            try:
+                duplicates = []
+                processed_entities = set()
+                
+                # Compare entities in batches
+                for i, entity1 in enumerate(entities):
+                    if entity1["name"] in processed_entities:
+                        continue
+                    
+                    similar_group = [entity1]
+                    
+                    for j, entity2 in enumerate(entities[i+1:], i+1):
+                        if entity2["name"] in processed_entities:
+                            continue
+                            
+                        # Calculate similarity based on method
+                        similarity = await self._calculate_similarity_by_method(entity1, entity2, comparison_method)
+                        
+                        if similarity >= similarity_threshold:
+                            similar_group.append(entity2)
+                            processed_entities.add(entity2["name"])
+                    
+                    # If we found similar entities, add to duplicates
+                    if len(similar_group) > 1:
+                        duplicates.append({
+                            "primary_entity": similar_group[0],
+                            "duplicate_entities": similar_group[1:],
+                            "similarity_scores": [similarity_threshold] * (len(similar_group) - 1),  # Simplified
+                            "group_size": len(similar_group)
+                        })
+                        
+                        # Mark all as processed
+                        for entity in similar_group:
+                            processed_entities.add(entity["name"])
+                
+                return {
+                    "success": True,
+                    "duplicate_groups": duplicates,
+                    "total_entities": len(entities),
+                    "entities_with_duplicates": sum(group["group_size"] for group in duplicates),
+                    "similarity_threshold": similarity_threshold,
+                    "comparison_method": comparison_method,
+                    "entity_types_filter": entity_types
+                }
+                
+            finally:
+                # Restore original threshold
+                self.similarity_threshold = original_threshold
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "entity_types": entity_types,
+                "similarity_threshold": similarity_threshold,
+                "comparison_method": comparison_method
+            }
+    
+    async def _calculate_similarity_by_method(self, entity1: Dict[str, Any], entity2: Dict[str, Any], method: str) -> float:
+        """Calculate similarity using specified method."""
+        if method == "semantic":
+            return await self._semantic_similarity(
+                self._entity_to_text(entity1),
+                self._entity_to_text(entity2)
+            )
+        elif method == "text":
+            return self._simple_text_similarity(
+                self._entity_to_text(entity1),
+                self._entity_to_text(entity2)
+            )
+        else:  # "both" - use average
+            semantic_sim = await self._semantic_similarity(
+                self._entity_to_text(entity1),
+                self._entity_to_text(entity2)
+            )
+            text_sim = self._simple_text_similarity(
+                self._entity_to_text(entity1),
+                self._entity_to_text(entity2)
+            )
+            return (semantic_sim + text_sim) / 2.0
+    
+    async def merge_entities(self, entity_groups: List[Dict[str, Any]], preserve_history: bool = True) -> Dict[str, Any]:
+        """Merge duplicate entities into single entities."""
+        try:
+            kg_agent = self.system.agents.get("knowledge_graph")
+            if not kg_agent:
+                return {"success": False, "error": "Knowledge graph agent not available"}
+            
+            merged_results = []
+            total_merged = 0
+            errors = []
+            
+            for group in entity_groups:
+                try:
+                    # Extract entities and target name from group
+                    entities = group["entities"]
+                    target_name = group["target_name"]
+                    merge_strategy = group.get("merge_strategy", "combine")
+                    
+                    # Verify target exists and get secondary entities
+                    if target_name not in kg_agent.entities:
+                        errors.append({
+                            "group": group,
+                            "error": f"Target entity not found: {target_name}"
+                        })
+                        continue
+                    
+                    secondary_names = [name for name in entities if name != target_name]
+                    
+                    if not secondary_names:
+                        continue  # Nothing to merge
+                    
+                    # Preserve history if requested
+                    if preserve_history:
+                        primary_entity = kg_agent.entities[target_name]
+                        if "merge_history" not in primary_entity.metadata:
+                            primary_entity.metadata["merge_history"] = []
+                        
+                        primary_entity.metadata["merge_history"].append({
+                            "merged_entities": secondary_names,
+                            "merge_strategy": merge_strategy,
+                            "timestamp": time.time()
+                        })
+                    
+                    # Perform the merge
+                    merge_result = await kg_agent.merge_entities(target_name, secondary_names)
+                    
+                    if merge_result.get("merged_count", 0) > 0:
+                        total_merged += merge_result["merged_count"]
+                        merged_results.append({
+                            "target_entity": target_name,
+                            "merged_entities": secondary_names,
+                            "merge_strategy": merge_strategy,
+                            "merged_count": merge_result["merged_count"]
+                        })
+                    
+                    if merge_result.get("errors"):
+                        errors.extend([{"group": group, "error": err} for err in merge_result["errors"]])
+                        
+                except Exception as e:
+                    errors.append({
+                        "group": group,
+                        "error": str(e)
+                    })
+            
+            return {
+                "success": len(errors) == 0,
+                "groups_processed": len(entity_groups),
+                "entities_merged": total_merged,
+                "merge_results": merged_results,
+                "preserve_history": preserve_history,
+                "errors": errors
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "entity_groups": entity_groups,
+                "preserve_history": preserve_history
+            }
+    
+    async def deduplicate_insights(self, scope: str = "global", entity_filter: List[str] = None, type_filter: List[str] = None, similarity_threshold: float = 0.9) -> Dict[str, Any]:
+        """Remove duplicate insights and observations."""
+        try:
+            kg_agent = self.system.agents.get("knowledge_graph")
+            if not kg_agent:
+                return {"success": False, "error": "Knowledge graph agent not available"}
+            
+            # Get entities based on scope and filters
+            target_entities = []
+            
+            for entity in kg_agent.entities.values():
+                # Apply filters based on scope
+                if scope == "entity_specific" and entity_filter:
+                    if entity.name not in entity_filter:
+                        continue
+                elif scope == "type_specific" and type_filter:
+                    if entity.entity_type not in type_filter:
+                        continue
+                # For "global" scope, include all entities
+                
+                target_entities.append(entity)
+            
+            deduplicated_count = 0
+            processed_entities = 0
+            
+            for entity in target_entities:
+                if not entity.observations:
+                    continue
+                
+                # Find duplicate observations within this entity
+                unique_observations = []
+                seen_observations = set()
+                
+                for obs in entity.observations:
+                    # Simple deduplication based on text similarity
+                    is_duplicate = False
+                    
+                    for existing_obs in unique_observations:
+                        similarity = self._simple_text_similarity(obs, existing_obs)
+                        if similarity >= similarity_threshold:
+                            is_duplicate = True
+                            deduplicated_count += 1
+                            break
+                    
+                    if not is_duplicate:
+                        unique_observations.append(obs)
+                        seen_observations.add(obs.lower().strip())
+                
+                # Update entity observations if we removed duplicates
+                if len(unique_observations) < len(entity.observations):
+                    entity.observations = unique_observations
+                    entity.updated_at = time.time()
+                
+                processed_entities += 1
+            
+            return {
+                "success": True,
+                "scope": scope,
+                "entity_filter": entity_filter,
+                "type_filter": type_filter,
+                "similarity_threshold": similarity_threshold,
+                "entities_processed": processed_entities,
+                "duplicate_insights_removed": deduplicated_count,
+                "target_entity_count": len(target_entities)
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "scope": scope,
+                "entity_filter": entity_filter,
+                "type_filter": type_filter
+            }
     
     async def _find_duplicates_in_batch(self, batch: List[Dict[str, Any]], all_entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Find duplicates within a batch of entities."""
@@ -280,6 +523,38 @@ class DeduplicationAgent(BaseAgent):
     async def _handle_resolve_duplicates(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle complete duplicate resolution requests."""
         return await self.resolve_all_duplicates()
+    
+    async def _handle_merge_similar_entities(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle workflow request to merge similar entities."""
+        duplicate_groups = data.get("duplicate_groups", [])
+        return await self.merge_similar_entities(duplicate_groups)
+    
+    async def _handle_consolidate_patterns(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle workflow request to consolidate patterns."""
+        # Find duplicate patterns and consolidate them
+        detection_result = await self.detect_duplicates(
+            entity_types=["Pattern", "TransferablePattern", "WorkflowPattern"],
+            similarity_threshold=0.8
+        )
+        
+        if not detection_result["success"] or not detection_result["duplicate_groups"]:
+            return {
+                "success": True,
+                "message": "No pattern duplicates found to consolidate",
+                "patterns_processed": 0,
+                "patterns_consolidated": 0
+            }
+        
+        # Merge the duplicate patterns
+        merge_result = await self.merge_similar_entities(detection_result["duplicate_groups"])
+        
+        return {
+            "success": merge_result["success"],
+            "patterns_processed": detection_result["total_entities"],
+            "patterns_consolidated": merge_result["merged_count"],
+            "duplicate_groups": len(detection_result["duplicate_groups"]),
+            "errors": merge_result.get("errors", [])
+        }
     
     async def health_check(self) -> Dict[str, Any]:
         """Check deduplication agent health."""

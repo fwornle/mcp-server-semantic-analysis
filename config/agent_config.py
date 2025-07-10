@@ -271,6 +271,38 @@ class AgentConfig:
                     "include_dependencies": True,
                     "analyze_architecture": True
                 }
+            ),
+            
+            "code-analysis": WorkflowDefinition(
+                name="code-analysis",
+                description="Analyze code for patterns, issues, and architectural insights",
+                agents=["coordinator", "semantic_analysis", "knowledge_graph", "synchronization"],
+                steps=[
+                    {"agent": "semantic_analysis", "action": "analyze_code", "timeout": 60},
+                    {"agent": "knowledge_graph", "action": "extract_patterns", "timeout": 30},
+                    {"agent": "synchronization", "action": "sync_results", "timeout": 30}
+                ],
+                config={
+                    "qa_validation": True,
+                    "min_significance": 5,
+                    "max_duration": 120
+                }
+            ),
+            
+            "insight-generation": WorkflowDefinition(
+                name="insight-generation",
+                description="Generate actionable insights from analysis context",
+                agents=["coordinator", "semantic_analysis", "knowledge_graph", "synchronization"],
+                steps=[
+                    {"agent": "semantic_analysis", "action": "analyze_insights", "timeout": 60},
+                    {"agent": "knowledge_graph", "action": "create_insight_entities", "timeout": 30},
+                    {"agent": "synchronization", "action": "sync_insights", "timeout": 30}
+                ],
+                config={
+                    "qa_validation": True,
+                    "min_significance": 5,
+                    "max_duration": 120
+                }
             )
         }
     

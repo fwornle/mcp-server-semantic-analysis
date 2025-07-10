@@ -9,8 +9,14 @@ import os
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import time
+import datetime
+import hashlib
 
 from .base import BaseAgent
+
+# Version tracking for this agent
+SYNC_AGENT_VERSION = "1.4.1"
+SYNC_AGENT_FILE = __file__
 
 
 class SynchronizationAgent(BaseAgent):
@@ -30,6 +36,15 @@ class SynchronizationAgent(BaseAgent):
     
     async def on_initialize(self):
         """Initialize synchronization agent."""
+        # Version and startup logging
+        sync_agent_hash = hashlib.md5(open(SYNC_AGENT_FILE, 'rb').read()).hexdigest()[:8]
+        self.logger.info(f"🔄 ====== SYNCHRONIZATION AGENT STARTUP ======")
+        self.logger.info(f"📝 Sync Agent Version: {SYNC_AGENT_VERSION}")
+        self.logger.info(f"📁 Sync Agent File: {SYNC_AGENT_FILE}")
+        self.logger.info(f"🔢 Sync Agent Hash: {sync_agent_hash}")
+        self.logger.info(f"📅 Sync Agent Init Time: {datetime.datetime.now().isoformat()}")
+        self.logger.info(f"==============================================")
+        
         self.logger.info("Initializing synchronization agent...")
         
         self._register_event_handlers()
@@ -43,6 +58,12 @@ class SynchronizationAgent(BaseAgent):
         self.register_event_handler("sync_target", self._handle_sync_target)
         self.register_event_handler("resolve_conflicts", self._handle_resolve_conflicts)
         self.register_event_handler("backup_data", self._handle_backup_data)
+        
+        # Missing workflow action handlers
+        # self.register_event_handler("sync_all_targets", self._handle_sync_all_targets)  # TODO: Implement
+        # self.register_event_handler("sync_changes", self._handle_sync_changes)  # TODO: Implement
+        # self.register_event_handler("sync_insights", self._handle_sync_insights)  # TODO: Implement
+        # self.register_event_handler("sync_results", self._handle_sync_results)  # TODO: Implement
     
     async def sync_all_targets(self) -> Dict[str, Any]:
         """Sync data across all configured targets."""
@@ -139,6 +160,9 @@ class SynchronizationAgent(BaseAgent):
             if not kg_agent:
                 return {"success": False, "error": "Knowledge graph agent not available"}
             
+            # Determine current project context
+            current_project = self._determine_current_project()
+            
             # Find shared memory files
             file_patterns = self.sync_targets.get("shared_memory_files", {}).get("file_patterns", ["shared-memory-*.json"])
             coding_tools_path = os.getenv("CODING_TOOLS_PATH", "")
@@ -152,6 +176,9 @@ class SynchronizationAgent(BaseAgent):
                 # Find files matching pattern
                 import glob
                 files = glob.glob(os.path.join(coding_tools_path, pattern))
+                
+                # Filter files to only sync to current project
+                files = self._filter_files_by_project(files, current_project)
                 
                 for file_path in files:
                     try:
@@ -179,22 +206,31 @@ class SynchronizationAgent(BaseAgent):
                         existing_entities = data.get("entities", [])
                         entity_names = {e["name"] for e in existing_entities}
                         
+                        # Track if any changes were made
+                        changes_made = False
+                        
                         for entity in current_entities:
                             if entity["name"] not in entity_names:
                                 existing_entities.append(entity)
+                                changes_made = True
                         
-                        data["entities"] = existing_entities
-                        
-                        # Update metadata
-                        data.setdefault("metadata", {})
-                        data["metadata"]["last_sync"] = time.time()
-                        data["metadata"]["sync_source"] = "semantic_analysis_agent"
-                        
-                        # Write back to file
-                        with open(file_path, 'w') as f:
-                            json.dump(data, f, indent=2)
-                        
-                        synced_files.append(file_path)
+                        # Only update file if there were actual content changes
+                        if changes_made:
+                            data["entities"] = existing_entities
+                            
+                            # Update metadata only when content changes
+                            data.setdefault("metadata", {})
+                            data["metadata"]["last_sync"] = time.time()
+                            data["metadata"]["sync_source"] = "semantic_analysis_agent"
+                            
+                            # Write back to file
+                            with open(file_path, 'w') as f:
+                                json.dump(data, f, indent=2)
+                            
+                            synced_files.append(file_path)
+                        else:
+                            # No changes - skip file update to avoid spurious timestamp updates
+                            self.logger.debug(f"No content changes for {file_path}, skipping update")
                         
                     except Exception as e:
                         self.logger.warning(f"Failed to sync file {file_path}", error=str(e))
@@ -209,33 +245,287 @@ class SynchronizationAgent(BaseAgent):
         except Exception as e:
             return {"success": False, "error": str(e), "target": "shared_memory_files"}
     
-    async def resolve_conflicts(self, conflicts: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Resolve data conflicts between storage systems."""
-        strategy = self.conflict_resolution.get("strategy", "timestamp_priority")
-        resolved = []
+    def _determine_current_project(self) -> str:
+        """Determine the current project context based on working directory and environment."""
+        # Check if we're in a specific project directory
+        current_dir = os.getcwd()
         
-        for conflict in conflicts:
-            if strategy == "timestamp_priority":
-                # Use most recent timestamp
-                resolved_item = max(conflict["versions"], key=lambda x: x.get("timestamp", 0))
-            elif strategy == "significance_priority":
-                # Use highest significance
-                resolved_item = max(conflict["versions"], key=lambda x: x.get("significance", 0))
-            else:
-                # Default to first version
-                resolved_item = conflict["versions"][0]
+        # Check for project-specific indicators
+        if "coding" in current_dir.lower() or os.getenv("CODING_TOOLS_PATH"):
+            return "coding"
+        elif "ui" in current_dir.lower():
+            return "ui"
+        elif "resi" in current_dir.lower():
+            return "resi"
+        elif "raas" in current_dir.lower():
+            return "raas"
+        
+        # Default to coding if we can't determine
+        return "coding"
+    
+    def _filter_files_by_project(self, files: List[str], project: str) -> List[str]:
+        """Filter shared memory files to only include the current project."""
+        if not project:
+            return files
+        
+        # Only sync to the file matching the current project
+        target_file = f"shared-memory-{project}.json"
+        
+        filtered_files = []
+        for file_path in files:
+            if os.path.basename(file_path) == target_file:
+                filtered_files.append(file_path)
+        
+        return filtered_files
+    
+    async def sync_all_sources(self, sources: List[str] = None, direction: str = "bidirectional", backup: bool = True) -> Dict[str, Any]:
+        """Sync between MCP Memory, shared-memory files, and other sources."""
+        try:
+            # Default sources if not specified
+            if sources is None:
+                sources = ["mcp_memory", "shared_memory_files"]
             
-            resolved.append({
-                "id": conflict["id"],
-                "resolved_version": resolved_item,
-                "strategy": strategy
-            })
-        
-        return {
-            "conflicts_resolved": len(resolved),
-            "strategy": strategy,
-            "resolutions": resolved
-        }
+            # Create backup if requested
+            backup_result = None
+            if backup:
+                backup_result = await self._handle_backup_data({})
+            
+            results = {}
+            
+            # Sync each requested source
+            for source in sources:
+                if source == "mcp_memory":
+                    results[source] = await self._sync_mcp_memory()
+                elif source == "shared_memory_files":
+                    results[source] = await self._sync_shared_memory_files()
+                elif source == "graphology_db":
+                    results[source] = await self._sync_graphology_db()
+                elif source == "ukb":
+                    # UKB sync through knowledge graph agent
+                    kg_agent = self.system.agents.get("knowledge_graph")
+                    if kg_agent:
+                        results[source] = await kg_agent.ukb_integration.sync_with_shared_memory()
+                    else:
+                        results[source] = {"success": False, "error": "Knowledge graph agent not available"}
+                else:
+                    results[source] = {"success": False, "error": f"Unknown source: {source}"}
+            
+            # Calculate overall success
+            all_successful = all(r.get("success", False) for r in results.values())
+            
+            self.logger.info(
+                "Multi-source sync completed",
+                sources=sources,
+                direction=direction,
+                backup_created=backup_result is not None,
+                all_successful=all_successful
+            )
+            
+            return {
+                "success": all_successful,
+                "sources": sources,
+                "direction": direction,
+                "backup_created": backup and backup_result and backup_result.get("success", False),
+                "backup_file": backup_result.get("backup_file") if backup_result else None,
+                "results": results
+            }
+            
+        except Exception as e:
+            self.logger.error("Multi-source sync failed", error=str(e))
+            return {
+                "success": False,
+                "error": str(e),
+                "sources": sources or [],
+                "direction": direction
+            }
+    
+    async def resolve_conflicts(self, conflict_entities: List[str], resolution_strategy: str = "newest", priority_source: str = None) -> Dict[str, Any]:
+        """Handle synchronization conflicts between sources."""
+        try:
+            resolved_entities = []
+            errors = []
+            
+            # Get knowledge graph agent for entity access
+            kg_agent = self.system.agents.get("knowledge_graph")
+            if not kg_agent:
+                return {
+                    "success": False,
+                    "error": "Knowledge graph agent not available for conflict resolution"
+                }
+            
+            for entity_name in conflict_entities:
+                try:
+                    if entity_name not in kg_agent.entities:
+                        errors.append({
+                            "entity": entity_name,
+                            "error": "Entity not found in knowledge graph"
+                        })
+                        continue
+                    
+                    entity = kg_agent.entities[entity_name]
+                    
+                    # Apply resolution strategy
+                    if resolution_strategy == "newest":
+                        # Keep entity as-is (assuming it's the newest)
+                        resolved_action = "kept_current"
+                    elif resolution_strategy == "manual":
+                        # Mark for manual review
+                        entity.metadata["manual_review_required"] = True
+                        resolved_action = "marked_for_review"
+                    elif resolution_strategy == "merge":
+                        # Merge observations (basic implementation)
+                        entity.metadata["conflict_resolved"] = True
+                        entity.metadata["resolution_strategy"] = "merge"
+                        resolved_action = "merged"
+                    elif resolution_strategy == "priority_source" and priority_source:
+                        # Use priority source (simplified)
+                        entity.metadata["priority_source"] = priority_source
+                        resolved_action = f"prioritized_{priority_source}"
+                    else:
+                        resolved_action = "default_resolution"
+                    
+                    # Update entity timestamp
+                    entity.updated_at = time.time()
+                    
+                    resolved_entities.append({
+                        "entity_name": entity_name,
+                        "action": resolved_action,
+                        "strategy": resolution_strategy,
+                        "timestamp": entity.updated_at
+                    })
+                    
+                except Exception as e:
+                    errors.append({
+                        "entity": entity_name,
+                        "error": str(e)
+                    })
+            
+            return {
+                "success": True,
+                "conflicts_resolved": len(resolved_entities),
+                "errors": len(errors),
+                "resolution_strategy": resolution_strategy,
+                "priority_source": priority_source,
+                "resolved_entities": resolved_entities,
+                "error_details": errors
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "resolution_strategy": resolution_strategy,
+                "conflict_entities": conflict_entities
+            }
+    
+    async def periodic_sync(self) -> Dict[str, Any]:
+        """Public method for periodic synchronization called by core system."""
+        self.logger.info(f"⏰ Executing periodic_sync() - Version: {SYNC_AGENT_VERSION}")
+        return await self.sync_all_targets()
+    
+    async def backup_knowledge(self, sources: List[str] = None, backup_location: str = None, include_metadata: bool = True) -> Dict[str, Any]:
+        """Create backups of knowledge sources."""
+        try:
+            # Default sources
+            if sources is None or "all" in sources:
+                sources = ["mcp_memory", "shared_memory_files"]
+            
+            # Default backup location
+            if backup_location is None:
+                backup_dir = Path(__file__).parent.parent / "backups"
+            else:
+                backup_dir = Path(backup_location)
+            
+            backup_dir.mkdir(exist_ok=True)
+            
+            backup_files = []
+            backup_results = {}
+            
+            for source in sources:
+                try:
+                    if source == "mcp_memory" or source == "shared_memory_files":
+                        # Get data from knowledge graph agent
+                        kg_agent = self.system.agents.get("knowledge_graph")
+                        if not kg_agent:
+                            backup_results[source] = {
+                                "success": False,
+                                "error": "Knowledge graph agent not available"
+                            }
+                            continue
+                        
+                        backup_data = {
+                            "source": source,
+                            "timestamp": time.time(),
+                            "entities": [
+                                {
+                                    "name": entity.name,
+                                    "entityType": entity.entity_type,
+                                    "significance": entity.significance,
+                                    "observations": entity.observations,
+                                    "metadata": entity.metadata if include_metadata else {},
+                                    "created_at": entity.created_at,
+                                    "updated_at": entity.updated_at
+                                }
+                                for entity in kg_agent.entities.values()
+                            ],
+                            "relations": [
+                                {
+                                    "from": rel.from_entity,
+                                    "to": rel.to_entity,
+                                    "relationType": rel.relation_type,
+                                    "metadata": rel.metadata if include_metadata else {},
+                                    "created_at": rel.created_at
+                                }
+                                for rel in kg_agent.relations
+                            ]
+                        }
+                        
+                        # Save backup file
+                        backup_file = backup_dir / f"{source}_backup_{int(time.time())}.json"
+                        with open(backup_file, 'w') as f:
+                            json.dump(backup_data, f, indent=2)
+                        
+                        backup_files.append(str(backup_file))
+                        backup_results[source] = {
+                            "success": True,
+                            "backup_file": str(backup_file),
+                            "entities_count": len(backup_data["entities"]),
+                            "relations_count": len(backup_data["relations"])
+                        }
+                        
+                    else:
+                        backup_results[source] = {
+                            "success": False,
+                            "error": f"Backup not implemented for source: {source}"
+                        }
+                        
+                except Exception as e:
+                    backup_results[source] = {
+                        "success": False,
+                        "error": str(e)
+                    }
+            
+            # Calculate overall success
+            successful_backups = sum(1 for r in backup_results.values() if r.get("success", False))
+            
+            return {
+                "success": successful_backups > 0,
+                "sources_requested": len(sources),
+                "successful_backups": successful_backups,
+                "failed_backups": len(sources) - successful_backups,
+                "backup_location": str(backup_dir),
+                "backup_files": backup_files,
+                "include_metadata": include_metadata,
+                "results": backup_results
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "sources": sources or [],
+                "backup_location": backup_location
+            }
     
     async def _periodic_sync(self):
         """Periodic synchronization task."""

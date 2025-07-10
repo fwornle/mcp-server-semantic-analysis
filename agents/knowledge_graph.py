@@ -59,41 +59,32 @@ class UKBIntegration:
         }
         
         try:
-            # Create temporary file for entity data
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-                json.dump(entity_data, f, indent=2)
-                temp_file = f.name
+            # Execute UKB command using interactive mode with piped input
+            # Create input for UKB interactive mode (entity creation format)
+            input_data = f"{entity_data['name']}\n{entity_data['entityType']}\n{entity_data['significance']}\n{entity_data['observations'][0] if entity_data['observations'] else 'No observations'}\n"
             
-            try:
-                # Execute UKB command
-                cmd = [self.ukb_path, "--add-entity", "--file", temp_file]
-                result = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                
-                stdout, stderr = await result.communicate()
-                
-                if result.returncode == 0:
-                    return {
-                        "success": True,
-                        "entity": entity_data,
-                        "ukb_output": stdout.decode() if stdout else ""
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "error": stderr.decode() if stderr else "Unknown UKB error",
-                        "entity": entity_data
-                    }
-                    
-            finally:
-                # Clean up temp file
-                try:
-                    os.unlink(temp_file)
-                except:
-                    pass
+            cmd = [self.ukb_path, "--add-entity"]
+            result = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await result.communicate(input=input_data.encode())
+            
+            if result.returncode == 0:
+                return {
+                    "success": True,
+                    "entity": entity_data,
+                    "ukb_output": stdout.decode() if stdout else ""
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": stderr.decode() if stderr else "Unknown UKB error",
+                    "entity": entity_data
+                }
                     
         except Exception as e:
             return {
@@ -136,7 +127,7 @@ class UKBIntegration:
     async def search_entities(self, query: str, limit: int = 10) -> Dict[str, Any]:
         """Search for entities in the UKB system."""
         try:
-            cmd = [self.ukb_path, "--search", query, "--limit", str(limit)]
+            cmd = [self.ukb_path, "--search-entities", query]
             result = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -271,6 +262,13 @@ class KnowledgeGraphAgent(BaseAgent):
         self.register_event_handler("create_entities", self._handle_create_entities)
         self.register_event_handler("create_relation", self._handle_create_relation)
         self.register_event_handler("search_entities", self._handle_search_entities)
+        
+        # Missing workflow action handlers
+        # self.register_event_handler("process_entities", self._handle_process_entities)  # TODO: Implement
+        # self.register_event_handler("update_entities", self._handle_update_entities)  # TODO: Implement
+        # self.register_event_handler("map_architecture", self._handle_map_architecture)  # TODO: Implement
+        # self.register_event_handler("extract_patterns", self._handle_extract_patterns)  # TODO: Implement
+        # self.register_event_handler("create_insight_entities", self._handle_create_insight_entities)  # TODO: Implement
         self.register_event_handler("merge_entities", self._handle_merge_entities)
         self.register_event_handler("sync_with_ukb", self._handle_sync_with_ukb)
         self.register_event_handler("get_entity", self._handle_get_entity)
@@ -401,16 +399,17 @@ class KnowledgeGraphAgent(BaseAgent):
         
         return relation
     
-    async def search_entities(self, query: str, search_type: str = "local") -> Dict[str, Any]:
+    async def search_entities(self, query: str, entity_type: str = None, limit: int = 10) -> Dict[str, Any]:
         """Search for entities in the knowledge graph."""
-        if search_type == "ukb":
-            return await self.ukb_integration.search_entities(query)
-        
         # Local search
         matching_entities = []
         query_lower = query.lower()
         
         for entity in self.entities.values():
+            # Apply entity type filter if specified
+            if entity_type and entity.entity_type != entity_type:
+                continue
+                
             # Search in name, type, and observations
             if (query_lower in entity.name.lower() or 
                 query_lower in entity.entity_type.lower() or
@@ -425,12 +424,177 @@ class KnowledgeGraphAgent(BaseAgent):
                     "updated_at": entity.updated_at
                 })
         
+        # Apply limit
+        matching_entities = matching_entities[:limit]
+        
         return {
             "success": True,
             "query": query,
-            "search_type": search_type,
+            "entity_type": entity_type,
             "entities": matching_entities,
             "count": len(matching_entities)
+        }
+    
+    async def update_knowledge_graph(self, entities: List[Dict[str, Any]] = None, relations: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Update the knowledge graph with new entities and relations."""
+        results = {
+            "entities_created": 0,
+            "entities_updated": 0,
+            "relations_created": 0,
+            "errors": []
+        }
+        
+        # Process entities
+        if entities:
+            for entity_data in entities:
+                try:
+                    name = entity_data["name"]
+                    entity_type = entity_data["entity_type"]
+                    significance = entity_data.get("significance", 5)
+                    observations = entity_data.get("observations", [])
+                    metadata = entity_data.get("metadata", {})
+                    
+                    if name in self.entities:
+                        # Update existing entity
+                        await self.update_entity(name, observations=observations, metadata=metadata, significance=significance)
+                        results["entities_updated"] += 1
+                    else:
+                        # Create new entity
+                        await self.create_entity(name, entity_type, significance, observations, metadata)
+                        results["entities_created"] += 1
+                        
+                except Exception as e:
+                    results["errors"].append({
+                        "type": "entity",
+                        "data": entity_data,
+                        "error": str(e)
+                    })
+        
+        # Process relations
+        if relations:
+            for relation_data in relations:
+                try:
+                    from_entity = relation_data["from_entity"]
+                    to_entity = relation_data["to_entity"]
+                    relation_type = relation_data["relation_type"]
+                    metadata = relation_data.get("metadata", {})
+                    
+                    await self.create_relation(from_entity, to_entity, relation_type, metadata)
+                    results["relations_created"] += 1
+                    
+                except Exception as e:
+                    results["errors"].append({
+                        "type": "relation",
+                        "data": relation_data,
+                        "error": str(e)
+                    })
+        
+        self.logger.info(
+            "Knowledge graph updated",
+            entities_created=results["entities_created"],
+            entities_updated=results["entities_updated"],
+            relations_created=results["relations_created"],
+            errors=len(results["errors"])
+        )
+        
+        return {
+            "success": True,
+            **results
+        }
+    
+    async def sync_knowledge_sources(self, source_files: List[str] = None, direction: str = "bidirectional") -> Dict[str, Any]:
+        """Sync knowledge graph with external sources."""
+        try:
+            # Use UKB integration for syncing
+            result = await self.ukb_integration.sync_with_shared_memory()
+            
+            if result.get("success"):
+                self.logger.info(
+                    "Knowledge sources synced",
+                    direction=direction,
+                    source_files=source_files,
+                    entities_synced=result.get("entities_count", 0)
+                )
+                
+                return {
+                    "success": True,
+                    "direction": direction,
+                    "source_files": source_files or ["shared-memory"],
+                    "entities_synced": result.get("entities_count", 0),
+                    "relations_synced": result.get("relations_count", 0)
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("error", "Sync failed"),
+                    "direction": direction
+                }
+                
+        except Exception as e:
+            self.logger.error("Knowledge source sync failed", error=str(e))
+            return {
+                "success": False,
+                "error": str(e),
+                "direction": direction
+            }
+    
+    async def get_entity_relations(self, entity_names: List[str], relation_types: List[str] = None, depth: int = 1) -> Dict[str, Any]:
+        """Get relationships for specific entities."""
+        entity_relations = {}
+        
+        for entity_name in entity_names:
+            if entity_name not in self.entities:
+                entity_relations[entity_name] = {
+                    "error": f"Entity not found: {entity_name}"
+                }
+                continue
+            
+            # Find direct relations
+            outgoing_relations = []
+            incoming_relations = []
+            
+            for relation in self.relations:
+                # Apply relation type filter if specified
+                if relation_types and relation.relation_type not in relation_types:
+                    continue
+                    
+                if relation.from_entity == entity_name:
+                    outgoing_relations.append({
+                        "to_entity": relation.to_entity,
+                        "relation_type": relation.relation_type,
+                        "metadata": relation.metadata,
+                        "created_at": relation.created_at
+                    })
+                    
+                if relation.to_entity == entity_name:
+                    incoming_relations.append({
+                        "from_entity": relation.from_entity,
+                        "relation_type": relation.relation_type,
+                        "metadata": relation.metadata,
+                        "created_at": relation.created_at
+                    })
+            
+            entity_relations[entity_name] = {
+                "entity": {
+                    "name": entity_name,
+                    "type": self.entities[entity_name].entity_type,
+                    "significance": self.entities[entity_name].significance
+                },
+                "outgoing_relations": outgoing_relations,
+                "incoming_relations": incoming_relations,
+                "total_relations": len(outgoing_relations) + len(incoming_relations)
+            }
+            
+            # TODO: Implement multi-level depth traversal if depth > 1
+            if depth > 1:
+                self.logger.warning(f"Multi-level relation traversal not yet implemented (depth={depth})")
+        
+        return {
+            "success": True,
+            "entity_relations": entity_relations,
+            "entities_processed": len(entity_names),
+            "depth": depth,
+            "relation_types_filter": relation_types
         }
     
     async def merge_entities(self, primary_name: str, secondary_names: List[str]) -> Dict[str, Any]:

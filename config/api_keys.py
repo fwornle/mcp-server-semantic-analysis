@@ -32,23 +32,43 @@ class APIKeyManager:
         """Detect which API providers are available based on environment variables."""
         providers = {}
         
+        # Debug: Log all environment variables starting with common API key prefixes
+        self.logger.info("🔍 Debugging environment variables...")
+        for key in sorted(os.environ.keys()):
+            if any(prefix in key for prefix in ["ANTHROPIC", "OPENAI", "API", "KEY"]):
+                value = os.environ[key]
+                masked_value = value[:8] + "..." if len(value) > 8 else "***"
+                self.logger.info(f"  ENV: {key}={masked_value}")
+        
         # Check Anthropic (Claude)
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        self.logger.info(f"🔍 ANTHROPIC_API_KEY check: found={bool(anthropic_key)}, length={len(anthropic_key) if anthropic_key else 0}")
         if anthropic_key and anthropic_key not in ("", "your-anthropic-api-key"):
             providers[ProviderType.ANTHROPIC] = {
                 "api_key": anthropic_key,
                 "available": True,
                 "priority": 1
             }
+            self.logger.info("✅ ANTHROPIC_API_KEY detected", key_prefix=anthropic_key[:8] + "..." if len(anthropic_key) > 8 else "***")
+        else:
+            self.logger.warning("❌ ANTHROPIC_API_KEY not found or invalid", 
+                              found=bool(anthropic_key), 
+                              is_placeholder=anthropic_key == "your-anthropic-api-key" if anthropic_key else False)
             
         # Check OpenAI
         openai_key = os.getenv("OPENAI_API_KEY")
+        self.logger.info(f"🔍 OPENAI_API_KEY check: found={bool(openai_key)}, length={len(openai_key) if openai_key else 0}")
         if openai_key and openai_key not in ("", "your-openai-api-key"):
             providers[ProviderType.OPENAI] = {
                 "api_key": openai_key,
                 "available": True,
                 "priority": 2
             }
+            self.logger.info("✅ OPENAI_API_KEY detected", key_prefix=openai_key[:8] + "..." if len(openai_key) > 8 else "***")
+        else:
+            self.logger.warning("❌ OPENAI_API_KEY not found or invalid", 
+                              found=bool(openai_key), 
+                              is_placeholder=openai_key == "your-openai-api-key" if openai_key else False)
             
         # Check Custom OpenAI-compatible endpoint
         custom_base_url = os.getenv("OPENAI_BASE_URL")

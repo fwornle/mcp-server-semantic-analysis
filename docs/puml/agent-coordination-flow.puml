@@ -1,0 +1,93 @@
+@startuml agent-coordination-flow
+!include _standard-style.puml
+
+title Agent Coordination Flow - Workflow Execution
+
+participant "Claude Code" as CLAUDE
+participant "MCP Handler" as MCP
+participant "Coordinator Agent" as COORD
+participant "Semantic Analyzer" as SEMANTIC
+participant "Knowledge Manager" as KNOWLEDGE
+participant "Repository Analyzer" as REPO
+participant "Documentation Agent" as DOC
+participant "Web Search Agent" as WEB
+participant "Synchronization Agent" as SYNC
+
+CLAUDE ->> MCP : tool_call(analyze_repository)
+activate MCP
+
+MCP ->> COORD : execute_workflow(repo-analysis)
+activate COORD
+
+note over COORD
+  Validate input parameters
+  Initialize workflow context
+  Create execution plan
+end note
+
+COORD ->> REPO : analyze_structure(repo_path)
+activate REPO
+REPO ->> REPO : scan_files()
+REPO ->> REPO : extract_patterns()
+REPO -->> COORD : structure_analysis
+deactivate REPO
+
+COORD ->> SEMANTIC : analyze_content(code_samples)
+activate SEMANTIC
+SEMANTIC ->> SEMANTIC : call_llm_provider()
+SEMANTIC -->> COORD : insights
+deactivate SEMANTIC
+
+COORD ->> WEB : validate_references(patterns)
+activate WEB
+WEB ->> WEB : search_documentation()
+WEB -->> COORD : validation_results
+deactivate WEB
+
+note over COORD
+  QA Validation:
+  - Verify output quality
+  - Check completeness
+  - Validate references
+end note
+
+COORD ->> DOC : generate_report(analysis_data)
+activate DOC
+DOC ->> DOC : create_markdown()
+DOC ->> DOC : generate_diagrams()
+DOC -->> COORD : documentation
+deactivate DOC
+
+COORD ->> KNOWLEDGE : store_insights(results)
+activate KNOWLEDGE
+KNOWLEDGE ->> KNOWLEDGE : create_entities()
+KNOWLEDGE ->> KNOWLEDGE : establish_relations()
+KNOWLEDGE -->> COORD : storage_status
+deactivate KNOWLEDGE
+
+COORD ->> SYNC : sync_knowledge_bases()
+activate SYNC
+SYNC ->> SYNC : update_files()
+SYNC ->> SYNC : sync_memory()
+SYNC -->> COORD : sync_complete
+deactivate SYNC
+
+note over COORD
+  Final validation and
+  result compilation
+end note
+
+COORD -->> MCP : workflow_results
+deactivate COORD
+
+MCP -->> CLAUDE : formatted_response
+deactivate MCP
+
+note right of CLAUDE
+  Comprehensive analysis
+  including insights,
+  documentation, and
+  knowledge base updates
+end note
+
+@enduml

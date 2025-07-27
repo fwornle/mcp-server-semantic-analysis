@@ -1,0 +1,82 @@
+@startuml mcp-server-architecture
+!include _standard-style.puml
+
+title MCP Semantic Analysis Server - Architecture Overview
+
+' Define the main system layers
+package "Claude Code Client" {
+  component [Claude Interface] as CLAUDE <<external>>
+}
+
+package "MCP Server Core" <<infra>> {
+  component [MCP Protocol Handler] as MCP_HANDLER <<infra>>
+  component [Tool Registry] as TOOL_REG <<api>>
+  component [Agent Coordinator] as COORDINATOR <<agent>>
+}
+
+package "Tool Layer (12 Tools)" <<api>> {
+  component [Connection Tools] as CONN_TOOLS <<api>>
+  component [Analysis Tools] as ANALYSIS_TOOLS <<api>>
+  component [Knowledge Tools] as KNOWLEDGE_TOOLS <<api>>
+  component [Documentation Tools] as DOC_TOOLS <<api>>
+}
+
+package "Agent Layer (7 Agents)" <<agent>> {
+  component [Semantic Analyzer] as SEMANTIC <<agent>>
+  component [Repository Analyzer] as REPO <<agent>>
+  component [Knowledge Manager] as KNOWLEDGE <<agent>>
+  component [Web Search Agent] as WEBSEARCH <<agent>>
+  component [Synchronization Agent] as SYNC <<agent>>
+  component [Deduplication Agent] as DEDUP <<agent>>
+  component [Documentation Agent] as DOCGEN <<agent>>
+}
+
+package "External Services" <<external>> {
+  cloud [Anthropic Claude] as ANTHROPIC <<external>>
+  cloud [OpenAI GPT] as OPENAI <<external>>
+  cloud [Web Search APIs] as WEB_API <<external>>
+  database [Knowledge Bases] as KB <<storage>>
+}
+
+' Define connections
+CLAUDE --> MCP_HANDLER : "MCP Protocol"
+MCP_HANDLER --> TOOL_REG : "Tool Dispatch"
+TOOL_REG --> COORDINATOR : "Orchestration"
+
+COORDINATOR --> CONN_TOOLS
+COORDINATOR --> ANALYSIS_TOOLS
+COORDINATOR --> KNOWLEDGE_TOOLS
+COORDINATOR --> DOC_TOOLS
+
+CONN_TOOLS --> SEMANTIC
+ANALYSIS_TOOLS --> SEMANTIC
+ANALYSIS_TOOLS --> REPO
+KNOWLEDGE_TOOLS --> KNOWLEDGE
+DOC_TOOLS --> DOCGEN
+
+SEMANTIC ..> ANTHROPIC
+SEMANTIC .> OPENAI
+WEBSEARCH ..> WEB_API
+KNOWLEDGE --> KB
+SYNC <--> KB
+DEDUP --> KNOWLEDGE
+
+note right of COORDINATOR
+  Orchestrates workflow execution
+  Provides QA validation
+  Manages agent lifecycle
+end note
+
+note right of SEMANTIC
+  Multi-provider LLM support
+  Anthropic (primary) → OpenAI (fallback)
+  Content and code analysis
+end note
+
+note right of KB
+  UKB/VKB Integration
+  MCP Memory Service
+  Cross-session persistence
+end note
+
+@enduml

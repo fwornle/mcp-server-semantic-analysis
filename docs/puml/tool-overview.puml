@@ -1,0 +1,97 @@
+@startuml tool-overview
+!include _standard-style.puml
+
+title MCP Server Tools - Complete Overview
+
+package "Connection & Health Tools" <<api>> {
+  component [heartbeat] as HEARTBEAT <<api>>
+  component [test_connection] as TEST <<api>>
+}
+
+package "Analysis Tools" <<core>> {
+  component [determine_insights] as INSIGHTS <<core>>
+  component [analyze_code] as CODE <<core>>
+  component [analyze_repository] as REPO <<core>>
+  component [extract_patterns] as PATTERNS <<core>>
+}
+
+package "Knowledge Management Tools" <<storage>> {
+  component [create_ukb_entity_with_insight] as UKB <<storage>>
+  component [execute_workflow] as WORKFLOW <<util>>
+}
+
+package "Documentation & Reporting Tools" <<util>> {
+  component [generate_documentation] as DOCS <<util>>
+  component [create_insight_report] as REPORT <<util>>
+  component [generate_plantuml_diagrams] as DIAGRAMS <<util>>
+  component [generate_lessons_learned] as LESSONS <<util>>
+}
+
+package "Agent Support Layer" <<agent>> {
+  component [Semantic Analyzer] as SEMANTIC_AGENT <<agent>>
+  component [Repository Analyzer] as REPO_AGENT <<agent>>
+  component [Knowledge Manager] as KNOWLEDGE_AGENT <<agent>>
+  component [Documentation Agent] as DOC_AGENT <<agent>>
+  component [Coordinator Agent] as COORD_AGENT <<agent>>
+}
+
+' Tool to Agent mappings
+HEARTBEAT --> COORD_AGENT
+TEST --> COORD_AGENT
+
+INSIGHTS --> SEMANTIC_AGENT
+CODE --> SEMANTIC_AGENT
+REPO --> REPO_AGENT
+PATTERNS --> SEMANTIC_AGENT
+
+UKB --> KNOWLEDGE_AGENT
+WORKFLOW --> COORD_AGENT
+
+DOCS --> DOC_AGENT
+REPORT --> DOC_AGENT
+DIAGRAMS --> DOC_AGENT
+LESSONS --> DOC_AGENT
+
+' Cross-agent coordination
+COORD_AGENT --> SEMANTIC_AGENT
+COORD_AGENT --> REPO_AGENT
+COORD_AGENT --> KNOWLEDGE_AGENT
+COORD_AGENT --> DOC_AGENT
+
+note top of HEARTBEAT
+  Server health monitoring
+  Uptime tracking
+  Connection validation
+end note
+
+note top of INSIGHTS
+  Multi-provider LLM analysis
+  Content insight extraction
+  Context-aware processing
+end note
+
+note top of REPO
+  Repository structure analysis
+  Pattern identification
+  Architecture insights
+end note
+
+note top of UKB
+  Knowledge base integration
+  Entity creation & management
+  Cross-system sync
+end note
+
+note top of WORKFLOW
+  Multi-agent orchestration
+  Complex analysis pipelines
+  QA validation
+end note
+
+note top of DIAGRAMS
+  PlantUML generation
+  Architecture visualization
+  Documentation support
+end note
+
+@enduml

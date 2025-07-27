@@ -1,18 +1,17 @@
 # Semantic Analysis MCP Server
 
-A powerful multi-agent semantic analysis system built with the Graphite framework, providing comprehensive code and conversation analysis capabilities through multiple interfaces.
+A powerful multi-agent semantic analysis system built with Node.js and TypeScript, providing comprehensive code and conversation analysis capabilities through MCP (Model Context Protocol).
 
 ## Overview
 
-This MCP server implements a sophisticated 7-agent architecture for semantic analysis:
+This MCP server implements a sophisticated 6-agent architecture for semantic analysis:
 
-- **Coordinator Agent** - Workflow orchestration and quality assurance
-- **Semantic Analysis Agent** - Core LLM analysis with multi-provider fallback
-- **Knowledge Graph Agent** - Entity and relationship management with UKB integration
-- **Web Search Agent** - Context-aware search and validation
-- **Synchronization Agent** - Data sync across MCP Memory, Graphology DB, and shared-memory files
+- **Coordinator Agent** - Workflow orchestration and task coordination
+- **Semantic Analysis Agent** - Core LLM analysis with multi-provider fallback (Custom → Anthropic → OpenAI)
+- **Web Search Agent** - Context-aware search and external data gathering
+- **Synchronization Agent** - Data sync and consistency management
 - **Deduplication Agent** - Similarity detection and entity merging
-- **Documentation Agent** - Automated documentation generation
+- **Documentation Agent** - Automated documentation and report generation
 
 ## Features
 
@@ -138,33 +137,34 @@ SEMANTIC_ANALYSIS_CONFIG=/path/to/config.json
 git clone <repository-url>
 cd mcp-server-semantic-analysis
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
-
 # Install dependencies
-pip install -e .[dev]
+npm install
 
-# Run tests
-pytest
+# Build the project
+npm run build
 
-# Format code
-black .
-ruff check --fix .
+# Start in development mode
+npm run dev
+
+# Start the MCP server
+npm start
+
+# Run tests (when available)
+npm test
 ```
 
 ### Adding New Agents
 
-1. Create agent file in `agents/` directory
-2. Implement using Graphite framework patterns
-3. Register with coordinator in `config/agent_config.py`
-4. Add tests in `tests/agents/`
+1. Create agent file in `src/agents/` directory
+2. Implement using TypeScript class patterns
+3. Register with main server in `src/index.ts`
+4. Add appropriate tool definitions and handlers
 
 ### Adding New Workflows
 
-1. Create workflow file in `workflows/` directory
-2. Define as Graphite Assistant
-3. Register in coordinator's workflow engine
+1. Add workflow method to `Coordinator` class
+2. Register workflow in constructor
+3. Implement workflow logic with proper error handling
 4. Add tests and documentation
 
 ## Integration

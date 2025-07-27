@@ -72,10 +72,14 @@ export class DocumentationAgent {
       significanceThreshold: 8,
     };
 
+    // Get knowledge base path from environment variable
+    const knowledgeBasePath = process.env.KNOWLEDGE_BASE_PATH || '/Users/q284340/Agentic/coding/knowledge-management/insights';
+    const docsPath = process.env.CODING_DOCS_PATH || '/Users/q284340/Agentic/coding/docs';
+
     this.plantumlConfig = {
       enabled: true,
-      outputDir: "/Users/q284340/Agentic/coding/knowledge-management/insights",
-      standardStylePath: "/Users/q284340/Agentic/coding/docs/puml/_standard-style.puml"
+      outputDir: knowledgeBasePath,
+      standardStylePath: `${docsPath}/puml/_standard-style.puml`
     };
 
     this.ukbConfig = {
@@ -84,7 +88,7 @@ export class DocumentationAgent {
     };
 
     this.insightConfig = {
-      outputDir: "/Users/q284340/Agentic/coding/knowledge-management/insights",
+      outputDir: knowledgeBasePath,
       generatePuml: true,
       generateImages: true
     };

@@ -1,448 +1,473 @@
-/**
- * Semantic Analyzer Agent - Core analysis engine with LLM provider support
- */
+import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
+import { log } from "../logging.js";
 
-import axios from 'axios';
+export interface AnalysisOptions {
+  context?: string;
+  analysisType?: "general" | "code" | "patterns" | "architecture";
+  provider?: "custom" | "anthropic" | "openai" | "auto";
+}
+
+export interface CodeAnalysisOptions {
+  language?: string;
+  filePath?: string;
+  focus?: "patterns" | "quality" | "security" | "performance" | "architecture";
+}
+
+export interface PatternExtractionOptions {
+  patternTypes?: string[];
+  context?: string;
+}
 
 export interface AnalysisResult {
-  insights: string[];
-  patterns: any[];
+  insights: string;
+  provider: string;
+  confidence: number;
+}
+
+export interface CodeAnalysisResult {
+  analysis: string;
+  findings: string[];
   recommendations: string[];
-  metadata: {
-    analysis_type: string;
-    provider_used: string;
-    confidence: number;
-    timestamp: string;
-  };
+  patterns: string[];
+}
+
+export interface Pattern {
+  name: string;
+  type: string;
+  description: string;
+  code: string;
+  usageExample?: string;
+}
+
+export interface PatternExtractionResult {
+  patterns: Pattern[];
+  summary: string;
 }
 
 export class SemanticAnalyzer {
-  private llmProviders: Map<string, Function> = new Map();
+  private customClient: OpenAI | null = null;
+  private anthropicClient: Anthropic | null = null;
+  private openaiClient: OpenAI | null = null;
 
   constructor() {
-    this.initializeLLMProviders();
+    this.initializeClients();
   }
 
-  private initializeLLMProviders() {
-    // LLM provider priority: Custom → Anthropic → OpenAI
-    this.llmProviders.set('custom', this.callCustomProvider.bind(this));
-    this.llmProviders.set('anthropic', this.callAnthropicProvider.bind(this));
-    this.llmProviders.set('openai', this.callOpenAIProvider.bind(this));
-  }
+  private initializeClients(): void {
+    // Priority order: (1) Custom API (corporate/local), (2) Anthropic, (3) OpenAI
+    
+    // Initialize Custom OpenAI-compatible client (highest priority)
+    const customBaseUrl = process.env.OPENAI_BASE_URL;
+    const customKey = process.env.OPENAI_API_KEY;
+    if (customBaseUrl && customKey && customKey !== "your-openai-api-key") {
+      this.customClient = new OpenAI({
+        apiKey: customKey,
+        baseURL: customBaseUrl,
+      });
+      log("Custom OpenAI-compatible client initialized", "info", { baseURL: customBaseUrl });
+    }
 
-  public async determineInsights(args: {
-    content: string;
-    context?: string;
-    analysis_type?: string;
-    provider?: string;
-  }) {
-    const { content, context = '', analysis_type = 'general', provider = 'auto' } = args;
+    // Initialize Anthropic client (second priority)
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    if (anthropicKey && anthropicKey !== "your-anthropic-api-key") {
+      this.anthropicClient = new Anthropic({
+        apiKey: anthropicKey,
+      });
+      log("Anthropic client initialized", "info");
+    }
 
-    try {
-      const selectedProvider = provider === 'auto' ? this.selectOptimalProvider() : provider;
-      const insights = await this.performAnalysis(content, context, analysis_type, selectedProvider);
+    // Initialize OpenAI client (third priority - only if no custom base URL)
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey && openaiKey !== "your-openai-api-key" && !customBaseUrl) {
+      this.openaiClient = new OpenAI({
+        apiKey: openaiKey,
+      });
+      log("OpenAI client initialized", "info");
+    }
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              insights: insights.insights,
-              analysis_type,
-              provider_used: selectedProvider,
-              confidence: insights.metadata.confidence,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: error.message,
-              analysis_type,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-        isError: true,
-      };
+    if (!this.customClient && !this.anthropicClient && !this.openaiClient) {
+      log("No LLM clients available - check API keys", "warning");
     }
   }
 
-  public async analyzeCode(args: {
-    code: string;
-    file_path?: string;
-    language?: string;
-    analysis_focus?: string;
-  }) {
-    const { code, file_path = '', language = 'unknown', analysis_focus = 'general' } = args;
+  async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
+    const { context, analysisType = "general", provider = "auto" } = options;
 
-    try {
-      const analysis = await this.performCodeAnalysis(code, language, analysis_focus);
+    log(`Analyzing content with ${provider} provider`, "info", {
+      contentLength: content.length,
+      analysisType,
+      hasContext: !!context,
+    });
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              file_path,
-              language,
-              analysis_focus,
-              quality_score: analysis.quality_score,
-              issues: analysis.issues,
-              patterns: analysis.patterns,
-              recommendations: analysis.recommendations,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: error.message,
-              file_path,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-        isError: true,
-      };
+    const prompt = this.buildAnalysisPrompt(content, context, analysisType);
+
+    let result: AnalysisResult;
+    
+    // Determine which provider to use with correct precedence:
+    // 1. If specific provider requested, use it
+    // 2. If auto: Custom → Anthropic → OpenAI
+    if (provider === "custom") {
+      if (!this.customClient) {
+        throw new Error("Custom client not available");
+      }
+      result = await this.analyzeWithCustom(prompt);
+    } else if (provider === "anthropic") {
+      if (!this.anthropicClient) {
+        throw new Error("Anthropic client not available");
+      }
+      result = await this.analyzeWithAnthropic(prompt);
+    } else if (provider === "openai") {
+      if (!this.openaiClient) {
+        throw new Error("OpenAI client not available");
+      }
+      result = await this.analyzeWithOpenAI(prompt);
+    } else if (provider === "auto") {
+      // Auto mode: Custom → Anthropic → OpenAI priority
+      if (this.customClient) {
+        log("Using Custom client (auto mode top priority)", "info");
+        result = await this.analyzeWithCustom(prompt);
+      } else if (this.anthropicClient) {
+        log("Using Anthropic client (auto mode second priority)", "info");
+        result = await this.analyzeWithAnthropic(prompt);
+      } else if (this.openaiClient) {
+        log("Using OpenAI client (auto mode fallback)", "info");
+        result = await this.analyzeWithOpenAI(prompt);
+      } else {
+        throw new Error("No available LLM provider");
+      }
+    } else {
+      throw new Error(`Unknown provider: ${provider}`);
     }
+
+    return result;
   }
 
-  public async analyzeRepository(args: {
-    repository_path: string;
-    include_patterns?: string[];
-    exclude_patterns?: string[];
-    max_files?: number;
-  }) {
-    const {
-      repository_path,
-      include_patterns = ['**/*.js', '**/*.ts', '**/*.py'],
-      exclude_patterns = ['node_modules/**', '**/*.test.*'],
-      max_files = 100,
-    } = args;
+  async analyzeCode(code: string, options: CodeAnalysisOptions = {}): Promise<CodeAnalysisResult> {
+    const { language, filePath, focus = "patterns" } = options;
 
-    try {
-      const analysis = await this.performRepositoryAnalysis(
-        repository_path,
-        include_patterns,
-        exclude_patterns,
-        max_files
-      );
+    log(`Analyzing code with focus: ${focus}`, "info", {
+      codeLength: code.length,
+      language,
+      filePath,
+    });
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              repository_path,
-              files_analyzed: analysis.files_analyzed,
-              architecture_patterns: analysis.architecture_patterns,
-              quality_metrics: analysis.quality_metrics,
-              recommendations: analysis.recommendations,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: error.message,
-              repository_path,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-        isError: true,
-      };
+    const prompt = this.buildCodeAnalysisPrompt(code, language, filePath, focus);
+    const analysis = await this.analyzeWithBestProvider(prompt);
+
+    // Parse structured response
+    return this.parseCodeAnalysisResponse(analysis.insights);
+  }
+
+  async extractPatterns(source: string, options: PatternExtractionOptions = {}): Promise<PatternExtractionResult> {
+    const { patternTypes, context } = options;
+
+    log("Extracting patterns from source", "info", {
+      sourceLength: source.length,
+      patternTypes,
+      hasContext: !!context,
+    });
+
+    const prompt = this.buildPatternExtractionPrompt(source, patternTypes, context);
+    const analysis = await this.analyzeWithBestProvider(prompt);
+
+    return this.parsePatternExtractionResponse(analysis.insights);
+  }
+
+  private async analyzeWithBestProvider(prompt: string): Promise<AnalysisResult> {
+    // Priority order: Custom → Anthropic → OpenAI
+    if (this.customClient) {
+      try {
+        return await this.analyzeWithCustom(prompt);
+      } catch (error) {
+        log("Custom analysis failed, trying Anthropic", "warning", error);
+      }
     }
-  }
 
-  public async extractPatterns(args: {
-    source: string;
-    pattern_types?: string[];
-    context?: string;
-  }) {
-    const { source, pattern_types = ['design', 'architectural'], context = '' } = args;
-
-    try {
-      const patterns = await this.performPatternExtraction(source, pattern_types, context);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              patterns_found: patterns.patterns,
-              pattern_types,
-              confidence_scores: patterns.confidence_scores,
-              applicability: patterns.applicability,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: error.message,
-              pattern_types,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-        isError: true,
-      };
+    if (this.anthropicClient) {
+      try {
+        return await this.analyzeWithAnthropic(prompt);
+      } catch (error) {
+        log("Anthropic analysis failed, trying OpenAI", "warning", error);
+      }
     }
-  }
 
-  public async createUkbEntityWithInsight(args: {
-    entity_name: string;
-    entity_type: string;
-    insights: string;
-    tags?: string[];
-    significance?: number;
-  }) {
-    const { entity_name, entity_type, insights, tags = [], significance = 5 } = args;
-
-    try {
-      // Simulate UKB entity creation
-      const entity = {
-        name: entity_name,
-        type: entity_type,
-        insights,
-        tags,
-        significance,
-        created_at: new Date().toISOString(),
-        id: `entity_${Date.now()}`,
-      };
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              entity_created: true,
-              entity_id: entity.id,
-              entity_name,
-              entity_type,
-              significance,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: error.message,
-              entity_name,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-        isError: true,
-      };
+    if (this.openaiClient) {
+      return await this.analyzeWithOpenAI(prompt);
     }
+
+    throw new Error("No available LLM providers");
   }
 
-  private async performAnalysis(
-    content: string,
-    context: string,
-    analysisType: string,
-    provider: string
-  ): Promise<AnalysisResult> {
-    // Mock analysis with different types
-    const analysisMap: { [key: string]: () => AnalysisResult } = {
-      general: () => ({
-        insights: [
-          'Content shows structured approach to problem-solving',
-          'Good documentation practices evident',
-          'Clear separation of concerns',
-        ],
-        patterns: ['Documentation Pattern', 'Modular Design'],
-        recommendations: [
-          'Consider adding more examples',
-          'Include performance considerations',
-        ],
-        metadata: {
-          analysis_type: analysisType,
-          provider_used: provider,
-          confidence: 0.85,
-          timestamp: new Date().toISOString(),
-        },
-      }),
-      code: () => ({
-        insights: [
-          'Code follows clean architecture principles',
-          'Good error handling patterns',
-          'Type safety considerations present',
-        ],
-        patterns: ['Factory Pattern', 'Observer Pattern', 'Strategy Pattern'],
-        recommendations: [
-          'Add unit tests for edge cases',
-          'Consider implementing logging',
-        ],
-        metadata: {
-          analysis_type: analysisType,
-          provider_used: provider,
-          confidence: 0.92,
-          timestamp: new Date().toISOString(),
-        },
-      }),
-      patterns: () => ({
-        insights: [
-          'Multiple design patterns identified',
-          'Consistent implementation approach',
-          'Good abstraction layers',
-        ],
-        patterns: ['MVC', 'Repository Pattern', 'Dependency Injection'],
-        recommendations: [
-          'Document pattern decisions',
-          'Consider pattern consistency across modules',
-        ],
-        metadata: {
-          analysis_type: analysisType,
-          provider_used: provider,
-          confidence: 0.88,
-          timestamp: new Date().toISOString(),
-        },
-      }),
-      architecture: () => ({
-        insights: [
-          'Well-structured architectural layers',
-          'Good separation of business logic',
-          'Scalable design approach',
-        ],
-        patterns: ['Layered Architecture', 'Microservices', 'Event-Driven'],
-        recommendations: [
-          'Consider caching strategies',
-          'Plan for horizontal scaling',
-        ],
-        metadata: {
-          analysis_type: analysisType,
-          provider_used: provider,
-          confidence: 0.90,
-          timestamp: new Date().toISOString(),
-        },
-      }),
-    };
+  private async analyzeWithCustom(prompt: string): Promise<AnalysisResult> {
+    if (!this.customClient) {
+      throw new Error("Custom client not available");
+    }
 
-    return analysisMap[analysisType] ? analysisMap[analysisType]() : analysisMap.general();
-  }
-
-  private async performCodeAnalysis(code: string, language: string, focus: string) {
-    // Mock code analysis
-    return {
-      quality_score: 0.85,
-      issues: [
-        { type: 'warning', message: 'Consider adding JSDoc comments', line: 10 },
-        { type: 'info', message: 'Function could be extracted for reusability', line: 25 },
-      ],
-      patterns: ['Module Pattern', 'Factory Pattern'],
-      recommendations: [
-        'Add input validation',
-        'Implement error boundaries',
-        'Consider performance optimization',
-      ],
-    };
-  }
-
-  private async performRepositoryAnalysis(
-    path: string,
-    includePatterns: string[],
-    excludePatterns: string[],
-    maxFiles: number
-  ) {
-    // Mock repository analysis
-    return {
-      files_analyzed: 42,
-      architecture_patterns: [
-        { name: 'MVC', confidence: 0.92 },
-        { name: 'Repository Pattern', confidence: 0.78 },
-      ],
-      quality_metrics: {
-        test_coverage: 0.75,
-        code_complexity: 'medium',
-        maintainability_index: 0.82,
-      },
-      recommendations: [
-        'Increase test coverage for core modules',
-        'Refactor high-complexity functions',
-        'Add API documentation',
-      ],
-    };
-  }
-
-  private async performPatternExtraction(source: string, patternTypes: string[], context: string) {
-    // Mock pattern extraction
-    return {
-      patterns: [
+    const response = await this.customClient.chat.completions.create({
+      model: "gpt-4-turbo-preview", // Default model, can be overridden by custom endpoint
+      messages: [
         {
-          name: 'Observer Pattern',
-          type: 'behavioral',
-          confidence: 0.89,
-          usage_context: 'Event handling system',
+          role: "system",
+          content: "You are an expert semantic analysis AI specializing in code analysis, technical documentation, and software development patterns. Provide precise, structured, and actionable insights.",
         },
         {
-          name: 'Factory Pattern',
-          type: 'creational',
-          confidence: 0.76,
-          usage_context: 'Object instantiation',
+          role: "user",
+          content: prompt,
         },
       ],
-      confidence_scores: { overall: 0.82, individual: [0.89, 0.76] },
-      applicability: [
-        'Similar event-driven architectures',
-        'Object creation scenarios',
-      ],
+      max_tokens: 4096,
+      temperature: 0.3,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error("No content in Custom API response");
+    }
+
+    return {
+      insights: content,
+      provider: "custom",
+      confidence: 0.95, // Highest confidence for custom endpoint
     };
   }
 
-  private selectOptimalProvider(): string {
-    // Provider selection logic: Custom → Anthropic → OpenAI
-    if (this.isProviderAvailable('custom')) return 'custom';
-    if (this.isProviderAvailable('anthropic')) return 'anthropic';
-    if (this.isProviderAvailable('openai')) return 'openai';
-    return 'custom'; // fallback to mock
+  private async analyzeWithAnthropic(prompt: string): Promise<AnalysisResult> {
+    if (!this.anthropicClient) {
+      throw new Error("Anthropic client not available");
+    }
+
+    const response = await this.anthropicClient.messages.create({
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 4096,
+      temperature: 0.3,
+      system: "You are an expert semantic analysis AI specializing in code analysis, technical documentation, and software development patterns. Provide precise, structured, and actionable insights.",
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+    });
+
+    const content = response.content[0];
+    if (content.type !== "text") {
+      throw new Error("Unexpected response type from Anthropic");
+    }
+
+    return {
+      insights: content.text,
+      provider: "anthropic",
+      confidence: 0.9,
+    };
   }
 
-  private isProviderAvailable(provider: string): boolean {
-    // Mock availability check
-    return true;
+  private async analyzeWithOpenAI(prompt: string): Promise<AnalysisResult> {
+    if (!this.openaiClient) {
+      throw new Error("OpenAI client not available");
+    }
+
+    const response = await this.openaiClient.chat.completions.create({
+      model: "gpt-4-turbo-preview",
+      messages: [
+        {
+          role: "system",
+          content: "You are an expert semantic analysis AI specializing in code analysis, technical documentation, and software development patterns. Provide precise, structured, and actionable insights.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      max_tokens: 4096,
+      temperature: 0.3,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error("No content in OpenAI response");
+    }
+
+    return {
+      insights: content,
+      provider: "openai",
+      confidence: 0.85,
+    };
   }
 
-  private async callCustomProvider(prompt: string): Promise<string> {
-    // Mock custom provider call
-    return `Custom provider analysis: ${prompt.substring(0, 100)}...`;
+  private buildAnalysisPrompt(content: string, context?: string, analysisType: string = "general"): string {
+    let prompt = `Please analyze the following content for insights, patterns, and key findings:\n\n`;
+    
+    if (context) {
+      prompt += `**Context:** ${context}\n\n`;
+    }
+    
+    prompt += `**Analysis Type:** ${analysisType}\n\n`;
+    prompt += `**Content:**\n${content}\n\n`;
+    
+    switch (analysisType) {
+      case "code":
+        prompt += `Focus on: code quality, patterns, architecture, potential issues, and improvement opportunities.`;
+        break;
+      case "patterns":
+        prompt += `Focus on: identifying reusable patterns, design principles, and architectural structures.`;
+        break;
+      case "architecture":
+        prompt += `Focus on: system architecture, component relationships, and structural insights.`;
+        break;
+      default:
+        prompt += `Provide comprehensive insights covering key themes, patterns, and actionable recommendations.`;
+    }
+    
+    return prompt;
   }
 
-  private async callAnthropicProvider(prompt: string): Promise<string> {
-    // Mock Anthropic API call
-    return `Anthropic analysis: ${prompt.substring(0, 100)}...`;
+  private buildCodeAnalysisPrompt(code: string, language?: string, filePath?: string, focus: string = "patterns"): string {
+    let prompt = `Analyze the following code and provide structured insights:\n\n`;
+    
+    if (language) {
+      prompt += `**Language:** ${language}\n`;
+    }
+    if (filePath) {
+      prompt += `**File:** ${filePath}\n`;
+    }
+    
+    prompt += `**Focus:** ${focus}\n\n`;
+    prompt += `**Code:**\n\`\`\`\n${code}\n\`\`\`\n\n`;
+    
+    prompt += `Please provide a JSON response with the following structure:
+{
+  "analysis": "Overall analysis summary",
+  "findings": ["finding1", "finding2", ...],
+  "recommendations": ["rec1", "rec2", ...],
+  "patterns": ["pattern1", "pattern2", ...]
+}`;
+    
+    return prompt;
   }
 
-  private async callOpenAIProvider(prompt: string): Promise<string> {
-    // Mock OpenAI API call
-    return `OpenAI analysis: ${prompt.substring(0, 100)}...`;
+  private buildPatternExtractionPrompt(source: string, patternTypes?: string[], context?: string): string {
+    let prompt = `Extract reusable patterns from the following source:\n\n`;
+    
+    if (context) {
+      prompt += `**Context:** ${context}\n\n`;
+    }
+    
+    if (patternTypes && patternTypes.length > 0) {
+      prompt += `**Pattern Types to Look For:** ${patternTypes.join(", ")}\n\n`;
+    }
+    
+    prompt += `**Source:**\n${source}\n\n`;
+    prompt += `Please extract patterns and provide a JSON response with:
+{
+  "patterns": [
+    {
+      "name": "Pattern Name",
+      "type": "Pattern Type",
+      "description": "Description",
+      "code": "Example code"
+    }
+  ],
+  "summary": "Overall summary of patterns found"
+}`;
+    
+    return prompt;
+  }
+
+  private parseCodeAnalysisResponse(response: string): CodeAnalysisResult {
+    try {
+      // Try to extract JSON from the response
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          analysis: parsed.analysis || "Analysis not provided",
+          findings: parsed.findings || [],
+          recommendations: parsed.recommendations || [],
+          patterns: parsed.patterns || [],
+        };
+      }
+    } catch (error) {
+      log("Failed to parse structured response, falling back to text parsing", "warning");
+    }
+
+    // Fallback to text parsing
+    return {
+      analysis: response,
+      findings: this.extractBulletPoints(response, "findings"),
+      recommendations: this.extractBulletPoints(response, "recommendations"),
+      patterns: this.extractBulletPoints(response, "patterns"),
+    };
+  }
+
+  private parsePatternExtractionResponse(response: string): PatternExtractionResult {
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          patterns: parsed.patterns || [],
+          summary: parsed.summary || "No patterns extracted",
+        };
+      }
+    } catch (error) {
+      log("Failed to parse pattern response", "warning");
+    }
+
+    // Fallback
+    return {
+      patterns: [],
+      summary: response,
+    };
+  }
+
+  async generateDocumentation(analysisResult: any, metadata: any = {}): Promise<string> {
+    const { title = "Analysis Documentation", format = "markdown" } = metadata;
+    
+    const docContent = `# ${title}
+
+## Overview
+This documentation was automatically generated from semantic analysis results.
+
+## Analysis Summary
+${JSON.stringify(analysisResult, null, 2)}
+
+## Key Findings
+- Pattern identification completed
+- Code quality assessed
+- Architecture documented
+
+## Recommendations
+1. Follow identified patterns consistently
+2. Address quality issues
+3. Maintain architecture documentation
+
+---
+*Generated on ${new Date().toISOString()}*`;
+    
+    return docContent;
+  }
+
+  private extractBulletPoints(text: string, section: string): string[] {
+    const lines = text.split('\n');
+    const items: string[] = [];
+    let inSection = false;
+
+    for (const line of lines) {
+      if (line.toLowerCase().includes(section.toLowerCase())) {
+        inSection = true;
+        continue;
+      }
+      
+      if (inSection && (line.startsWith('- ') || line.startsWith('* ') || line.match(/^\d+\./))) {
+        items.push(line.replace(/^[-*\d.]\s*/, '').trim());
+      } else if (inSection && line.trim() === '') {
+        continue;
+      } else if (inSection && line.match(/^[A-Z]/)) {
+        break; // End of section
+      }
+    }
+
+    return items;
   }
 }

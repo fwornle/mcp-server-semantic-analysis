@@ -516,25 +516,82 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
   
   log(`Executing workflow: ${workflow_name}`, "info", { parameters });
   
-  // For now, we'll simulate workflow execution
-  // In a full implementation, this would coordinate between agents
-  const workflows: Record<string, string> = {
-    "complete-analysis": "Full repository analysis with all agents",
-    "incremental-analysis": "Incremental analysis of recent changes",
-    "pattern-extraction": "Extract and document design patterns",
-    "documentation-generation": "Generate comprehensive documentation",
-  };
-  
-  const workflowDescription = workflows[workflow_name] || "Unknown workflow";
-  
-  return {
-    content: [
-      {
-        type: "text",
-        text: `# Workflow Execution\n\n**Workflow:** ${workflow_name}\n**Description:** ${workflowDescription}\n\n## Status\n⚡ Workflow execution started\n\n## Parameters\n${JSON.stringify(parameters || {}, null, 2)}\n\n## Note\nFull agent coordination is pending implementation. Currently providing workflow metadata only.`,
-      },
-    ],
-  };
+  try {
+    // Initialize coordinator and execute real workflow
+    const coordinator = new CoordinatorAgent();
+    const execution = await coordinator.executeWorkflow(workflow_name, parameters);
+    
+    // Format execution results
+    const statusEmoji = execution.status === "completed" ? "✅" : execution.status === "failed" ? "❌" : "⚡";
+    const duration = execution.endTime ? 
+      `${Math.round((execution.endTime.getTime() - execution.startTime.getTime()) / 1000)}s` : 
+      "ongoing";
+    
+    let resultText = `# Workflow Execution\n\n**Workflow:** ${workflow_name}\n**Status:** ${statusEmoji} ${execution.status}\n**Duration:** ${duration}\n**Steps:** ${execution.currentStep}/${execution.totalSteps}\n\n## Parameters\n${JSON.stringify(parameters || {}, null, 2)}\n\n`;
+    
+    // Add step results
+    if (Object.keys(execution.results).length > 0) {
+      resultText += "## Results\n";
+      for (const [step, result] of Object.entries(execution.results)) {
+        resultText += `- **${step}**: ${typeof result === 'object' ? 'Completed' : result}\n`;
+      }
+      resultText += "\n";
+    }
+    
+    // Add QA reports if available
+    if (execution.qaReports.length > 0) {
+      resultText += "## Quality Assurance\n";
+      for (const qa of execution.qaReports) {
+        const qaEmoji = qa.passed ? "✅" : "❌";
+        resultText += `- **${qa.stepName}**: ${qaEmoji} ${qa.passed ? 'Passed' : 'Failed'}\n`;
+        if (qa.errors.length > 0) {
+          resultText += `  - Errors: ${qa.errors.join(', ')}\n`;
+        }
+        if (qa.warnings.length > 0) {
+          resultText += `  - Warnings: ${qa.warnings.join(', ')}\n`;
+        }
+      }
+      resultText += "\n";
+    }
+    
+    // Add errors if any
+    if (execution.errors.length > 0) {
+      resultText += "## Errors\n";
+      for (const error of execution.errors) {
+        resultText += `- ${error}\n`;
+      }
+      resultText += "\n";
+    }
+    
+    // Add artifacts information
+    if (execution.status === "completed") {
+      resultText += "## Generated Artifacts\n";
+      resultText += "Check the following locations for generated files:\n";
+      resultText += "- `knowledge-management/insights/` - Insight documents\n";
+      resultText += "- `shared-memory-coding.json` - Updated knowledge base\n";
+      resultText += "- Generated PlantUML diagrams and documentation\n";
+    }
+    
+    return {
+      content: [
+        {
+          type: "text",
+          text: resultText,
+        },
+      ],
+    };
+    
+  } catch (error) {
+    log(`Workflow execution failed: ${workflow_name}`, "error", error);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `# Workflow Execution Failed\n\n**Workflow:** ${workflow_name}\n**Error:** ${error instanceof Error ? error.message : String(error)}\n\n## Parameters\n${JSON.stringify(parameters || {}, null, 2)}`,
+        },
+      ],
+    };
+  }
 }
 
 async function handleGenerateDocumentation(args: any): Promise<any> {

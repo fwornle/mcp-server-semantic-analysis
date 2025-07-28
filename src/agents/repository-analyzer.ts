@@ -438,4 +438,80 @@ ${filesSummary.slice(0, 10).map(f => `- ${path.basename(f.path)} (${f.language})
       return `Repository contains ${metrics.totalFiles} files across ${Object.keys(metrics.languageDistribution).length} languages. Primary patterns: ${patterns.slice(0, 5).join(', ')}.`;
     }
   }
+
+  async validateArtifacts(executionResults: Record<string, any>): Promise<{passed: boolean, errors: string[], warnings: string[]}> {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    
+    log("Validating semantic analysis artifacts", "info", { results: Object.keys(executionResults) });
+    
+    try {
+      // Check for required output directories
+      const insightsDir = '/Users/q284340/Agentic/coding/knowledge-management/insights';
+      if (!fs.existsSync(insightsDir)) {
+        errors.push(`Insights directory does not exist: ${insightsDir}`);
+      }
+      
+      // Check for generated documentation files
+      const today = new Date().toISOString().split('T')[0];
+      const expectedDocs = [
+        `${insightsDir}/${today}-semantic-analysis.md`,
+        `${insightsDir}/architecture-diagram.puml`
+      ];
+      
+      for (const docPath of expectedDocs) {
+        if (!fs.existsSync(docPath)) {
+          errors.push(`Expected documentation file missing: ${docPath}`);
+        } else {
+          // Check file is not empty and not just a template
+          const content = fs.readFileSync(docPath, 'utf-8');
+          if (content.length < 100) {
+            warnings.push(`Documentation file seems too short: ${docPath} (${content.length} chars)`);
+          }
+          if (content.includes('TODO') || content.includes('placeholder')) {
+            warnings.push(`Documentation file contains placeholder content: ${docPath}`);
+          }
+        }
+      }
+      
+      // Check shared memory was updated
+      const sharedMemoryPath = '/Users/q284340/Agentic/coding/shared-memory-coding.json';
+      if (fs.existsSync(sharedMemoryPath)) {
+        const stats = fs.statSync(sharedMemoryPath);
+        const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+        if (stats.mtime < fiveMinutesAgo) {
+          warnings.push(`Shared memory file was not recently updated: ${sharedMemoryPath} (last modified: ${stats.mtime})`);
+        }
+      } else {
+        errors.push(`Shared memory file not found: ${sharedMemoryPath}`);
+      }
+      
+      // Validate execution results contain meaningful data
+      if (!executionResults.repository_analysis) {
+        errors.push("Missing repository analysis results");
+      }
+      
+      if (!executionResults.documentation_generated) {
+        errors.push("Missing documentation generation results");
+      }
+      
+      const passed = errors.length === 0;
+      
+      log(`Artifact validation ${passed ? 'PASSED' : 'FAILED'}`, passed ? "info" : "error", {
+        passed,
+        errorCount: errors.length,
+        warningCount: warnings.length,
+        errors,
+        warnings
+      });
+      
+      return { passed, errors, warnings };
+      
+    } catch (error) {
+      const errorMsg = `Artifact validation failed with error: ${error instanceof Error ? error.message : String(error)}`;
+      errors.push(errorMsg);
+      log("Artifact validation error", "error", error);
+      return { passed: false, errors, warnings };
+    }
+  }
 }

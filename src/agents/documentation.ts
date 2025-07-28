@@ -253,14 +253,32 @@ export class DocumentationAgent {
     data: Record<string, any>,
     options: Partial<DocumentationConfig> = {}
   ): Promise<DocumentationResult> {
-    const template = this.templates.get(templateName);
+    // Emergency debugging - direct console output
+    console.log("EMERGENCY DEBUG - generateDocumentation called:");
+    console.log("templateName:", templateName, typeof templateName);
+    console.log("data:", data, typeof data);
+    console.log("options:", options, typeof options);
+    console.log("arguments.length:", arguments.length);
+    console.log("arguments:", Array.from(arguments));
+    
+    log(`generateDocumentation called with parameters`, "info", {
+      templateName: templateName,
+      templateNameType: typeof templateName,
+      dataType: typeof data,
+      availableTemplates: Array.from(this.templates.keys())
+    });
+
+    // Ensure templateName is a string
+    const validTemplateName = typeof templateName === 'string' ? templateName : 'analysis_documentation';
+    
+    const template = this.templates.get(validTemplateName);
     if (!template) {
-      throw new Error(`Template not found: ${templateName}`);
+      throw new Error(`Template not found: ${validTemplateName}. Available templates: ${Array.from(this.templates.keys()).join(', ')}`);
     }
 
     const config = { ...this.config, ...options };
     
-    log(`Generating documentation using template: ${templateName}`, "info", {
+    log(`Generating documentation using template: ${validTemplateName}`, "info", {
       format: config.outputFormat,
       includeCode: config.includeCodeExamples,
     });

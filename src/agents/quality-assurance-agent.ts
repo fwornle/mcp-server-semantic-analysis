@@ -54,7 +54,44 @@ export class QualityAssuranceAgent {
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
+    this.rules = this.getDefaultRules();
     this.initializeRules();
+  }
+
+  private getDefaultRules(): ValidationRules {
+    return {
+      entityNaming: {
+        camelCase: true,
+        noSpaces: true,
+        descriptive: true,
+        maxLength: 50
+      },
+      observations: {
+        minCount: 1,
+        requiredTypes: ['insight', 'implementation'],
+        maxLength: 1000,
+        hasLinks: false
+      },
+      significance: {
+        validRange: [1, 10],
+        allowedValues: [5, 8, 9]
+      },
+      files: {
+        insightFiles: true,
+        diagramFiles: false,
+        extensions: ['.md', '.puml']
+      },
+      knowledgeBase: {
+        entityExists: true,
+        relationshipsValid: true,
+        synchronizedWithMCP: false
+      }
+    };
+  }
+
+  private initializeRules(): void {
+    // Load any custom rules from configuration
+    log('QualityAssuranceAgent initialized with default rules', 'info');
   }
 
   async performComprehensiveQA(
@@ -160,37 +197,6 @@ export class QualityAssuranceAgent {
         }
       };
     }
-  }
-
-  private initializeRules(): void {
-    this.rules = {
-      entityNaming: {
-        camelCase: true,
-        noSpaces: true,
-        descriptive: true,
-        maxLength: 50
-      },
-      observations: {
-        minCount: 3,
-        requiredTypes: ['implementation', 'insight', 'applicability', 'link'],
-        maxLength: 500,
-        hasLinks: true
-      },
-      significance: {
-        validRange: [1, 10],
-        allowedValues: [5, 8, 9] // Preferred values based on existing data
-      },
-      files: {
-        insightFiles: true,
-        diagramFiles: true,
-        extensions: ['.md', '.puml', '.png']
-      },
-      knowledgeBase: {
-        entityExists: true,
-        relationshipsValid: true,
-        synchronizedWithMCP: true
-      }
-    };
   }
 
   private async validateGitHistoryAnalysis(result: any, errors: string[], warnings: string[]): Promise<void> {

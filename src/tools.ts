@@ -1,13 +1,12 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./logging.js";
-import { SemanticAnalyzer } from "./agents/semantic-analyzer.js";
+import { SemanticAnalysisAgent } from "./agents/semantic-analysis-agent.js";
 import { CoordinatorAgent } from "./agents/coordinator.js";
-import { DocumentationAgent } from "./agents/documentation.js";
+import { InsightGenerationAgent } from "./agents/insight-generation-agent.js";
 import { DeduplicationAgent } from "./agents/deduplication.js";
 import { SynchronizationAgent } from "./agents/synchronization.js";
 import { WebSearchAgent } from "./agents/web-search.js";
-import { RepositoryAnalyzer } from "./agents/repository-analyzer.js";
-import { KnowledgeManager } from "./agents/knowledge-manager.js";
+import { PersistenceAgent } from "./agents/persistence-agent.js";
 import fs from "fs/promises";
 import { mkdirSync, writeFileSync } from "fs";
 import path from "path";
@@ -393,12 +392,8 @@ async function handleDetermineInsights(args: any): Promise<any> {
     has_context: !!context,
   });
   
-  const analyzer = new SemanticAnalyzer();
-  const result = await analyzer.analyzeContent(content, {
-    context,
-    analysisType: analysis_type,
-    provider,
-  });
+  const analyzer = new SemanticAnalysisAgent();
+  const result = await analyzer.analyzeContent(content, context, analysis_type);
   
   return {
     content: [
@@ -419,18 +414,14 @@ async function handleAnalyzeCode(args: any): Promise<any> {
     analysis_focus,
   });
   
-  const analyzer = new SemanticAnalyzer();
-  const result = await analyzer.analyzeCode(code, {
-    language,
-    filePath: file_path,
-    focus: analysis_focus,
-  });
+  const analyzer = new SemanticAnalysisAgent();
+  const result = await analyzer.analyzeCode(code, language, file_path);
   
   return {
     content: [
       {
         type: "text",
-        text: `# Code Analysis Results\n\n${result.analysis}\n\n## Findings\n${result.findings.map(f => `- ${f}`).join('\n')}\n\n## Recommendations\n${result.recommendations.map(r => `- ${r}`).join('\n')}`,
+        text: `# Code Analysis Results\n\n${result.analysis}\n\n## Findings\n${result.findings.map((f: string) => `- ${f}`).join('\n')}\n\n## Recommendations\n${result.recommendations.map((r: string) => `- ${r}`).join('\n')}`,
       },
     ],
   };
@@ -445,7 +436,7 @@ async function handleAnalyzeRepository(args: any): Promise<any> {
     max_files,
   });
   
-  const analyzer = new RepositoryAnalyzer();
+  const analyzer = new SemanticAnalysisAgent();
   const result = await analyzer.analyzeRepository(repository_path, {
     includePatterns: include_patterns,
     excludePatterns: exclude_patterns,
@@ -456,7 +447,7 @@ async function handleAnalyzeRepository(args: any): Promise<any> {
     content: [
       {
         type: "text",
-        text: `# Repository Analysis\n\n## Structure Overview\n${result.structure}\n\n## Key Patterns\n${result.patterns.map(p => `- ${p}`).join('\n')}\n\n## Architecture Insights\n${result.insights}`,
+        text: `# Repository Analysis\n\n## Structure Overview\n${result.structure}\n\n## Key Patterns\n${result.patterns.map((p: string) => `- ${p}`).join('\n')}\n\n## Architecture Insights\n${result.insights}`,
       },
     ],
   };
@@ -470,17 +461,14 @@ async function handleExtractPatterns(args: any): Promise<any> {
     has_context: !!context,
   });
   
-  const analyzer = new SemanticAnalyzer();
-  const result = await analyzer.extractPatterns(source, {
-    patternTypes: pattern_types,
-    context,
-  });
+  const analyzer = new SemanticAnalysisAgent();
+  const result = await analyzer.extractPatterns(source, pattern_types, context);
   
   return {
     content: [
       {
         type: "text",
-        text: `# Extracted Patterns\n\n${result.patterns.map(p => `## ${p.name}\n\n**Type:** ${p.type}\n\n**Description:** ${p.description}\n\n**Implementation:**\n\`\`\`\n${p.code}\n\`\`\`\n`).join('\n')}`,
+        text: `# Extracted Patterns\n\n${result.map((pattern: string) => `- ${pattern}`).join('\n')}`,
       },
     ],
   };
@@ -495,7 +483,7 @@ async function handleCreateUkbEntity(args: any): Promise<any> {
     tags,
   });
   
-  const knowledgeManager = new KnowledgeManager();
+  const knowledgeManager = new PersistenceAgent();
   const result = await knowledgeManager.createUkbEntity({
     name: entity_name,
     type: entity_type,
@@ -542,16 +530,18 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     }
     
     // Add QA reports if available
-    if (execution.qaReports.length > 0) {
+    const qaResults = execution.results.quality_assurance;
+    if (qaResults && qaResults.validations) {
       resultText += "## Quality Assurance\n";
-      for (const qa of execution.qaReports) {
-        const qaEmoji = qa.passed ? "✅" : "❌";
-        resultText += `- **${qa.stepName}**: ${qaEmoji} ${qa.passed ? 'Passed' : 'Failed'}\n`;
-        if (qa.errors.length > 0) {
-          resultText += `  - Errors: ${qa.errors.join(', ')}\n`;
+      for (const [stepName, qa] of Object.entries(qaResults.validations)) {
+        const qaReport = qa as any; // Type assertion for validation result
+        const qaEmoji = qaReport.passed ? "✅" : "❌";
+        resultText += `- **${stepName}**: ${qaEmoji} ${qaReport.passed ? 'Passed' : 'Failed'}\n`;
+        if (qaReport.errors && qaReport.errors.length > 0) {
+          resultText += `  - Errors: ${qaReport.errors.join(', ')}\n`;
         }
-        if (qa.warnings.length > 0) {
-          resultText += `  - Warnings: ${qa.warnings.join(', ')}\n`;
+        if (qaReport.warnings && qaReport.warnings.length > 0) {
+          resultText += `  - Warnings: ${qaReport.warnings.join(', ')}\n`;
         }
       }
       resultText += "\n";
@@ -731,7 +721,7 @@ async function handleGenerateDocumentation(args: any): Promise<any> {
   log("Generating documentation with real file writing", "info", { has_metadata: !!metadata });
   
   try {
-    const docAgent = new DocumentationAgent();
+    const docAgent = new InsightGenerationAgent();
     
     // Map the analysis result to the expected template variables
     const documentationData = {

@@ -4,17 +4,24 @@
 
 ## Overview
 
-This MCP server integrates seamlessly with Claude Code to provide advanced semantic analysis capabilities. Built entirely in Node.js with TypeScript, it offers **12 specialized tools** and **8 intelligent agents** for comprehensive code and knowledge analysis.
+This MCP server integrates seamlessly with Claude Code to provide advanced semantic analysis capabilities. Built entirely in Node.js with TypeScript, it offers **12 specialized tools** and **11 intelligent agents** for comprehensive code and knowledge analysis using an 8-agent workflow system.
 
-### 🤖 Intelligent Agents (8 Specialized)
-- **`CoordinatorAgent`** - Workflow orchestration and QA validation
-- **`SemanticAnalyzer`** - AI-powered content and code analysis
-- **`KnowledgeManager`** - Knowledge base management and integration
-- **`WebSearchAgent`** - Technical documentation search and validation
-- **`SynchronizationAgent`** - Multi-source data synchronization
-- **`DeduplicationAgent`** - Semantic duplicate detection and merging
-- **`DocumentationAgent`** - Automated insight document generation
-- **`RepositoryAnalyzer`** - Repository structure and pattern analysis
+### 🤖 Intelligent Agents (11 Total - 8 Core Workflow + 3 Supporting)
+
+#### Core Workflow Agents (8-Agent System)
+1. **`GitHistoryAgent`** - Analyzes git commits from checkpoint with architectural decisions
+2. **`VibeHistoryAgent`** - Processes .specstory/history conversation files for context
+3. **`SemanticAnalysisAgent`** - Deep code analysis correlating git and conversation data
+4. **`WebSearchAgent`** - External pattern research and reference gathering
+5. **`InsightGenerationAgent`** - Generates insights with PlantUML diagrams and patterns
+6. **`ObservationGenerationAgent`** - Creates structured UKB-compatible observations
+7. **`QualityAssuranceAgent`** - Validates outputs with auto-correction capabilities
+8. **`PersistenceAgent`** - Manages knowledge base persistence and checkpoints
+
+#### Supporting Agents
+9. **`CoordinatorAgent`** - Workflow orchestration for the 8-agent system
+10. **`SynchronizationAgent`** - Multi-source data synchronization
+11. **`DeduplicationAgent`** - Semantic duplicate detection and merging
 
 ## ✨ Key Features
 
@@ -26,7 +33,7 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 - **`analyze_repository`** - Repository-wide architecture analysis
 - **`extract_patterns`** - Reusable design pattern identification
 - **`create_ukb_entity_with_insight`** - Knowledge base entity creation
-- **`execute_workflow`** - Coordinated multi-agent workflows
+- **`execute_workflow`** - Coordinated 8-agent workflows
 - **`generate_documentation`** - Automated documentation generation
 - **`create_insight_report`** - Detailed analysis reports
 - **`generate_plantuml_diagrams`** - Architecture diagram generation
@@ -35,14 +42,16 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 ### 🔗 Integration Capabilities
 - **Claude Code Integration** - Full MCP compatibility
 - **Multiple LLM Providers** - Custom LLM (primary), Anthropic Claude (secondary), OpenAI GPT (fallback)
-- **Knowledge Base Support** - UKB/VKB integration
+- **Knowledge Base Support** - UKB/VKB integration with shared-memory-*.json files
 - **PlantUML Diagrams** - Architecture visualization
 - **Web Search** - Technical documentation discovery
+- **Git & Conversation Analysis** - Cross-correlates code changes with development discussions
 
 ### 🚀 Performance & Stability
 - **Node.js Advantages** - No Python environment issues, stable connections
 - **Smart Fallbacks** - Automatic provider switching on failures
 - **Error Recovery** - Graceful degradation and retry logic
+- **Checkpoint Management** - Prevents duplicate analysis work
 
 ## 🚀 Quick Start
 
@@ -116,6 +125,51 @@ generate_lessons_learned(analysis_result, title?, metadata?) → LessonsLearned
 
 ## 🏗️ Architecture Overview
 
+### 8-Agent Workflow System
+
+```mermaid
+graph TB
+    subgraph "8-Agent Semantic Analysis Workflow"
+        GIT[1. GitHistoryAgent<br/>Git Commits Analysis]
+        VIBE[2. VibeHistoryAgent<br/>Conversation Analysis]
+        SEM[3. SemanticAnalysisAgent<br/>Deep Code Analysis]
+        WEB[4. WebSearchAgent<br/>External Research]
+        INS[5. InsightGenerationAgent<br/>Insights & Diagrams]
+        OBS[6. ObservationGenerationAgent<br/>Structured Observations]
+        QA[7. QualityAssuranceAgent<br/>Validation & Correction]
+        PER[8. PersistenceAgent<br/>Knowledge Base Update]
+    end
+    
+    subgraph "Supporting Infrastructure"
+        COORD[CoordinatorAgent<br/>Orchestration]
+        SYNC[SynchronizationAgent]
+        DEDUP[DeduplicationAgent]
+    end
+    
+    COORD -->|Orchestrates| GIT
+    GIT -->|Commits| SEM
+    VIBE -->|Context| SEM
+    SEM -->|Analysis| WEB
+    WEB -->|Research| INS
+    INS -->|Insights| OBS
+    OBS -->|Observations| QA
+    QA -->|Validated| PER
+    PER -->|Updates| SYNC
+    SYNC -->|Syncs| DEDUP
+    
+    style GIT fill:#e6f3ff
+    style VIBE fill:#e6f3ff
+    style SEM fill:#e6f3ff
+    style WEB fill:#e6f3ff
+    style INS fill:#e6f3ff
+    style OBS fill:#e6f3ff
+    style QA fill:#e6f3ff
+    style PER fill:#e6f3ff
+    style COORD fill:#fff2e6
+    style SYNC fill:#e8f4fd
+    style DEDUP fill:#e8f4fd
+```
+
 ### System Architecture
 
 ```mermaid
@@ -127,7 +181,7 @@ graph TB
     subgraph "MCP Server Core"
         MCP[MCP Protocol Handler]
         TOOLS[Tool Layer<br/>12 Tools]
-        AGENTS[Agent Layer<br/>8 Agents]
+        AGENTS[Agent Layer<br/>11 Agents]
         INTEG[Integration Layer]
     end
     
@@ -137,6 +191,8 @@ graph TB
         OPENAI[OpenAI GPT<br/>Fallback]
         SEARCH[Web Search APIs<br/>DuckDuckGo]
         KB[Knowledge Bases<br/>UKB/VKB]
+        GIT[Git Repository]
+        HIST[.specstory/history]
     end
     
     CLAUDE -->|MCP Protocol| MCP
@@ -149,6 +205,8 @@ graph TB
     AGENTS -->|Fallback| OPENAI
     AGENTS --> SEARCH
     AGENTS --> KB
+    AGENTS --> GIT
+    AGENTS --> HIST
     
     style CLAUDE fill:#e8f4fd
     style MCP fill:#fff2e6
@@ -160,55 +218,8 @@ graph TB
     style OPENAI fill:#f5f5f5
     style SEARCH fill:#f5f5f5
     style KB fill:#fff9e6
-```
-
-### Agent Coordination
-
-```mermaid
-graph LR
-    subgraph "Workflow Orchestration"
-        COORD[CoordinatorAgent<br/>Orchestrate]
-    end
-    
-    subgraph "Analysis Agents"
-        SEM[SemanticAnalyzer<br/>Analyze]
-        REPO[RepositoryAnalyzer<br/>Scan Code]
-        WEB[WebSearchAgent<br/>Research]
-    end
-    
-    subgraph "Knowledge Agents"
-        KNOW[KnowledgeManager<br/>Persist]
-        SYNC[SynchronizationAgent<br/>Sync]
-        DEDUP[DeduplicationAgent<br/>Dedupe]
-    end
-    
-    subgraph "Output Agent"
-        DOC[DocumentationAgent<br/>Document]
-    end
-    
-    COORD -->|1| SEM
-    COORD -->|2| REPO
-    COORD -->|3| WEB
-    COORD -->|4| KNOW
-    COORD -->|5| SYNC
-    COORD -->|6| DEDUP
-    COORD -->|7| DOC
-    
-    SEM --> KNOW
-    REPO --> KNOW
-    WEB --> KNOW
-    KNOW --> SYNC
-    SYNC --> DEDUP
-    DEDUP --> DOC
-    
-    style COORD fill:#e6f3ff
-    style SEM fill:#e6f3ff
-    style REPO fill:#e6f3ff
-    style WEB fill:#e6f3ff
-    style KNOW fill:#e6f3ff
-    style SYNC fill:#e6f3ff
-    style DEDUP fill:#e6f3ff
-    style DOC fill:#e6f3ff
+    style GIT fill:#e8f4fd
+    style HIST fill:#e8f4fd
 ```
 
 ## 📚 Detailed Documentation
@@ -229,44 +240,52 @@ graph LR
 
 ## 🎯 Use Cases
 
-### 1. **Code Analysis Workflow**
+### 1. **Full Semantic Analysis Workflow**
 ```typescript
-// Analyze repository structure
-const repoAnalysis = await analyze_repository("/path/to/repo");
-
-// Extract specific patterns
-const patterns = await extract_patterns(repoAnalysis.content);
-
-// Generate documentation
-const docs = await generate_documentation(patterns);
-
-// Create knowledge base entry
-await create_ukb_entity_with_insight("RepoPatterns", "ArchitecturalPattern", docs.content);
-```
-
-### 2. **Insight Generation Pipeline**
-```typescript
-// Analyze content for insights
-const insights = await determine_insights(content, context, "architecture", "anthropic");
-
-// Create comprehensive report
-const report = await create_insight_report(insights, {name: "SystemAnalysis"});
-
-// Generate supporting diagrams
-await generate_plantuml_diagrams("architecture", "System Overview", "system-arch");
-```
-
-### 3. **Knowledge Management**
-```typescript
-// Execute comprehensive analysis workflow
+// Execute complete 8-agent analysis
 const workflow = await execute_workflow("complete-analysis", {
   repository_path: "/path/to/project",
-  include_documentation: true,
-  generate_diagrams: true
+  include_git_history: true,
+  include_vibe_history: true,
+  checkpoint_enabled: true
 });
 
-// Generate lessons learned
-await generate_lessons_learned(workflow.result, "Project Analysis Insights");
+// Results include:
+// - Git commit analysis since last checkpoint
+// - Conversation context from .specstory/history
+// - Deep code analysis with pattern extraction
+// - External research validation
+// - Comprehensive insights with diagrams
+// - Structured UKB observations
+// - Quality-assured outputs
+// - Updated knowledge base with new checkpoint
+```
+
+### 2. **Incremental Analysis**
+```typescript
+// Analyze only changes since last checkpoint
+const incremental = await execute_workflow("incremental-analysis", {
+  since_last_checkpoint: true
+});
+
+// Efficient analysis of:
+// - Recent git commits only
+// - New conversation sessions
+// - Incremental pattern updates
+// - Quick observation generation
+```
+
+### 3. **Pattern Extraction Pipeline**
+```typescript
+// Extract and document patterns
+const patterns = await execute_workflow("pattern-extraction", {
+  pattern_types: ["design", "architectural", "workflow"]
+});
+
+// Generates:
+// - Pattern catalog with examples
+// - PlantUML diagrams for each pattern
+// - Structured observations for knowledge base
 ```
 
 ## 🔌 Integration with Main System
@@ -285,6 +304,7 @@ This MCP server is designed to integrate seamlessly with the broader coding know
 - **UKB Integration**: Creates and updates Universal Knowledge Base entities
 - **VKB Compatibility**: Supports knowledge visualization workflows  
 - **Cross-Session Persistence**: Maintains context across Claude sessions
+- **Checkpoint Management**: Tracks analysis progress to avoid duplication
 
 ## 🚀 Performance & Stability
 
@@ -329,21 +349,24 @@ graph TD
     src --> logging["logging.ts<br/><small>Logging utilities</small>"]
     src --> agents["agents/<br/><small>Intelligent agent implementations</small>"]
     
-    agents --> coordinator["coordinator.ts"]
-    agents --> semantic["semantic-analyzer.ts"]
-    agents --> knowledge["knowledge-manager.ts"]
+    agents --> git["git-history-agent.ts"]
+    agents --> vibe["vibe-history-agent.ts"]
+    agents --> semantic["semantic-analysis-agent.ts"]
     agents --> web["web-search.ts"]
+    agents --> insight["insight-generation-agent.ts"]
+    agents --> observation["observation-generation-agent.ts"]
+    agents --> qa["quality-assurance-agent.ts"]
+    agents --> persistence["persistence-agent.ts"]
+    agents --> coordinator["coordinator.ts"]
     agents --> sync["synchronization.ts"]
     agents --> dedup["deduplication.ts"]
-    agents --> docs["documentation.ts"]
-    agents --> repo["repository-analyzer.ts"]
     
     classDef mainFile fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
     classDef agentFile fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1px
     classDef folderStyle fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
     
     class index,server,tools,logging mainFile
-    class coordinator,semantic,knowledge,web,sync,dedup,docs,repo agentFile
+    class git,vibe,semantic,web,insight,observation,qa,persistence,coordinator,sync,dedup agentFile
     class agents folderStyle
 ```
 
@@ -376,4 +399,4 @@ For issues and support:
 - [UKB Documentation](../../docs/ukb/README.md) - Universal Knowledge Base
 - [VKB Documentation](../../docs/vkb/README.md) - Knowledge Visualization
 
-**🏷️ Tags:** MCP, Semantic Analysis, Claude Code, Node.js, TypeScript, AI, Knowledge Management
+**🏷️ Tags:** MCP, Semantic Analysis, Claude Code, Node.js, TypeScript, AI, Knowledge Management, 8-Agent System

@@ -90,7 +90,18 @@ export class VibeHistoryAgent {
     this.specstoryPath = path.join(repositoryPath, '.specstory', 'history');
   }
 
-  async analyzeVibeHistory(fromTimestamp?: Date): Promise<VibeHistoryAnalysisResult> {
+  async analyzeVibeHistory(fromTimestampOrParams?: Date | Record<string, any>): Promise<VibeHistoryAnalysisResult> {
+    // Handle both Date parameter (old API) and parameters object (new coordinator API)
+    let fromTimestamp: Date | undefined;
+    if (fromTimestampOrParams instanceof Date) {
+      fromTimestamp = fromTimestampOrParams;
+    } else if (typeof fromTimestampOrParams === 'object' && fromTimestampOrParams !== null) {
+      // Parameters object from coordinator - extract timestamp if provided
+      if (fromTimestampOrParams.fromTimestamp) {
+        fromTimestamp = new Date(fromTimestampOrParams.fromTimestamp);
+      }
+    }
+
     log('Starting vibe history analysis', 'info', {
       repositoryPath: this.repositoryPath,
       specstoryPath: this.specstoryPath,

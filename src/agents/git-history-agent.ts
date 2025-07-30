@@ -73,7 +73,18 @@ export class GitHistoryAgent {
     this.repositoryPath = repositoryPath;
   }
 
-  async analyzeGitHistory(fromTimestamp?: Date): Promise<GitHistoryAnalysisResult> {
+  async analyzeGitHistory(fromTimestampOrParams?: Date | Record<string, any>): Promise<GitHistoryAnalysisResult> {
+    // Handle both Date parameter (old API) and parameters object (new coordinator API)
+    let fromTimestamp: Date | undefined;
+    if (fromTimestampOrParams instanceof Date) {
+      fromTimestamp = fromTimestampOrParams;
+    } else if (typeof fromTimestampOrParams === 'object' && fromTimestampOrParams !== null) {
+      // Parameters object from coordinator - extract timestamp if provided
+      if (fromTimestampOrParams.fromTimestamp) {
+        fromTimestamp = new Date(fromTimestampOrParams.fromTimestamp);
+      }
+    }
+
     log('Starting git history analysis', 'info', {
       repositoryPath: this.repositoryPath,
       fromTimestamp: fromTimestamp?.toISOString() || 'beginning'
@@ -269,9 +280,15 @@ export class GitHistoryAgent {
   }
 
   private shouldExcludeFile(filePath: string): boolean {
-    return this.excludePatterns.some(pattern => 
-      filePath.includes(pattern) || filePath.match(new RegExp(pattern))
-    );
+    return this.excludePatterns.some(pattern => {
+      // Handle glob patterns like *.log
+      if (pattern.startsWith('*.')) {
+        const extension = pattern.substring(1); // Remove the *
+        return filePath.endsWith(extension);
+      }
+      // Handle regular includes
+      return filePath.includes(pattern);
+    });
   }
 
   private identifyArchitecturalDecisions(commits: GitCommit[]): ArchitecturalDecision[] {

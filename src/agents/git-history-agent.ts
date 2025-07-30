@@ -123,8 +123,8 @@ export class GitHistoryAgent {
         summary
       };
 
-      // Update checkpoint
-      await this.saveAnalysisCheckpoint(new Date());
+      // Note: Checkpoint is now updated by CoordinatorAgent when entire workflow completes successfully
+      // await this.saveAnalysisCheckpoint(new Date());
 
       log('Git history analysis completed', 'info', {
         commitsAnalyzed: commits.length,
@@ -149,13 +149,24 @@ export class GitHistoryAgent {
 
   private async getLastAnalysisCheckpoint(): Promise<Date | null> {
     try {
-      // Try to read from shared memory file
+      // Try to read from shared memory file - use lastSuccessfulWorkflowCompletion instead of lastGitAnalysis
       const sharedMemoryPath = path.join(this.repositoryPath, 'shared-memory-coding.json');
       if (fs.existsSync(sharedMemoryPath)) {
         const data = JSON.parse(fs.readFileSync(sharedMemoryPath, 'utf8'));
-        if (data.metadata?.lastGitAnalysis) {
+        // Check for successful workflow checkpoint first, fallback to old format for compatibility
+        if (data.metadata?.lastSuccessfulWorkflowCompletion) {
+          log('Using workflow completion checkpoint for git analysis', 'info', {
+            checkpoint: data.metadata.lastSuccessfulWorkflowCompletion
+          });
+          return new Date(data.metadata.lastSuccessfulWorkflowCompletion);
+        } else if (data.metadata?.lastGitAnalysis) {
+          log('Using legacy git analysis checkpoint (will be upgraded)', 'warning', {
+            checkpoint: data.metadata.lastGitAnalysis
+          });
           return new Date(data.metadata.lastGitAnalysis);
         }
+      } else {
+        log('No shared memory file found - will analyze all commits from repository start', 'info');
       }
       return null;
     } catch (error) {

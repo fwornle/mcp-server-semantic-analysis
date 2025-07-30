@@ -111,7 +111,7 @@ export class CoordinatorAgent {
           {
             name: "generate_insights",
             agent: "insight_generation",
-            action: "generateInsights",
+            action: "generateComprehensiveInsights",
             parameters: {},
             dependencies: ["semantic_analysis", "web_search"],
             timeout: 120,
@@ -119,7 +119,7 @@ export class CoordinatorAgent {
           {
             name: "generate_observations",
             agent: "observation_generation",
-            action: "generateObservations", 
+            action: "generateStructuredObservations", 
             parameters: {},
             dependencies: ["generate_insights"],
             timeout: 90,
@@ -127,7 +127,7 @@ export class CoordinatorAgent {
           {
             name: "quality_assurance",
             agent: "quality_assurance",
-            action: "validateWorkflow",
+            action: "performComprehensiveQA",
             parameters: {},
             dependencies: ["generate_observations"],
             timeout: 60,
@@ -135,7 +135,7 @@ export class CoordinatorAgent {
           {
             name: "persist_results",
             agent: "persistence",
-            action: "persistToKnowledgeBase",
+            action: "persistAnalysisResults",
             parameters: {},
             dependencies: ["quality_assurance"],
             timeout: 60,
@@ -183,7 +183,7 @@ export class CoordinatorAgent {
           {
             name: "generate_observations",
             agent: "observation_generation",
-            action: "generateObservations",
+            action: "generateStructuredObservations",
             parameters: {
               incremental: true
             },
@@ -366,6 +366,18 @@ export class CoordinatorAgent {
 
       execution.status = "completed";
       execution.endTime = new Date();
+      
+      // Save successful workflow completion checkpoint
+      try {
+        const persistenceAgent = this.agents.get('persistence') as PersistenceAgent;
+        if (persistenceAgent && persistenceAgent.saveSuccessfulWorkflowCompletion) {
+          await persistenceAgent.saveSuccessfulWorkflowCompletion(workflowName, execution.endTime);
+          log('Workflow completion checkpoint saved', 'info', { workflow: workflowName });
+        }
+      } catch (checkpointError) {
+        log('Failed to save workflow completion checkpoint', 'warning', checkpointError);
+        // Don't fail the workflow for checkpoint issues
+      }
       
       // Generate summary
       const summary = this.generateWorkflowSummary(execution, workflow);

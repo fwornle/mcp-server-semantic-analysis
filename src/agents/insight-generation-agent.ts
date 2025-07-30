@@ -263,6 +263,105 @@ export class InsightGenerationAgent {
     };
   }
 
+  private generateMeaningfulNameAndTitle(
+    gitAnalysis: any,
+    vibeAnalysis: any,
+    semanticAnalysis: any,
+    patternCatalog: PatternCatalog
+  ): { name: string; title: string } {
+    // Analyze content to determine the main focus
+    const analysisTypes = [];
+    if (gitAnalysis?.commits?.length > 0) analysisTypes.push('Git');
+    if (vibeAnalysis?.conversations?.length > 0) analysisTypes.push('Conversation');
+    if (semanticAnalysis?.patterns?.length > 0) analysisTypes.push('Semantic');
+    
+    // Get the most significant patterns
+    const topPatterns = patternCatalog.patterns
+      .sort((a, b) => b.significance - a.significance)
+      .slice(0, 3);
+    
+    // Generate name based on discovered patterns and analysis
+    let baseName = '';
+    let titleSuffix = '';
+    
+    if (topPatterns.length > 0) {
+      const primaryPattern = topPatterns[0];
+      
+      // Extract key terms from pattern names/descriptions
+      const keyTerms = this.extractKeyTerms([
+        primaryPattern.name,
+        primaryPattern.description,
+        ...(gitAnalysis?.summary?.majorChanges || []),
+        ...(semanticAnalysis?.insights || [])
+      ]);
+      
+      // Create meaningful base name from key terms
+      baseName = this.createCamelCaseName(keyTerms);
+      titleSuffix = ` - ${primaryPattern.category} Pattern Analysis`;
+      
+    } else if (gitAnalysis?.commits?.length > 0) {
+      // Focus on git analysis if no patterns found
+      const gitTerms = this.extractKeyTerms([
+        ...(gitAnalysis.summary?.majorChanges || []),
+        ...(gitAnalysis.summary?.activeDevelopmentAreas || [])
+      ]);
+      baseName = this.createCamelCaseName([...gitTerms, 'Development', 'Analysis']);
+      titleSuffix = ' - Development Evolution Analysis';
+      
+    } else if (analysisTypes.length > 0) {
+      // Generic analysis-based naming
+      baseName = `${analysisTypes.join('')}AnalysisInsight`;
+      titleSuffix = ` - ${analysisTypes.join(' & ')} Analysis`;
+      
+    } else {
+      // Fallback
+      baseName = 'ComprehensiveSemanticAnalysis';
+      titleSuffix = ' - System Analysis';
+    }
+    
+    // Ensure name follows conventions: CamelCase, no spaces, descriptive
+    const finalName = baseName || 'SemanticAnalysisInsight';
+    const finalTitle = `${finalName}${titleSuffix}`;
+    
+    log('Generated meaningful insight name', 'info', {
+      name: finalName,
+      title: finalTitle,
+      basedOn: { analysisTypes, patternCount: topPatterns.length }
+    });
+    
+    return { name: finalName, title: finalTitle };
+  }
+
+  private extractKeyTerms(texts: string[]): string[] {
+    const keyTerms = new Set<string>();
+    const stopWords = new Set(['the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'a', 'an']);
+    
+    texts.forEach(text => {
+      if (typeof text === 'string') {
+        // Extract meaningful terms (capitalized words, technical terms)
+        const matches = text.match(/\b[A-Z][a-z]+(?:[A-Z][a-z]*)*\b|\b[a-z]*[A-Z][a-z]*\b/g) || [];
+        matches.forEach(term => {
+          const cleanTerm = term.toLowerCase();
+          if (cleanTerm.length > 2 && !stopWords.has(cleanTerm)) {
+            keyTerms.add(term.charAt(0).toUpperCase() + term.slice(1).toLowerCase());
+          }
+        });
+      }
+    });
+    
+    return Array.from(keyTerms).slice(0, 4); // Limit to avoid overly long names
+  }
+
+  private createCamelCaseName(terms: string[]): string {
+    if (terms.length === 0) return 'SemanticAnalysis';
+    
+    return terms
+      .map(term => term.charAt(0).toUpperCase() + term.slice(1).toLowerCase())
+      .join('')
+      .replace(/[^A-Za-z0-9]/g, '') // Remove special characters
+      .substring(0, 50); // Limit length
+  }
+
   private async generateInsightDocument(
     gitAnalysis: any,
     vibeAnalysis: any,
@@ -270,9 +369,13 @@ export class InsightGenerationAgent {
     patternCatalog: PatternCatalog,
     webResults?: any
   ): Promise<InsightDocument> {
-    const timestamp = new Date().toISOString();
-    const name = `SemanticAnalysisInsight_${timestamp.replace(/[:.]/g, '-').substring(0, 19)}`;
-    const title = 'Comprehensive Semantic Analysis Insights';
+    // Generate meaningful name based on analysis content
+    const { name, title } = this.generateMeaningfulNameAndTitle(
+      gitAnalysis,
+      vibeAnalysis,
+      semanticAnalysis,
+      patternCatalog
+    );
 
     // Generate PlantUML diagrams
     const diagrams = await this.generateAllDiagrams(name, {
@@ -282,7 +385,8 @@ export class InsightGenerationAgent {
       patternCatalog
     });
 
-    // Generate comprehensive content
+    // Generate comprehensive content  
+    const timestamp = new Date().toISOString();
     const content = this.generateInsightContent({
       title,
       timestamp,
@@ -395,7 +499,8 @@ export class InsightGenerationAgent {
         pngFile = path.join(imagesDir, `${name}_${type}.png`);
         
         const { spawn } = await import('child_process');
-        const plantuml = spawn('plantuml', ['-o', imagesDir, pumlFile]);
+        // Use -tpng to specify PNG output and direct output to correct images directory
+        const plantuml = spawn('plantuml', ['-tpng', pumlFile, '-o', imagesDir]);
         
         await new Promise<void>((resolve, reject) => {
           plantuml.on('close', (code) => {
@@ -653,7 +758,17 @@ Co-Authored-By: Claude <noreply@anthropic.com>`;
     patternCatalog: PatternCatalog
   ): Promise<LessonsLearnedDocument> {
     const timestamp = new Date().toISOString();
-    const title = `Semantic Analysis Lessons Learned - ${timestamp.substring(0, 10)}`;
+    
+    // Generate meaningful name for lessons learned based on primary insights
+    const { name: insightName } = this.generateMeaningfulNameAndTitle(
+      gitAnalysis,
+      vibeAnalysis,
+      semanticAnalysis,
+      patternCatalog
+    );
+    
+    const title = `${insightName}LessonsLearned`;
+    const displayTitle = `${insightName} - Lessons Learned`;
 
     // Extract lessons from each analysis type
     const sections = {
@@ -664,13 +779,13 @@ Co-Authored-By: Claude <noreply@anthropic.com>`;
       futureConsiderations: this.extractFutureConsiderations(patternCatalog)
     };
 
-    const content = this.generateLessonsLearnedContent(title, timestamp, sections);
-    const filePath = path.join(this.outputDir, `${title.replace(/\s+/g, '_').toLowerCase()}.md`);
+    const content = this.generateLessonsLearnedContent(displayTitle, timestamp, sections);
+    const filePath = path.join(this.outputDir, `${title}.md`);
     
     await fs.promises.writeFile(filePath, content, 'utf8');
 
     return {
-      title,
+      title: displayTitle,
       content,
       filePath,
       sections
@@ -985,15 +1100,23 @@ ${pattern.implementation.usageNotes.map(note => `- ${note}`).join('\n')}
     }
     
     const references = successful.map(diagram => {
-      const lines = [`- **${diagram.type.charAt(0).toUpperCase() + diagram.type.slice(1)} Diagram**: ${diagram.name}`];
-      lines.push(`  - PlantUML: \`${path.basename(diagram.pumlFile)}\``);
+      const diagramTitle = diagram.type.charAt(0).toUpperCase() + diagram.type.slice(1);
+      const lines = [`### ${diagramTitle} Diagram`];
+      
       if (diagram.pngFile) {
-        lines.push(`  - Image: \`${path.basename(diagram.pngFile)}\``);
+        // Embed PNG image using markdown image syntax
+        const pngFileName = path.basename(diagram.pngFile);
+        lines.push(`![${diagramTitle} Architecture](images/${pngFileName})`);
+        lines.push(''); // Empty line for spacing
       }
+      
+      // Add reference to PlantUML source for those who want to see/modify it
+      lines.push(`*PlantUML source: [${path.basename(diagram.pumlFile)}](puml/${path.basename(diagram.pumlFile)})*`);
+      
       return lines.join('\n');
     });
     
-    return references.join('\n');
+    return references.join('\n\n');
   }
 
   private formatWebResults(webResults: any): string {

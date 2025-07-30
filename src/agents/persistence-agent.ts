@@ -69,6 +69,9 @@ export interface SharedMemoryStructure {
     lastVibeAnalysis?: string;
     lastSemanticAnalysis?: string;
     analysisCount?: number;
+    lastSuccessfulWorkflowCompletion?: string;
+    lastCompletedWorkflow?: string;
+    successfulWorkflowCount?: number;
   };
 }
 
@@ -85,12 +88,42 @@ export class PersistenceAgent {
   }
 
   async persistAnalysisResults(
-    gitAnalysis: any,
-    vibeAnalysis: any,
-    semanticAnalysis: any,
-    observations: any[],
-    insightGeneration?: any
+    parameters: any
   ): Promise<PersistenceResult> {
+    // Handle both direct parameters and coordinator parameter object
+    let gitAnalysis, vibeAnalysis, semanticAnalysis, observations, insightGeneration;
+    
+    if (arguments.length === 1 && typeof parameters === 'object' && parameters._context) {
+      // Called by coordinator with parameter object
+      const context = parameters._context;
+      const results = context.previousResults || {};
+      
+      gitAnalysis = results.analyze_git_history;
+      vibeAnalysis = results.analyze_vibe_history;
+      semanticAnalysis = results.semantic_analysis;
+      observations = results.generate_observations || [];
+      insightGeneration = results.generate_insights;
+    } else if (arguments.length > 1) {
+      // Called directly with separate parameters (backward compatibility)
+      gitAnalysis = arguments[0];
+      vibeAnalysis = arguments[1];
+      semanticAnalysis = arguments[2];
+      observations = arguments[3] || [];
+      insightGeneration = arguments[4];
+    } else {
+      // Single parameter call without context
+      gitAnalysis = parameters.gitAnalysis;
+      vibeAnalysis = parameters.vibeAnalysis;
+      semanticAnalysis = parameters.semanticAnalysis;
+      observations = parameters.observations || [];
+      insightGeneration = parameters.insightGeneration;
+    }
+
+    // Ensure observations is always an array
+    if (!Array.isArray(observations)) {
+      observations = [];
+    }
+
     log('Starting comprehensive analysis persistence', 'info', {
       hasGitAnalysis: !!gitAnalysis,
       hasVibeAnalysis: !!vibeAnalysis,
@@ -113,9 +146,25 @@ export class PersistenceAgent {
       // Load current shared memory
       const sharedMemory = await this.loadSharedMemory();
 
-      // Create entities from observations
+      // Create entities from observations and analysis results
       const createdEntities = await this.createEntitiesFromObservations(observations, sharedMemory);
-      result.entitiesCreated = createdEntities.length;
+      
+      // Also create entities from analysis results even if no observations provided
+      const analysisEntities = await this.createEntitiesFromAnalysisResults({
+        gitAnalysis,
+        vibeAnalysis, 
+        semanticAnalysis,
+        insightGeneration
+      }, sharedMemory);
+      
+      const totalCreated = createdEntities.length + analysisEntities.length;
+      result.entitiesCreated = totalCreated;
+      
+      log('Entities created from persistence', 'info', {
+        fromObservations: createdEntities.length,
+        fromAnalysis: analysisEntities.length,
+        total: totalCreated
+      });
 
       // Update relationships based on analysis results
       const updatedRelations = await this.updateEntityRelationships(sharedMemory, {
@@ -607,6 +656,180 @@ export class PersistenceAgent {
     } catch (error) {
       result.errors.push(error instanceof Error ? error.message : String(error));
       result.summary = `Vibe persistence failed: ${result.errors[0]}`;
+      return result;
+    }
+  }
+
+  private async createEntitiesFromAnalysisResults(
+    analysisData: {
+      gitAnalysis?: any;
+      vibeAnalysis?: any;
+      semanticAnalysis?: any;
+      insightGeneration?: any;
+    },
+    sharedMemory: SharedMemoryStructure
+  ): Promise<SharedMemoryEntity[]> {
+    const entities: SharedMemoryEntity[] = [];
+    const now = new Date().toISOString();
+
+    try {
+      // Create entity from insight generation if available
+      if (analysisData.insightGeneration?.insightDocument) {
+        const insight = analysisData.insightGeneration.insightDocument;
+        const entity: SharedMemoryEntity = {
+          id: `analysis_${Date.now()}`,
+          name: insight.name || 'SemanticAnalysisInsight',
+          entityType: 'AnalysisInsight',
+          significance: insight.metadata?.significance || 5,
+          observations: [
+            {
+              type: 'insight',
+              content: insight.title || 'Comprehensive semantic analysis results',
+              date: now,
+              metadata: {
+                generatedAt: insight.metadata?.generatedAt,
+                analysisTypes: insight.metadata?.analysisTypes,
+                patternCount: insight.metadata?.patternCount
+              }
+            }
+          ],
+          relationships: [],
+          metadata: {
+            created_at: now,
+            last_updated: now,
+            source: 'semantic-analysis-workflow',
+            context: `comprehensive-analysis-${insight.metadata?.analysisTypes?.join('-') || 'semantic'}`,
+            tags: insight.metadata?.analysisTypes
+          }
+        };
+
+        entities.push(entity);
+        sharedMemory.entities.push(entity);
+      }
+
+      // Create entities from discovered patterns if available
+      if (analysisData.insightGeneration?.patternCatalog?.patterns) {
+        const patterns = analysisData.insightGeneration.patternCatalog.patterns;
+        
+        for (const pattern of patterns.slice(0, 3)) { // Limit to top 3 patterns
+          const patternEntity: SharedMemoryEntity = {
+            id: `pattern_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            name: pattern.name || `${pattern.category}Pattern`,
+            entityType: 'TransferablePattern',
+            significance: pattern.significance || 5,
+            observations: [
+              {
+                type: 'pattern',
+                content: pattern.description || 'Pattern discovered through semantic analysis',
+                date: now
+              },
+              {
+                type: 'implementation',
+                content: pattern.implementation?.codeExample || 'Implementation details from analysis',
+                date: now
+              }
+            ],
+            relationships: [],
+            metadata: {
+              created_at: now,
+              last_updated: now,
+              source: 'semantic-analysis-pattern-detection',
+              context: `pattern-${pattern.category}`,
+              tags: [pattern.category, 'pattern', 'semantic-analysis']
+            }
+          };
+
+          entities.push(patternEntity);
+          sharedMemory.entities.push(patternEntity);
+        }
+      }
+
+      // Create entity from Git analysis insights if significant commits found
+      if (analysisData.gitAnalysis?.commits?.length > 0) {
+        const gitAnalysis = analysisData.gitAnalysis;
+        const gitEntity: SharedMemoryEntity = {
+          id: `git_analysis_${Date.now()}`,
+          name: 'GitDevelopmentEvolution',
+          entityType: 'DevelopmentInsight',
+          significance: Math.min(8, Math.max(3, gitAnalysis.commits.length / 5)), // Scale based on commits
+          observations: [
+            {
+              type: 'metric',
+              content: `Analyzed ${gitAnalysis.commits.length} commits with ${gitAnalysis.architecturalDecisions?.length || 0} architectural decisions`,
+              date: now
+            },
+            {
+              type: 'insight',
+              content: gitAnalysis.summary?.insights || 'Development patterns extracted from commit history',
+              date: now
+            }
+          ],
+          relationships: [],
+          metadata: {
+            created_at: now,
+            last_updated: now,
+            source: 'git-history-analysis',
+            context: `git-evolution-${gitAnalysis.commits.length}-commits`,
+            tags: ['git-analysis', 'development', 'evolution']
+          }
+        };
+
+        entities.push(gitEntity);
+        sharedMemory.entities.push(gitEntity);
+      }
+
+      log('Created entities from analysis results', 'info', {
+        entitiesCreated: entities.length,
+        types: entities.map(e => e.entityType)
+      });
+
+      return entities;
+
+    } catch (error) {
+      log('Failed to create entities from analysis results', 'error', error);
+      return [];
+    }
+  }
+
+  async saveSuccessfulWorkflowCompletion(workflowName: string, timestamp: Date = new Date()): Promise<PersistenceResult> {
+    const result: PersistenceResult = {
+      success: false,
+      entitiesCreated: 0,
+      entitiesUpdated: 0,
+      checkpointUpdated: false,
+      filesCreated: [],
+      errors: [],
+      summary: ''
+    };
+
+    try {
+      const sharedMemory = await this.loadSharedMemory();
+      
+      // Update successful workflow completion checkpoint
+      sharedMemory.metadata.lastSuccessfulWorkflowCompletion = timestamp.toISOString();
+      sharedMemory.metadata.lastCompletedWorkflow = workflowName;
+      sharedMemory.metadata.last_updated = timestamp.toISOString();
+      
+      // Increment successful workflow count
+      sharedMemory.metadata.successfulWorkflowCount = (sharedMemory.metadata.successfulWorkflowCount || 0) + 1;
+      
+      await this.saveSharedMemory(sharedMemory);
+      
+      result.checkpointUpdated = true;
+      result.success = true;
+      result.summary = `Successful workflow completion recorded: ${workflowName}`;
+
+      log('Successful workflow completion checkpoint saved', 'info', {
+        workflow: workflowName,
+        timestamp: timestamp.toISOString(),
+        count: sharedMemory.metadata.successfulWorkflowCount
+      });
+
+      return result;
+    } catch (error) {
+      result.errors.push(error instanceof Error ? error.message : String(error));
+      result.summary = `Workflow completion checkpoint failed: ${result.errors[0]}`;
+      log('Failed to save workflow completion checkpoint', 'error', error);
       return result;
     }
   }

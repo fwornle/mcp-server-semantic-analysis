@@ -748,7 +748,10 @@ async function handleGenerateDocumentation(args: any): Promise<any> {
     
     // Save the documentation to files
     const today = new Date().toISOString().split('T')[0];
-    const insightsDir = '/Users/q284340/Agentic/coding/knowledge-management/insights';
+    const insightsDir = process.env.KNOWLEDGE_BASE_PATH;
+    if (!insightsDir) {
+      throw new Error('KNOWLEDGE_BASE_PATH environment variable not set');
+    }
     const outputPath = `${insightsDir}/${today}-semantic-analysis.md`;
     
     await docAgent.saveDocumentation(docResult, outputPath);
@@ -813,7 +816,10 @@ async function handleGeneratePlantUMLDiagrams(args: any): Promise<any> {
   
   try {
     // Set up directory structure
-    const insightsDir = '/Users/q284340/Agentic/coding/knowledge-management/insights';
+    const insightsDir = process.env.KNOWLEDGE_BASE_PATH;
+    if (!insightsDir) {
+      throw new Error('KNOWLEDGE_BASE_PATH environment variable not set');
+    }
     const pumlDir = path.join(insightsDir, 'puml');
     const imagesDir = path.join(insightsDir, 'images');
     

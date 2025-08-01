@@ -94,15 +94,83 @@ export class QualityAssuranceAgent {
     log('QualityAssuranceAgent initialized with default rules', 'info');
   }
 
+  private async validateStepTiming(
+    stepName: string,
+    timing: { startTime: Date; endTime: Date; timeout: number },
+    errors: string[],
+    warnings: string[]
+  ): Promise<void> {
+    const duration = timing.endTime.getTime() - timing.startTime.getTime();
+    const durationSeconds = duration / 1000;
+    const timeoutSeconds = timing.timeout;
+
+    log(`Validating timing for ${stepName}`, 'info', {
+      durationSeconds,
+      timeoutSeconds,
+      utilizationPercent: (durationSeconds / timeoutSeconds) * 100
+    });
+
+    // Critical timing thresholds by step type
+    const timingExpectations: Record<string, { min: number; ideal: number; max: number }> = {
+      'analyze_git_history': { min: 5, ideal: 30, max: 120 },
+      'analyze_vibe_history': { min: 3, ideal: 20, max: 90 },
+      'semantic_analysis': { min: 10, ideal: 60, max: 180 },
+      'web_search': { min: 2, ideal: 15, max: 60 },
+      'generate_insights': { min: 15, ideal: 90, max: 300 },
+      'generate_observations': { min: 5, ideal: 30, max: 90 },
+      'quality_assurance': { min: 2, ideal: 10, max: 60 },
+      'persist_results': { min: 1, ideal: 10, max: 30 }
+    };
+
+    const expected = timingExpectations[stepName] || { min: 1, ideal: 30, max: 120 };
+
+    // Performance analysis
+    if (durationSeconds < expected.min) {
+      warnings.push(`Step ${stepName} completed suspiciously fast (${durationSeconds.toFixed(1)}s < ${expected.min}s) - may indicate incomplete processing`);
+    } else if (durationSeconds > expected.max) {
+      errors.push(`Step ${stepName} exceeded maximum expected duration (${durationSeconds.toFixed(1)}s > ${expected.max}s) - performance concern`);
+    } else if (durationSeconds > expected.ideal * 1.5) {
+      warnings.push(`Step ${stepName} took longer than ideal (${durationSeconds.toFixed(1)}s > ${expected.ideal * 1.5}s) - consider optimization`);
+    }
+
+    // Timeout utilization analysis
+    const utilizationPercent = (durationSeconds / timeoutSeconds) * 100;
+    if (utilizationPercent > 90) {
+      errors.push(`Step ${stepName} used ${utilizationPercent.toFixed(1)}% of timeout (${durationSeconds.toFixed(1)}s/${timeoutSeconds}s) - timeout too aggressive`);
+    } else if (utilizationPercent > 75) {
+      warnings.push(`Step ${stepName} used ${utilizationPercent.toFixed(1)}% of timeout - consider increasing timeout buffer`);
+    } else if (utilizationPercent < 10 && timeoutSeconds > 60) {
+      warnings.push(`Step ${stepName} timeout may be too generous (${utilizationPercent.toFixed(1)}% utilization) - consider optimization`);
+    }
+
+    // LLM-specific timing validation
+    if (stepName === 'semantic_analysis' || stepName === 'generate_insights') {
+      if (durationSeconds < 8) {
+        errors.push(`LLM step ${stepName} completed too quickly (${durationSeconds.toFixed(1)}s) - likely skipped LLM calls`);
+      } else if (durationSeconds < 15) {
+        warnings.push(`LLM step ${stepName} may not have used LLM analysis (${durationSeconds.toFixed(1)}s) - verify API calls`);
+      }
+    }
+
+    // File I/O intensive steps timing
+    if (stepName === 'analyze_git_history' || stepName === 'analyze_vibe_history') {
+      if (durationSeconds < 2) {
+        warnings.push(`File analysis step ${stepName} completed very quickly - may indicate insufficient file processing`);
+      }
+    }
+  }
+
   async performComprehensiveQA(
     stepName: string,
     stepResult: any,
-    expectedOutputs?: string[]
+    expectedOutputs?: string[],
+    stepTiming?: { startTime: Date; endTime: Date; timeout: number }
   ): Promise<QualityAssuranceReport> {
     log(`Starting QA validation for step: ${stepName}`, 'info', {
       stepName,
       hasResult: !!stepResult,
-      expectedOutputs: expectedOutputs?.length || 0
+      expectedOutputs: expectedOutputs?.length || 0,
+      hasTiming: !!stepTiming
     });
 
     const startTime = new Date();
@@ -110,6 +178,11 @@ export class QualityAssuranceAgent {
     const warnings: string[] = [];
     let corrected = false;
     let correctedOutput = undefined;
+
+    // Enhanced timing validation
+    if (stepTiming) {
+      await this.validateStepTiming(stepName, stepTiming, errors, warnings);
+    }
 
     try {
       // Step-specific validations
@@ -197,6 +270,188 @@ export class QualityAssuranceAgent {
         }
       };
     }
+  }
+
+  // New comprehensive workflow QA method
+  async performWorkflowQA(parameters: { all_results: Record<string, any> }): Promise<any> {
+    const { all_results } = parameters;
+    
+    log('Starting comprehensive workflow QA', 'info', {
+      stepsToValidate: Object.keys(all_results).length
+    });
+
+    const validations: Record<string, QualityAssuranceReport> = {};
+    let overallPassed = true;
+    let totalErrors = 0;
+    let totalWarnings = 0;
+
+    // Validate each step individually with timing data
+    for (const [stepName, stepResult] of Object.entries(all_results)) {
+      if (stepResult && typeof stepResult === 'object') {
+        const timing = stepResult._timing ? {
+          startTime: new Date(stepResult._timing.startTime),
+          endTime: new Date(stepResult._timing.endTime),
+          timeout: stepResult._timing.timeout
+        } : undefined;
+
+        const cleanResult = { ...stepResult };
+        delete cleanResult._timing; // Remove timing data for validation
+
+        const report = await this.performComprehensiveQA(stepName, cleanResult, undefined, timing);
+        validations[stepName] = report;
+
+        if (!report.passed) {
+          overallPassed = false;
+        }
+        totalErrors += report.errors.length;
+        totalWarnings += report.warnings.length;
+      }
+    }
+
+    // Workflow-level validations
+    const workflowErrors: string[] = [];
+    const workflowWarnings: string[] = [];
+
+    await this.validateWorkflowIntegrity(all_results, workflowErrors, workflowWarnings);
+    await this.validateWorkflowTiming(all_results, workflowErrors, workflowWarnings);
+
+    const result = {
+      validations,
+      workflowLevel: {
+        passed: workflowErrors.length === 0 && overallPassed,
+        errors: workflowErrors,
+        warnings: workflowWarnings
+      },
+      summary: {
+        totalSteps: Object.keys(all_results).length,
+        passedSteps: Object.values(validations).filter(v => v.passed).length,
+        totalErrors: totalErrors + workflowErrors.length,
+        totalWarnings: totalWarnings + workflowWarnings.length,
+        overallScore: this.calculateWorkflowScore(validations, workflowErrors, workflowWarnings)
+      }
+    };
+
+    log('Workflow QA completed', 'info', {
+      overallPassed: result.workflowLevel.passed,
+      totalErrors: result.summary.totalErrors,
+      totalWarnings: result.summary.totalWarnings,
+      overallScore: result.summary.overallScore
+    });
+
+    return result;
+  }
+
+  private async validateWorkflowIntegrity(
+    allResults: Record<string, any>,
+    errors: string[],
+    warnings: string[]
+  ): Promise<void> {
+    // Check for data flow consistency
+    const gitResult = allResults.git_history;
+    const semanticResult = allResults.semantic_analysis;
+    const insightsResult = allResults.insights;
+
+    if (gitResult && semanticResult) {
+      if (gitResult.commits?.length > 0 && !semanticResult.insights) {
+        errors.push('Git analysis found commits but semantic analysis produced no insights - data flow broken');
+      }
+    }
+
+    if (semanticResult && insightsResult) {
+      if (semanticResult.insights && (!insightsResult.patternCatalog?.patterns || insightsResult.patternCatalog.patterns.length === 0)) {
+        errors.push('Semantic analysis produced insights but insight generation found no patterns - processing failure');
+      }
+    }
+
+    // Validate cross-step dependencies
+    const expectedFlow = [
+      ['git_history', 'semantic_analysis'],
+      ['vibe_history', 'semantic_analysis'],
+      ['semantic_analysis', 'insights'],
+      ['insights', 'observations']
+    ];
+
+    for (const [prereq, dependent] of expectedFlow) {
+      if (allResults[prereq] && allResults[dependent]) {
+        if (allResults[prereq].error && !allResults[dependent].error) {
+          warnings.push(`Step ${dependent} succeeded despite ${prereq} failure - may indicate incomplete processing`);
+        }
+      }
+    }
+  }
+
+  private async validateWorkflowTiming(
+    allResults: Record<string, any>,
+    errors: string[],
+    warnings: string[]
+  ): Promise<void> {
+    const timings: Array<{ step: string; duration: number; startTime: Date }> = [];
+
+    // Collect timing data
+    for (const [stepName, result] of Object.entries(allResults)) {
+      if (result?._timing) {
+        timings.push({
+          step: stepName,
+          duration: result._timing.duration / 1000, // Convert to seconds
+          startTime: new Date(result._timing.startTime)
+        });
+      }
+    }
+
+    if (timings.length === 0) {
+      warnings.push('No timing data available for workflow analysis');
+      return;
+    }
+
+    // Sort by start time to analyze sequential execution
+    timings.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+
+    // Calculate total workflow time
+    const firstStart = timings[0].startTime;
+    const lastEnd = new Date(Math.max(...timings.map(t => 
+      new Date(t.startTime.getTime() + t.duration * 1000).getTime()
+    )));
+    const totalWorkflowTime = (lastEnd.getTime() - firstStart.getTime()) / 1000;
+
+    log('Workflow timing analysis', 'info', {
+      totalSteps: timings.length,
+      totalWorkflowTime: `${totalWorkflowTime.toFixed(1)}s`,
+      slowestStep: timings.reduce((max, t) => t.duration > max.duration ? t : max).step
+    });
+
+    // Validate workflow efficiency
+    if (totalWorkflowTime > 900) { // 15 minutes
+      errors.push(`Workflow took too long: ${totalWorkflowTime.toFixed(1)}s > 900s - needs optimization`);
+    } else if (totalWorkflowTime > 600) { // 10 minutes
+      warnings.push(`Workflow approaching time limit: ${totalWorkflowTime.toFixed(1)}s - monitor performance`);
+    }
+
+    // Identify performance bottlenecks
+    const slowSteps = timings.filter(t => t.duration > 120); // > 2 minutes
+    if (slowSteps.length > 0) {
+      warnings.push(`Performance bottlenecks detected: ${slowSteps.map(s => `${s.step}(${s.duration.toFixed(1)}s)`).join(', ')}`);
+    }
+
+    // Check for suspiciously fast steps
+    const fastSteps = timings.filter(t => t.duration < 1); // < 1 second
+    if (fastSteps.length > 2) {
+      warnings.push(`Multiple steps completed very quickly: ${fastSteps.map(s => s.step).join(', ')} - verify completeness`);
+    }
+  }
+
+  private calculateWorkflowScore(
+    validations: Record<string, QualityAssuranceReport>,
+    workflowErrors: string[],
+    workflowWarnings: string[]
+  ): number {
+    const stepScores = Object.values(validations).map(v => v.score);
+    const avgStepScore = stepScores.length > 0 ? 
+      stepScores.reduce((sum, score) => sum + score, 0) / stepScores.length : 0;
+
+    // Apply workflow-level penalties
+    const workflowPenalty = (workflowErrors.length * 15) + (workflowWarnings.length * 5);
+    
+    return Math.max(0, Math.min(100, Math.round(avgStepScore - workflowPenalty)));
   }
 
   private async validateGitHistoryAnalysis(result: any, errors: string[], warnings: string[]): Promise<void> {
@@ -319,28 +574,124 @@ export class QualityAssuranceAgent {
       return;
     }
 
-    // Check for generated files
-    if (!result.files && !result.insights && !result.documents) {
-      errors.push('No insight files or documents were generated');
-    }
-
-    // Check for PlantUML diagrams
-    if (result.diagrams) {
-      const diagramTypes = ['architecture', 'sequence', 'class', 'use-case'];
-      const generatedTypes = Object.keys(result.diagrams);
-      const missingTypes = diagramTypes.filter(type => !generatedTypes.includes(type));
+    // CRITICAL: Validate actual content quality, not just file existence
+    
+    // 1. Validate patterns are meaningful (not garbage conversation fragments)
+    if (result.patternCatalog?.patterns) {
+      const patterns = result.patternCatalog.patterns;
       
-      if (missingTypes.length > 0) {
-        warnings.push(`Missing diagram types: ${missingTypes.join(', ')}`);
+      // Check for garbage pattern names
+      const garbagePatterns = patterns.filter((p: any) => 
+        p.name.startsWith('ProblemSolutionPattern') || 
+        p.name.startsWith('ArchitecturalDecision') ||
+        p.name.startsWith('SemanticPattern') ||
+        p.description.includes('you were just in the process') ||
+        p.description.includes('I cannot see any chan') ||
+        p.description.length < 20
+      );
+      
+      if (garbagePatterns.length > 0) {
+        errors.push(`Found ${garbagePatterns.length} garbage patterns with meaningless names or conversation fragments`);
+        garbagePatterns.forEach((p: any) => {
+          errors.push(`Garbage pattern: "${p.name}" - "${p.description.substring(0, 50)}..."`);
+        });
+      }
+      
+      // Ensure patterns have real evidence
+      const patternsWithoutEvidence = patterns.filter((p: any) => 
+        !p.evidence || p.evidence.length === 0 || 
+        p.evidence.some((e: string) => e.includes('N/A') || e.length < 10)
+      );
+      
+      if (patternsWithoutEvidence.length > 0) {
+        errors.push(`Found ${patternsWithoutEvidence.length} patterns without meaningful evidence`);
+      }
+      
+      if (patterns.length === 0) {
+        errors.push('No patterns identified - analysis may be incomplete');
       }
     } else {
-      warnings.push('No PlantUML diagrams were generated');
+      errors.push('No pattern catalog generated');
     }
 
-    // Validate insight file creation
-    const insightDir = path.join(this.repositoryPath, 'knowledge-management', 'insights');
-    if (!fs.existsSync(insightDir)) {
-      errors.push('Insight directory does not exist - files may not have been created');
+    // 2. Validate git analysis actually found commits
+    if (result.gitAnalysis || result.git_analysis_results) {
+      const gitData = result.gitAnalysis || result.git_analysis_results;
+      if (!gitData.commits || gitData.commits.length === 0) {
+        errors.push('Git analysis found 0 commits - analysis scope may be too narrow');
+      } else if (gitData.commits.length < 5) {
+        warnings.push(`Only ${gitData.commits.length} commits analyzed - consider broader time window`);
+      }
+    }
+
+    // 3. Validate insight document content quality
+    if (result.insightDocument) {
+      const content = result.insightDocument.content || '';
+      
+      // Check for template placeholders
+      if (content.includes('{{') || content.includes('}}')) {
+        errors.push('Insight document contains unresolved template placeholders');
+      }
+      
+      // Check for meaningful content length
+      if (content.length < 1000) {
+        errors.push('Insight document is too short to be meaningful (less than 1000 characters)');
+      }
+      
+      // Check for conversation fragments
+      const conversationFragments = [
+        'you were just in the process',
+        'I cannot see any chan',
+        'so, it seems that you somehow',
+        'User:',
+        'Assistant:'
+      ];
+      
+      const foundFragments = conversationFragments.filter(fragment => 
+        content.toLowerCase().includes(fragment.toLowerCase())
+      );
+      
+      if (foundFragments.length > 0) {
+        errors.push(`Insight contains conversation fragments: ${foundFragments.join(', ')}`);
+      }
+    } else {
+      errors.push('No insight document generated');
+    }
+
+    // 4. Validate PlantUML diagrams have real content
+    if (result.insightDocument?.diagrams) {
+      const diagrams = result.insightDocument.diagrams;
+      const emptyDiagrams = diagrams.filter((d: any) => 
+        !d.success || 
+        d.content.includes('Welcome to PlantUML!') ||
+        d.content.includes('@startuml\n@enduml') ||
+        d.content.length < 100
+      );
+      
+      if (emptyDiagrams.length > 0) {
+        errors.push(`Found ${emptyDiagrams.length} empty or placeholder PlantUML diagrams`);
+      }
+      
+      if (diagrams.length === 0) {
+        warnings.push('No PlantUML diagrams generated');
+      }
+    } else {
+      warnings.push('No diagrams in insight document');
+    }
+
+    // 5. Validate meaningful filename generation
+    if (result.insightDocument?.name) {
+      const name = result.insightDocument.name;
+      if (name.includes('SemanticAnalysisInsight') || 
+          name.includes('timestamp') || 
+          name.match(/\d{4}-\d{2}-\d{2}/)) {
+        errors.push(`Generic or timestamp-based filename: ${name}`);
+      }
+    }
+
+    // 6. Final quality gate - reject if too many errors
+    if (errors.length > 3) {
+      errors.push('QUALITY GATE FAILED: Too many content quality issues detected - output rejected');
     }
   }
 

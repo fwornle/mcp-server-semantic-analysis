@@ -1,6 +1,7 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./logging.js";
 import { SemanticAnalysisAgent } from "./agents/semantic-analysis-agent.js";
+import { SemanticAnalyzer } from "./agents/semantic-analyzer.js";
 import { CoordinatorAgent } from "./agents/coordinator.js";
 import { InsightGenerationAgent } from "./agents/insight-generation-agent.js";
 import { DeduplicationAgent } from "./agents/deduplication.js";
@@ -264,30 +265,6 @@ export const TOOLS: Tool[] = [
       additionalProperties: false,
     },
   },
-  {
-    name: "generate_lessons_learned",
-    description: "Generate lessons learned document (lele) with UKB integration",
-    inputSchema: {
-      type: "object",
-      properties: {
-        analysis_result: {
-          type: "object",
-          description: "Analysis results to extract lessons from",
-        },
-        title: {
-          type: "string",
-          description: "Title for the lessons learned document",
-        },
-        metadata: {
-          type: "object",
-          description: "Optional metadata for the lessons learned",
-          additionalProperties: true,
-        },
-      },
-      required: ["analysis_result"],
-      additionalProperties: false,
-    },
-  },
 ];
 
 // Tool call handler
@@ -329,8 +306,6 @@ export async function handleToolCall(name: string, args: any): Promise<any> {
       case "generate_plantuml_diagrams":
         return await handleGeneratePlantUMLDiagrams(args);
         
-      case "generate_lessons_learned":
-        return await handleGenerateLessonsLearned(args);
         
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -392,17 +367,51 @@ async function handleDetermineInsights(args: any): Promise<any> {
     has_context: !!context,
   });
   
-  const analyzer = new SemanticAnalysisAgent();
-  const result = await analyzer.analyzeContent(content, context, analysis_type);
-  
-  return {
-    content: [
-      {
-        type: "text", 
-        text: `# Semantic Analysis Insights\n\n${result.insights}\n\n## Metadata\n- Provider: ${result.provider}\n- Analysis Type: ${analysis_type}\n- Timestamp: ${new Date().toISOString()}`,
-      },
-    ],
-  };
+  try {
+    const analyzer = new SemanticAnalyzer();
+    log("SemanticAnalyzer created", "info");
+    
+    const result = await analyzer.analyzeContent(content, {
+      context,
+      analysisType: analysis_type,
+      provider
+    });
+    
+    log("SemanticAnalyzer.analyzeContent completed", "info", {
+      hasResult: !!result,
+      resultType: typeof result,
+      resultKeys: result ? Object.keys(result) : null,
+      insightsLength: result?.insights?.length || 0,
+      provider: result?.provider || "none"
+    });
+
+    if (!result) {
+      throw new Error("SemanticAnalyzer returned null/undefined result");
+    }
+
+    return {
+      content: [
+        {
+          type: "text", 
+          text: `# Semantic Analysis Insights\n\n${result.insights || 'No insights generated'}\n\n## Metadata\n- Provider: ${result.provider || 'Unknown'}\n- Analysis Type: ${analysis_type}\n- Timestamp: ${new Date().toISOString()}`,
+        },
+      ],
+    };
+  } catch (error: any) {
+    log("Error in handleDetermineInsights", "error", {
+      error: error.message,
+      stack: error.stack
+    });
+    
+    return {
+      content: [
+        {
+          type: "text",
+          text: `# Semantic Analysis Error\n\nError: ${error.message}\n\n## Details\n- Analysis Type: ${analysis_type}\n- Provider: ${provider}\n- Content Length: ${content.length}\n- Has Context: ${!!context}\n- Timestamp: ${new Date().toISOString()}`,
+        },
+      ],
+    };
+  }
 }
 
 async function handleAnalyzeCode(args: any): Promise<any> {
@@ -1062,65 +1071,3 @@ end note
 }
 
 
-async function handleGenerateLessonsLearned(args: any): Promise<any> {
-  const { analysis_result, title, metadata } = args;
-  
-  log("Generating lessons learned", "info", { title, has_metadata: !!metadata });
-  
-  const lessonsTitle = title || "Analysis Lessons Learned";
-  const timestamp = new Date().toISOString();
-  
-  // Extract key lessons from analysis
-  const lessons = [
-    "Architecture patterns identified and documented",
-    "Code quality metrics established",
-    "Performance optimization opportunities found",
-    "Security considerations highlighted",
-    "Technical debt areas mapped",
-  ];
-  
-  const leleContent = `# ${lessonsTitle}
-
-**Generated:** ${timestamp}
-**Type:** Lessons Learned Document (LELE)
-
-## Executive Summary
-
-This document captures key lessons learned from the semantic analysis performed on the codebase.
-
-## Key Lessons
-
-${lessons.map((lesson, i) => `${i + 1}. ${lesson}`).join('\n')}
-
-## Analysis Results
-
-${JSON.stringify(analysis_result, null, 2)}
-
-## Recommendations
-
-1. **Immediate Actions**
-   - Apply identified patterns consistently
-   - Address critical security findings
-   - Optimize performance bottlenecks
-
-2. **Long-term Improvements**
-   - Refactor technical debt areas
-   - Enhance documentation coverage
-   - Implement automated quality checks
-
-## UKB Integration
-
-This document should be integrated into the Universal Knowledge Base for future reference and pattern matching.
-
----
-*This is an automatically generated lessons learned document*`;
-  
-  return {
-    content: [
-      {
-        type: "text",
-        text: leleContent,
-      },
-    ],
-  };
-}

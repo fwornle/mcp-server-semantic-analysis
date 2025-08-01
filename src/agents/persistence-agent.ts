@@ -181,12 +181,6 @@ export class PersistenceAgent {
         }
       }
 
-      if (insightGeneration?.lessonsLearned) {
-        const lessonsFile = await this.saveLessonsLearned(insightGeneration.lessonsLearned);
-        if (lessonsFile) {
-          result.filesCreated.push(lessonsFile);
-        }
-      }
 
       // Update analysis checkpoints
       const checkpointResult = await this.updateAnalysisCheckpoints({
@@ -362,29 +356,6 @@ export class PersistenceAgent {
     }
   }
 
-  private async saveLessonsLearned(lessonsLearned: any): Promise<string | null> {
-    try {
-      if (!lessonsLearned.filePath) {
-        log('Lessons learned has no file path - saving content directly', 'warning');
-        const fileName = `lessons_learned_${Date.now()}.md`;
-        const filePath = path.join(this.insightsDir, fileName);
-        await fs.promises.writeFile(filePath, lessonsLearned.content, 'utf8');
-        return filePath;
-      }
-
-      // File already saved by InsightGenerationAgent, just verify it exists
-      if (fs.existsSync(lessonsLearned.filePath)) {
-        log(`Lessons learned document verified: ${lessonsLearned.filePath}`, 'info');
-        return lessonsLearned.filePath;
-      } else {
-        log(`Lessons learned file not found: ${lessonsLearned.filePath}`, 'warning');
-        return null;
-      }
-    } catch (error) {
-      log('Failed to save lessons learned document', 'error', error);
-      return null;
-    }
-  }
 
   private async updateAnalysisCheckpoints(analysisData: any): Promise<boolean> {
     try {
@@ -948,6 +919,116 @@ export class PersistenceAgent {
         valid: false,
         issues: [`Validation failed: ${error instanceof Error ? error.message : String(error)}`],
         repaired: false
+      };
+    }
+  }
+
+  async createUkbEntity(entityData: {
+    name: string;
+    type: string;
+    insights: string;
+    significance?: number;
+    tags?: string[];
+  }): Promise<{ success: boolean; details: string }> {
+    try {
+      log(`Creating UKB entity: ${entityData.name}`, 'info', {
+        type: entityData.type,
+        significance: entityData.significance
+      });
+
+      const currentDate = new Date().toISOString();
+      
+      // Create structured observation from insights
+      const observations = [
+        {
+          type: 'insight',
+          content: entityData.insights,
+          date: currentDate,
+          metadata: {
+            source: 'manual_creation',
+            significance: entityData.significance || 5
+          }
+        },
+        {
+          type: 'link',
+          content: `Details: http://localhost:8080/knowledge-management/insights/${entityData.name}.md`,
+          date: currentDate
+        }
+      ];
+
+      // Create entity structure
+      const entity: SharedMemoryEntity = {
+        id: `entity_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        name: entityData.name,
+        entityType: entityData.type,
+        significance: entityData.significance || 5,
+        observations,
+        relationships: [],
+        metadata: {
+          created_at: currentDate,
+          last_updated: currentDate,
+          created_by: 'ukb_tool',
+          version: '1.0'
+        }
+      };
+
+      // Load shared memory
+      const sharedMemory = await this.loadSharedMemory();
+      
+      // Check if entity already exists
+      const existingEntity = sharedMemory.entities.find(e => e.name === entityData.name);
+      if (existingEntity) {
+        return {
+          success: false,
+          details: `Entity '${entityData.name}' already exists`
+        };
+      }
+
+      // Add entity
+      sharedMemory.entities.push(entity);
+      sharedMemory.metadata.total_entities = sharedMemory.entities.length;
+      sharedMemory.metadata.last_updated = currentDate;
+
+      // Save updated shared memory
+      await this.saveSharedMemory(sharedMemory);
+
+      // Create insight document
+      const insightPath = path.join(this.insightsDir, `${entityData.name}.md`);
+      const insightContent = `# ${entityData.name}
+
+**Type:** ${entityData.type}
+**Significance:** ${entityData.significance || 5}/10
+**Created:** ${currentDate}
+**Tags:** ${entityData.tags?.join(', ') || 'None'}
+
+## Insights
+
+${entityData.insights}
+
+## Metadata
+
+- **Entity ID:** ${entity.id}
+- **Created By:** ukb_tool
+- **Version:** 1.0
+`;
+
+      await fs.promises.writeFile(insightPath, insightContent, 'utf8');
+
+      log(`UKB entity created successfully: ${entityData.name}`, 'info', {
+        entityId: entity.id,
+        insightPath
+      });
+
+      return {
+        success: true,
+        details: `Entity '${entityData.name}' created with insight document at ${insightPath}`
+      };
+
+    } catch (error) {
+      log(`Failed to create UKB entity: ${entityData.name}`, 'error', error);
+      return {
+        success: false,
+        details: `Failed to create entity: ${error instanceof Error ? error.message : String(error)}`
       };
     }
   }

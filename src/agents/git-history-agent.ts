@@ -76,27 +76,57 @@ export class GitHistoryAgent {
   async analyzeGitHistory(fromTimestampOrParams?: Date | Record<string, any>): Promise<GitHistoryAnalysisResult> {
     // Handle both Date parameter (old API) and parameters object (new coordinator API)
     let fromTimestamp: Date | undefined;
+    let checkpointEnabled = true;
+    let daysBack: number | undefined;
+    let depth: number | undefined;
+
     if (fromTimestampOrParams instanceof Date) {
       fromTimestamp = fromTimestampOrParams;
     } else if (typeof fromTimestampOrParams === 'object' && fromTimestampOrParams !== null) {
-      // Parameters object from coordinator - extract timestamp if provided
+      // Parameters object from coordinator - extract all parameters
       if (fromTimestampOrParams.fromTimestamp) {
         fromTimestamp = new Date(fromTimestampOrParams.fromTimestamp);
+      }
+      if (fromTimestampOrParams.checkpoint_enabled !== undefined) {
+        checkpointEnabled = fromTimestampOrParams.checkpoint_enabled;
+      }
+      if (fromTimestampOrParams.days_back) {
+        daysBack = fromTimestampOrParams.days_back;
+      }
+      if (fromTimestampOrParams.depth) {
+        depth = fromTimestampOrParams.depth;
       }
     }
 
     log('Starting git history analysis', 'info', {
       repositoryPath: this.repositoryPath,
-      fromTimestamp: fromTimestamp?.toISOString() || 'beginning'
+      fromTimestamp: fromTimestamp?.toISOString() || 'auto',
+      checkpointEnabled,
+      daysBack,
+      depth
     });
 
     try {
       // Validate git repository
       this.validateGitRepository();
 
-      // Get analysis checkpoint
-      const checkpoint = await this.getLastAnalysisCheckpoint();
-      const effectiveFromTimestamp = fromTimestamp || checkpoint;
+      // Determine effective timestamp based on parameters
+      let effectiveFromTimestamp: Date | null = null;
+      
+      if (fromTimestamp) {
+        effectiveFromTimestamp = fromTimestamp;
+      } else if (daysBack) {
+        // Analyze commits from last N days
+        effectiveFromTimestamp = new Date(Date.now() - (daysBack * 24 * 60 * 60 * 1000));
+        log(`Analyzing commits from last ${daysBack} days`, 'info', {
+          fromDate: effectiveFromTimestamp.toISOString()
+        });
+      } else if (checkpointEnabled) {
+        // Use checkpoint only if explicitly enabled
+        const checkpoint = await this.getLastAnalysisCheckpoint();
+        effectiveFromTimestamp = checkpoint;
+      }
+      // If none of the above, analyze all commits (effectiveFromTimestamp = null)
 
       // Extract commits
       const commits = await this.extractCommits(effectiveFromTimestamp);

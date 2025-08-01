@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface InsightDocument {
   name: string;
@@ -53,7 +54,6 @@ export interface IdentifiedPattern {
 export interface InsightGenerationResult {
   insightDocument: InsightDocument;
   patternCatalog: PatternCatalog;
-  lessonsLearned: LessonsLearnedDocument;
   generationMetrics: {
     processingTime: number;
     documentsGenerated: number;
@@ -63,44 +63,37 @@ export interface InsightGenerationResult {
   };
 }
 
-export interface LessonsLearnedDocument {
-  title: string;
-  content: string;
-  filePath: string;
-  sections: {
-    successes: string[];
-    challenges: string[];
-    keyLearnings: string[];
-    improvements: string[];
-    futureConsiderations: string[];
-  };
-}
 
 export class InsightGenerationAgent {
   private outputDir: string;
   private plantumlAvailable: boolean = false;
   private standardStylePath: string;
+  private semanticAnalyzer: SemanticAnalyzer;
 
   constructor(repositoryPath: string = '.') {
     this.outputDir = path.join(repositoryPath, 'knowledge-management', 'insights');
     this.standardStylePath = path.join(repositoryPath, 'docs', 'puml', '_standard-style.puml');
+    this.semanticAnalyzer = new SemanticAnalyzer();
     this.initializeDirectories();
     this.checkPlantUMLAvailability();
   }
 
-  async generateComprehensiveInsights(
-    gitAnalysis: any,
-    vibeAnalysis: any,
-    semanticAnalysis: any,
-    webResults?: any
-  ): Promise<InsightGenerationResult> {
+  async generateComprehensiveInsights(params: any): Promise<InsightGenerationResult> {
     const startTime = Date.now();
     
+    // Extract parameters from the params object
+    const gitAnalysis = params.git_analysis_results || params.gitAnalysis;
+    const vibeAnalysis = params.vibe_analysis_results || params.vibeAnalysis;
+    const semanticAnalysis = params.semantic_analysis_results || params.semanticAnalysis;
+    const webResults = params.web_search_results || params.webResults;
+    
     log('Starting comprehensive insight generation', 'info', {
+      receivedParams: Object.keys(params || {}),
       hasGitAnalysis: !!gitAnalysis,
       hasVibeAnalysis: !!vibeAnalysis,
       hasSemanticAnalysis: !!semanticAnalysis,
-      hasWebResults: !!webResults
+      hasWebResults: !!webResults,
+      gitCommitCount: gitAnalysis?.commits?.length || 0
     });
 
     try {
@@ -114,20 +107,15 @@ export class InsightGenerationAgent {
         gitAnalysis, vibeAnalysis, semanticAnalysis, patternCatalog, webResults
       );
 
-      // Generate lessons learned
-      const lessonsLearned = await this.generateLessonsLearned(
-        gitAnalysis, vibeAnalysis, semanticAnalysis, patternCatalog
-      );
 
       const processingTime = Date.now() - startTime;
       
       const result: InsightGenerationResult = {
         insightDocument,
         patternCatalog,
-        lessonsLearned,
         generationMetrics: {
           processingTime,
-          documentsGenerated: 2, // insight + lessons
+          documentsGenerated: 1, // insight only
           diagramsGenerated: insightDocument.diagrams.filter(d => d.success).length,
           patternsIdentified: patternCatalog.patterns.length,
           qualityScore: this.calculateQualityScore(insightDocument, patternCatalog)
@@ -158,84 +146,47 @@ export class InsightGenerationAgent {
   ): Promise<PatternCatalog> {
     const patterns: IdentifiedPattern[] = [];
 
-    // Extract patterns from git analysis
-    if (gitAnalysis?.architecturalDecisions) {
-      gitAnalysis.architecturalDecisions.forEach((decision: any, index: number) => {
-        patterns.push({
-          name: `ArchitecturalDecision${index + 1}`,
-          category: 'Architecture',
-          description: decision.description || 'Architectural decision from git analysis',
-          significance: this.mapImpactToSignificance(decision.impact),
-          evidence: [`Commit: ${decision.commit}`, `Files: ${decision.files?.length || 0}`],
-          relatedComponents: decision.files || [],
-          implementation: {
-            language: this.detectLanguageFromFiles(decision.files || []),
-            usageNotes: [`Applied in ${decision.files?.length || 0} files`]
-          }
-        });
-      });
+    // Generate REAL architectural patterns based on actual code analysis
+    // This should analyze actual code commits and file changes to identify meaningful patterns
+    
+    // Analyze git commits for architectural patterns
+    try {
+      if (gitAnalysis?.commits && gitAnalysis.commits.length > 0) {
+        const architecturalPatterns = await this.extractArchitecturalPatternsFromCommits(gitAnalysis.commits);
+        patterns.push(...architecturalPatterns);
+      }
+    } catch (error) {
+      console.warn('Error extracting architectural patterns:', error);
     }
 
-    // Extract patterns from code evolution
-    if (gitAnalysis?.codeEvolution) {
-      gitAnalysis.codeEvolution.forEach((evolution: any, index: number) => {
-        patterns.push({
-          name: `CodeEvolution${index + 1}`,
-          category: 'Evolution',
-          description: `Evolution pattern: ${evolution.pattern}`,
-          significance: Math.min(Math.ceil((evolution.occurrences || 1) / 2), 10),
-          evidence: [
-            `Occurrences: ${evolution.occurrences}`,
-            `Trend: ${evolution.trend}`,
-            `Files affected: ${evolution.files?.length || 0}`
-          ],
-          relatedComponents: evolution.files || [],
-          implementation: {
-            language: this.detectLanguageFromFiles(evolution.files || []),
-            usageNotes: [`Pattern occurs ${evolution.occurrences} times with ${evolution.trend} trend`]
-          }
-        });
-      });
+    // Analyze code changes for implementation patterns  
+    try {
+      if (gitAnalysis?.codeEvolution && gitAnalysis.codeEvolution.length > 0) {
+        const implementationPatterns = this.extractImplementationPatterns(gitAnalysis.codeEvolution);
+        patterns.push(...implementationPatterns);
+      }
+    } catch (error) {
+      console.warn('Error extracting implementation patterns:', error);
     }
 
-    // Extract patterns from vibe analysis problem-solution pairs
-    if (vibeAnalysis?.problemSolutionPairs) {
-      vibeAnalysis.problemSolutionPairs.forEach((pair: any, index: number) => {
-        patterns.push({
-          name: `ProblemSolutionPattern${index + 1}`,
-          category: 'Solution',
-          description: pair.problem.description.substring(0, 100) + '...',
-          significance: this.mapDifficultyToSignificance(pair.problem.difficulty),
-          evidence: [
-            `Approach: ${pair.solution.approach}`,
-            `Technologies: ${pair.solution.technologies?.join(', ') || 'N/A'}`,
-            `Outcome: ${pair.solution.outcome}`
-          ],
-          relatedComponents: pair.solution.technologies || [],
-          implementation: {
-            language: this.detectLanguageFromTechnologies(pair.solution.technologies || []),
-            usageNotes: pair.solution.steps || []
-          }
-        });
-      });
+    // Analyze semantic code structure for design patterns
+    try {
+      if (semanticAnalysis?.codeAnalysis) {
+        const designPatterns = this.extractDesignPatterns(semanticAnalysis.codeAnalysis);
+        patterns.push(...designPatterns);
+      }
+    } catch (error) {
+      console.warn('Error extracting design patterns:', error);
     }
 
-    // Extract patterns from semantic analysis
-    if (semanticAnalysis?.codeAnalysis?.architecturalPatterns) {
-      semanticAnalysis.codeAnalysis.architecturalPatterns.forEach((pattern: any, index: number) => {
-        patterns.push({
-          name: `SemanticPattern${index + 1}`,
-          category: 'Semantic',
-          description: pattern.description || `${pattern.name} pattern`,
-          significance: Math.round(pattern.confidence * 10),
-          evidence: [`Confidence: ${pattern.confidence}`, `Files: ${pattern.files?.length || 0}`],
-          relatedComponents: pattern.files || [],
-          implementation: {
-            language: this.detectLanguageFromFiles(pattern.files || []),
-            usageNotes: [`Pattern found in ${pattern.files?.length || 0} files`]
-          }
-        });
-      });
+    // Only analyze conversation patterns if they relate to actual code solutions
+    try {
+      if (vibeAnalysis?.problemSolutionPairs) {
+        const codeSolutionPatterns = this.extractCodeSolutionPatterns(vibeAnalysis.problemSolutionPairs);
+        patterns.push(...codeSolutionPatterns);
+      }
+    } catch (error) {
+      console.warn('Error extracting solution patterns:', error);
     }
 
     // Analyze and summarize patterns
@@ -470,19 +421,27 @@ export class InsightGenerationAgent {
 
     let diagramContent = '';
     
-    switch (type) {
-      case 'architecture':
-        diagramContent = this.generateArchitectureDiagram(data);
-        break;
-      case 'sequence':
-        diagramContent = this.generateSequenceDiagram(data);
-        break;
-      case 'use-cases':
-        diagramContent = this.generateUseCasesDiagram(data);
-        break;
-      case 'class':
-        diagramContent = this.generateClassDiagram(data);
-        break;
+    // Try LLM-enhanced diagram generation first
+    if (this.semanticAnalyzer && (type === 'architecture' || type === 'class')) {
+      diagramContent = await this.generateLLMEnhancedDiagram(type, data);
+    }
+    
+    // Fallback to template-based generation if LLM fails or for other types
+    if (!diagramContent) {
+      switch (type) {
+        case 'architecture':
+          diagramContent = this.generateArchitectureDiagram(data);
+          break;
+        case 'sequence':
+          diagramContent = this.generateSequenceDiagram(data);
+          break;
+        case 'use-cases':
+          diagramContent = this.generateUseCasesDiagram(data);
+          break;
+        case 'class':
+          diagramContent = this.generateClassDiagram(data);
+          break;
+      }
     }
 
     // Write PlantUML file
@@ -535,55 +494,241 @@ export class InsightGenerationAgent {
     }
   }
 
+  private async generateLLMEnhancedDiagram(type: PlantUMLDiagram['type'], data: any): Promise<string> {
+    if (!this.semanticAnalyzer) {
+      return '';
+    }
+
+    try {
+      const diagramPrompt = this.buildDiagramPrompt(type, data);
+      log(`Generating LLM-enhanced ${type} diagram`, 'info');
+      
+      const analysisResult = await this.semanticAnalyzer.analyzeContent(diagramPrompt, {
+        analysisType: 'architecture',
+        context: `PlantUML ${type} diagram generation`,
+        provider: 'auto'
+      });
+
+      if (analysisResult?.insights && analysisResult.insights.includes('@startuml')) {
+        // Extract PlantUML content from LLM response
+        const pumlMatch = analysisResult.insights.match(/@startuml[\s\S]*?@enduml/);
+        if (pumlMatch) {
+          log(`LLM-enhanced ${type} diagram generated successfully`, 'info', {
+            provider: analysisResult.provider,
+            contentLength: pumlMatch[0].length
+          });
+          return pumlMatch[0];
+        }
+      }
+      
+      log(`LLM diagram generation failed for ${type} - no valid PlantUML found`, 'warning');
+      return '';
+    } catch (error) {
+      log(`LLM diagram generation failed for ${type}`, 'warning', error);
+      return '';
+    }
+  }
+
+  private buildDiagramPrompt(type: PlantUMLDiagram['type'], data: any): string {
+    const patternCount = data.patternCatalog?.patterns?.length || 0;
+    const patterns = data.patternCatalog?.patterns || [];
+    
+    let prompt = `Generate a professional PlantUML ${type} diagram based on the following semantic analysis data:
+
+**Analysis Data:**
+${JSON.stringify(data, null, 2)}
+
+**Requirements:**
+- Create a valid PlantUML diagram enclosed in @startuml and @enduml tags
+- Use proper PlantUML syntax and styling
+- Make the diagram visually clear and informative
+- Include meaningful relationships and annotations
+- Use professional styling with appropriate colors and layouts`;
+
+    if (type === 'architecture') {
+      prompt += `
+
+**Architecture Diagram Specifics:**
+- Show ${patternCount} identified patterns as components
+- Group related patterns into packages by category
+- Use different styles for different significance levels (<<critical>>, <<important>>, <<standard>>)
+- Show relationships between related components
+- Include a summary note with key metrics
+- Use component diagram syntax with packages, components, and interfaces`;
+
+    } else if (type === 'class') {
+      prompt += `
+
+**Class Diagram Specifics:**
+- Create classes representing the main architectural patterns
+- Show inheritance and composition relationships
+- Include key methods and properties where relevant
+- Group related classes into packages
+- Use proper UML class diagram syntax
+- Show dependencies and associations between classes`;
+    }
+
+    prompt += `
+
+**Output Format:** Valid PlantUML code only, starting with @startuml and ending with @enduml. No explanatory text outside the diagram.`;
+
+    return prompt;
+  }
+
   private generateArchitectureDiagram(data: any): string {
     const patterns = data.patternCatalog?.patterns || [];
-    let components = '';
     
-    patterns.slice(0, 8).forEach((pattern: any, index: number) => {
-      components += `  component "${pattern.name}" as comp${index + 1}\n`;
+    // Enhanced architecture diagram with better component relationships
+    let components = '';
+    let relationships = '';
+    
+    // Group patterns by category for better organization
+    const patternsByCategory: Record<string, any[]> = {};
+    patterns.slice(0, 10).forEach((pattern: any) => {
+      const category = pattern.category || 'General';
+      if (!patternsByCategory[category]) {
+        patternsByCategory[category] = [];
+      }
+      patternsByCategory[category].push(pattern);
     });
+
+    // Generate components grouped by category
+    Object.entries(patternsByCategory).forEach(([category, categoryPatterns]) => {
+      components += `\n  package "${category}" {\n`;
+      categoryPatterns.forEach((pattern, index) => {
+        const significance = pattern.significance || 5;
+        const style = significance >= 8 ? '<<critical>>' : significance >= 6 ? '<<important>>' : '<<standard>>';
+        components += `    component "${pattern.name}" as ${category}_${index} ${style}\n`;
+      });
+      components += `  }\n`;
+    });
+
+    // Generate relationships based on related components
+    patterns.forEach((pattern: any, index: number) => {
+      if (pattern.relatedComponents && pattern.relatedComponents.length > 0) {
+        pattern.relatedComponents.forEach((related: string) => {
+          const relatedPattern = patterns.find((p: any) => p.name.includes(related));
+          if (relatedPattern) {
+            const sourceCategory = pattern.category || 'General';
+            const targetCategory = relatedPattern.category || 'General';
+            relationships += `  ${sourceCategory}_${index} --> ${targetCategory}_${patterns.indexOf(relatedPattern)} : uses\n`;
+          }
+        });
+      }
+    });
+
+    const totalPatterns = patterns.length;
+    const avgSignificance = patterns.reduce((sum: number, p: any) => sum + (p.significance || 5), 0) / totalPatterns || 0;
 
     return `@startuml
 ${this.getStandardStyle()}
 
-title System Architecture Analysis
+title System Architecture - Semantic Analysis Results
 
-package "Semantic Analysis Results" {
 ${components}
-}
 
-note right
-  Generated from comprehensive
-  semantic analysis including:
-  - Git history patterns
-  - Conversation analysis
-  - Code structure analysis
+${relationships}
+
+note top
+  Architecture Summary:
+  - Total Patterns: ${totalPatterns}
+  - Avg Significance: ${avgSignificance.toFixed(1)}/10
+  - Categories: ${Object.keys(patternsByCategory).length}
+  
+  Legend:
+  <<critical>> High Impact (8-10)
+  <<important>> Medium Impact (6-7)  
+  <<standard>> Standard Impact (1-5)
 end note
 
 @enduml`;
   }
 
   private generateSequenceDiagram(data: any): string {
+    const patternCount = data.patternCatalog?.patterns?.length || 0;
+    const avgSignificance = data.patternCatalog?.summary?.avgSignificance || 0;
+    const hasGitData = data.gitAnalysis || data.git_analysis_results;
+    const hasVibeData = data.vibeAnalysis || data.vibe_analysis_results;
+    const hasWebSearch = data.webSearchResults || data.web_search_results;
+
+    // Dynamic sequence based on what data is available
+    let interactions = '';
+    let participants = `actor "Developer" as dev
+participant "Coordinator" as coord
+participant "Git History Agent" as git
+participant "Vibe History Agent" as vibe
+participant "Semantic Analysis Agent" as semantic`;
+
+    if (hasWebSearch) {
+      participants += `\nparticipant "Web Search Agent" as web`;
+    }
+
+    participants += `\nparticipant "Insight Generation Agent" as insight
+participant "Quality Assurance Agent" as qa
+participant "Persistence Agent" as persist`;
+
+    // Generate interaction sequence
+    interactions = `dev -> coord: Execute complete-analysis workflow
+coord -> git: analyzeGitHistory()
+activate git`;
+
+    if (hasGitData) {
+      interactions += `\ngit --> coord: ${hasGitData.commits?.length || 0} commits analyzed`;
+    } else {
+      interactions += `\ngit --> coord: No commits found`;
+    }
+
+    interactions += `\ndeactivate git
+coord -> vibe: analyzeVibeHistory()
+activate vibe`;
+
+    if (hasVibeData) {
+      interactions += `\nvibe --> coord: ${hasVibeData.sessions?.length || 0} sessions analyzed`;
+    } else {
+      interactions += `\nvibe --> coord: No conversation data`;
+    }
+
+    interactions += `\ndeactivate vibe
+coord -> semantic: analyzeSemantics()
+activate semantic
+semantic --> coord: Cross-analysis complete
+deactivate semantic`;
+
+    if (hasWebSearch) {
+      interactions += `\ncoord -> web: searchSimilarPatterns()
+web --> coord: External patterns found`;
+    }
+
+    interactions += `\ncoord -> insight: generateComprehensiveInsights()
+activate insight
+insight --> coord: ${patternCount} patterns identified
+deactivate insight
+
+coord -> qa: performWorkflowQA()
+activate qa
+qa --> coord: Quality validation complete
+deactivate qa
+
+coord -> persist: persistAnalysisResults()
+persist --> coord: Knowledge base updated
+coord --> dev: Analysis complete`;
+
     return `@startuml
 ${this.getStandardStyle()}
 
-title Semantic Analysis Workflow
+title Semantic Analysis Workflow - ${new Date().toISOString().split('T')[0]}
 
-actor "Developer" as dev
-participant "Git History Agent" as git
-participant "Vibe History Agent" as vibe
-participant "Semantic Analysis Agent" as semantic
-participant "Insight Generation Agent" as insight
+${participants}
 
-dev -> git: Analyze commits
-git -> vibe: Share git patterns
-vibe -> semantic: Correlate with conversations
-semantic -> insight: Generate comprehensive insights
-insight -> dev: Deliver actionable insights
+${interactions}
 
 note right of insight
-  Patterns identified: ${data.patternCatalog?.patterns?.length || 0}
-  Significance: ${data.patternCatalog?.summary?.avgSignificance || 0}/10
+  Results Summary:
+  - Patterns identified: ${patternCount}
+  - Avg Significance: ${avgSignificance.toFixed(1)}/10
+  - Git commits: ${hasGitData?.commits?.length || 0}
+  - Conversations: ${hasVibeData?.sessions?.length || 0}
+  - Web references: ${hasWebSearch ? 'Yes' : 'No'}
 end note
 
 @enduml`;
@@ -751,80 +896,6 @@ ${semanticAnalysis ? this.formatSemanticAnalysisSummary(semanticAnalysis) : 'No 
 Co-Authored-By: Claude <noreply@anthropic.com>`;
   }
 
-  private async generateLessonsLearned(
-    gitAnalysis: any,
-    vibeAnalysis: any,
-    semanticAnalysis: any,
-    patternCatalog: PatternCatalog
-  ): Promise<LessonsLearnedDocument> {
-    const timestamp = new Date().toISOString();
-    
-    // Generate meaningful name for lessons learned based on primary insights
-    const { name: insightName } = this.generateMeaningfulNameAndTitle(
-      gitAnalysis,
-      vibeAnalysis,
-      semanticAnalysis,
-      patternCatalog
-    );
-    
-    const title = `${insightName}LessonsLearned`;
-    const displayTitle = `${insightName} - Lessons Learned`;
-
-    // Extract lessons from each analysis type
-    const sections = {
-      successes: this.extractSuccesses(gitAnalysis, vibeAnalysis, semanticAnalysis, patternCatalog),
-      challenges: this.extractChallenges(gitAnalysis, vibeAnalysis, semanticAnalysis),
-      keyLearnings: this.extractKeyLearnings(gitAnalysis, vibeAnalysis, semanticAnalysis, patternCatalog),
-      improvements: this.extractImprovements(gitAnalysis, vibeAnalysis, semanticAnalysis),
-      futureConsiderations: this.extractFutureConsiderations(patternCatalog)
-    };
-
-    const content = this.generateLessonsLearnedContent(displayTitle, timestamp, sections);
-    const filePath = path.join(this.outputDir, `${title}.md`);
-    
-    await fs.promises.writeFile(filePath, content, 'utf8');
-
-    return {
-      title: displayTitle,
-      content,
-      filePath,
-      sections
-    };
-  }
-
-  private generateLessonsLearnedContent(title: string, timestamp: string, sections: any): string {
-    return `# ${title}
-
-**Date:** ${timestamp}  
-**Context:** Comprehensive Semantic Analysis Session
-
-## What Worked Well
-
-${sections.successes.map((success: string, index: number) => `${index + 1}. ${success}`).join('\n')}
-
-## Challenges Encountered
-
-${sections.challenges.map((challenge: string, index: number) => `${index + 1}. ${challenge}`).join('\n')}
-
-## Key Learnings
-
-${sections.keyLearnings.map((learning: string, index: number) => `${index + 1}. ${learning}`).join('\n')}
-
-## Actionable Improvements
-
-${sections.improvements.map((improvement: string, index: number) => `${index + 1}. ${improvement}`).join('\n')}
-
-## Future Considerations
-
-${sections.futureConsiderations.map((consideration: string, index: number) => `${index + 1}. ${consideration}`).join('\n')}
-
----
-*Lessons Learned captured by Insight Generation Agent*
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>`;
-  }
 
   // Helper methods for content generation
   private generateExecutiveSummary(gitAnalysis: any, vibeAnalysis: any, semanticAnalysis: any, patternCatalog: PatternCatalog): string {
@@ -1141,118 +1212,6 @@ ${pattern.implementation.usageNotes.map(note => `- ${note}`).join('\n')}
     return sections.length > 0 ? sections.join('\n') : 'Web research data available but not structured.';
   }
 
-  // Helper methods for lessons learned extraction
-  private extractSuccesses(gitAnalysis: any, vibeAnalysis: any, semanticAnalysis: any, patternCatalog: PatternCatalog): string[] {
-    const successes = [];
-    
-    if (patternCatalog.patterns.length > 0) {
-      successes.push(`Successfully identified ${patternCatalog.patterns.length} distinct patterns across multiple analysis types`);
-    }
-    
-    if (semanticAnalysis?.codeAnalysis?.codeQuality?.score > 70) {
-      successes.push(`Maintained good code quality with score of ${semanticAnalysis.codeAnalysis.codeQuality.score}/100`);
-    }
-    
-    if (vibeAnalysis?.problemSolutionPairs?.length > 0) {
-      const successfulSolutions = vibeAnalysis.problemSolutionPairs.filter((p: any) => 
-        p.solution.outcome !== 'Solution implemented'
-      ).length;
-      if (successfulSolutions > 0) {
-        successes.push(`Achieved ${successfulSolutions} successful problem resolutions with clear outcomes`);
-      }
-    }
-    
-    if (gitAnalysis?.architecturalDecisions?.length > 0) {
-      successes.push(`Made ${gitAnalysis.architecturalDecisions.length} documented architectural decisions`);
-    }
-    
-    if (successes.length === 0) {
-      successes.push('Completed comprehensive semantic analysis successfully');
-      successes.push('Generated actionable insights from available data');
-    }
-    
-    return successes;
-  }
-
-  private extractChallenges(gitAnalysis: any, vibeAnalysis: any, semanticAnalysis: any): string[] {
-    const challenges = [];
-    
-    if (semanticAnalysis?.codeAnalysis?.codeQuality?.issues?.length > 0) {
-      challenges.push(`Code quality issues identified: ${semanticAnalysis.codeAnalysis.codeQuality.issues.length} areas need attention`);
-    }
-    
-    if (semanticAnalysis?.codeAnalysis?.complexityMetrics?.highComplexityFiles?.length > 0) {
-      challenges.push(`High complexity detected in ${semanticAnalysis.codeAnalysis.complexityMetrics.highComplexityFiles.length} files`);
-    }
-    
-    if (vibeAnalysis?.sessions?.length === 0) {
-      challenges.push('Limited conversation history available for analysis');
-    }
-    
-    if (gitAnalysis?.commits?.length < 10) {
-      challenges.push('Limited git history may affect pattern identification accuracy');
-    }
-    
-    if (challenges.length === 0) {
-      challenges.push('No significant challenges encountered during analysis');
-    }
-    
-    return challenges;
-  }
-
-  private extractKeyLearnings(gitAnalysis: any, vibeAnalysis: any, semanticAnalysis: any, patternCatalog: PatternCatalog): string[] {
-    const learnings = [];
-    
-    if (patternCatalog.summary.avgSignificance > 6) {
-      learnings.push(`High-quality patterns identified with average significance of ${patternCatalog.summary.avgSignificance}/10`);
-    }
-    
-    if (Object.keys(patternCatalog.summary.byCategory).length > 2) {
-      learnings.push(`Diverse pattern categories indicate comprehensive development approach: ${Object.keys(patternCatalog.summary.byCategory).join(', ')}`);
-    }
-    
-    if (vibeAnalysis?.summary?.primaryFocus) {
-      learnings.push(`Development focus on ${vibeAnalysis.summary.primaryFocus} shows clear project direction`);
-    }
-    
-    if (semanticAnalysis?.crossAnalysisInsights) {
-      learnings.push('Cross-analysis correlation provides deeper insights than individual analysis methods');
-    }
-    
-    learnings.push('Semantic analysis combining multiple data sources yields superior insight quality');
-    learnings.push('Pattern identification across different analysis types reveals systemic development approaches');
-    
-    return learnings;
-  }
-
-  private extractImprovements(gitAnalysis: any, vibeAnalysis: any, semanticAnalysis: any): string[] {
-    const improvements = [];
-    
-    if (semanticAnalysis?.codeAnalysis?.codeQuality?.recommendations) {
-      improvements.push(...semanticAnalysis.codeAnalysis.codeQuality.recommendations);
-    }
-    
-    improvements.push('Establish regular semantic analysis cycles for continuous insight generation');
-    improvements.push('Create pattern libraries from identified high-significance patterns');
-    improvements.push('Implement automated quality gates based on complexity metrics');
-    
-    return improvements;
-  }
-
-  private extractFutureConsiderations(patternCatalog: PatternCatalog): string[] {
-    const considerations = [];
-    
-    if (patternCatalog.patterns.length > 10) {
-      considerations.push('Consider creating a formal pattern catalog for team reference');
-    }
-    
-    considerations.push('Monitor pattern evolution over time to identify emerging trends');
-    considerations.push('Integrate semantic analysis insights into development workflow');
-    considerations.push('Explore automated pattern application and enforcement mechanisms');
-    considerations.push('Consider expanding analysis to include performance and security patterns');
-    
-    return considerations;
-  }
 
   // Utility methods
   private initializeDirectories(): void {
@@ -1293,7 +1252,73 @@ ${pattern.implementation.usageNotes.map(note => `- ${note}`).join('\n')}
     if (fs.existsSync(this.standardStylePath)) {
       return `!include ${this.standardStylePath}`;
     }
-    return '!theme plain';
+    
+    // Enhanced styling for professional diagrams
+    return `!theme plain
+
+skinparam backgroundColor #FEFEFE
+skinparam shadowing false
+
+' Component styling
+skinparam component {
+  BackgroundColor<<critical>> #FF6B6B
+  BorderColor<<critical>> #E53E3E
+  FontColor<<critical>> #FFFFFF
+  
+  BackgroundColor<<important>> #4ECDC4
+  BorderColor<<important>> #38B2AC
+  FontColor<<important>> #1A365D
+  
+  BackgroundColor<<standard>> #E6F3FF
+  BorderColor<<standard>> #3182CE
+  FontColor<<standard>> #1A365D
+  
+  BackgroundColor #F7FAFC
+  BorderColor #CBD5E0
+  FontColor #2D3748
+}
+
+' Package styling  
+skinparam package {
+  BackgroundColor #F0FFF4
+  BorderColor #48BB78
+  FontColor #22543D
+  FontStyle bold
+}
+
+' Note styling
+skinparam note {
+  BackgroundColor #FFFAF0
+  BorderColor #ED8936
+  FontColor #744210
+}
+
+' Actor styling
+skinparam actor {
+  BackgroundColor #EDF2F7
+  BorderColor #4A5568
+  FontColor #2D3748
+}
+
+' Participant styling
+skinparam participant {
+  BackgroundColor #F7FAFC
+  BorderColor #A0AEC0
+  FontColor #2D3748
+}
+
+' Arrow styling
+skinparam arrow {
+  Color #4A5568
+  FontColor #2D3748
+}
+
+' General styling
+skinparam defaultFontSize 12
+skinparam defaultFontColor #2D3748
+skinparam titleFontSize 16
+skinparam titleFontColor #1A202C
+skinparam titleFontStyle bold`;
   }
 
   private mapImpactToSignificance(impact: string): number {
@@ -1404,5 +1429,504 @@ ${pattern.implementation.usageNotes.map(note => `- ${note}`).join('\n')}
 - Architectural patterns: ${codeAnalysis.architecturalPatterns?.length || 0}
 - Code quality score: ${codeAnalysis.codeQuality?.score || 0}/100
 - Average complexity: ${codeAnalysis.complexityMetrics?.averageComplexity || 0}`;
+  }
+
+  // NEW METHODS FOR REAL PATTERN ANALYSIS
+  private async extractArchitecturalPatternsFromCommits(commits: any[]): Promise<IdentifiedPattern[]> {
+    const patterns: IdentifiedPattern[] = [];
+    
+    // Limit processing to prevent performance issues
+    const limitedCommits = commits.slice(0, 50);
+    
+    // Group commits by potential architectural significance
+    const significantCommits = limitedCommits.filter(commit => 
+      commit.additions + commit.deletions > 20 || // Significant code changes
+      this.isArchitecturalCommit(commit.message)
+    );
+
+    if (significantCommits.length === 0) return patterns;
+
+    try {
+      // Use LLM to analyze commit patterns
+      const commitSummary = significantCommits.map(c => ({
+        message: c.message,
+        files: c.files.map((f: any) => f.path),
+        changes: c.additions + c.deletions
+      }));
+
+      const analysisResult = await this.semanticAnalyzer.analyzeContent(
+        JSON.stringify(commitSummary, null, 2),
+        {
+          analysisType: 'patterns',
+          context: 'Git commit history analysis for architectural patterns',
+          provider: 'auto'
+        }
+      );
+
+      // Extract patterns from LLM response
+      if (analysisResult.insights) {
+        const extractedPatterns = await this.parseArchitecturalPatternsFromLLM(
+          analysisResult.insights,
+          significantCommits
+        );
+        patterns.push(...extractedPatterns);
+      }
+    } catch (error) {
+      log('Failed to use LLM for pattern extraction, falling back to basic analysis', 'warning', error);
+      // Fallback to basic pattern extraction if LLM fails
+      const themeGroups = this.groupCommitsByTheme(significantCommits);
+      let patternCount = 0;
+      themeGroups.forEach((commits, theme) => {
+        if (commits.length >= 2 && patternCount < 10) {
+          const pattern = this.createArchitecturalPattern(theme, commits);
+          if (pattern) {
+            patterns.push(pattern);
+            patternCount++;
+          }
+        }
+      });
+    }
+
+    return patterns;
+  }
+
+  private extractImplementationPatterns(codeEvolution: any[]): IdentifiedPattern[] {
+    const patterns: IdentifiedPattern[] = [];
+    
+    // Limit processing to prevent performance issues
+    const limitedEvolution = codeEvolution.slice(0, 20);
+    
+    limitedEvolution.forEach(evolution => {
+      if (evolution.occurrences >= 3 && patterns.length < 5) {
+        const pattern = this.createImplementationPattern(evolution);
+        if (pattern) patterns.push(pattern);
+      }
+    });
+
+    return patterns;
+  }
+
+  private extractDesignPatterns(codeAnalysis: any): IdentifiedPattern[] {
+    const patterns: IdentifiedPattern[] = [];
+    
+    if (codeAnalysis.architecturalPatterns) {
+      codeAnalysis.architecturalPatterns.forEach((archPattern: any) => {
+        if (archPattern.confidence > 0.7) {
+          const pattern = this.createDesignPattern(archPattern);
+          if (pattern) patterns.push(pattern);
+        }
+      });
+    }
+
+    return patterns;
+  }
+
+  private extractCodeSolutionPatterns(problemSolutionPairs: any[]): IdentifiedPattern[] {
+    const patterns: IdentifiedPattern[] = [];
+    
+    // Limit processing to prevent performance issues
+    const limitedPairs = problemSolutionPairs.slice(0, 10);
+    
+    const codeSolutions = limitedPairs.filter(pair => 
+      this.isCodeRelatedSolution(pair.solution) && this.isSignificantSolution(pair)
+    );
+
+    codeSolutions.forEach((pair, index) => {
+      if (patterns.length < 5) {
+        const pattern = this.createCodeSolutionPattern(pair, index);
+        if (pattern) patterns.push(pattern);
+      }
+    });
+
+    return patterns;
+  }
+
+  private isArchitecturalCommit(message: string): boolean {
+    const keywords = ['refactor', 'restructure', 'architecture', 'design', 'pattern', 'framework', 'system'];
+    return keywords.some(k => message.toLowerCase().includes(k));
+  }
+
+  private groupCommitsByTheme(commits: any[]): Map<string, any[]> {
+    const themes = new Map();
+    commits.forEach(commit => {
+      const theme = this.extractThemeFromCommit(commit);
+      if (!themes.has(theme)) themes.set(theme, []);
+      themes.get(theme).push(commit);
+    });
+    return themes;
+  }
+
+  private extractThemeFromCommit(commit: any): string {
+    const message = commit.message.toLowerCase();
+    if (message.includes('refactor')) return 'Refactoring';
+    if (message.includes('api')) return 'API Design';
+    if (message.includes('component')) return 'Component Architecture';
+    return 'General Architecture';
+  }
+
+  private createArchitecturalPattern(theme: string, commits: any[]): IdentifiedPattern | null {
+    if (commits.length === 0) return null;
+
+    const allFiles = new Set();
+    commits.forEach(commit => commit.files?.forEach((f: string) => allFiles.add(f)));
+
+    return {
+      name: `${theme.replace(/\s+/g, '')}Pattern`,
+      category: 'Architecture',
+      description: `${theme} pattern from ${commits.length} commits affecting ${allFiles.size} files`,
+      significance: Math.min(8, 4 + commits.length),
+      evidence: [
+        `Commits: ${commits.length}`,
+        `Files: ${allFiles.size}`,
+        `Example: ${commits[0].message.substring(0, 50)}...`
+      ],
+      relatedComponents: Array.from(allFiles) as string[],
+      implementation: {
+        language: this.detectLanguageFromFiles(Array.from(allFiles) as string[]),
+        usageNotes: [`Applied across ${allFiles.size} files`, `${commits.length} related commits`]
+      }
+    };
+  }
+
+  private createImplementationPattern(evolution: any): IdentifiedPattern | null {
+    if (!evolution.pattern) return null;
+
+    return {
+      name: `${evolution.pattern.replace(/\s+/g, '')}Implementation`,
+      category: 'Implementation',
+      description: `${evolution.pattern} with ${evolution.occurrences} occurrences`,
+      significance: Math.min(9, Math.ceil(evolution.occurrences / 2)),
+      evidence: [`Occurrences: ${evolution.occurrences}`, `Trend: ${evolution.trend}`],
+      relatedComponents: evolution.files || [],
+      implementation: {
+        language: this.detectLanguageFromFiles(evolution.files || []),
+        usageNotes: [`${evolution.occurrences} occurrences`, `Trend: ${evolution.trend}`]
+      }
+    };
+  }
+
+  private createDesignPattern(archPattern: any): IdentifiedPattern | null {
+    return {
+      name: `${archPattern.name.replace(/\s+/g, '')}Pattern`,
+      category: 'Design',
+      description: archPattern.description || `${archPattern.name} design pattern`,
+      significance: Math.round(archPattern.confidence * 10),
+      evidence: [`Confidence: ${Math.round(archPattern.confidence * 100)}%`],
+      relatedComponents: archPattern.files || [],
+      implementation: {
+        language: this.detectLanguageFromFiles(archPattern.files || []),
+        usageNotes: [`High confidence: ${Math.round(archPattern.confidence * 100)}%`]
+      }
+    };
+  }
+
+  private createCodeSolutionPattern(pair: any, index: number): IdentifiedPattern | null {
+    const patternName = this.generatePatternNameFromSolution(pair.solution, index);
+    
+    return {
+      name: patternName,  
+      category: 'Solution',
+      description: `Code solution: ${pair.problem.description.substring(0, 80)}`,
+      significance: this.calculateSolutionSignificance(pair),
+      evidence: [
+        `Approach: ${pair.solution.approach}`,
+        `Technologies: ${pair.solution.technologies?.join(', ') || 'Mixed'}`,
+        `Outcome: ${pair.solution.outcome}`
+      ],
+      relatedComponents: pair.solution.technologies || [],
+      implementation: {
+        language: this.detectLanguageFromTechnologies(pair.solution.technologies || []),
+        usageNotes: [`Solution for: ${pair.problem.description.substring(0, 50)}`]
+      }
+    };
+  }
+
+  private isCodeRelatedSolution(solution: any): boolean {
+    if (!solution) return false;
+    const text = (solution.approach + ' ' + (solution.outcome || '')).toLowerCase();
+    return ['code', 'function', 'class', 'component', 'api', 'refactor'].some(k => text.includes(k));
+  }
+
+  async generateDocumentation(templateName: string, data: any): Promise<{
+    title: string;
+    content: string;
+    generatedAt: string;
+  }> {
+    log(`Generating LLM-enhanced documentation using template: ${templateName}`, 'info', {
+      templateName,
+      hasData: !!data,
+      useSemanticAnalyzer: !!this.semanticAnalyzer
+    });
+
+    const generatedAt = new Date().toISOString();
+    const title = data.analysis_title || 'Generated Documentation';
+    
+    let content: string;
+    
+    // Try to use LLM for enhanced documentation generation
+    if (this.semanticAnalyzer) {
+      try {
+        const documentationPrompt = this.buildDocumentationPrompt(data, templateName);
+        const analysisResult = await this.semanticAnalyzer.analyzeContent(documentationPrompt, {
+          analysisType: 'architecture',
+          context: `Documentation generation for ${title}`,
+          provider: 'auto'
+        });
+        
+        if (analysisResult?.insights && analysisResult.insights.length > 500) {
+          // LLM generated good documentation
+          content = `# ${title}
+
+**Generated:** ${generatedAt} (LLM-Enhanced)
+**Scope:** ${data.scope || 'Analysis'}
+**Duration:** ${data.duration || 'N/A'}
+
+${analysisResult.insights}
+
+---
+
+*Generated by AI-Enhanced Semantic Analysis System at ${generatedAt}*
+*Provider: ${analysisResult.provider}*
+`;
+          log('LLM-enhanced documentation generated successfully', 'info', {
+            contentLength: content.length,
+            provider: analysisResult.provider
+          });
+        } else {
+          throw new Error('LLM analysis returned insufficient content');
+        }
+      } catch (error) {
+        log('LLM documentation generation failed, falling back to template', 'warning', error);
+        content = this.generateTemplateDocumentation(data, title, generatedAt);
+      }
+    } else {
+      content = this.generateTemplateDocumentation(data, title, generatedAt);
+    }
+
+    return {
+      title,
+      content,
+      generatedAt
+    };
+  }
+
+  private buildDocumentationPrompt(data: any, templateName: string): string {
+    return `Generate comprehensive technical documentation based on the following semantic analysis results:
+
+**Analysis Data:**
+${JSON.stringify(data, null, 2)}
+
+**Documentation Requirements:**
+- Create a professional technical document with clear structure
+- Include executive summary, detailed findings, and actionable recommendations
+- Focus on architectural insights and patterns discovered
+- Provide specific metrics and quality assessments where available
+- Include technical implementation details and best practices
+- Make recommendations concrete and actionable
+
+**Format:** Markdown with professional structure including:
+1. Executive Summary (2-3 paragraphs)
+2. Analysis Overview and Methodology
+3. Detailed Findings (with subsections as needed)
+4. Quality Metrics and Scores
+5. Architectural Insights
+6. Pattern Analysis
+7. Recommendations (prioritized list)
+8. Technical Implementation Notes
+9. Appendices (metadata, references)
+
+Please generate a comprehensive, professional technical document that would be valuable for developers and architects.`;
+  }
+
+  private generateTemplateDocumentation(data: any, title: string, generatedAt: string): string {
+    return `# ${title}
+
+**Generated:** ${generatedAt}
+**Scope:** ${data.scope || 'Analysis'}
+**Duration:** ${data.duration || 'N/A'}
+
+## Executive Summary
+
+${data.results_summary || 'Documentation generated from semantic analysis results.'}
+
+## Analysis Overview
+
+**Items Analyzed:** ${data.analyzed_items || 'Multiple components'}
+**Methodology:** ${data.methodology || 'Semantic analysis with AI-powered insights'}
+
+## Detailed Findings
+
+${data.detailed_findings || 'Analysis findings pending detailed review.'}
+
+## Quality Metrics
+
+${data.quality_metrics || 'Quality metrics under assessment.'}
+
+## Architectural Insights
+
+${data.architecture_insights || 'Architectural analysis in progress.'}
+
+## Pattern Analysis
+
+${data.pattern_analysis || 'Pattern detection and documentation pending.'}
+
+## Recommendations
+
+${data.recommendations || 'Recommendations based on analysis results pending.'}
+
+## Appendices
+
+${data.appendices || 'Additional metadata and references.'}
+
+---
+
+*Generated by Semantic Analysis System at ${generatedAt}*
+`;
+  }
+
+  async saveDocumentation(docResult: any, filePath: string): Promise<void> {
+    try {
+      log(`Saving documentation to: ${filePath}`, 'info', {
+        title: docResult.title,
+        contentLength: docResult.content.length
+      });
+
+      // Ensure directory exists
+      const dir = path.dirname(filePath);
+      await fs.promises.mkdir(dir, { recursive: true });
+
+      // Write documentation file
+      await fs.promises.writeFile(filePath, docResult.content, 'utf8');
+
+      log(`Documentation saved successfully: ${filePath}`, 'info');
+    } catch (error) {
+      log(`Failed to save documentation: ${filePath}`, 'error', error);
+      throw error;
+    }
+  }
+
+  private isSignificantSolution(pair: any): boolean {
+    return pair.solution && pair.solution.approach && pair.solution.approach.length > 20;
+  }
+
+  private generatePatternNameFromSolution(solution: any, index: number): string {
+    const approach = solution.approach?.toLowerCase() || '';
+    if (approach.includes('refactor')) return `RefactoringPattern${index + 1}`;
+    if (approach.includes('component')) return `ComponentPattern${index + 1}`;
+    if (approach.includes('api')) return `APIPattern${index + 1}`;
+    return `SolutionPattern${index + 1}`;
+  }
+
+  private calculateSolutionSignificance(pair: any): number {
+    let sig = 3;
+    if (pair.solution.technologies?.length > 2) sig += 1;
+    if (pair.solution.approach?.length > 50) sig += 1;
+    if (pair.solution.outcome?.includes('success')) sig += 2;
+    return Math.min(sig, 8);
+  }
+
+  private async parseArchitecturalPatternsFromLLM(
+    llmInsights: string, 
+    commits: any[]
+  ): Promise<IdentifiedPattern[]> {
+    const patterns: IdentifiedPattern[] = [];
+    
+    try {
+      // Try to extract structured patterns from LLM response
+      const lines = llmInsights.split('\n');
+      let currentPattern: Partial<IdentifiedPattern> | null = null;
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        
+        // Look for pattern headers
+        if (trimmed.match(/^(Pattern|Architecture|Design):\s*(.+)/i)) {
+          if (currentPattern && currentPattern.name) {
+            patterns.push(this.finalizePattern(currentPattern, commits));
+          }
+          const patternName = RegExp.$2.trim();
+          currentPattern = {
+            name: this.formatPatternName(patternName),
+            category: 'Architecture',
+            description: '',
+            significance: 7,
+            evidence: [],
+            relatedComponents: [],
+            implementation: {
+              language: 'TypeScript',
+              usageNotes: []
+            }
+          };
+        }
+        // Look for descriptions
+        else if (currentPattern && trimmed.match(/^(Description|Purpose|Summary):\s*(.+)/i)) {
+          currentPattern.description = RegExp.$2.trim();
+        }
+        // Look for significance indicators
+        else if (currentPattern && trimmed.match(/^(Significance|Importance|Impact):\s*(\d+)/i)) {
+          currentPattern.significance = Math.min(10, Math.max(1, parseInt(RegExp.$2)));
+        }
+        // Look for code examples or implementation notes
+        else if (currentPattern && trimmed.match(/^(Implementation|Code|Example):/i)) {
+          currentPattern.implementation = currentPattern.implementation || { language: 'TypeScript', usageNotes: [] };
+          currentPattern.implementation.usageNotes?.push(trimmed);
+        }
+        // Collect evidence
+        else if (currentPattern && trimmed.length > 20) {
+          currentPattern.evidence = currentPattern.evidence || [];
+          currentPattern.evidence.push(trimmed);
+        }
+      }
+      
+      // Don't forget the last pattern
+      if (currentPattern && currentPattern.name) {
+        patterns.push(this.finalizePattern(currentPattern, commits));
+      }
+      
+      // If no structured patterns found, create a general one
+      if (patterns.length === 0 && llmInsights.length > 100) {
+        patterns.push({
+          name: 'ArchitecturalEvolutionPattern',
+          category: 'Architecture',
+          description: llmInsights.substring(0, 200) + '...',
+          significance: 6,
+          evidence: [llmInsights],
+          relatedComponents: commits.flatMap(c => c.files?.map((f: any) => f.path) || []).slice(0, 5),
+          implementation: {
+            language: 'TypeScript',
+            usageNotes: ['See detailed analysis in the insight document']
+          }
+        });
+      }
+    } catch (error) {
+      log('Error parsing LLM insights into patterns', 'error', error);
+    }
+    
+    return patterns;
+  }
+
+  private formatPatternName(rawName: string): string {
+    // Convert to PascalCase and ensure it ends with "Pattern"
+    const words = rawName.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/);
+    const pascalCase = words
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join('');
+    
+    return pascalCase.endsWith('Pattern') ? pascalCase : pascalCase + 'Pattern';
+  }
+
+  private finalizePattern(partial: Partial<IdentifiedPattern>, commits: any[]): IdentifiedPattern {
+    return {
+      name: partial.name || 'UnnamedPattern',
+      category: partial.category || 'Architecture',
+      description: partial.description || 'Pattern identified through commit analysis',
+      significance: partial.significance || 5,
+      evidence: partial.evidence || [`Found in ${commits.length} commits`],
+      relatedComponents: partial.relatedComponents || commits.flatMap(c => c.files?.map((f: any) => f.path) || []).slice(0, 10),
+      implementation: partial.implementation || {
+        language: 'TypeScript',
+        usageNotes: ['Pattern extracted from commit history']
+      }
+    };
   }
 }

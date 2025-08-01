@@ -69,7 +69,7 @@ export class CoordinatorAgent {
         name: "complete-analysis",
         description: "Full 8-agent semantic analysis workflow",
         agents: ["git_history", "vibe_history", "semantic_analysis", "web_search", 
-                 "insight_generation", "observation_generation", "quality_assurance", "persistence"],
+                 "insight_generation", "observation_generation", "quality_assurance", "persistence", "deduplication"],
         steps: [
           {
             name: "analyze_git_history",
@@ -77,8 +77,9 @@ export class CoordinatorAgent {
             action: "analyzeGitHistory",
             parameters: { 
               repository_path: ".",
-              checkpoint_enabled: true,
-              depth: 100 // Number of commits to analyze
+              checkpoint_enabled: false, // Disable checkpoint for broader analysis
+              depth: 100, // Number of commits to analyze
+              days_back: 30 // Analyze commits from last 30 days
             },
             timeout: 120,
           },
@@ -96,7 +97,10 @@ export class CoordinatorAgent {
             name: "semantic_analysis",
             agent: "semantic_analysis",
             action: "analyzeSemantics",
-            parameters: {},
+            parameters: {
+              git_analysis_results: "{{analyze_git_history.result}}",
+              vibe_analysis_results: "{{analyze_vibe_history.result}}"
+            },
             dependencies: ["analyze_git_history", "analyze_vibe_history"],
             timeout: 180,
           },
@@ -104,7 +108,9 @@ export class CoordinatorAgent {
             name: "web_search",
             agent: "web_search",
             action: "searchSimilarPatterns",
-            parameters: {},
+            parameters: {
+              semantic_analysis_results: "{{semantic_analysis.result}}"
+            },
             dependencies: ["semantic_analysis"],
             timeout: 90,
           },
@@ -112,7 +118,12 @@ export class CoordinatorAgent {
             name: "generate_insights",
             agent: "insight_generation",
             action: "generateComprehensiveInsights",
-            parameters: {},
+            parameters: {
+              semantic_analysis_results: "{{semantic_analysis.result}}",
+              web_search_results: "{{web_search.result}}",
+              git_analysis_results: "{{analyze_git_history.result}}",
+              vibe_analysis_results: "{{analyze_vibe_history.result}}"
+            },
             dependencies: ["semantic_analysis", "web_search"],
             timeout: 120,
           },
@@ -120,25 +131,65 @@ export class CoordinatorAgent {
             name: "generate_observations",
             agent: "observation_generation",
             action: "generateStructuredObservations", 
-            parameters: {},
+            parameters: {
+              insights_results: "{{generate_insights.result}}",
+              semantic_analysis_results: "{{semantic_analysis.result}}",
+              git_analysis_results: "{{analyze_git_history.result}}"
+            },
             dependencies: ["generate_insights"],
             timeout: 90,
           },
           {
             name: "quality_assurance",
             agent: "quality_assurance",
-            action: "performComprehensiveQA",
-            parameters: {},
+            action: "performWorkflowQA",
+            parameters: {
+              all_results: {
+                git_history: "{{analyze_git_history.result}}",
+                vibe_history: "{{analyze_vibe_history.result}}",
+                semantic_analysis: "{{semantic_analysis.result}}",
+                web_search: "{{web_search.result}}",
+                insights: "{{generate_insights.result}}",
+                observations: "{{generate_observations.result}}"
+              }
+            },
             dependencies: ["generate_observations"],
-            timeout: 60,
+            timeout: 90, // Increased timeout for comprehensive analysis
           },
           {
             name: "persist_results",
             agent: "persistence",
             action: "persistAnalysisResults",
-            parameters: {},
+            parameters: {
+              workflow_results: {
+                git_history: "{{analyze_git_history.result}}",
+                vibe_history: "{{analyze_vibe_history.result}}",
+                semantic_analysis: "{{semantic_analysis.result}}",
+                web_search: "{{web_search.result}}",
+                insights: "{{generate_insights.result}}",
+                observations: "{{generate_observations.result}}",
+                quality_assurance: "{{quality_assurance.result}}"
+              }
+            },
             dependencies: ["quality_assurance"],
             timeout: 60,
+          },
+          {
+            name: "deduplicate_insights",
+            agent: "deduplication",
+            action: "handleResolveDuplicates",
+            parameters: {
+              entity_types: ["Pattern", "WorkflowPattern", "Insight", "DesignPattern"],
+              similarity_threshold: 0.85,
+              auto_merge: true,
+              preserve_history: true,
+              deduplicate_insights: true,
+              insight_scope: "global",
+              insight_threshold: 0.9,
+              merge_strategy: "combine"
+            },
+            dependencies: ["persist_results"],
+            timeout: 45,
           }
         ],
         config: {
@@ -150,7 +201,7 @@ export class CoordinatorAgent {
       {
         name: "incremental-analysis",
         description: "Incremental analysis since last checkpoint",
-        agents: ["git_history", "vibe_history", "semantic_analysis", "observation_generation", "persistence"],
+        agents: ["git_history", "vibe_history", "semantic_analysis", "observation_generation", "persistence", "deduplication"],
         steps: [
           {
             name: "analyze_recent_changes",
@@ -197,6 +248,16 @@ export class CoordinatorAgent {
             parameters: {},
             dependencies: ["generate_observations"],
             timeout: 30,
+          },
+          {
+            name: "deduplicate_incremental",
+            agent: "deduplication",
+            action: "handleConsolidatePatterns",
+            parameters: {
+              similarity_threshold: 0.9
+            },
+            dependencies: ["persist_incremental"],
+            timeout: 20,
           }
         ],
         config: {
@@ -284,6 +345,10 @@ export class CoordinatorAgent {
       const dedupAgent = new DeduplicationAgent();
       this.agents.set("deduplication", dedupAgent);
       
+      // Register other agents with deduplication for access to knowledge graph
+      dedupAgent.registerAgent("knowledge_graph", persistenceAgent);
+      dedupAgent.registerAgent("persistence", persistenceAgent);
+      
       log(`Initialized ${this.agents.size} agents`, "info", {
         agents: Array.from(this.agents.keys())
       });
@@ -337,15 +402,30 @@ export class CoordinatorAgent {
           }
         }
         
-        // Execute step
+        // Execute step with timing tracking
+        const stepStartTime = new Date();
         try {
           const stepResult = await this.executeStepWithTimeout(execution, step, parameters);
-          execution.results[step.name] = stepResult;
+          const stepEndTime = new Date();
+          const stepDuration = stepEndTime.getTime() - stepStartTime.getTime();
+          
+          // Store timing information with result
+          execution.results[step.name] = {
+            ...stepResult,
+            _timing: {
+              startTime: stepStartTime,
+              endTime: stepEndTime,
+              duration: stepDuration,
+              timeout: step.timeout || 60
+            }
+          };
           
           log(`Step completed: ${step.name}`, "info", {
             step: step.name,
             agent: step.agent,
-            hasResult: !!stepResult
+            hasResult: !!stepResult,
+            duration: `${(stepDuration / 1000).toFixed(1)}s`,
+            timeoutUtilization: `${((stepDuration / 1000) / (step.timeout || 60) * 100).toFixed(1)}%`
           });
           
         } catch (error) {
@@ -379,12 +459,15 @@ export class CoordinatorAgent {
         // Don't fail the workflow for checkpoint issues
       }
       
-      // Generate summary
+      // Generate summary with enhanced timing analysis
       const summary = this.generateWorkflowSummary(execution, workflow);
+      const performanceMetrics = this.analyzeWorkflowPerformance(execution);
       
       log(`Workflow completed: ${executionId}`, "info", {
         duration: execution.endTime.getTime() - execution.startTime.getTime(),
         stepsCompleted: execution.currentStep + 1,
+        performanceScore: performanceMetrics.overallScore,
+        bottlenecks: performanceMetrics.bottlenecks,
         summary
       });
       
@@ -416,6 +499,9 @@ export class CoordinatorAgent {
 
     const stepTimeout = (step.timeout || 60) * 1000;
     const stepParams = { ...step.parameters, ...globalParams };
+
+    // Resolve template placeholders in parameters
+    this.resolveParameterTemplates(stepParams, execution.results);
 
     // Add execution context
     stepParams._context = {
@@ -487,6 +573,40 @@ export class CoordinatorAgent {
     }
   }
 
+  /**
+   * Resolve template placeholders in parameters like {{step_name.result}}
+   */
+  private resolveParameterTemplates(parameters: Record<string, any>, results: Record<string, any>): void {
+    for (const [key, value] of Object.entries(parameters)) {
+      if (typeof value === 'string' && value.startsWith('{{') && value.endsWith('}}')) {
+        const template = value.slice(2, -2); // Remove {{ and }}
+        const [stepName, property = 'result'] = template.split('.');
+        
+        if (results[stepName] && !results[stepName].error) {
+          const resolvedValue = property === 'result' ? results[stepName] : results[stepName][property];
+          parameters[key] = resolvedValue;
+          
+          log(`Resolved template: ${value} -> ${typeof resolvedValue}`, "debug", {
+            template: value,
+            stepName,
+            property,
+            resolvedType: typeof resolvedValue
+          });
+        } else {
+          log(`Failed to resolve template: ${value} - step not found or failed`, "warning", {
+            template: value,
+            stepName,
+            availableSteps: Object.keys(results)
+          });
+          parameters[key] = null;
+        }
+      } else if (typeof value === 'object' && value !== null) {
+        // Recursively resolve nested objects
+        this.resolveParameterTemplates(value, results);
+      }
+    }
+  }
+
   private generateWorkflowSummary(execution: WorkflowExecution, workflow: WorkflowDefinition): string {
     const successfulSteps = Object.entries(execution.results)
       .filter(([_, result]) => !result.error)
@@ -525,6 +645,76 @@ Check the following locations for generated files:
 `;
     
     return summary.trim();
+  }
+
+  private analyzeWorkflowPerformance(execution: WorkflowExecution): {
+    overallScore: number;
+    bottlenecks: string[];
+    efficiency: number;
+    recommendations: string[];
+  } {
+    const bottlenecks: string[] = [];
+    const recommendations: string[] = [];
+    
+    const totalDuration = execution.endTime!.getTime() - execution.startTime.getTime();
+    const totalSeconds = totalDuration / 1000;
+    
+    // Analyze step performance
+    const stepTimings: Array<{ name: string; duration: number; timeout: number }> = [];
+    
+    for (const [stepName, result] of Object.entries(execution.results)) {
+      if (result?._timing) {
+        const duration = result._timing.duration / 1000;
+        const timeout = result._timing.timeout;
+        stepTimings.push({ name: stepName, duration, timeout });
+        
+        // Identify bottlenecks
+        if (duration > timeout * 0.8) {
+          bottlenecks.push(`${stepName} (${duration.toFixed(1)}s/${timeout}s)`);
+        }
+        
+        // Performance-based recommendations
+        if (duration > 180) { // > 3 minutes
+          recommendations.push(`Optimize ${stepName} - took ${duration.toFixed(1)}s`);
+        }
+      }
+    }
+    
+    // Calculate efficiency score
+    const totalStepTime = stepTimings.reduce((sum, step) => sum + step.duration, 0);
+    const efficiency = totalStepTime > 0 ? (totalSeconds / totalStepTime) * 100 : 100;
+    
+    // Overall performance score
+    let score = 100;
+    
+    // Penalize long workflows
+    if (totalSeconds > 900) score -= 30; // > 15 minutes
+    else if (totalSeconds > 600) score -= 15; // > 10 minutes
+    
+    // Penalize bottlenecks
+    score -= bottlenecks.length * 10;
+    
+    // Penalize low efficiency (too much parallel overhead)
+    if (efficiency < 80) score -= 10;
+    
+    // Reward fast execution
+    if (totalSeconds < 300 && execution.errors.length === 0) score += 10; // < 5 minutes
+    
+    const result = {
+      overallScore: Math.max(0, Math.min(100, score)),
+      bottlenecks,
+      efficiency: Math.round(efficiency),
+      recommendations
+    };
+    
+    log('Workflow performance analysis', 'info', {
+      totalDuration: `${totalSeconds.toFixed(1)}s`,
+      efficiency: `${result.efficiency}%`,
+      bottlenecks: result.bottlenecks.length,
+      score: result.overallScore
+    });
+    
+    return result;
   }
 
   private startBackgroundMonitor(): void {

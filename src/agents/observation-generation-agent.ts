@@ -15,6 +15,7 @@ export interface StructuredObservation {
   entityType: string;
   significance: number; // 1-10, but usually 5, 8, or 9
   observations: (string | ObservationTemplate)[]; // Can be simple strings or structured
+  tags?: string[]; // Optional tags for categorization
   relationships: {
     from: string;
     to: string;
@@ -344,19 +345,24 @@ export class ObservationGenerationAgent {
       ];
 
       return {
-        entityName,
+        name: entityName,
         entityType: 'CodeEvolutionPattern',
         significance: Math.min(Math.ceil(pattern.occurrences / 2), 10),
         observations,
         tags: [pattern.pattern.replace(/\s+/g, ''), pattern.trend, 'evolution', 'git-analysis'],
         relationships: [
           {
+            from: entityName,
+            to: 'GitHistoryAnalysis',
+            relationType: 'evidencedBy',
             type: 'evidencedBy',
             target: 'GitHistoryAnalysis',
             description: `Pattern observed across ${pattern.commits.length} commits`
           }
         ],
         metadata: {
+          created_at: currentDate,
+          last_updated: currentDate,
           generatedAt: currentDate,
           sourceData: ['git-history'],
           confidence: 0.8,
@@ -540,19 +546,24 @@ export class ObservationGenerationAgent {
       ];
 
       return {
-        entityName,
+        name: entityName,
         entityType: 'DevelopmentContextPattern',
         significance: Math.min(Math.ceil(totalContexts / 2), 8),
         observations,
         tags: [type.replace(/\s+/g, ''), 'context', 'workflow', 'vibe-analysis'],
         relationships: [
           {
+            from: entityName,
+            to: 'VibeHistoryAnalysis',
+            relationType: 'aggregatedFrom',
             type: 'aggregatedFrom',
             target: 'VibeHistoryAnalysis',
             description: `Aggregated from ${totalContexts} development contexts`
           }
         ],
         metadata: {
+          created_at: currentDate,
+          last_updated: currentDate,
           generatedAt: currentDate,
           sourceData: ['vibe-history'],
           confidence: 0.85,
@@ -624,19 +635,24 @@ export class ObservationGenerationAgent {
       ];
 
       return {
-        entityName,
+        name: entityName,
         entityType: 'SemanticInsight',
         significance: 7, // Default high significance for semantic insights
         observations,
         tags: ['semantic', 'insight', 'analysis', 'cross-source'],
         relationships: [
           {
+            from: entityName,
+            to: 'SemanticAnalysis',
+            relationType: 'derivedFrom',
             type: 'derivedFrom',
             target: 'SemanticAnalysis',
             description: 'Generated through semantic analysis of multiple data sources'
           }
         ],
         metadata: {
+          created_at: currentDate,
+          last_updated: currentDate,
           generatedAt: currentDate,
           sourceData: ['semantic-analysis'],
           confidence: 0.88,
@@ -714,24 +730,32 @@ export class ObservationGenerationAgent {
       ];
 
       return {
-        entityName,
+        name: entityName,
         entityType: 'CrossAnalysisPattern',
         significance: 8,
         observations,
         tags: ['cross-analysis', 'correlation', 'git-vibe', 'pattern'],
         relationships: [
           {
+            from: entityName,
+            to: 'GitHistoryAnalysis',
+            relationType: 'correlates',
             type: 'correlates',
             target: 'GitHistoryAnalysis',
             description: 'Correlates git patterns with conversation themes'
           },
           {
+            from: entityName,
+            to: 'VibeHistoryAnalysis',
+            relationType: 'correlates',
             type: 'correlates',
             target: 'VibeHistoryAnalysis',
             description: 'Correlates conversation themes with git patterns'
           }
         ],
         metadata: {
+          created_at: currentDate,
+          last_updated: currentDate,
           generatedAt: currentDate,
           sourceData: ['git-history', 'vibe-history'],
           confidence: 0.75,

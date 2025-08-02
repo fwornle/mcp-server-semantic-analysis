@@ -174,7 +174,16 @@ export class PersistenceAgent {
       });
 
       // Save insight files if available
-      if (insightGeneration?.insightDocument) {
+      if (insightGeneration?.insightDocuments && insightGeneration.insightDocuments.length > 0) {
+        // Save all generated insight documents
+        for (const insightDoc of insightGeneration.insightDocuments) {
+          const insightFile = await this.saveInsightDocument(insightDoc);
+          if (insightFile) {
+            result.filesCreated.push(insightFile);
+          }
+        }
+      } else if (insightGeneration?.insightDocument) {
+        // Fallback to single document for backward compatibility
         const insightFile = await this.saveInsightDocument(insightGeneration.insightDocument);
         if (insightFile) {
           result.filesCreated.push(insightFile);

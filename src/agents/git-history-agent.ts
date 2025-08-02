@@ -129,8 +129,21 @@ export class GitHistoryAgent {
       // If none of the above, analyze all commits (effectiveFromTimestamp = null)
 
       // Extract commits
+      log('Starting commit extraction', 'info', {
+        fromTimestamp: effectiveFromTimestamp?.toISOString() || 'repository start',
+        repositoryPath: this.repositoryPath
+      });
       const commits = await this.extractCommits(effectiveFromTimestamp);
-      log(`Extracted ${commits.length} commits for analysis`, 'info');
+      log(`Extracted ${commits.length} commits for analysis`, 'info', {
+        commitsAnalyzed: commits.length,
+        timeRange: {
+          from: effectiveFromTimestamp?.toISOString() || 'repository start',
+          to: new Date().toISOString()
+        },
+        commitHashes: commits.slice(0, 5).map(c => c.hash.substring(0, 8)),
+        totalFiles: commits.reduce((sum, c) => sum + c.files.length, 0),
+        totalChanges: commits.reduce((sum, c) => sum + c.stats.totalChanges, 0)
+      });
 
       // Analyze architectural decisions
       const architecturalDecisions = this.identifyArchitecturalDecisions(commits);

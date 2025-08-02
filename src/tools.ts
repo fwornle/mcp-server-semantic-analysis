@@ -849,15 +849,37 @@ async function handleGeneratePlantUMLDiagrams(args: any): Promise<any> {
       fileSize: diagramContent.length
     });
     
-    // TODO: Add PNG generation using plantuml command
-    // const pngFile = path.join(imagesDir, `${fileBaseName}-${diagram_type}.png`);
-    // await exec(`plantuml -tpng "${pumlFile}" -o "${imagesDir}"`);
+    // Generate PNG image using plantuml command
+    const pngFile = path.join(imagesDir, `${fileBaseName}-${diagram_type}.png`);
+    let pngGenerated = false;
+    
+    try {
+      const { exec } = await import('child_process');
+      const { promisify } = await import('util');
+      const execAsync = promisify(exec);
+      
+      // Use relative path to avoid nested directory creation
+      const relativePath = path.relative(path.dirname(pumlFile), imagesDir);
+      await execAsync(`plantuml -tpng "${pumlFile}" -o "${relativePath}"`);
+      pngGenerated = true;
+      
+      log(`PNG file generated: ${pngFile}`, "info", {
+        pumlFile,
+        pngFile
+      });
+      
+    } catch (error) {
+      log(`Failed to generate PNG: ${error}`, "warning", {
+        pumlFile,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
     
     return {
       content: [
         {
           type: "text",
-          text: `# PlantUML Diagram Generated\n\n**File Created:** ${pumlFile}\n**Type:** ${diagram_type}\n**Title:** ${content || name}\n**Size:** ${diagramContent.length} chars\n**Generated:** ${new Date().toISOString()}\n\n## Preview\n\`\`\`plantuml\n${diagramContent}\n\`\`\`\n\n**Note:** PNG conversion will be implemented in the next phase.`
+          text: `# PlantUML Diagram Generated\n\n**PUML File:** ${pumlFile}\n**PNG File:** ${pngGenerated ? pngFile : 'Not generated'}\n**Type:** ${diagram_type}\n**Title:** ${content || name}\n**Size:** ${diagramContent.length} chars\n**Generated:** ${new Date().toISOString()}\n\n## Preview\n\`\`\`plantuml\n${diagramContent}\n\`\`\`\n\n${pngGenerated ? '✅ PNG image successfully generated!' : '⚠️ PNG generation failed - check PlantUML installation'}`
         }
       ],
       metadata: {
@@ -890,7 +912,62 @@ function generateContextAwareDiagram(diagram_type: string, content: string, name
 }
 
 function generateArchitectureDiagram(title: string, analysis: any): string {
-  const components = analysis?.key_patterns || ["Component1", "Component2", "Component3"];
+  // Extract meaningful components from analysis data
+  let components = [];
+  
+  // Debug: log what we received
+  log(`generateArchitectureDiagram called with analysis:`, 'debug', { 
+    hasAnalysis: !!analysis, 
+    hasSemanticInsights: !!analysis?.semanticInsights,
+    hasPatterns: !!analysis?.semanticInsights?.patterns,
+    hasCommits: !!analysis?.commits,
+    hasArchDecisions: !!analysis?.architecturalDecisions,
+    analysisKeys: analysis ? Object.keys(analysis) : []
+  });
+  
+  // Try different sources for meaningful components
+  if (analysis?.semanticInsights?.patterns) {
+    components = analysis.semanticInsights.patterns.map((p: any) => p.name || p.pattern).slice(0, 8);
+    log(`Using semantic insights patterns:`, 'debug', components);
+  } else if (analysis?.codeAnalysis?.patterns) {
+    components = analysis.codeAnalysis.patterns.map((p: any) => p.name || p.pattern).slice(0, 8);
+    log(`Using code analysis patterns:`, 'debug', components);
+  } else if (analysis?.commits && analysis.commits.length > 0) {
+    // Extract components from git commit messages and file changes
+    const fileTypes = new Set<string>();
+    analysis.commits.forEach((commit: any) => {
+      if (commit.files) {
+        commit.files.forEach((file: string) => {
+          const ext = file.split('.').pop();
+          if (ext) {
+            if (ext.includes('ts') || ext.includes('js')) fileTypes.add('TypeScript/JavaScript Engine');
+            if (ext.includes('json')) fileTypes.add('Configuration Manager');
+            if (ext.includes('md')) fileTypes.add('Documentation System');
+            if (file.includes('agent')) fileTypes.add('Agent Framework');
+            if (file.includes('mcp')) fileTypes.add('MCP Protocol Handler');
+          }
+        });
+      }
+    });
+    components = Array.from(fileTypes).slice(0, 6);
+    log(`Using components from git commits:`, 'debug', components);
+  } else if (analysis?.architecturalDecisions) {
+    // Use architectural decisions as components
+    components = analysis.architecturalDecisions.map((d: any) => d.component || d.area || 'System Component').slice(0, 6);
+    log(`Using architectural decisions:`, 'debug', components);
+  }
+  
+  // Fallback to meaningful default components if still empty
+  if (components.length === 0) {
+    components = [
+      "Semantic Analysis Engine", 
+      "Knowledge Management System", 
+      "PlantUML Generator",
+      "Quality Assurance Agent",
+      "MCP Protocol Handler"
+    ];
+  }
+  
   const hasSharedMemory = components.some((p: string) => p.toLowerCase().includes("shared") || p.toLowerCase().includes("memory"));
   
   let diagram = `@startuml ${title.toLowerCase().replace(/\s+/g, '-')}-architecture

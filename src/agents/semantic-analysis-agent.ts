@@ -600,20 +600,25 @@ export class SemanticAnalysisAgent {
       
       let response: string;
       
+      // Try Anthropic first with rate limit handling
       if (this.anthropicClient) {
-        const result = await this.anthropicClient.messages.create({
-          model: "claude-3-sonnet-20240229",
-          max_tokens: 2000,
-          messages: [{ role: "user", content: analysisPrompt }]
-        });
-        response = result.content[0].type === 'text' ? result.content[0].text : '';
+        try {
+          response = await this.callAnthropicWithRetry(analysisPrompt);
+        } catch (anthropicError: any) {
+          log('Anthropic call failed, trying OpenAI fallback', 'warning', {
+            error: anthropicError.message,
+            status: anthropicError.status
+          });
+          
+          // If Anthropic fails due to rate limiting, try OpenAI
+          if (this.openaiClient && this.isRateLimitError(anthropicError)) {
+            response = await this.callOpenAIWithRetry(analysisPrompt);
+          } else {
+            throw anthropicError;
+          }
+        }
       } else if (this.openaiClient) {
-        const result = await this.openaiClient.chat.completions.create({
-          model: "gpt-4",
-          max_tokens: 2000,
-          messages: [{ role: "user", content: analysisPrompt }]
-        });
-        response = result.choices[0]?.message?.content || '';
+        response = await this.callOpenAIWithRetry(analysisPrompt);
       } else {
         throw new Error('No LLM client available');
       }
@@ -624,6 +629,133 @@ export class SemanticAnalysisAgent {
       log('LLM insight generation failed, falling back to rule-based', 'warning', error);
       return this.generateRuleBasedInsights(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis);
     }
+  }
+
+  /**
+   * Check if an error is a rate limit error
+   */
+  private isRateLimitError(error: any): boolean {
+    return error.status === 429 || 
+           error.message?.includes('rate_limit') ||
+           error.message?.includes('Rate limit') ||
+           error.error?.error?.type === 'rate_limit_error';
+  }
+
+  /**
+   * Sleep for a given number of milliseconds
+   */
+  private async sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Call Anthropic with exponential backoff retry
+   */
+  private async callAnthropicWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
+    let lastError: any;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        log(`Calling Anthropic API (attempt ${attempt + 1}/${maxRetries})`, 'info');
+        
+        const result = await this.anthropicClient!.messages.create({
+          model: "claude-3-5-sonnet-20241022",
+          max_tokens: 2000,
+          messages: [{ role: "user", content: prompt }]
+        });
+        
+        const response = result.content[0].type === 'text' ? result.content[0].text : '';
+        log(`Anthropic API call successful`, 'info', {
+          responseLength: response.length,
+          attempt: attempt + 1
+        });
+        
+        return response;
+        
+      } catch (error: any) {
+        lastError = error;
+        
+        if (this.isRateLimitError(error)) {
+          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
+          log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
+            attempt: attempt + 1,
+            maxRetries,
+            status: error.status,
+            backoffMs
+          });
+          
+          if (attempt < maxRetries - 1) {
+            await this.sleep(backoffMs);
+            continue;
+          }
+        }
+        
+        // For non-rate-limit errors, don't retry
+        log(`Anthropic API call failed`, 'error', {
+          attempt: attempt + 1,
+          error: error.message,
+          status: error.status
+        });
+        break;
+      }
+    }
+    
+    throw lastError;
+  }
+
+  /**
+   * Call OpenAI with exponential backoff retry
+   */
+  private async callOpenAIWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
+    let lastError: any;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        log(`Calling OpenAI API (attempt ${attempt + 1}/${maxRetries})`, 'info');
+        
+        const result = await this.openaiClient!.chat.completions.create({
+          model: "gpt-4",
+          max_tokens: 2000,
+          messages: [{ role: "user", content: prompt }]
+        });
+        
+        const response = result.choices[0]?.message?.content || '';
+        log(`OpenAI API call successful`, 'info', {
+          responseLength: response.length,
+          attempt: attempt + 1
+        });
+        
+        return response;
+        
+      } catch (error: any) {
+        lastError = error;
+        
+        if (this.isRateLimitError(error)) {
+          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
+          log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
+            attempt: attempt + 1,
+            maxRetries,
+            status: error.status,
+            backoffMs
+          });
+          
+          if (attempt < maxRetries - 1) {
+            await this.sleep(backoffMs);
+            continue;
+          }
+        }
+        
+        // For non-rate-limit errors, don't retry
+        log(`OpenAI API call failed`, 'error', {
+          attempt: attempt + 1,
+          error: error.message,
+          status: error.status
+        });
+        break;
+      }
+    }
+    
+    throw lastError;
   }
 
   private buildAnalysisPrompt(
@@ -716,26 +848,53 @@ Focus on:
     vibeAnalysis: any,
     crossAnalysis: any
   ): SemanticAnalysisResult['semanticInsights'] {
-    const keyPatterns = [...new Set(codeFiles.flatMap(f => f.patterns))];
+    // Extract insights from git analysis if available
+    const keyPatterns = codeFiles?.length > 0 
+      ? [...new Set(codeFiles.flatMap(f => f.patterns))]
+      : (gitAnalysis?.patterns || []).map((p: any) => p.name || p);
     
     const architecturalDecisions = gitAnalysis?.architecturalDecisions
-      ?.map((d: any) => `${d.type}: ${d.description}`)
+      ?.map((d: any) => `${d.type || 'Decision'}: ${d.description || d}`)
       .slice(0, 5) || [];
 
-    const technicalDebt = codeFiles
-      .filter(f => f.complexity > 15)
-      .map(f => `High complexity in ${f.path} (${f.complexity})`)
-      .slice(0, 3);
+    // Get technical debt from code analysis or git commits
+    const technicalDebt = codeFiles?.length > 0
+      ? codeFiles.filter(f => f.complexity > 15)
+          .map(f => `High complexity in ${f.path} (${f.complexity})`).slice(0, 3)
+      : gitAnalysis?.commits?.filter((c: any) => c.message?.includes('fix') || c.message?.includes('refactor'))
+          .map((c: any) => `Technical fix: ${c.message?.substring(0, 50)}...`).slice(0, 3) || [];
 
-    const innovativeApproaches = crossAnalysis.conversationImplementationMap
-      .map((m: any) => `Implemented ${m.implementation.join(', ')} for: ${m.problem}`)
-      .slice(0, 3);
+    // Generate insights from conversation analysis
+    const innovativeApproaches = crossAnalysis?.conversationImplementationMap?.length > 0
+      ? crossAnalysis.conversationImplementationMap
+          .map((m: any) => `Implemented ${m.implementation?.join(', ') || 'solution'} for: ${m.problem}`)
+          .slice(0, 3)
+      : vibeAnalysis?.sessions?.map((s: any) => `Development insight from session: ${s.content?.substring(0, 50)}...`).slice(0, 3) || [];
 
-    const learnings = [
-      `Primary development language: ${this.getMostUsedLanguage(codeFiles)}`,
-      `Code quality score: ${this.calculateOverallQuality(codeFiles)}%`,
-      `Most common pattern: ${keyPatterns[0] || 'None identified'}`
-    ];
+    // Generate meaningful learnings even without code files
+    const learnings = [];
+    
+    if (codeFiles?.length > 0) {
+      learnings.push(`Primary development language: ${this.getMostUsedLanguage(codeFiles)}`);
+      learnings.push(`Code quality score: ${this.calculateOverallQuality(codeFiles)}%`);
+    } else {
+      learnings.push(`Analysis based on git history with ${gitAnalysis?.commits?.length || 0} commits`);
+      learnings.push(`Repository contains ${gitAnalysis?.totalChanges || 0} total changes`);
+    }
+    
+    learnings.push(`Most common pattern: ${keyPatterns[0] || 'Pattern analysis in progress'}`);
+    
+    if (gitAnalysis?.summary) {
+      learnings.push(`Repository focus: ${gitAnalysis.summary}`);
+    }
+
+    log('Generated rule-based insights', 'info', {
+      keyPatterns: keyPatterns.length,
+      architecturalDecisions: architecturalDecisions.length,
+      technicalDebt: technicalDebt.length,
+      innovativeApproaches: innovativeApproaches.length,
+      learnings: learnings.length
+    });
 
     return {
       keyPatterns,

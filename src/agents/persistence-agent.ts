@@ -360,24 +360,34 @@ export class PersistenceAgent {
 
   private async saveInsightDocument(insightDocument: any): Promise<string | null> {
     try {
+      log('🔍 PERSISTENCE TRACE: saveInsightDocument called', 'info', {
+        name: insightDocument.name,
+        hasFilePath: !!insightDocument.filePath,
+        filePath: insightDocument.filePath,
+        hasContent: !!insightDocument.content
+      });
+      
       if (!insightDocument.filePath) {
-        log('Insight document has no file path - saving content directly', 'warning');
+        log('🚨 NO FILEPATH - Creating new file', 'warning', { name: insightDocument.name });
         const fileName = `${insightDocument.name || 'insight'}_${Date.now()}.md`;
+        log('🚨 GENERATED FILENAME', 'warning', { fileName });
         const filePath = path.join(this.insightsDir, fileName);
+        log('🚨 FULL FILEPATH', 'warning', { fullPath: filePath });
         await fs.promises.writeFile(filePath, insightDocument.content, 'utf8');
         return filePath;
       }
 
       // File already saved by InsightGenerationAgent, just verify it exists
+      log('🔍 CHECKING EXISTING FILE', 'info', { filePath: insightDocument.filePath });
       if (fs.existsSync(insightDocument.filePath)) {
-        log(`Insight document verified: ${insightDocument.filePath}`, 'info');
+        log('✅ FILE EXISTS - Using existing file', 'info', { filePath: insightDocument.filePath });
         return insightDocument.filePath;
       } else {
-        log(`Insight document file not found: ${insightDocument.filePath}`, 'warning');
+        log('❌ FILE NOT FOUND - Returning null', 'warning', { filePath: insightDocument.filePath });
         return null;
       }
     } catch (error) {
-      log('Failed to save insight document', 'error', error);
+      log('💥 ERROR in saveInsightDocument', 'error', error);
       return null;
     }
   }
@@ -673,23 +683,40 @@ export class PersistenceAgent {
       // Create entity from insight generation if available
       if (analysisData.insightGeneration?.insightDocument) {
         const insight = analysisData.insightGeneration.insightDocument;
+        
+        // Use filename directly - no manipulation
+        const cleanName = insight.name || 'SemanticAnalysisInsight';
+        
+        // Create detailed observations with bullet points
+        const detailedObservations = [
+          {
+            type: 'insight',
+            content: `${cleanName} - Comprehensive Pattern Analysis`,
+            date: now,
+            metadata: {
+              generatedAt: insight.metadata?.generatedAt,
+              analysisTypes: insight.metadata?.analysisTypes,
+              patternCount: insight.metadata?.patternCount
+            }
+          },
+          {
+            type: 'summary',
+            content: this.generateEntitySummary(analysisData),
+            date: now
+          },
+          {
+            type: 'link',
+            content: `Details: ${cleanName}.md`,
+            date: now
+          }
+        ];
+
         const entity: SharedMemoryEntity = {
           id: `analysis_${Date.now()}`,
-          name: insight.name || 'SemanticAnalysisInsight',
-          entityType: 'AnalysisInsight',
-          significance: insight.metadata?.significance || 5,
-          observations: [
-            {
-              type: 'insight',
-              content: insight.title || 'Comprehensive semantic analysis results',
-              date: now,
-              metadata: {
-                generatedAt: insight.metadata?.generatedAt,
-                analysisTypes: insight.metadata?.analysisTypes,
-                patternCount: insight.metadata?.patternCount
-              }
-            }
-          ],
+          name: cleanName,
+          entityType: 'TransferablePattern',
+          significance: insight.metadata?.significance || 7,
+          observations: detailedObservations,
           relationships: [],
           metadata: {
             created_at: now,
@@ -1097,5 +1124,32 @@ ${entityData.insights}
   // Utility method for external access to insights directory
   get insightsDirectory(): string {
     return this.insightsDir;
+  }
+
+
+  private generateEntitySummary(analysisData: any): string {
+    const summaryPoints = [];
+    
+    if (analysisData.gitAnalysis?.commits?.length) {
+      summaryPoints.push(`Git analysis: ${analysisData.gitAnalysis.commits.length} commits analyzed`);
+    }
+    
+    if (analysisData.semanticAnalysis?.patterns?.length) {
+      summaryPoints.push(`${analysisData.semanticAnalysis.patterns.length} patterns identified`);
+    }
+    
+    if (analysisData.semanticAnalysis?.codeAnalysis?.complexity) {
+      const complexity = analysisData.semanticAnalysis.codeAnalysis.complexity;
+      summaryPoints.push(`Code complexity: avg ${complexity.averageComplexity?.toFixed(1) || 'N/A'}`);
+    }
+    
+    if (analysisData.vibeAnalysis?.conversations?.length) {
+      summaryPoints.push(`${analysisData.vibeAnalysis.conversations.length} conversations analyzed`);
+    }
+
+    summaryPoints.push('Cross-session persistence, agent-agnostic design');
+    summaryPoints.push('Generated insights with PlantUML diagrams');
+    
+    return summaryPoints.join('\n');
   }
 }

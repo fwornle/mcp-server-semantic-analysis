@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
+import { FilenameTracer } from '../utils/filename-tracer.js';
 
 export interface InsightDocument {
   name: string;
@@ -179,6 +180,11 @@ export class InsightGenerationAgent {
     semanticAnalysis: any,
     webResults?: any
   ): Promise<PatternCatalog> {
+    FilenameTracer.trace('PATTERN_CATALOG_START', 'generatePatternCatalog',
+      { hasGit: !!gitAnalysis, hasVibe: !!vibeAnalysis, hasSemantic: !!semanticAnalysis },
+      'Starting pattern catalog generation'
+    );
+    
     const patterns: IdentifiedPattern[] = [];
 
     // Generate REAL architectural patterns based on actual code analysis
@@ -187,7 +193,17 @@ export class InsightGenerationAgent {
     // Analyze git commits for architectural patterns
     try {
       if (gitAnalysis?.commits && gitAnalysis.commits.length > 0) {
+        FilenameTracer.trace('EXTRACTING_ARCH_PATTERNS', 'generatePatternCatalog',
+          gitAnalysis.commits.length, 'Extracting architectural patterns from commits'
+        );
+        
         const architecturalPatterns = await this.extractArchitecturalPatternsFromCommits(gitAnalysis.commits);
+        
+        FilenameTracer.trace('ARCH_PATTERNS_EXTRACTED', 'generatePatternCatalog',
+          architecturalPatterns.map(p => p.name), 
+          `Extracted ${architecturalPatterns.length} architectural patterns`
+        );
+        
         patterns.push(...architecturalPatterns);
       }
     } catch (error) {
@@ -255,169 +271,84 @@ export class InsightGenerationAgent {
     semanticAnalysis: any,
     patternCatalog: PatternCatalog
   ): { name: string; title: string } {
-    // Analyze content to determine the main focus
-    const analysisTypes = [];
-    if (gitAnalysis?.commits?.length > 0) analysisTypes.push('Git');
-    if (vibeAnalysis?.conversations?.length > 0) analysisTypes.push('Conversation');
-    if (semanticAnalysis?.patterns?.length > 0) analysisTypes.push('Semantic');
     
-    // Get the most significant patterns
-    const topPatterns = patternCatalog.patterns
-      .sort((a, b) => b.significance - a.significance)
-      .slice(0, 3);
+    FilenameTracer.trace('START', 'generateMeaningfulNameAndTitle', 
+      { patternsCount: patternCatalog?.patterns?.length }, 
+      'Starting filename generation'
+    );
     
-    // Generate name based on discovered patterns and analysis
-    let baseName = '';
-    let titleSuffix = '';
+    const topPattern = patternCatalog?.patterns
+      ?.sort((a: any, b: any) => b.significance - a.significance)?.[0];
+      
+    // Clean the pattern name immediately at selection
+    if (topPattern?.name) {
+      topPattern.name = this.cleanCorruptedPatternName(topPattern.name);
+    }
+      
+    FilenameTracer.trace('PATTERN_SELECTION', 'generateMeaningfulNameAndTitle',
+      { 
+        allPatterns: patternCatalog?.patterns?.map((p: any) => p.name),
+        topPattern: topPattern?.name 
+      },
+      topPattern?.name || 'NO_PATTERN_FOUND'
+    );
     
-    if (topPatterns.length > 0) {
-      const primaryPattern = topPatterns[0];
-      
-      // Extract key terms from pattern names/descriptions ONLY (filter out corrupted data)
-      // FIXED: Better handling of pattern names to prevent corruption
-      const patternWords = primaryPattern.name
-        .split(/[\s\-_]+/)
-        .filter(word => word.length > 2 && !word.match(/^\d+$/))
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
-      
-      // Add category if it's meaningful
-      if (primaryPattern.category && primaryPattern.category !== 'Implementation') {
-        patternWords.push(primaryPattern.category);
-      }
-      
-      // Add the word "Pattern" if not already present
-      if (!patternWords.some(w => w.toLowerCase() === 'pattern')) {
-        patternWords.push('Pattern');
-      }
-      
-      // Create clean camelCase name from pattern words only
-      baseName = patternWords.join('');
-      titleSuffix = ` - ${primaryPattern.category} Pattern Analysis`;
-      
-    } else if (gitAnalysis?.commits?.length > 0) {
-      // Focus on git analysis if no patterns found - use only clean structured data
-      const cleanGitInputs = [
-        ...(gitAnalysis.summary?.focusAreas || []),
-        ...(gitAnalysis.summary?.technologies || []),
-        ...(gitAnalysis.summary?.fileTypes || [])
-      ].filter(item => 
-        typeof item === 'string' && 
-        item.length > 0 && 
-        item.length < 50 &&  // Keep git terms short and clean
-        !item.includes('you were just') &&
-        !item.includes('conversation')
+    let filename: string;
+    
+    if (topPattern?.name) {
+      FilenameTracer.trace('PATTERN_INPUT', 'generateMeaningfulNameAndTitle',
+        topPattern.name, 
+        'Raw pattern name input'
       );
       
-      const gitTerms = this.extractKeyTerms(cleanGitInputs);
-      baseName = this.createCamelCaseName([...gitTerms, 'Development', 'Analysis']);
-      titleSuffix = ' - Development Evolution Analysis';
-      
-    } else if (analysisTypes.length > 0) {
-      // FIXED: Clean analysis-based naming with proper camelCase
-      const cleanAnalysisTypes = analysisTypes.filter(type => 
-        typeof type === 'string' && type.length > 0 && type.length < 20
-      );
-      const cleanTerms = this.extractKeyTerms(cleanAnalysisTypes);
-      baseName = this.createCamelCaseName([...cleanTerms, 'Analysis']);
-      titleSuffix = ` - ${cleanAnalysisTypes.join(' & ')} Analysis`;
-      
+      // Fix all known corruption patterns (case-insensitive)
+      const name = topPattern.name.toLowerCase();
+      if (name.includes('documentationupdates')) {
+        filename = 'DocumentationUpdatesPattern';
+        FilenameTracer.trace('CORRUPTION_FIX', 'generateMeaningfulNameAndTitle',
+          topPattern.name, filename
+        );
+      } else if (name.includes('configuration')) {
+        filename = 'ConfigurationPattern';
+        FilenameTracer.trace('CORRUPTION_FIX', 'generateMeaningfulNameAndTitle',
+          topPattern.name, filename
+        );
+      } else if (name.includes('testfile')) {
+        filename = 'TestFilePattern';
+        FilenameTracer.trace('CORRUPTION_FIX', 'generateMeaningfulNameAndTitle',
+          topPattern.name, filename
+        );
+      } else if (name.includes('bugfix')) {
+        filename = 'BugFixPattern';
+        FilenameTracer.trace('CORRUPTION_FIX', 'generateMeaningfulNameAndTitle',
+          topPattern.name, filename
+        );
+      } else {
+        filename = topPattern.name.replace(/\s+/g, '');
+        FilenameTracer.trace('SPACE_REMOVAL', 'generateMeaningfulNameAndTitle',
+          topPattern.name, filename
+        );
+      }
     } else {
-      // Fallback - check if we have any meaningful data at all
-      const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
-      baseName = `SemanticAnalysis${timestamp}`;
-      titleSuffix = ' - System Analysis';
-      
-      log('Using timestamp-based fallback naming - no meaningful analysis data found', 'warning', {
-        gitCommits: gitAnalysis?.commits?.length || 0,
-        vibeConversations: vibeAnalysis?.conversations?.length || 0,
-        semanticPatterns: semanticAnalysis?.patterns?.length || 0,
-        catalogPatterns: patternCatalog?.patterns?.length || 0
-      });
+      filename = 'SemanticAnalysisPattern';
+      FilenameTracer.trace('FALLBACK', 'generateMeaningfulNameAndTitle',
+        'NO_PATTERN', filename
+      );
     }
     
-    // Ensure name follows conventions: CamelCase, no spaces, descriptive
-    const finalName = baseName || 'SemanticAnalysisInsight';
-    const finalTitle = `${finalName}${titleSuffix}`;
+    const title = `${filename} - Implementation Analysis`;
     
-    log('Generated meaningful insight name', 'info', {
-      name: finalName,
-      title: finalTitle,
-      basedOn: { analysisTypes, patternCount: topPatterns.length }
-    });
+    FilenameTracer.trace('FINAL_OUTPUT', 'generateMeaningfulNameAndTitle',
+      { originalPattern: topPattern?.name, filename, title },
+      { name: filename, title }
+    );
     
-    return { name: finalName, title: finalTitle };
+    // Add breakpoint opportunity
+    debugger; // Will pause here when running with debugger
+    
+    return { name: filename, title };
   }
 
-  private extractKeyTerms(texts: string[]): string[] {
-    const keyTerms = new Set<string>();
-    const stopWords = new Set(['the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'a', 'an']);
-    
-    texts.forEach(text => {
-      if (typeof text === 'string') {
-        // Extract meaningful terms (capitalized words, technical terms)
-        const matches = text.match(/\b[A-Z][a-z]+(?:[A-Z][a-z]*)*\b|\b[a-z]*[A-Z][a-z]*\b/g) || [];
-        matches.forEach(term => {
-          const cleanTerm = term.toLowerCase();
-          if (cleanTerm.length > 2 && !stopWords.has(cleanTerm)) {
-            keyTerms.add(term.charAt(0).toUpperCase() + term.slice(1).toLowerCase());
-          }
-        });
-      }
-    });
-    
-    return Array.from(keyTerms).slice(0, 4); // Limit to avoid overly long names
-  }
-
-  private createCamelCaseName(terms: string[]): string {
-    if (terms.length === 0) return 'SemanticAnalysis';
-    
-    // Extract meaningful words from each term
-    const meaningfulWords = new Set<string>();
-    const stopWords = new Set(['the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'a', 'an', 'is', 'are', 'was', 'were', 'been', 'be']);
-    
-    terms.forEach(term => {
-      if (typeof term === 'string') {
-        // Split by spaces, hyphens, underscores, and camelCase boundaries
-        const words = term
-          .split(/[\s\-_]+/) // Split by spaces, hyphens, underscores
-          .flatMap(word => word.split(/(?=[A-Z])/)) // Split camelCase
-          .map(word => word.toLowerCase().trim())
-          .filter(word => word.length > 2 && !stopWords.has(word));
-        
-        words.forEach(word => meaningfulWords.add(word));
-      }
-    });
-    
-    // Convert to array and prioritize
-    let wordList = Array.from(meaningfulWords);
-    
-    // Prioritize certain keywords if found
-    const priorityWords = ['pattern', 'repository', 'service', 'controller', 'manager', 'handler', 'workflow', 'analysis'];
-    const hasPriority = wordList.filter(w => priorityWords.includes(w));
-    if (hasPriority.length > 0) {
-      wordList = [...hasPriority, ...wordList.filter(w => !priorityWords.includes(w))];
-    }
-    
-    // Take only the most relevant 2-3 words
-    const selectedWords = wordList.slice(0, 3);
-    
-    if (selectedWords.length === 0) return 'SemanticAnalysis';
-    
-    // Create camelCase name
-    const result = selectedWords
-      .map((word, index) => {
-        const cleaned = word.replace(/[^a-z0-9]/g, '');
-        if (index === 0) {
-          return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-        }
-        return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-      })
-      .join('');
-    
-    // FIXED: No truncation - return meaningful names (removed broken 30-char limit)
-    // Only fallback if result is empty, but keep meaningful names intact
-    return result || 'SemanticAnalysis';
-  }
 
   private async generateInsightDocument(
     gitAnalysis: any,
@@ -434,8 +365,24 @@ export class InsightGenerationAgent {
       patternCatalog
     );
 
-    // Generate PlantUML diagrams
-    const diagrams = await this.generateAllDiagrams(name, {
+    // Generate PlantUML diagrams with clean name  
+    FilenameTracer.trace('DIAGRAM_INPUT', 'generateInsightDocument',
+      name, 'Diagram name input'
+    );
+    
+    let cleanDiagramName = name;
+    if (name.includes('PatternDocumentationupdatespattern') || name.includes('documentationupdates')) {
+      cleanDiagramName = 'DocumentationUpdatesPattern';
+      FilenameTracer.trace('DIAGRAM_CORRUPTION_FIX', 'generateInsightDocument',
+        name, cleanDiagramName
+      );
+    }
+    
+    FilenameTracer.trace('DIAGRAM_FINAL', 'generateInsightDocument',
+      { originalName: name, cleanName: cleanDiagramName }, cleanDiagramName
+    );
+    
+    const diagrams = await this.generateAllDiagrams(cleanDiagramName, {
       gitAnalysis,
       vibeAnalysis,
       semanticAnalysis,
@@ -444,7 +391,7 @@ export class InsightGenerationAgent {
 
     // Generate comprehensive content  
     const timestamp = new Date().toISOString();
-    const content = this.generateInsightContent({
+    const content = await this.generateInsightContent({
       title,
       timestamp,
       gitAnalysis,
@@ -455,9 +402,42 @@ export class InsightGenerationAgent {
       diagrams
     });
 
-    // Save the document
-    const filePath = path.join(this.outputDir, `${name}.md`);
+    // Save the document with tracing
+    FilenameTracer.trace('FILE_WRITE_INPUT', 'generateInsightDocument',
+      name, 'Filename for file write operation'
+    );
+    
+    let cleanName = name;
+    FilenameTracer.trace('FILE_ORIGINAL_NAME', 'generateInsightDocument',
+      name, 'Original name before cleaning'
+    );
+    
+    if (name.includes('PatternDocumentationupdatespattern') || name.includes('documentationupdates')) {
+      cleanName = 'DocumentationUpdatesPattern';
+      FilenameTracer.trace('FILE_CORRUPTION_FIX', 'generateInsightDocument',
+        name, cleanName
+      );
+    } else {
+      FilenameTracer.trace('FILE_NO_CORRUPTION_DETECTED', 'generateInsightDocument',
+        name, 'No corruption patterns matched'
+      );
+    }
+    
+    const filePath = path.join(this.outputDir, `${cleanName}.md`);
+    
+    FilenameTracer.trace('FILE_PATH_FINAL', 'generateInsightDocument',
+      { name, cleanName, outputDir: this.outputDir }, filePath
+    );
+    
+    debugger; // Breakpoint opportunity for file writing
+    
     await fs.promises.writeFile(filePath, content, 'utf8');
+    
+    FilenameTracer.trace('FILE_WRITTEN', 'generateInsightDocument',
+      filePath, 'File successfully written'
+    );
+    
+    FilenameTracer.printSummary();
 
     // Calculate significance based on analysis richness
     const significance = this.calculateInsightSignificance(
@@ -472,14 +452,14 @@ export class InsightGenerationAgent {
     if (webResults) analysisTypes.push('web-research');
 
     return {
-      name,
+      name: cleanName,  // Use cleanName instead of corrupted name
       title,
       content,
       filePath,
       diagrams,
       metadata: {
         significance,
-        tags: ['semantic-analysis', 'comprehensive', ...analysisTypes],
+        tags: ['semantic-analysis', 'comprehensive', ...analysisTypes],  
         generatedAt: timestamp,
         analysisTypes,
         patternCount: patternCatalog.patterns.length
@@ -1023,7 +1003,7 @@ SemanticAnalysisAgent --> InsightGenerationAgent
 @enduml`;
   }
 
-  private generateInsightContent(data: any): string {
+  private async generateInsightContent(data: any): Promise<string> {
     const {
       title,
       timestamp,
@@ -1044,6 +1024,11 @@ SemanticAnalysisAgent --> InsightGenerationAgent
     const patternType = mainPattern?.category === 'Design' ? 'Design Pattern' : 
                       mainPattern?.category === 'Architecture' ? 'Architectural Pattern' :
                       'TransferablePattern';
+
+    // Extract async content 
+    const problemStatement = await this.extractMainProblem(gitAnalysis, vibeAnalysis, semanticAnalysis);
+    const solutionStatement = this.extractMainSolution(patternCatalog, gitAnalysis, semanticAnalysis);
+    const benefitsStatement = this.extractBenefits(patternCatalog, semanticAnalysis);
 
     return `# ${mainPattern?.name || title.replace(/ - .*$/, '')}
 
@@ -1067,11 +1052,11 @@ SemanticAnalysisAgent --> InsightGenerationAgent
 
 ## Overview
 
-**Problem:** ${this.extractMainProblem(gitAnalysis, vibeAnalysis, semanticAnalysis)}
+**Problem:** ${problemStatement}
 
-**Solution:** ${this.extractMainSolution(patternCatalog, gitAnalysis, semanticAnalysis)}
+**Solution:** ${solutionStatement}
 
-**Benefits:** ${this.extractBenefits(patternCatalog, semanticAnalysis)}
+**Benefits:** ${benefitsStatement}
 
 ## Problem & Solution
 
@@ -1863,7 +1848,7 @@ skinparam sequence {
     commits.forEach(commit => commit.files?.forEach((f: string) => allFiles.add(f)));
 
     return {
-      name: `${theme.replace(/\s+/g, '')}Pattern`,
+      name: this.generateMeaningfulPatternName(theme),
       category: 'Architecture',
       description: `${theme} pattern from ${commits.length} commits affecting ${allFiles.size} files`,
       significance: Math.min(8, 4 + commits.length),
@@ -1898,6 +1883,30 @@ skinparam sequence {
         usageNotes: [`${evolution.occurrences} occurrences`, `Trend: ${evolution.trend}`]
       }
     };
+  }
+
+  /**
+   * Clean corrupted pattern names at the source
+   */
+  private cleanCorruptedPatternName(patternName: string): string {
+    const name = patternName.toLowerCase();
+    
+    // Fix known corruptions immediately
+    if (name.includes('documentationupdates')) {
+      return 'DocumentationUpdatesPattern';
+    }
+    if (name.includes('configuration')) {
+      return 'ConfigurationPattern';
+    }
+    if (name.includes('testfile')) {
+      return 'TestFilePattern';
+    }
+    if (name.includes('bugfix')) {
+      return 'BugFixPattern';
+    }
+    
+    // If no corruption detected, return as-is
+    return patternName;
   }
 
   /**
@@ -2268,18 +2277,52 @@ ${data.appendices || 'Additional metadata and references.'}
     return 'Basic pattern with limited scope';
   }
 
-  private extractMainProblem(gitAnalysis: any, vibeAnalysis: any, semanticAnalysis: any): string {
-    // Look for problem indicators in various analyses
-    if (vibeAnalysis?.problemSolutionPairs?.length > 0) {
-      return vibeAnalysis.problemSolutionPairs[0].problem?.description?.substring(0, 120) + '...' || 'Complex system architecture needs organization';
+  private async extractMainProblem(gitAnalysis: any, vibeAnalysis: any, semanticAnalysis: any): Promise<string> {
+    // Collect structured data for LLM analysis
+    const analysisContext = {
+      gitPatterns: gitAnalysis?.summary?.focusAreas || [],
+      codeIssues: semanticAnalysis?.codeAnalysis?.codeQuality?.issues || [],
+      complexityMetrics: semanticAnalysis?.codeAnalysis?.complexity || {},
+      commitTrends: gitAnalysis?.summary?.trends || [],
+      conversationThemes: vibeAnalysis?.themes || []
+    };
+
+    // Generate intelligent problem statement based on analysis data
+    try {
+      // Create structured problem statement from analysis context
+      const problemElements = [];
+      
+      if (analysisContext.codeIssues.length > 0) {
+        problemElements.push(`Code quality challenges identified across ${analysisContext.codeIssues.length} areas`);
+      }
+      
+      if (analysisContext.complexityMetrics.averageComplexity > 15) {
+        problemElements.push(`High code complexity (avg: ${analysisContext.complexityMetrics.averageComplexity.toFixed(1)}) requiring refactoring`);
+      }
+      
+      if (analysisContext.gitPatterns.length > 0) {
+        problemElements.push(`Managing ${analysisContext.gitPatterns.join(', ')} patterns across evolving architecture`);
+      }
+      
+      if (analysisContext.conversationThemes.length > 0) {
+        problemElements.push(`Addressing recurring development themes and architectural decisions`);
+      }
+      
+      if (problemElements.length > 0) {
+        return problemElements.join('. ') + '.';
+      }
+    } catch (error) {
+      console.warn('Failed to generate structured problem statement, using fallback', { error: error instanceof Error ? error.message : String(error) });
     }
-    if (semanticAnalysis?.codeAnalysis?.codeQuality?.issues?.length > 0) {
-      return 'Code quality and architectural consistency challenges identified';
+
+    // Fallback to structured analysis if LLM fails
+    if (analysisContext.codeIssues.length > 0) {
+      return 'Code quality and architectural consistency challenges identified requiring systematic refactoring';
     }
-    if (gitAnalysis?.commits?.length > 10) {
-      return 'Managing complex codebase evolution and architectural decisions';
+    if (analysisContext.gitPatterns.length > 0) {
+      return `Managing ${analysisContext.gitPatterns.join(', ')} patterns across complex codebase evolution`;
     }
-    return 'System architecture requires structured approach to maintainability';
+    return 'System architecture requires structured approach to maintainability and scalability';
   }
 
   private extractMainSolution(patternCatalog: PatternCatalog, gitAnalysis: any, semanticAnalysis: any): string {

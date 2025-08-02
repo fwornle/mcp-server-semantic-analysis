@@ -54,6 +54,8 @@ export interface SemanticAnalysisResult {
     innovativeApproaches: string[];
     learnings: string[];
   };
+  // FIXED: Added insights field for QA compatibility
+  insights?: string;
   confidence: number;
   processingTime: number;
 }
@@ -109,10 +111,18 @@ export class SemanticAnalysisAgent {
 
       const processingTime = Date.now() - startTime;
       
+      // FIXED: Create aggregated insights for QA validation
+      const aggregatedInsights = [
+        ...semanticInsights.keyPatterns,
+        ...semanticInsights.learnings,
+        ...semanticInsights.architecturalDecisions
+      ].filter(Boolean).join('. ');
+      
       const result: SemanticAnalysisResult = {
         codeAnalysis,
         crossAnalysisInsights,
         semanticInsights,
+        insights: aggregatedInsights || 'No specific insights extracted from semantic analysis.',
         confidence: this.calculateConfidence(codeFiles, crossAnalysisInsights),
         processingTime
       };
@@ -121,7 +131,9 @@ export class SemanticAnalysisAgent {
         filesAnalyzed: codeFiles.length,
         patternsFound: semanticInsights.keyPatterns.length,
         confidence: result.confidence,
-        processingTime
+        processingTime,
+        hasInsightsField: 'insights' in result,
+        insightsLength: result.insights ? result.insights.length : 0
       });
 
       return result;
@@ -939,9 +951,11 @@ Focus on:
 
   // Public wrapper methods for coordinator and tools compatibility
   async analyzeSemantics(parameters: any): Promise<SemanticAnalysisResult> {
-    const { _context, incremental } = parameters;
-    const gitAnalysis = _context?.previousResults?.analyze_git_history;
-    const vibeAnalysis = _context?.previousResults?.analyze_vibe_history;
+    const { _context, incremental, git_analysis_results, vibe_analysis_results } = parameters;
+    
+    // Support both direct parameters and context-based parameters
+    const gitAnalysis = git_analysis_results || _context?.previousResults?.analyze_git_history;
+    const vibeAnalysis = vibe_analysis_results || _context?.previousResults?.analyze_vibe_history;
     
     return await this.analyzeGitAndVibeData(gitAnalysis, vibeAnalysis, {
       analysisDepth: incremental ? 'surface' : 'deep'

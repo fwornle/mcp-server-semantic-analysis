@@ -274,28 +274,24 @@ export class InsightGenerationAgent {
       const primaryPattern = topPatterns[0];
       
       // Extract key terms from pattern names/descriptions ONLY (filter out corrupted data)
-      const cleanInputs = [
-        primaryPattern.name,
-        primaryPattern.description,
-        primaryPattern.category || '',
-        // Only use clean, structured data from git analysis
-        ...(gitAnalysis?.summary?.focusAreas || []),
-        ...(gitAnalysis?.summary?.technologies || []),
-        // Only use pattern names from semantic analysis, not full insights
-        ...(semanticAnalysis?.patterns?.map((p: any) => p.name).filter(Boolean) || [])
-      ].filter(item => 
-        typeof item === 'string' && 
-        item.length > 0 && 
-        item.length < 100 &&  // Reject very long strings (likely conversation text)
-        !item.includes('you were just in the process') && // Filter out conversation artifacts
-        !item.includes('conversation') &&
-        !item.includes('session')
-      );
+      // FIXED: Better handling of pattern names to prevent corruption
+      const patternWords = primaryPattern.name
+        .split(/[\s\-_]+/)
+        .filter(word => word.length > 2 && !word.match(/^\d+$/))
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
       
-      const keyTerms = this.extractKeyTerms(cleanInputs);
+      // Add category if it's meaningful
+      if (primaryPattern.category && primaryPattern.category !== 'Implementation') {
+        patternWords.push(primaryPattern.category);
+      }
       
-      // Create meaningful base name from key terms
-      baseName = this.createCamelCaseName(keyTerms);
+      // Add the word "Pattern" if not already present
+      if (!patternWords.some(w => w.toLowerCase() === 'pattern')) {
+        patternWords.push('Pattern');
+      }
+      
+      // Create clean camelCase name from pattern words only
+      baseName = patternWords.join('');
       titleSuffix = ` - ${primaryPattern.category} Pattern Analysis`;
       
     } else if (gitAnalysis?.commits?.length > 0) {

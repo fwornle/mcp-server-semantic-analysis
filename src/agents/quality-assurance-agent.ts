@@ -185,6 +185,18 @@ export class QualityAssuranceAgent {
     }
 
     try {
+      // Debug log for all validations
+      console.log(`[QA DEBUG] Starting step-specific validation for: ${stepName}`, {
+        hasStepResult: !!stepResult,
+        stepResultType: typeof stepResult,
+        isSemanticAnalysis: stepName === 'semantic_analysis'
+      });
+      log(`Starting step-specific validation for: ${stepName}`, 'info', {
+        hasStepResult: !!stepResult,
+        stepResultType: typeof stepResult,
+        isSemanticAnalysis: stepName === 'semantic_analysis'
+      });
+      
       // Step-specific validations
       switch (stepName) {
         case 'analyze_git_history':
@@ -196,6 +208,11 @@ export class QualityAssuranceAgent {
           break;
           
         case 'semantic_analysis':
+          log('About to validate semantic analysis step', 'info', {
+            hasStepResult: !!stepResult,
+            stepResultType: typeof stepResult,
+            stepResultKeys: stepResult ? Object.keys(stepResult).filter(k => !k.startsWith('_')) : []
+          });
           await this.validateSemanticAnalysis(stepResult, errors, warnings);
           break;
           
@@ -701,12 +718,42 @@ export class QualityAssuranceAgent {
       return;
     }
 
+    // Debug logging to understand the structure
+    log('Validating semantic analysis result', 'info', {
+      hasInsights: 'insights' in result,
+      hasSemanticInsights: 'semanticInsights' in result,
+      resultKeys: Object.keys(result).filter(k => !k.startsWith('_')),
+      insightsType: result.insights ? typeof result.insights : 'undefined'
+    });
+
+    // FIXED: More flexible insights validation - check multiple potential insight sources
+    let insightsText = '';
+    
+    if (result.insights) {
+      insightsText = typeof result.insights === 'string' ? result.insights : JSON.stringify(result.insights);
+    } else if (result.semanticInsights?.learnings) {
+      // Fallback to semantic insights learnings
+      insightsText = Array.isArray(result.semanticInsights.learnings) 
+        ? result.semanticInsights.learnings.join('. ')
+        : String(result.semanticInsights.learnings);
+      log('Using semanticInsights.learnings as fallback for insights validation', 'info', {
+        learngsCount: Array.isArray(result.semanticInsights.learnings) ? result.semanticInsights.learnings.length : 1
+      });
+    } else if (result.semanticInsights?.keyPatterns) {
+      // Another fallback to key patterns
+      insightsText = Array.isArray(result.semanticInsights.keyPatterns)
+        ? result.semanticInsights.keyPatterns.join(', ')
+        : String(result.semanticInsights.keyPatterns);
+      log('Using semanticInsights.keyPatterns as fallback for insights validation', 'info', {
+        patternsCount: Array.isArray(result.semanticInsights.keyPatterns) ? result.semanticInsights.keyPatterns.length : 1
+      });
+    }
+
     // Check for meaningful insights
-    if (!result.insights) {
+    if (!insightsText || insightsText.length === 0) {
       errors.push('Missing insights in semantic analysis');
     } else {
-      const insightText = typeof result.insights === 'string' ? result.insights : JSON.stringify(result.insights);
-      if (insightText.length < 100) {
+      if (insightsText.length < 100) {
         warnings.push('Semantic analysis insights are too brief');
       }
     }

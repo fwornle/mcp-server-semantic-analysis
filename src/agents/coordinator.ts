@@ -439,19 +439,33 @@ export class CoordinatorAgent {
             timeoutUtilization: `${((stepDuration / 1000) / (step.timeout || 60) * 100).toFixed(1)}%`
           });
 
-          // QA Enforcement: Check quality assurance results and halt on failures
+          // QA Enforcement: Check quality assurance results and implement retry logic
           if (step.name === 'quality_assurance' && stepResult) {
             const qaFailures = this.validateQualityAssuranceResults(stepResult);
             if (qaFailures.length > 0) {
-              const qaError = `Quality Assurance failed with ${qaFailures.length} critical issues: ${qaFailures.join(', ')}`;
-              log(`QA Enforcement: Halting workflow due to quality failures`, "error", {
+              log(`QA Enforcement: Quality issues detected, attempting intelligent retry`, "warning", {
                 failures: qaFailures,
                 step: step.name,
                 workflow: execution.workflow
               });
-              throw new Error(qaError);
+              
+              // Attempt to fix the issues by retrying failed steps with enhanced parameters
+              const retryResult = await this.attemptQARecovery(qaFailures, execution, workflow);
+              
+              if (!retryResult.success) {
+                const qaError = `Quality Assurance failed after retry with ${retryResult.remainingFailures.length} critical issues: ${retryResult.remainingFailures.join(', ')}`;
+                log(`QA Enforcement: Halting workflow after retry attempt`, "error", {
+                  failures: retryResult.remainingFailures,
+                  step: step.name,
+                  workflow: execution.workflow
+                });
+                throw new Error(qaError);
+              }
+              
+              log(`QA Enforcement: Quality validation passed after retry`, "info");
+            } else {
+              log(`QA Enforcement: Quality validation passed`, "info");
             }
-            log(`QA Enforcement: Quality validation passed`, "info");
           }
           
         } catch (error) {
@@ -738,6 +752,144 @@ export class CoordinatorAgent {
     }
 
     return criticalFailures;
+  }
+
+  /**
+   * Attempt to recover from QA failures by retrying failed steps with enhanced parameters
+   */
+  private async attemptQARecovery(
+    failures: string[],
+    execution: WorkflowExecution,
+    workflow: WorkflowDefinition
+  ): Promise<{ success: boolean; remainingFailures: string[] }> {
+    log('Attempting QA recovery', 'info', { failures });
+    
+    const remainingFailures: string[] = [];
+    const failedSteps = new Set<string>();
+    
+    // Identify which steps need retry based on failures
+    failures.forEach(failure => {
+      const [stepName] = failure.split(':');
+      if (stepName) {
+        failedSteps.add(stepName.trim());
+      }
+    });
+    
+    // Retry each failed step with enhanced parameters
+    for (const stepName of failedSteps) {
+      const step = workflow.steps.find(s => s.name === stepName);
+      if (!step) continue;
+      
+      try {
+        log(`Retrying step ${stepName} with enhanced parameters`, 'info');
+        
+        // Build enhanced parameters based on the failure type
+        const enhancedParams = this.buildEnhancedParameters(stepName, failures, execution);
+        
+        // Get the agent and retry the action
+        const agent = this.agents.get(step.agent);
+        if (!agent) {
+          throw new Error(`Agent ${step.agent} not found`);
+        }
+        
+        const action = (agent as any)[step.action];
+        if (!action) {
+          throw new Error(`Action ${step.action} not found on agent ${step.agent}`);
+        }
+        
+        // Retry with enhanced parameters
+        const retryResult = await action.call(agent, enhancedParams);
+        
+        // Update execution results
+        execution.results[stepName] = retryResult;
+        
+        log(`Successfully retried step ${stepName}`, 'info');
+        
+      } catch (retryError) {
+        const errorMsg = retryError instanceof Error ? retryError.message : String(retryError);
+        remainingFailures.push(`${stepName}: ${errorMsg} (after retry)`);
+        log(`Failed to retry step ${stepName}`, 'error', { error: errorMsg });
+      }
+    }
+    
+    // Re-run QA to check if issues are resolved
+    if (remainingFailures.length === 0) {
+      try {
+        const qaStep = workflow.steps.find(s => s.name === 'quality_assurance');
+        if (qaStep) {
+          const qaAgent = this.agents.get(qaStep.agent);
+          if (qaAgent) {
+            const qaAction = (qaAgent as any)[qaStep.action];
+            if (qaAction) {
+              const qaParams = { ...qaStep.parameters };
+              this.resolveParameterTemplates(qaParams, execution.results);
+              qaParams._context = {
+                workflow: execution.workflow,
+                executionId: execution.id,
+                previousResults: execution.results,
+                step: qaStep.name
+              };
+              const newQaResult = await qaAction.call(qaAgent, qaParams);
+              
+              // Validate the new QA results
+              const newFailures = this.validateQualityAssuranceResults(newQaResult);
+              if (newFailures.length > 0) {
+                remainingFailures.push(...newFailures);
+              }
+            }
+          }
+        }
+      } catch (qaError) {
+        log('Failed to re-run QA after retry', 'error', qaError);
+      }
+    }
+    
+    return {
+      success: remainingFailures.length === 0,
+      remainingFailures
+    };
+  }
+
+  /**
+   * Build enhanced parameters for retry based on failure analysis
+   */
+  private buildEnhancedParameters(
+    stepName: string,
+    failures: string[],
+    execution: WorkflowExecution
+  ): any {
+    const baseParams = execution.results[stepName]?._parameters || {};
+    const enhancedParams = { ...baseParams };
+    
+    // Analyze failures to determine enhancement strategy
+    const stepFailures = failures.filter(f => f.startsWith(`${stepName}:`));
+    
+    if (stepName === 'semantic_analysis') {
+      // If semantic analysis failed due to missing insights, enhance the analysis depth
+      if (stepFailures.some(f => f.includes('Missing insights'))) {
+        enhancedParams.analysisDepth = 'comprehensive';
+        enhancedParams.includeDetailedInsights = true;
+        enhancedParams.minInsightLength = 200;
+      }
+    } else if (stepName === 'insight_generation') {
+      // If insight generation failed, request more detailed insights
+      enhancedParams.generateDetailedInsights = true;
+      enhancedParams.includeCodeExamples = true;
+      enhancedParams.minPatternSignificance = 5;
+    } else if (stepName === 'web_search') {
+      // If web search failed, try with broader search parameters
+      enhancedParams.searchDepth = 'comprehensive';
+      enhancedParams.includeAlternativePatterns = true;
+    }
+    
+    // Add retry context to help agents understand they're in a retry
+    enhancedParams._retryContext = {
+      isRetry: true,
+      previousFailures: stepFailures,
+      enhancementReason: 'QA validation failure'
+    };
+    
+    return enhancedParams;
   }
 
   /**

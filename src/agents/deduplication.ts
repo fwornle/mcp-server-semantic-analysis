@@ -93,27 +93,53 @@ export class DeduplicationAgent {
 
   async detectDuplicates(entityTypes?: string[], similarityThreshold: number = 0.85, comparisonMethod: string = "both"): Promise<any> {
     try {
-      // Get entities from knowledge graph
+      // Get entities from registered knowledge graph agent
       const kgAgent = this.agents.get("knowledge_graph");
       if (!kgAgent) {
+        log("DEDUPLICATION FIX: Knowledge graph agent not available", "error", {
+          availableAgents: Array.from(this.agents.keys()),
+          requestedAgent: "knowledge_graph"
+        });
         return { success: false, error: "Knowledge graph agent not available" };
+      }
+
+      // Get shared memory entities from persistence agent
+      let allEntities: any[] = [];
+      if (typeof kgAgent.getSharedMemory === 'function') {
+        const sharedMemory = await kgAgent.getSharedMemory();
+        allEntities = sharedMemory?.entities || [];
+      } else if (kgAgent.entities) {
+        allEntities = Array.from(kgAgent.entities.values() || []);
+      } else {
+        log("DEDUPLICATION FIX: No entities found in knowledge graph agent", "warning");
+        return {
+          success: true,
+          duplicate_groups: [],
+          total_entities: 0,
+          message: "No entities found to deduplicate"
+        };
       }
 
       // Filter entities by type if specified
       const entities: any[] = [];
-      const allEntities = Array.from(kgAgent.entities?.values() || []);
       
       for (const entity of allEntities) {
-        if (!entityTypes || entityTypes.includes((entity as any).entity_type || (entity as any).entityType)) {
+        if (!entityTypes || entityTypes.includes(entity.entityType || entity.entity_type)) {
           entities.push({
-            name: (entity as any).name,
-            type: (entity as any).entity_type || (entity as any).entityType,
-            observations: Array.isArray((entity as any).observations) ? (entity as any).observations : [(entity as any).observations].filter(Boolean),
-            significance: (entity as any).significance || 5,
-            metadata: (entity as any).metadata || {}
+            name: entity.name,
+            type: entity.entityType || entity.entity_type,
+            observations: Array.isArray(entity.observations) ? entity.observations : [entity.observations].filter(Boolean),
+            significance: entity.significance || 5,
+            metadata: entity.metadata || {}
           });
         }
       }
+      
+      log(`DEDUPLICATION FIX: Processing ${entities.length} entities for deduplication`, "info", {
+        totalEntities: allEntities.length,
+        filteredEntities: entities.length,
+        entityTypes: entityTypes || 'all'
+      });
 
       if (entities.length < 2) {
         return {

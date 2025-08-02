@@ -53,6 +53,7 @@ export interface EntityMetadata {
   source?: string;
   context?: string;
   tags?: string[];
+  validated_file_path?: string; // Track validated insight file path
 }
 
 export interface SharedMemoryStructure {
@@ -252,7 +253,21 @@ export class PersistenceAgent {
             log(`Updated existing entity: ${observation.name} with ${newObservations.length} new observations`, 'info');
           }
         } else {
-          // Create new entity
+          // CRITICAL: Validate insight file exists before creating entity (prevents phantom nodes)
+          const insightFilePath = path.join(process.cwd(), 'knowledge-management', 'insights', `${observation.name}.md`);
+          const insightFileExists = fs.existsSync(insightFilePath);
+          
+          if (!insightFileExists) {
+            log(`VALIDATION FAILED: Insight file missing for entity ${observation.name} at ${insightFilePath}`, 'error', {
+              entityName: observation.name,
+              expectedPath: insightFilePath,
+              preventingPhantomNode: true
+            });
+            // Skip creating entity to prevent phantom nodes
+            continue;
+          }
+          
+          // Create new entity only after file validation passes
           const newEntity: SharedMemoryEntity = {
             id: this.generateEntityId(observation.name),
             name: observation.name,
@@ -268,17 +283,19 @@ export class PersistenceAgent {
               team: 'coding',
               source: 'semantic-analysis',
               context: 'comprehensive-analysis',
-              tags: observation.tags || []
+              tags: observation.tags || [],
+              validated_file_path: insightFilePath
             }
           };
 
           sharedMemory.entities.push(newEntity);
           createdEntities.push(newEntity);
           
-          log(`Created new entity: ${observation.name}`, 'info', {
+          log(`Created new entity with validated file: ${observation.name}`, 'info', {
             entityType: newEntity.entityType,
             significance: newEntity.significance,
-            observationsCount: newEntity.observations.length
+            observationsCount: newEntity.observations.length,
+            validatedFile: insightFilePath
           });
         }
       } catch (error) {
@@ -683,45 +700,38 @@ export class PersistenceAgent {
           }
         };
 
-        entities.push(entity);
-        sharedMemory.entities.push(entity);
+        // CRITICAL: Validate insight file exists before creating entity (prevents phantom nodes)
+        const insightFilePath = path.join(process.cwd(), 'knowledge-management', 'insights', `${entity.name}.md`);
+        const insightFileExists = fs.existsSync(insightFilePath);
+        
+        if (!insightFileExists) {
+          log(`VALIDATION FAILED: Insight file missing for entity ${entity.name} at ${insightFilePath}`, 'error', {
+            entityName: entity.name,
+            expectedPath: insightFilePath,
+            preventingPhantomNode: true,
+            method: 'createEntitiesFromAnalysisResults'
+          });
+          // Skip creating entity to prevent phantom nodes
+        } else {
+          entity.metadata.validated_file_path = insightFilePath;
+          entities.push(entity);
+          sharedMemory.entities.push(entity);
+          log(`Created entity with validated file: ${entity.name}`, 'info', {
+            validatedFile: insightFilePath,
+            method: 'createEntitiesFromAnalysisResults'
+          });
+        }
       }
 
-      // Create entities from discovered patterns if available
+      // FIXED: Don't create separate entities for patterns to prevent phantom nodes
+      // Patterns are already included in the main analysis insight document
+      // Creating separate entities for patterns without corresponding insight files
+      // was causing phantom nodes in shared-memory-coding.json
       if (analysisData.insightGeneration?.patternCatalog?.patterns) {
-        const patterns = analysisData.insightGeneration.patternCatalog.patterns;
-        
-        for (const pattern of patterns.slice(0, 3)) { // Limit to top 3 patterns
-          const patternEntity: SharedMemoryEntity = {
-            id: `pattern_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-            name: pattern.name || `${pattern.category}Pattern`,
-            entityType: 'TransferablePattern',
-            significance: pattern.significance || 5,
-            observations: [
-              {
-                type: 'pattern',
-                content: pattern.description || 'Pattern discovered through semantic analysis',
-                date: now
-              },
-              {
-                type: 'implementation',
-                content: pattern.implementation?.codeExample || 'Implementation details from analysis',
-                date: now
-              }
-            ],
-            relationships: [],
-            metadata: {
-              created_at: now,
-              last_updated: now,
-              source: 'semantic-analysis-pattern-detection',
-              context: `pattern-${pattern.category}`,
-              tags: [pattern.category, 'pattern', 'semantic-analysis']
-            }
-          };
-
-          entities.push(patternEntity);
-          sharedMemory.entities.push(patternEntity);
-        }
+        log('Patterns included in main analysis insight document - no separate entities created', 'info', {
+          patternCount: analysisData.insightGeneration.patternCatalog.patterns.length,
+          reasoning: 'Preventing phantom nodes by including patterns in main analysis only'
+        });
       }
 
       // Create entity from Git analysis insights if significant commits found
@@ -754,8 +764,27 @@ export class PersistenceAgent {
           }
         };
 
-        entities.push(gitEntity);
-        sharedMemory.entities.push(gitEntity);
+        // CRITICAL: Validate insight file exists before creating git entity
+        const gitInsightPath = path.join(process.cwd(), 'knowledge-management', 'insights', `${gitEntity.name}.md`);
+        const gitFileExists = fs.existsSync(gitInsightPath);
+        
+        if (!gitFileExists) {
+          log(`VALIDATION FAILED: Git insight file missing for ${gitEntity.name} at ${gitInsightPath}`, 'error', {
+            entityName: gitEntity.name,
+            expectedPath: gitInsightPath,
+            preventingPhantomNode: true,
+            method: 'createEntitiesFromAnalysisResults-git'
+          });
+          // Skip creating git entity to prevent phantom nodes
+        } else {
+          gitEntity.metadata.validated_file_path = gitInsightPath;
+          entities.push(gitEntity);
+          sharedMemory.entities.push(gitEntity);
+          log(`Created git entity with validated file: ${gitEntity.name}`, 'info', {
+            validatedFile: gitInsightPath,
+            method: 'createEntitiesFromAnalysisResults-git'
+          });
+        }
       }
 
       log('Created entities from analysis results', 'info', {
@@ -993,7 +1022,25 @@ export class PersistenceAgent {
         };
       }
 
-      // Add entity
+      // CRITICAL: Validate insight file exists before creating UKB entity
+      const ukbInsightPath = path.join(process.cwd(), 'knowledge-management', 'insights', `${entity.name}.md`);
+      const ukbFileExists = fs.existsSync(ukbInsightPath);
+      
+      if (!ukbFileExists) {
+        log(`VALIDATION FAILED: UKB insight file missing for ${entity.name} at ${ukbInsightPath}`, 'error', {
+          entityName: entity.name,
+          expectedPath: ukbInsightPath,
+          preventingPhantomNode: true,
+          method: 'createUkbEntity'
+        });
+        return {
+          success: false,
+          details: `Insight file validation failed: ${ukbInsightPath} not found`
+        };
+      }
+      
+      // Add validated entity
+      entity.metadata.validated_file_path = ukbInsightPath;
       sharedMemory.entities.push(entity);
       sharedMemory.metadata.total_entities = sharedMemory.entities.length;
       sharedMemory.metadata.last_updated = currentDate;

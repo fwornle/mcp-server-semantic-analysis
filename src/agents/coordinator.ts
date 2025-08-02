@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import { log } from "../logging.js";
 import { GitHistoryAgent } from "./git-history-agent.js";
 import { VibeHistoryAgent } from "./vibe-history-agent.js";
@@ -37,6 +38,16 @@ export interface WorkflowExecution {
   errors: string[];
   currentStep: number;
   totalSteps: number;
+  // Rollback tracking for error recovery
+  rollbackActions?: RollbackAction[];
+  rolledBack?: boolean;
+}
+
+export interface RollbackAction {
+  type: 'file_created' | 'entity_created' | 'file_modified';
+  target: string;
+  originalState?: any;
+  timestamp: Date;
 }
 
 export interface StepExecution {
@@ -427,6 +438,21 @@ export class CoordinatorAgent {
             duration: `${(stepDuration / 1000).toFixed(1)}s`,
             timeoutUtilization: `${((stepDuration / 1000) / (step.timeout || 60) * 100).toFixed(1)}%`
           });
+
+          // QA Enforcement: Check quality assurance results and halt on failures
+          if (step.name === 'quality_assurance' && stepResult) {
+            const qaFailures = this.validateQualityAssuranceResults(stepResult);
+            if (qaFailures.length > 0) {
+              const qaError = `Quality Assurance failed with ${qaFailures.length} critical issues: ${qaFailures.join(', ')}`;
+              log(`QA Enforcement: Halting workflow due to quality failures`, "error", {
+                failures: qaFailures,
+                step: step.name,
+                workflow: execution.workflow
+              });
+              throw new Error(qaError);
+            }
+            log(`QA Enforcement: Quality validation passed`, "info");
+          }
           
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
@@ -476,10 +502,28 @@ export class CoordinatorAgent {
       execution.endTime = new Date();
       execution.errors.push(error instanceof Error ? error.message : String(error));
       
+      // ROLLBACK: Attempt to rollback changes if critical failure occurred
+      if (execution.rollbackActions && execution.rollbackActions.length > 0) {
+        log(`Attempting rollback due to workflow failure: ${executionId}`, "warning", {
+          rollbackActionsCount: execution.rollbackActions.length,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        
+        try {
+          await this.performRollback(execution);
+          execution.rolledBack = true;
+          log(`Rollback completed successfully for: ${executionId}`, "info");
+        } catch (rollbackError) {
+          log(`Rollback failed for: ${executionId}`, "error", rollbackError);
+          execution.errors.push(`Rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+        }
+      }
+      
       log(`Workflow failed: ${executionId}`, "error", {
         error: error instanceof Error ? error.message : String(error),
         currentStep: execution.currentStep,
         duration: execution.endTime.getTime() - execution.startTime.getTime(),
+        rolledBack: execution.rolledBack || false
       });
     }
 
@@ -607,6 +651,163 @@ export class CoordinatorAgent {
     }
   }
 
+  /**
+   * Perform rollback of workflow changes
+   */
+  private async performRollback(execution: WorkflowExecution): Promise<void> {
+    if (!execution.rollbackActions) return;
+    
+    // Reverse order rollback (last actions first)
+    const reversedActions = [...execution.rollbackActions].reverse();
+    
+    for (const action of reversedActions) {
+      try {
+        switch (action.type) {
+          case 'file_created':
+            // Remove created file
+            if (fs.existsSync(action.target)) {
+              fs.unlinkSync(action.target);
+              log(`Rollback: Removed created file ${action.target}`, 'info');
+            }
+            break;
+            
+          case 'file_modified':
+            // Restore original file content
+            if (action.originalState) {
+              fs.writeFileSync(action.target, action.originalState, 'utf8');
+              log(`Rollback: Restored file ${action.target}`, 'info');
+            }
+            break;
+            
+          case 'entity_created':
+            // Remove entity from shared memory (requires persistence agent)
+            const persistenceAgent = this.agents.get('persistence');
+            if (persistenceAgent && typeof persistenceAgent.removeEntity === 'function') {
+              await persistenceAgent.removeEntity(action.target);
+              log(`Rollback: Removed entity ${action.target}`, 'info');
+            }
+            break;
+        }
+      } catch (rollbackError) {
+        log(`Rollback action failed for ${action.type}:${action.target}`, 'error', rollbackError);
+        // Continue with other rollback actions even if one fails
+      }
+    }
+  }
+
+  /**
+   * Validate Quality Assurance results and return critical failures
+   */
+  private validateQualityAssuranceResults(qaResult: any): string[] {
+    const criticalFailures: string[] = [];
+    
+    if (!qaResult || !qaResult.validations) {
+      criticalFailures.push("No QA validations found");
+      return criticalFailures;
+    }
+
+    // Check each step's QA validation
+    for (const [stepName, validation] of Object.entries(qaResult.validations)) {
+      const val = validation as any;
+      
+      // Critical failure conditions
+      if (!val.passed) {
+        if (val.errors && val.errors.length > 0) {
+          // Focus on specific critical errors
+          const criticalErrors = val.errors.filter((error: string) => 
+            error.includes('Missing insights') || 
+            error.includes('phantom node') ||
+            error.includes('file not found') ||
+            error.includes('broken filename')
+          );
+          if (criticalErrors.length > 0) {
+            criticalFailures.push(`${stepName}: ${criticalErrors.join(', ')}`);
+          }
+        }
+        
+        // Check quality score threshold
+        if (val.score !== undefined && val.score < 60) {
+          criticalFailures.push(`${stepName}: Quality score too low (${val.score}/100)`);
+        }
+      }
+    }
+
+    // Overall QA score check
+    if (qaResult.overallScore !== undefined && qaResult.overallScore < 70) {
+      criticalFailures.push(`Overall QA score below threshold (${qaResult.overallScore}/100)`);
+    }
+
+    return criticalFailures;
+  }
+
+  /**
+   * Generate detailed analysis of what each step did and decided
+   */
+  private generateDetailedStepAnalysis(execution: WorkflowExecution): string {
+    const analysis: string[] = [];
+    
+    for (const [stepName, result] of Object.entries(execution.results)) {
+      if (result.error) {
+        analysis.push(`### ${stepName} - ❌ FAILED\n**Error:** ${result.error}`);
+        continue;
+      }
+      
+      let stepDetails = `### ${stepName} - ✅ SUCCESS\n`;
+      
+      // Add specific analysis based on step type
+      switch (stepName) {
+        case 'persist_results':
+          if (result.entitiesCreated || result.filesCreated) {
+            stepDetails += `**Entities Created:** ${result.entitiesCreated || 0}\n`;
+            stepDetails += `**Files Created:** ${result.filesCreated?.length || 0}\n`;
+            if (result.filesCreated?.length > 0) {
+              stepDetails += `**Files:** ${result.filesCreated.join(', ')}\n`;
+            }
+          }
+          break;
+          
+        case 'deduplicate_insights':
+          if (result.duplicatesFound !== undefined) {
+            stepDetails += `**Duplicates Found:** ${result.duplicatesFound}\n`;
+            stepDetails += `**Entities Merged:** ${result.entitiesMerged || 0}\n`;
+            stepDetails += `**Processing Time:** ${result.processingTime || 'Unknown'}\n`;
+          }
+          break;
+          
+        case 'quality_assurance':
+          if (result.validations) {
+            const passed = Object.values(result.validations).filter((v: any) => v.passed).length;
+            const total = Object.keys(result.validations).length;
+            stepDetails += `**QA Validations:** ${passed}/${total} passed\n`;
+            if (result.overallScore) {
+              stepDetails += `**Overall Score:** ${result.overallScore}/100\n`;
+            }
+          }
+          break;
+          
+        case 'generate_insights':
+          if (result.insights_generated) {
+            stepDetails += `**Insights Generated:** ${result.insights_generated}\n`;
+          }
+          if (result.filename) {
+            stepDetails += `**Generated File:** ${result.filename}\n`;
+          }
+          break;
+      }
+      
+      // Add timing information
+      if (result._timing) {
+        const duration = (result._timing.duration / 1000).toFixed(1);
+        const utilization = ((result._timing.duration / 1000) / result._timing.timeout * 100).toFixed(1);
+        stepDetails += `**Timing:** ${duration}s (${utilization}% of ${result._timing.timeout}s timeout)\n`;
+      }
+      
+      analysis.push(stepDetails);
+    }
+    
+    return analysis.join('\n');
+  }
+
   private generateWorkflowSummary(execution: WorkflowExecution, workflow: WorkflowDefinition): string {
     const successfulSteps = Object.entries(execution.results)
       .filter(([_, result]) => !result.error)
@@ -624,8 +825,12 @@ export class CoordinatorAgent {
 ${workflow.steps.map(step => {
   const result = execution.results[step.name];
   const status = result?.error ? '❌' : '✅';
-  return `- **${step.name}**: ${status} ${result?.error ? 'Failed' : 'Completed'}`;
+  const timing = result?._timing ? ` (${(result._timing.duration / 1000).toFixed(1)}s)` : '';
+  return `- **${step.name}**: ${status} ${result?.error ? 'Failed' : 'Completed'}${timing}`;
 }).join('\n')}
+
+## Detailed Step Analysis
+${this.generateDetailedStepAnalysis(execution)}
 
 ${workflow.config.quality_validation ? `
 ## Quality Assurance

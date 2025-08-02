@@ -110,9 +110,9 @@ export class InsightGenerationAgent {
       
       const insightDocuments: InsightDocument[] = [];
       
-      if (significantPatterns.length > 1 && significantPatterns.length <= 5) {
-        // Generate separate insights for each significant pattern
-        log(`Generating separate insights for ${significantPatterns.length} significant patterns`, 'info');
+      if (significantPatterns.length >= 1 && significantPatterns.length <= 5) {
+        // Generate separate insights for each significant pattern (improved logic)
+        log(`Generating separate insights for ${significantPatterns.length} significant patterns (≥7 significance)`, 'info');
         
         for (const pattern of significantPatterns) {
           const singlePatternCatalog: PatternCatalog = {
@@ -273,31 +273,57 @@ export class InsightGenerationAgent {
     if (topPatterns.length > 0) {
       const primaryPattern = topPatterns[0];
       
-      // Extract key terms from pattern names/descriptions
-      const keyTerms = this.extractKeyTerms([
+      // Extract key terms from pattern names/descriptions ONLY (filter out corrupted data)
+      const cleanInputs = [
         primaryPattern.name,
         primaryPattern.description,
-        ...(gitAnalysis?.summary?.majorChanges || []),
-        ...(semanticAnalysis?.insights || [])
-      ]);
+        primaryPattern.category || '',
+        // Only use clean, structured data from git analysis
+        ...(gitAnalysis?.summary?.focusAreas || []),
+        ...(gitAnalysis?.summary?.technologies || []),
+        // Only use pattern names from semantic analysis, not full insights
+        ...(semanticAnalysis?.patterns?.map((p: any) => p.name).filter(Boolean) || [])
+      ].filter(item => 
+        typeof item === 'string' && 
+        item.length > 0 && 
+        item.length < 100 &&  // Reject very long strings (likely conversation text)
+        !item.includes('you were just in the process') && // Filter out conversation artifacts
+        !item.includes('conversation') &&
+        !item.includes('session')
+      );
+      
+      const keyTerms = this.extractKeyTerms(cleanInputs);
       
       // Create meaningful base name from key terms
       baseName = this.createCamelCaseName(keyTerms);
       titleSuffix = ` - ${primaryPattern.category} Pattern Analysis`;
       
     } else if (gitAnalysis?.commits?.length > 0) {
-      // Focus on git analysis if no patterns found
-      const gitTerms = this.extractKeyTerms([
-        ...(gitAnalysis.summary?.majorChanges || []),
-        ...(gitAnalysis.summary?.activeDevelopmentAreas || [])
-      ]);
+      // Focus on git analysis if no patterns found - use only clean structured data
+      const cleanGitInputs = [
+        ...(gitAnalysis.summary?.focusAreas || []),
+        ...(gitAnalysis.summary?.technologies || []),
+        ...(gitAnalysis.summary?.fileTypes || [])
+      ].filter(item => 
+        typeof item === 'string' && 
+        item.length > 0 && 
+        item.length < 50 &&  // Keep git terms short and clean
+        !item.includes('you were just') &&
+        !item.includes('conversation')
+      );
+      
+      const gitTerms = this.extractKeyTerms(cleanGitInputs);
       baseName = this.createCamelCaseName([...gitTerms, 'Development', 'Analysis']);
       titleSuffix = ' - Development Evolution Analysis';
       
     } else if (analysisTypes.length > 0) {
-      // Generic analysis-based naming
-      baseName = `${analysisTypes.join('')}AnalysisInsight`;
-      titleSuffix = ` - ${analysisTypes.join(' & ')} Analysis`;
+      // FIXED: Clean analysis-based naming with proper camelCase
+      const cleanAnalysisTypes = analysisTypes.filter(type => 
+        typeof type === 'string' && type.length > 0 && type.length < 20
+      );
+      const cleanTerms = this.extractKeyTerms(cleanAnalysisTypes);
+      baseName = this.createCamelCaseName([...cleanTerms, 'Analysis']);
+      titleSuffix = ` - ${cleanAnalysisTypes.join(' & ')} Analysis`;
       
     } else {
       // Fallback - check if we have any meaningful data at all
@@ -392,8 +418,9 @@ export class InsightGenerationAgent {
       })
       .join('');
     
-    // Ensure reasonable length (20-30 chars max)
-    return result.substring(0, 30) || 'SemanticAnalysis';
+    // FIXED: No truncation - return meaningful names (removed broken 30-char limit)
+    // Only fallback if result is empty, but keep meaningful names intact
+    return result || 'SemanticAnalysis';
   }
 
   private async generateInsightDocument(
@@ -1860,8 +1887,11 @@ skinparam sequence {
   private createImplementationPattern(evolution: any): IdentifiedPattern | null {
     if (!evolution.pattern) return null;
 
+    // FIXED: Generate meaningful pattern names instead of corrupted concatenations
+    const cleanPatternName = this.generateMeaningfulPatternName(evolution.pattern);
+
     return {
-      name: `${evolution.pattern.replace(/\s+/g, '')}Implementation`,
+      name: cleanPatternName,
       category: 'Implementation',
       description: `${evolution.pattern} with ${evolution.occurrences} occurrences`,
       significance: Math.min(9, Math.ceil(evolution.occurrences / 2)),
@@ -1874,9 +1904,44 @@ skinparam sequence {
     };
   }
 
+  /**
+   * Generate meaningful pattern names instead of corrupted concatenations
+   */
+  private generateMeaningfulPatternName(rawPattern: string): string {
+    // Clean and normalize the pattern name
+    const words = rawPattern.trim()
+      .split(/\s+/)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .filter(word => word.length > 0);
+
+    // Handle common pattern transformations
+    if (words.length === 1) {
+      return `${words[0]}Pattern`;
+    }
+
+    // Create camelCase for multi-word patterns
+    const camelCase = words[0] + words.slice(1).join('');
+    
+    // Ensure it doesn't end with redundant suffixes
+    let finalName = camelCase;
+    if (!finalName.endsWith('Pattern') && !finalName.endsWith('Implementation')) {
+      finalName += 'Pattern';
+    }
+
+    // Validate length and meaningfulness
+    if (finalName.length > 50) {
+      // Use acronym for very long names
+      const acronym = words.map(w => w[0]).join('').toUpperCase();
+      finalName = `${acronym}Pattern`;
+    }
+
+    log(`Generated pattern name: "${rawPattern}" -> "${finalName}"`, 'info');
+    return finalName;
+  }
+
   private createDesignPattern(archPattern: any): IdentifiedPattern | null {
     return {
-      name: `${archPattern.name.replace(/\s+/g, '')}Pattern`,
+      name: this.generateMeaningfulPatternName(archPattern.name),
       category: 'Design',
       description: archPattern.description || `${archPattern.name} design pattern`,
       significance: Math.round(archPattern.confidence * 10),

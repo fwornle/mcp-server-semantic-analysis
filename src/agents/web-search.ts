@@ -641,7 +641,26 @@ const result = ${query.replace(/\s+/g, '')}();`,
       snippet: `Comprehensive guide to the ${pattern} pattern, including implementation details and best practices.`,
       content: `The ${pattern} pattern is a well-established architectural pattern used in ${context}. This pattern provides a structured approach to solving common design problems and improving code maintainability.`,
       relevanceScore: 0.7,
-      codeBlocks: [`// Example implementation of ${pattern}\nclass ${pattern.replace(/\s+/g, '')}Implementation {\n  // Implementation details\n}`]
+      codeBlocks: [`// Example implementation of ${pattern}\nclass ${this.generateCleanPatternName(pattern)} {\n  // Implementation details\n}`]
     }));
+  }
+
+  /**
+   * Generate clean pattern names to avoid corrupted concatenations
+   */
+  private generateCleanPatternName(pattern: string): string {
+    // Clean and normalize the pattern name
+    const words = pattern.trim()
+      .split(/\s+/)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .filter(word => word.length > 0);
+
+    if (words.length === 1) {
+      return `${words[0]}Implementation`;
+    }
+
+    // Create proper camelCase
+    const camelCase = words[0] + words.slice(1).join('');
+    return `${camelCase}Implementation`;
   }
 }

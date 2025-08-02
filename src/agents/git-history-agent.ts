@@ -133,9 +133,10 @@ export class GitHistoryAgent {
         fromTimestamp: effectiveFromTimestamp?.toISOString() || 'repository start',
         repositoryPath: this.repositoryPath
       });
-      const commits = await this.extractCommits(effectiveFromTimestamp);
-      log(`Extracted ${commits.length} commits for analysis`, 'info', {
+      const { commits, filteredCount } = await this.extractCommits(effectiveFromTimestamp);
+      log(`Extracted ${commits.length} commits for analysis (${filteredCount} documentation commits filtered)`, 'info', {
         commitsAnalyzed: commits.length,
+        filteredDocCommits: filteredCount,
         timeRange: {
           from: effectiveFromTimestamp?.toISOString() || 'repository start',
           to: new Date().toISOString()
@@ -240,7 +241,7 @@ export class GitHistoryAgent {
     }
   }
 
-  private async extractCommits(fromTimestamp: Date | null): Promise<GitCommit[]> {
+  private async extractCommits(fromTimestamp: Date | null): Promise<{ commits: GitCommit[], filteredCount: number }> {
     try {
       // Build git log command
       let gitCommand = 'git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat';
@@ -265,9 +266,10 @@ export class GitHistoryAgent {
     }
   }
 
-  private parseGitLogOutput(output: string): GitCommit[] {
+  private parseGitLogOutput(output: string): { commits: GitCommit[], filteredCount: number } {
     const commits: GitCommit[] = [];
     const sections = output.split('\n\n').filter(section => section.trim());
+    let filteredCount = 0;
 
     for (const section of sections) {
       const lines = section.split('\n');
@@ -279,6 +281,13 @@ export class GitHistoryAgent {
 
       const [hash, author, dateStr, message] = headerParts;
       const date = new Date(dateStr);
+
+      // Skip documentation-only commits for semantic analysis
+      if (this.isDocumentationOnlyCommit(message)) {
+        log(`Skipping documentation commit: ${hash.substring(0, 8)} - ${message}`, 'debug');
+        filteredCount++;
+        continue;
+      }
 
       // Parse file changes
       const files: GitFileChange[] = [];
@@ -330,7 +339,7 @@ export class GitHistoryAgent {
       });
     }
 
-    return commits;
+    return { commits, filteredCount };
   }
 
   private shouldExcludeFile(filePath: string): boolean {
@@ -343,6 +352,53 @@ export class GitHistoryAgent {
       // Handle regular includes
       return filePath.includes(pattern);
     });
+  }
+
+  private isDocumentationOnlyCommit(message: string): boolean {
+    const lowerMessage = message.toLowerCase().trim();
+    
+    // Check for explicit documentation commit patterns
+    const docPatterns = [
+      /^docs?:/,                           // docs: prefix
+      /^doc:/,                             // doc: prefix  
+      /^documentation:/,                   // documentation: prefix
+      /^update.*session.*logs?$/,          // update session logs
+      /^session.*logs?.*updated?$/,        // session logs updated
+      /^add.*session.*logs?$/,             // add session logs
+      /^.*session.*history$/,              // session history
+      /^update.*documentation$/,           // update documentation
+      /^updated?.*documentation$/,         // updated documentation  
+      /^add.*\.md$/,                       // add *.md
+      /^update.*\.md$/,                    // update *.md
+      /^updated?.*\.md$/,                  // updated *.md
+      /^readme.*update/,                   // readme update
+      /^update.*readme/,                   // update readme
+      /^comment/,                          // comment
+      /^fix.*typo/,                        // fix typo
+      /^typo.*fix/,                        // typo fix
+      /^correct.*documentation$/,          // correct documentation
+      /^improve.*documentation$/,          // improve documentation
+      /^clarify.*documentation$/,          // clarify documentation
+      /^.*\.specstory.*$/,                 // .specstory related
+      /^.*puml.*diagram.*$/,               // puml diagram
+      /^.*diagram.*fix.*$/,                // diagram fix
+    ];
+
+    // Check if message matches any documentation pattern
+    if (docPatterns.some(pattern => pattern.test(lowerMessage))) {
+      return true;
+    }
+
+    // Check for common documentation keywords (must be the primary focus)
+    const docKeywords = ['session logs', 'documentation', 'readme', 'comment', 'typo', 'diagram'];
+    const hasDocKeyword = docKeywords.some(keyword => lowerMessage.includes(keyword));
+    
+    // If it contains doc keywords and is short/simple, likely pure documentation
+    if (hasDocKeyword && lowerMessage.length < 60) {
+      return true;
+    }
+
+    return false;
   }
 
   private identifyArchitecturalDecisions(commits: GitCommit[]): ArchitecturalDecision[] {

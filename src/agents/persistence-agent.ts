@@ -706,7 +706,7 @@ export class PersistenceAgent {
           },
           {
             type: 'link',
-            content: `Details: ${cleanName}.md`,
+            content: `Details: knowledge-management/insights/${cleanName}.md`,
             date: now
           }
         ];

@@ -185,30 +185,50 @@ export class RepositoryContextManager {
       try {
         const files = this.getAllFiles(dir);
         const count = files.filter(file => 
-          extensions.some(ext => file.endsWith(ext))
+          extensions.some(ext => file.endsWith(ext)) &&
+          !file.includes('node_modules') &&
+          !file.includes('.git') &&
+          !file.includes('dist') &&
+          !file.includes('build')
         ).length;
         if (count > 0) {
           languages[language] = (languages[language] || 0) + count;
+          log(`Detected ${count} ${language} files in ${dir}`, 'debug');
         }
       } catch (error) {
-        // Directory doesn't exist, skip
+        log(`Failed to scan ${dir}: ${error}`, 'debug');
       }
     };
 
+    // Count files in both src/ and root directories for TypeScript/JavaScript
     countFiles('src', ['.ts', '.tsx'], 'TypeScript');
-    countFiles('src', ['.js', '.jsx'], 'JavaScript');
-    countFiles('.', ['.py'], 'Python');
+    countFiles('.', ['.ts', '.tsx'], 'TypeScript');
+    countFiles('src', ['.js', '.jsx'], 'JavaScript');  
+    countFiles('.', ['.js', '.jsx'], 'JavaScript');
+    
+    // Only count Python files in specific directories (exclude leftover experimental files)
+    countFiles('src', ['.py'], 'Python');
+    countFiles('lib', ['.py'], 'Python');
+    countFiles('app', ['.py'], 'Python');
+    
     countFiles('src', ['.java'], 'Java');
     countFiles('src', ['.rs'], 'Rust');
     countFiles('src', ['.go'], 'Go');
     countFiles('src', ['.cpp', '.cc', '.cxx'], 'C++');
     countFiles('src', ['.c'], 'C');
 
-    // Sort by file count and return top languages
-    return Object.entries(languages)
+    const result = Object.entries(languages)
       .sort(([,a], [,b]) => b - a)
       .slice(0, 3)
       .map(([lang]) => lang);
+      
+    log(`Language detection result: ${JSON.stringify(result)}`, 'info');
+    
+    if (result.length === 0) {
+      throw new Error('REPOSITORY_CONTEXT_ERROR: No primary languages detected - this should never happen');
+    }
+    
+    return result;
   }
 
   private detectFrameworks(structuralFiles: string[]): string[] {

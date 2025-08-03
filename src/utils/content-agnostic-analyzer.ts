@@ -268,7 +268,10 @@ export class ContentAgnosticAnalyzer {
       const decisions = mainCorrelation.vibeDiscussion.decisions || [];
       
       return {
-        approach: decisions[0] || 'Systematic refactoring approach based on identified patterns',
+        approach: decisions[0] || (() => {
+          log('ERROR: No decisions found in vibe correlations, cannot generate approach', 'error');
+          throw new Error('CONTENT_GENERATION_ERROR: Missing approach data - no decisions in correlations');
+        })(),
         implementation: decisions.slice(0, 5), // Limit implementation steps
         technologies: technologies.slice(0, 5), // Limit technologies
         tradeoffs: ['Implementation complexity vs. maintainability']
@@ -322,15 +325,9 @@ export class ContentAgnosticAnalyzer {
       }
     }
     
-    return {
-      description: `Code quality optimization needed (current score: ${codeQuality}/100)`,
-      context: 'Technical debt and maintainability improvement',
-      symptoms: [
-        `Average complexity: ${complexity}`,
-        'Multiple areas requiring architectural attention'
-      ],
-      impact: 'Affecting development velocity and code maintainability'
-    };
+    log('ERROR: Using generic problem description - this should be repository-specific', 'error');
+    log('DEBUG: codeQuality:', codeQuality, 'complexity:', complexity, 'codeIssues:', codeIssues);
+    throw new Error('CONTENT_GENERATION_ERROR: Generic problem fallback triggered - repository analysis failed');
   }
 
   private generateRepositorySpecificProblem(gitAnalysis: any, semanticAnalysis: any): ContentAgnosticInsight['problem'] {
@@ -370,15 +367,11 @@ export class ContentAgnosticAnalyzer {
       }
     }
     
-    // Fallback to generic if no specific patterns found
-    return {
-      description: `Code quality optimization needed (current score: 70/100)`,
-      context: 'Technical debt and maintainability improvement',
-      symptoms: [
-        'Multiple areas requiring architectural attention'
-      ],
-      impact: 'Affecting development velocity and code maintainability'
-    };
+    // NO MORE FALLBACKS - throw error instead
+    log('ERROR: Cannot generate repository-specific problem - no specific patterns found', 'error');
+    log('DEBUG: gitAnalysis structure:', JSON.stringify(Object.keys(gitAnalysis || {})), 'debug');
+    log('DEBUG: semanticAnalysis structure:', JSON.stringify(Object.keys(semanticAnalysis || {})), 'debug');
+    throw new Error('CONTENT_GENERATION_ERROR: No specific patterns found for problem generation - analysis data incomplete');
   }
 
   private generateRepositorySpecificSolution(gitAnalysis: any, semanticAnalysis: any, technologies: string[], patterns: string[]): ContentAgnosticInsight['solution'] {
@@ -496,13 +489,10 @@ export class ContentAgnosticAnalyzer {
       };
     }
     
-    // Fallback to improved generic solution
-    return {
-      approach: `Repository-specific quality improvement based on ${totalCommits} commits analysis`,
-      implementation: patterns.slice(0, 5),
-      technologies: technologies.slice(0, 5),
-      tradeoffs: ['Development time vs. long-term maintainability']
-    };
+    // NO MORE FALLBACKS - throw error instead
+    log('ERROR: Cannot generate repository-specific solution - no recognized patterns found', 'error');
+    log('DEBUG: Total commits:', totalCommits, 'technologies:', technologies, 'patterns:', patterns);
+    throw new Error('CONTENT_GENERATION_ERROR: No repository-specific solution patterns found - insufficient analysis data');
   }
 
   private async extractRealProblem(correlations: VibeGitCorrelation[], semanticAnalysis: any): Promise<ContentAgnosticInsight['problem']> {

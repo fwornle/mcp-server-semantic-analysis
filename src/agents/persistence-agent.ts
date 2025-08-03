@@ -39,6 +39,12 @@ export interface SharedMemoryEntity {
   observations: (string | ObservationObject)[];
   relationships: EntityRelationship[];
   metadata: EntityMetadata;
+  quick_reference?: {
+    trigger: string;
+    action: string;
+    avoid: string;
+    check: string;
+  };
 }
 
 export interface ObservationObject {
@@ -176,7 +182,9 @@ export class PersistenceAgent {
       const sharedMemory = await this.loadSharedMemory();
 
       // Create entities from observations and analysis results
-      const createdEntities = await this.createEntitiesFromObservations(observations, sharedMemory);
+      // DISABLED: Skip malformed observations - use analysis results instead
+      // const createdEntities = await this.createEntitiesFromObservations(observations, sharedMemory);
+      const createdEntities: SharedMemoryEntity[] = [];
       
       // Also create entities from analysis results even if no observations provided
       const analysisEntities = await this.createEntitiesFromAnalysisResults({
@@ -770,40 +778,20 @@ export class PersistenceAgent {
       if (analysisData.insightGeneration?.insightDocument) {
         const insight = analysisData.insightGeneration.insightDocument;
         
-        // Use filename directly - no manipulation
-        const cleanName = insight.name || 'SemanticAnalysisInsight';
+        // Clean up the insight name - remove duplicates and suffixes
+        let cleanName = insight.name || 'SemanticAnalysisInsight';
         
-        // Create detailed observations with bullet points
-        const detailedObservations = [
-          {
-            type: 'insight',
-            content: `Implementation Analysis for ${cleanName}`,
-            date: now,
-            metadata: {
-              transferable: true,
-              domain: 'pattern-analysis',
-              significance: insight.metadata?.significance || 7
-            }
-          },
-          {
-            type: 'solution',
-            content: insight.content ? insight.content.substring(0, 200) + '...' : 'Pattern analysis and implementation details',
-            date: now,
-            metadata: {
-              technical: true,
-              patterns: insight.metadata?.analysisTypes || ['semantic-analysis']
-            }
-          },
-          {
-            type: 'link',
-            content: `Details: ${cleanName}.md`,
-            date: now,
-            metadata: {
-              source: 'insight-generation',
-              fileValidated: true
-            }
-          }
-        ];
+        // Remove " - Implementation Analysis" suffix if present
+        cleanName = cleanName.replace(/ - Implementation Analysis$/, '');
+        
+        // Remove duplicate pattern names (e.g., "PatternName - PatternName")
+        const parts = cleanName.split(' - ');
+        if (parts.length === 2 && parts[0] === parts[1]) {
+          cleanName = parts[0];
+        }
+        
+        // Extract actionable insights from the content in VkbCli format (simple strings)
+        const detailedObservations = this.extractSimpleObservations(insight, cleanName, now);
 
         const entity: SharedMemoryEntity = {
           id: `analysis_${Date.now()}`,
@@ -818,7 +806,8 @@ export class PersistenceAgent {
             source: 'semantic-analysis-workflow',
             context: `comprehensive-analysis-${insight.metadata?.analysisTypes?.join('-') || 'semantic'}`,
             tags: insight.metadata?.analysisTypes
-          }
+          },
+          quick_reference: this.generateQuickReference(insight, cleanName)
         };
 
         // CRITICAL: Validate insight file exists before creating entity (prevents phantom nodes)
@@ -840,6 +829,64 @@ export class PersistenceAgent {
           log(`Created entity with validated file: ${entity.name}`, 'info', {
             validatedFile: insightFilePath,
             method: 'createEntitiesFromAnalysisResults'
+          });
+        }
+      }
+
+      // Process additional insight files that may have been generated
+      const insightsDir = path.join(process.cwd(), 'knowledge-management', 'insights');
+      if (fs.existsSync(insightsDir)) {
+        // Look for recently generated insight files (within last 5 minutes)
+        const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+        const insightFiles = fs.readdirSync(insightsDir)
+          .filter(file => file.endsWith('.md'))
+          .map(file => {
+            const fullPath = path.join(insightsDir, file);
+            const stats = fs.statSync(fullPath);
+            return { file, fullPath, mtime: stats.mtime.getTime() };
+          })
+          .filter(item => item.mtime > fiveMinutesAgo);
+
+        for (const insightFile of insightFiles) {
+          const patternName = path.basename(insightFile.file, '.md');
+          
+          // Skip if we already created this entity
+          if (entities.some(e => e.name === patternName)) {
+            continue;
+          }
+          
+          // Create entity from insight file
+          const insightContent = fs.readFileSync(insightFile.fullPath, 'utf8');
+          const mockInsight = {
+            name: patternName,
+            content: insightContent,
+            metadata: { significance: 7 }
+          };
+          
+          const simpleObservations = this.extractSimpleObservations(mockInsight, patternName, now);
+          
+          const additionalEntity: SharedMemoryEntity = {
+            id: `analysis_${Date.now()}_${patternName}`,
+            name: patternName,
+            entityType: 'TransferablePattern',
+            significance: 7,
+            observations: simpleObservations,
+            relationships: [],
+            metadata: {
+              created_at: now,
+              last_updated: now,
+              source: 'semantic-analysis-workflow-additional',
+              context: 'comprehensive-analysis-semantic',
+              tags: ['pattern', 'additional']
+            },
+            quick_reference: this.generateQuickReferenceFromContent(insightContent, patternName)
+          };
+          
+          entities.push(additionalEntity);
+          sharedMemory.entities.push(additionalEntity);
+          log(`Created additional entity from insight file: ${patternName}`, 'info', {
+            file: insightFile.fullPath,
+            method: 'createEntitiesFromAnalysisResults-additional'
           });
         }
       }
@@ -1249,5 +1296,409 @@ ${entityData.insights}
     summaryPoints.push('Generated insights with PlantUML diagrams');
     
     return summaryPoints.join('\n');
+  }
+
+  /**
+   * Extract actionable observations from insight content following shared-memory pattern structure
+   */
+  private extractActionableObservations(insight: any, cleanName: string, now: string): any[] {
+    const observations = [];
+
+    // Extract key implementation details from the content
+    const content = insight.content || '';
+    const sections = this.parseInsightSections(content);
+
+    // Rule/Key Principle observation
+    if (sections.problem || sections.solution) {
+      observations.push({
+        type: 'rule',
+        content: this.extractRule(sections, cleanName),
+        date: now
+      });
+    }
+
+    // Basic implementation observation
+    if (sections.implementation || sections.technical) {
+      observations.push({
+        type: 'basic_implementation',
+        content: this.extractImplementation(sections),
+        date: now
+      });
+    }
+
+    // Performance/Benefits observation
+    if (sections.performance || sections.benefits) {
+      observations.push({
+        type: 'performance',
+        content: this.extractPerformance(sections),
+        date: now
+      });
+    }
+
+    // Applicability observation
+    observations.push({
+      type: 'applicability',
+      content: this.extractApplicability(sections) || 'General software development patterns',
+      date: now
+    });
+
+    // Trigger criteria observation
+    observations.push({
+      type: 'trigger_criteria',
+      content: this.extractTriggerCriteria(sections, cleanName),
+      date: now
+    });
+
+    // Link observation
+    observations.push({
+      type: 'link',
+      content: `Details: knowledge-management/insights/${cleanName}.md`,
+      date: now
+    });
+
+    return observations;
+  }
+
+  /**
+   * Extract simple string observations like VkbCli format (not complex objects)
+   */
+  private extractSimpleObservations(insight: any, cleanName: string, now: string): string[] {
+    const observations: string[] = [];
+    const content = insight.content || '';
+    const sections = this.parseInsightSections(content);
+
+    // Problem statement
+    if (sections.problem) {
+      const problemText = sections.problem.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (problemText.length > 20) {
+        observations.push(problemText.substring(0, 300) + (problemText.length > 300 ? '...' : ''));
+      }
+    }
+
+    // Solution statement  
+    if (sections.solution) {
+      const solutionText = sections.solution.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (solutionText.length > 20) {
+        observations.push(solutionText.substring(0, 300) + (solutionText.length > 300 ? '...' : ''));
+      }
+    }
+
+    // Implementation approach
+    if (sections.implementation) {
+      const implText = sections.implementation.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (implText.length > 20) {
+        observations.push(implText.substring(0, 300) + (implText.length > 300 ? '...' : ''));
+      }
+    }
+
+    // Key learnings/rationale
+    const learnings = this.extractKeyLearnings(sections);
+    if (learnings) {
+      observations.push(learnings);
+    }
+
+    // Applicability
+    const applicability = this.extractApplicability(sections);
+    if (applicability) {
+      observations.push(applicability);
+    }
+
+    // Link with full URL like VkbCli
+    observations.push(`Details: http://localhost:8080/knowledge-management/insights/${cleanName}.md`);
+
+    return observations;
+  }
+
+  /**
+   * Parse insight content into sections
+   */
+  private parseInsightSections(content: string): any {
+    const sections: any = {};
+    
+    // Extract problem statement
+    const problemMatch = content.match(/## Problem[\s\S]*?(?=##|$)/i);
+    if (problemMatch) {
+      sections.problem = problemMatch[0].replace(/## Problem\s*/i, '').trim();
+    }
+
+    // Extract solution
+    const solutionMatch = content.match(/## Solution[\s\S]*?(?=##|$)/i);
+    if (solutionMatch) {
+      sections.solution = solutionMatch[0].replace(/## Solution\s*/i, '').trim();
+    }
+
+    // Extract implementation details
+    const implMatch = content.match(/## Implementation[\s\S]*?(?=##|$)/i);
+    if (implMatch) {
+      sections.implementation = implMatch[0].replace(/## Implementation\s*/i, '').trim();
+    }
+
+    // Extract technical details
+    const techMatch = content.match(/## Technical[\s\S]*?(?=##|$)/i);
+    if (techMatch) {
+      sections.technical = techMatch[0].replace(/## Technical\s*/i, '').trim();
+    }
+
+    // Extract performance information
+    const perfMatch = content.match(/## Performance[\s\S]*?(?=##|$)/i);
+    if (perfMatch) {
+      sections.performance = perfMatch[0].replace(/## Performance\s*/i, '').trim();
+    }
+
+    return sections;
+  }
+
+  /**
+   * Extract a key rule/principle from the sections
+   */
+  private extractRule(sections: any, cleanName: string): string {
+    if (sections.problem && sections.solution) {
+      // Try to extract the core principle
+      const firstSentence = sections.solution.split('.')[0];
+      if (firstSentence.length > 10 && firstSentence.length < 200) {
+        return firstSentence + '.';
+      }
+    }
+    
+    return `Apply ${cleanName} pattern for systematic ${this.inferDomain(sections)} improvements`;
+  }
+
+  /**
+   * Extract basic implementation details
+   */
+  private extractImplementation(sections: any): string {
+    // Look for code snippets or specific implementation steps
+    const codeMatch = sections.implementation?.match(/```[\s\S]*?```/);
+    if (codeMatch) {
+      return codeMatch[0].replace(/```[\w]*\n?|```/g, '').trim();
+    }
+
+    // Look for bullet points or numbered steps
+    const steps = sections.implementation?.match(/[-•*]\s.*$/gm);
+    if (steps && steps.length > 0) {
+      return steps[0].replace(/[-•*]\s/, '').trim();
+    }
+
+    // Fallback to first meaningful sentence
+    const firstSentence = (sections.implementation || sections.technical || '')
+      .split('.')[0]?.trim();
+    
+    return firstSentence || 'Pattern-specific implementation approach';
+  }
+
+  /**
+   * Extract performance benefits
+   */
+  private extractPerformance(sections: any): string {
+    if (sections.performance) {
+      const firstLine = sections.performance.split('\n')[0].trim();
+      if (firstLine.length > 10) {
+        return firstLine;
+      }
+    }
+
+    return 'Improved system performance and maintainability through pattern application';
+  }
+
+
+  /**
+   * Extract trigger criteria
+   */
+  private extractTriggerCriteria(sections: any, cleanName: string): string {
+    if (sections.problem) {
+      const problemDesc = sections.problem.split('.')[0].trim();
+      if (problemDesc.length > 10 && problemDesc.length < 150) {
+        return `When experiencing: ${problemDesc.toLowerCase()}`;
+      }
+    }
+
+    const domain = this.inferDomain(sections);
+    return `Apply when ${domain} complexity requires systematic pattern-based solution`;
+  }
+
+  /**
+   * Infer the domain from content sections
+   */
+  private inferDomain(sections: any): string {
+    const content = (sections.problem || sections.solution || sections.implementation || '').toLowerCase();
+    
+    if (content.includes('performance') || content.includes('optimization')) return 'performance';
+    if (content.includes('architecture') || content.includes('design')) return 'architectural';
+    if (content.includes('state') || content.includes('data')) return 'state management';
+    if (content.includes('api') || content.includes('service')) return 'service integration';
+    if (content.includes('ui') || content.includes('interface')) return 'user interface';
+    if (content.includes('security') || content.includes('auth')) return 'security';
+    
+    return 'system';
+  }
+
+  /**
+   * Generate quick reference section like other entities in shared-memory files
+   */
+  private generateQuickReference(insight: any, cleanName: string): any {
+    const content = insight.content || '';
+    const sections = this.parseInsightSections(content);
+    
+    return {
+      trigger: this.extractTriggerCondition(sections, cleanName),
+      action: this.extractActionSummary(sections, cleanName),
+      avoid: this.extractAvoidanceGuidance(sections),
+      check: this.extractSuccessCheck(sections)
+    };
+  }
+
+  /**
+   * Extract trigger condition for quick reference
+   */
+  private extractTriggerCondition(sections: any, cleanName: string): string {
+    if (sections.problem) {
+      const problem = sections.problem.split('.')[0].trim();
+      if (problem.length > 10 && problem.length < 100) {
+        return problem;
+      }
+    }
+    
+    const domain = this.inferDomain(sections);
+    return `${domain.charAt(0).toUpperCase() + domain.slice(1)} complexity requiring ${cleanName} pattern solution`;
+  }
+
+  /**
+   * Extract action summary for quick reference
+   */
+  private extractActionSummary(sections: any, cleanName: string): string {
+    // Look for implementation steps
+    if (sections.implementation) {
+      const firstStep = sections.implementation.split('.')[0].trim();
+      if (firstStep.length > 10 && firstStep.length < 150) {
+        return firstStep;
+      }
+    }
+
+    if (sections.solution) {
+      const firstSolution = sections.solution.split('.')[0].trim();
+      if (firstSolution.length > 10 && firstSolution.length < 150) {
+        return firstSolution;
+      }
+    }
+
+    return `Apply ${cleanName} pattern with systematic implementation approach`;
+  }
+
+  /**
+   * Extract avoidance guidance for quick reference
+   */
+  private extractAvoidanceGuidance(sections: any): string {
+    // Look for anti-patterns or warnings in the content
+    const content = (sections.problem || sections.solution || sections.implementation || '').toLowerCase();
+    
+    if (content.includes('avoid') || content.includes('don\'t') || content.includes('never')) {
+      const avoidMatch = content.match(/(?:avoid|don't|never)[^.]*\./i);
+      if (avoidMatch) {
+        return avoidMatch[0].trim();
+      }
+    }
+
+    // Generic avoidance guidance based on domain
+    const domain = this.inferDomain(sections);
+    switch (domain) {
+      case 'performance':
+        return 'Avoid premature optimization without measurement';
+      case 'architectural':
+        return 'Avoid tightly coupled components and monolithic structures';
+      case 'state management':
+        return 'Avoid direct state mutation and complex prop drilling';
+      case 'security':
+        return 'Avoid hardcoded secrets and unvalidated inputs';
+      default:
+        return 'Avoid ad-hoc solutions without systematic pattern application';
+    }
+  }
+
+  /**
+   * Extract success check criteria for quick reference
+   */
+  private extractSuccessCheck(sections: any): string {
+    if (sections.performance) {
+      const perfLine = sections.performance.split('\n')[0].trim();
+      if (perfLine.length > 10 && perfLine.length < 100) {
+        return perfLine;
+      }
+    }
+
+    // Look for measurable outcomes
+    const content = sections.solution || sections.implementation || '';
+    const metricMatch = content.match(/\d+%|\d+x|improved|reduced|increased/i);
+    if (metricMatch) {
+      const sentence = content.split('.').find((s: string) => s.includes(metricMatch[0]));
+      if (sentence && sentence.trim().length < 120) {
+        return sentence.trim();
+      }
+    }
+
+    return 'Measurable improvement in system maintainability and performance';
+  }
+
+  /**
+   * Extract key learnings for simple observations
+   */
+  private extractKeyLearnings(sections: any): string | null {
+    // Look for rationale or key insights
+    const solution = sections.solution || '';
+    const implementation = sections.implementation || '';
+    
+    // Try to find a sentence that explains "why" or "because"
+    const combined = solution + ' ' + implementation;
+    const sentences = combined.split(/[.!?]+/).filter(s => s.trim().length > 20);
+    
+    for (const sentence of sentences) {
+      if (sentence.toLowerCase().includes('because') || 
+          sentence.toLowerCase().includes('provides') || 
+          sentence.toLowerCase().includes('enables') ||
+          sentence.toLowerCase().includes('allows')) {
+        const cleaned = sentence.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+        if (cleaned.length > 30 && cleaned.length < 200) {
+          return cleaned;
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Extract applicability for simple observations
+   */
+  private extractApplicability(sections: any): string | null {
+    const content = (sections.solution || sections.implementation || '').toLowerCase();
+    
+    // Build applicability based on content domains
+    const domains = [];
+    if (content.includes('architecture') || content.includes('design')) domains.push('system architecture');
+    if (content.includes('performance') || content.includes('optimization')) domains.push('performance optimization');
+    if (content.includes('state') || content.includes('data')) domains.push('state management');
+    if (content.includes('api') || content.includes('service')) domains.push('API design');
+    if (content.includes('workflow') || content.includes('process')) domains.push('development workflows');
+    if (content.includes('collaboration') || content.includes('team')) domains.push('team collaboration');
+    if (content.includes('documentation') || content.includes('knowledge')) domains.push('knowledge management');
+    
+    if (domains.length > 0) {
+      return `Applicable to ${domains.join(', ')} and similar domain challenges`;
+    }
+    
+    return 'General software development patterns and architectural challenges';
+  }
+
+  /**
+   * Generate quick reference from insight content
+   */
+  private generateQuickReferenceFromContent(content: string, patternName: string): any {
+    const sections = this.parseInsightSections(content);
+    
+    return {
+      trigger: sections.problem ? sections.problem.split('.')[0].trim() : `When ${patternName} pattern is needed`,
+      action: sections.solution ? sections.solution.split('.')[0].trim() : `Apply ${patternName} pattern`,
+      avoid: `Don't ignore ${patternName.toLowerCase()} best practices`,
+      check: `Verify ${patternName.toLowerCase()} implementation is working correctly`
+    };
   }
 }

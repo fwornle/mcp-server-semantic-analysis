@@ -3,6 +3,8 @@ import * as path from 'path';
 import { log } from '../logging.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { FilenameTracer } from '../utils/filename-tracer.js';
+import { ContentAgnosticAnalyzer } from '../utils/content-agnostic-analyzer.js';
+import { RepositoryContextManager } from '../utils/repository-context.js';
 
 export interface InsightDocument {
   name: string;
@@ -71,16 +73,21 @@ export class InsightGenerationAgent {
   private plantumlAvailable: boolean = false;
   private standardStylePath: string;
   private semanticAnalyzer: SemanticAnalyzer;
+  private contentAnalyzer: ContentAgnosticAnalyzer;
+  private contextManager: RepositoryContextManager;
 
   constructor(repositoryPath: string = '.') {
     this.outputDir = path.join(repositoryPath, 'knowledge-management', 'insights');
     this.standardStylePath = path.join(repositoryPath, 'docs', 'puml', '_standard-style.puml');
     this.semanticAnalyzer = new SemanticAnalyzer();
+    this.contentAnalyzer = new ContentAgnosticAnalyzer(repositoryPath);
+    this.contextManager = new RepositoryContextManager(repositoryPath);
     this.initializeDirectories();
     this.checkPlantUMLAvailability();
   }
 
   async generateComprehensiveInsights(params: any): Promise<InsightGenerationResult> {
+    console.log('🚀 generateComprehensiveInsights called!');
     const startTime = Date.now();
     
     // Extract parameters from the params object
@@ -88,6 +95,13 @@ export class InsightGenerationAgent {
     const vibeAnalysis = params.vibe_analysis_results || params.vibeAnalysis;
     const semanticAnalysis = params.semantic_analysis_results || params.semanticAnalysis;
     const webResults = params.web_search_results || params.webResults;
+    
+    console.log('📊 Data availability:', {
+      gitAnalysis: !!gitAnalysis,
+      vibeAnalysis: !!vibeAnalysis,
+      semanticAnalysis: !!semanticAnalysis,
+      webResults: !!webResults
+    });
     
     log('Starting comprehensive insight generation', 'info', {
       receivedParams: Object.keys(params || {}),
@@ -391,6 +405,13 @@ export class InsightGenerationAgent {
 
     // Generate comprehensive content  
     const timestamp = new Date().toISOString();
+    console.log('📝 About to call generateInsightContent with:', {
+      title,
+      hasGitAnalysis: !!gitAnalysis,
+      hasVibeAnalysis: !!vibeAnalysis,
+      hasSemanticAnalysis: !!semanticAnalysis
+    });
+    
     const content = await this.generateInsightContent({
       title,
       timestamp,
@@ -401,6 +422,8 @@ export class InsightGenerationAgent {
       webResults,
       diagrams
     });
+    
+    console.log('✅ generateInsightContent completed, content length:', content.length);
 
     // Save the document with tracing
     FilenameTracer.trace('FILE_WRITE_INPUT', 'generateInsightDocument',
@@ -1015,80 +1038,103 @@ SemanticAnalysisAgent --> InsightGenerationAgent
       diagrams
     } = data;
 
-    const significance = this.calculateInsightSignificance(
-      gitAnalysis, vibeAnalysis, semanticAnalysis, patternCatalog
+    // Use content-agnostic analyzer to generate real insights
+    log('Starting content-agnostic insight generation', 'info');
+    const contentInsight = await this.contentAnalyzer.analyzeWithContext(
+      gitAnalysis, vibeAnalysis, semanticAnalysis
     );
+
+    // Get repository context for specific details
+    const repositoryContext = await this.contextManager.getRepositoryContext();
 
     // Determine main pattern for title
     const mainPattern = patternCatalog?.patterns?.sort((a: any, b: any) => b.significance - a.significance)[0];
-    const patternType = mainPattern?.category === 'Design' ? 'Design Pattern' : 
-                      mainPattern?.category === 'Architecture' ? 'Architectural Pattern' :
-                      'TransferablePattern';
+    const patternName = mainPattern?.name || this.generateContextualPatternName(contentInsight, repositoryContext);
+    
+    const patternType = this.determinePatternType(contentInsight, repositoryContext);
+    const significance = contentInsight.significance;
 
-    // Extract async content 
-    const problemStatement = await this.extractMainProblem(gitAnalysis, vibeAnalysis, semanticAnalysis);
-    const solutionStatement = this.extractMainSolution(patternCatalog, gitAnalysis, semanticAnalysis);
-    const benefitsStatement = this.extractBenefits(patternCatalog, semanticAnalysis);
-
-    return `# ${mainPattern?.name || title.replace(/ - .*$/, '')}
+    return `# ${patternName}
 
 **Pattern Type:** ${patternType}  
 **Significance:** ${significance}/10 - ${this.getSignificanceDescription(significance)}  
 **Created:** ${timestamp.split('T')[0]}  
 **Updated:** ${timestamp.split('T')[0]}
+**Confidence:** ${Math.round(contentInsight.confidence * 100)}% - ${this.getConfidenceDescription(contentInsight.confidence)}
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Problem & Solution](#problem--solution)
-- [Architecture Overview](#architecture-overview)
-- [Pattern Analysis](#pattern-analysis)
-- [Implementation Examples](#implementation-examples)
+- [Repository Context](#repository-context)
+- [Evolution Analysis](#evolution-analysis)
+- [Implementation Details](#implementation-details)
 - [Technical Analysis](#technical-analysis)
-- [Quality Assessment](#quality-assessment)
+- [Measured Outcomes](#measured-outcomes)
 - [Usage Guidelines](#usage-guidelines)
 - [Related Patterns](#related-patterns)
 - [References](#references)
 
 ## Overview
 
-**Problem:** ${problemStatement}
+**Problem:** ${contentInsight.problem.description}
 
-**Solution:** ${solutionStatement}
+**Solution:** ${contentInsight.solution.approach}
 
-**Benefits:** ${benefitsStatement}
+**Impact:** ${contentInsight.outcome.improvements.join(', ')}
 
 ## Problem & Solution
 
 ### 🎯 **Problem Statement**
-${this.generateProblemStatement(gitAnalysis, vibeAnalysis, semanticAnalysis)}
+
+**Context:** ${contentInsight.problem.context}
+
+**Description:** ${contentInsight.problem.description}
+
+**Symptoms:**
+${contentInsight.problem.symptoms.map(symptom => `- ${symptom}`).join('\n')}
+
+**Impact:** ${contentInsight.problem.impact}
 
 ### ✅ **Solution Approach**
-${this.generateSolutionApproach(patternCatalog, semanticAnalysis)}
 
-## Architecture Overview
+**Approach:** ${contentInsight.solution.approach}
+
+**Implementation:**
+${contentInsight.solution.implementation.map(impl => `- ${impl}`).join('\n')}
+
+**Technologies Used:**
+${contentInsight.solution.technologies.map(tech => `- ${tech}`).join('\n')}
+
+**Tradeoffs:**
+${contentInsight.solution.tradeoffs.map(tradeoff => `- ${tradeoff}`).join('\n')}
+
+## Repository Context
+
+**Project Type:** ${repositoryContext.projectType}  
+**Domain:** ${repositoryContext.domain}  
+**Primary Languages:** ${repositoryContext.primaryLanguages.join(', ')}  
+**Frameworks:** ${repositoryContext.frameworks.join(', ')}  
+**Architecture:** ${repositoryContext.architecturalStyle}  
+**Build Tools:** ${repositoryContext.buildTools.join(', ')}
+
+## Evolution Analysis
+
+${this.generateEvolutionAnalysis(gitAnalysis, vibeAnalysis, contentInsight)}
+
+## Implementation Details
+
+### Core Changes
 
 ![System Architecture](images/${diagrams.find((d: PlantUMLDiagram) => d.type === 'architecture' && d.success)?.name || 'architecture'}.png)
 
-${this.generateArchitectureDescription(gitAnalysis, semanticAnalysis, patternCatalog)}
+${this.generateContextualImplementation(contentInsight, gitAnalysis, semanticAnalysis)}
 
-## Pattern Analysis
-
-### Identified Patterns (${patternCatalog.patterns.length})
-
-${this.formatPatternCatalogStructured(patternCatalog)}
-
-## Implementation Examples
-
-### Core Implementation
+### Code Examples
 
 \`\`\`${this.detectMainLanguage(gitAnalysis, semanticAnalysis)}
-${this.generateCodeExample(patternCatalog, semanticAnalysis)}
+${this.generateRealCodeExample(contentInsight, semanticAnalysis, repositoryContext)}
 \`\`\`
-
-### Usage Pattern
-
-${this.generateUsageExample(patternCatalog)}
 
 ## Technical Analysis
 
@@ -1096,17 +1142,24 @@ ${this.generateUsageExample(patternCatalog)}
 
 ${this.generateTechnicalFindings(gitAnalysis, vibeAnalysis, semanticAnalysis)}
 
-## Quality Assessment
+## Measured Outcomes
 
-${this.generateQualityAssessment(semanticAnalysis)}
+### Quantitative Metrics
+${contentInsight.outcome.metrics.map(metric => `- ${metric}`).join('\n')}
+
+### Qualitative Improvements
+${contentInsight.outcome.improvements.map(improvement => `- ${improvement}`).join('\n')}
+
+### Emerging Challenges
+${contentInsight.outcome.newChallenges.map(challenge => `- ${challenge}`).join('\n')}
 
 ## Usage Guidelines
 
-### ✅ Use This Pattern When:
-${this.generateUsageGuidelines(patternCatalog, semanticAnalysis, true)}
+### ✅ Apply This Pattern When:
+${this.generateContextualUsageGuidelines(contentInsight, repositoryContext, true)}
 
 ### ❌ Avoid This Pattern When:
-${this.generateUsageGuidelines(patternCatalog, semanticAnalysis, false)}
+${this.generateContextualUsageGuidelines(contentInsight, repositoryContext, false)}
 
 ## Related Patterns
 
@@ -1116,7 +1169,7 @@ ${this.generateRelatedPatterns(patternCatalog)}
 
 ![Process Sequence](images/${diagrams.find((d: PlantUMLDiagram) => d.type === 'sequence' && d.success)?.name || 'sequence'}.png)
 
-${this.generateProcessDescription(vibeAnalysis, gitAnalysis)}
+${this.generateRealProcessDescription(contentInsight, vibeAnalysis, gitAnalysis)}
 
 ## References
 
@@ -1133,7 +1186,10 @@ ${this.generateReferences(webResults, gitAnalysis)}
 ${this.formatDiagramReferences(diagrams)}
 
 ---
-*Generated by Semantic Analysis Pattern Extraction System*
+*Generated by Content-Agnostic Semantic Analysis System*
+
+**Analysis Confidence:** ${Math.round(contentInsight.confidence * 100)}%  
+**Repository Context Hash:** ${repositoryContext.contextHash.substring(0, 8)}
 
 🤖 Generated with [Claude Code](https://claude.ai/code)
 
@@ -2556,5 +2612,320 @@ class ${topPattern?.name || 'PatternExample'} {
     refs.push('- Pattern analysis results');
     
     return refs.join('\n');
+  }
+
+  // New content-agnostic helper methods
+  private generateContextualPatternName(contentInsight: any, repositoryContext: any): string {
+    const { projectType, domain, primaryLanguages } = repositoryContext;
+    const problemKeywords = contentInsight.problem.description.toLowerCase();
+    
+    // Generate specific pattern names based on actual context
+    if (problemKeywords.includes('performance')) {
+      return `${projectType === 'api' ? 'API' : 'Application'} Performance Optimization Pattern`;
+    } else if (problemKeywords.includes('scale')) {
+      return `${domain} Scalability Enhancement Pattern`;
+    } else if (problemKeywords.includes('refactor') || problemKeywords.includes('maintain')) {
+      return `${primaryLanguages[0] || 'Code'} Maintainability Improvement Pattern`;
+    } else if (problemKeywords.includes('integration')) {
+      return `${projectType} Integration Architecture Pattern`;
+    } else if (problemKeywords.includes('test')) {
+      return `${domain} Quality Assurance Pattern`;
+    }
+    
+    return `${domain} Development Pattern`;
+  }
+
+  private determinePatternType(contentInsight: any, repositoryContext: any): string {
+    const solution = contentInsight.solution.approach.toLowerCase();
+    
+    if (solution.includes('architect') || solution.includes('structure')) {
+      return 'Architectural Pattern';
+    } else if (solution.includes('design') || solution.includes('component')) {
+      return 'Design Pattern';
+    } else if (solution.includes('process') || solution.includes('workflow')) {
+      return 'Process Pattern';
+    } else if (solution.includes('performance') || solution.includes('optimize')) {
+      return 'Performance Pattern';
+    } else if (solution.includes('integration') || solution.includes('api')) {
+      return 'Integration Pattern';
+    }
+    
+    return 'Technical Pattern';
+  }
+
+  private getConfidenceDescription(confidence: number): string {
+    if (confidence >= 0.8) return 'High confidence based on strong data correlation';
+    if (confidence >= 0.6) return 'Moderate confidence with good data coverage';
+    if (confidence >= 0.4) return 'Fair confidence with limited data correlation';
+    return 'Low confidence due to insufficient data correlation';
+  }
+
+  private generateEvolutionAnalysis(gitAnalysis: any, vibeAnalysis: any, contentInsight: any): string {
+    const analysis = [];
+    
+    if (gitAnalysis?.commits?.length > 0) {
+      analysis.push(`**Git Evolution:** Analysis of ${gitAnalysis.commits.length} commits shows focused development in the following areas:`);
+      
+      // Analyze commit patterns
+      const commitTypes = this.categorizeCommits(gitAnalysis.commits);
+      for (const [type, count] of Object.entries(commitTypes)) {
+        if (count > 0) {
+          analysis.push(`- ${type}: ${count} commits`);
+        }
+      }
+    }
+    
+    if (vibeAnalysis?.sessions?.length > 0) {
+      analysis.push(`\n**Conversation Evolution:** ${vibeAnalysis.sessions.length} development sessions reveal decision-making process:`);
+      analysis.push(`- Problem identification and solution discussion`);
+      analysis.push(`- Technical decision rationale and tradeoffs`);
+      analysis.push(`- Implementation approach and concerns`);
+    }
+    
+    analysis.push(`\n**Impact Timeline:** ${contentInsight.problem.description} was addressed through ${contentInsight.solution.approach.toLowerCase()}, resulting in ${contentInsight.outcome.improvements.join(' and ')}.`);
+    
+    return analysis.join('\n');
+  }
+
+  private generateContextualImplementation(contentInsight: any, gitAnalysis: any, semanticAnalysis: any): string {
+    const implementation = [];
+    
+    implementation.push(`**Implementation Approach:** ${contentInsight.solution.approach}`);
+    
+    if (contentInsight.solution.implementation.length > 0) {
+      implementation.push(`\n**Key Changes:**`);
+      contentInsight.solution.implementation.forEach((change: string) => {
+        implementation.push(`- ${change}`);
+      });
+    }
+    
+    if (semanticAnalysis?.codeAnalysis?.architecturalPatterns?.length > 0) {
+      implementation.push(`\n**Architectural Patterns Applied:**`);
+      semanticAnalysis.codeAnalysis.architecturalPatterns.forEach((pattern: any) => {
+        implementation.push(`- **${pattern.name}**: ${pattern.description} (Confidence: ${Math.round(pattern.confidence * 100)}%)`);
+      });
+    }
+    
+    return implementation.join('\n');
+  }
+
+  private generateRealCodeExample(contentInsight: any, semanticAnalysis: any, repositoryContext: any): string {
+    const { primaryLanguages, frameworks } = repositoryContext;
+    const mainLanguage = primaryLanguages[0] || 'JavaScript';
+    
+    // Generate contextual code examples based on the actual solution
+    const solution = contentInsight.solution.approach.toLowerCase();
+    
+    if (solution.includes('api') || solution.includes('endpoint')) {
+      return this.generateAPIExample(mainLanguage, frameworks);
+    } else if (solution.includes('component') || solution.includes('ui')) {
+      return this.generateComponentExample(mainLanguage, frameworks);
+    } else if (solution.includes('database') || solution.includes('query')) {
+      return this.generateDatabaseExample(mainLanguage, frameworks);
+    } else if (solution.includes('performance') || solution.includes('optimize')) {
+      return this.generatePerformanceExample(mainLanguage);
+    }
+    
+    return this.generateGenericExample(mainLanguage, contentInsight);
+  }
+
+  private generateAPIExample(language: string, frameworks: string[]): string {
+    if (frameworks.includes('Express.js')) {
+      return `// Express.js API optimization
+app.get('/api/users/:id', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const user = await userService.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json(user);
+  } catch (error) {
+    logger.error('User fetch error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});`;
+    }
+    
+    return `// API implementation
+async function handleRequest(request) {
+  const { id } = request.params;
+  const result = await service.process(id);
+  return { success: true, data: result };
+}`;
+  }
+
+  private generateComponentExample(language: string, frameworks: string[]): string {
+    if (frameworks.includes('React')) {
+      return `// React component optimization
+import React, { memo, useCallback } from 'react';
+
+const UserCard = memo(({ user, onEdit }) => {
+  const handleEdit = useCallback(() => {
+    onEdit(user.id);
+  }, [user.id, onEdit]);
+
+  return (
+    <div className="user-card">
+      <h3>{user.name}</h3>
+      <button onClick={handleEdit}>Edit</button>
+    </div>
+  );
+});
+
+export default UserCard;`;
+    }
+    
+    return `// Component implementation
+class Component {
+  constructor(props) {
+    this.props = props;
+  }
+  
+  render() {
+    return this.props.children;
+  }
+}`;
+  }
+
+  private generateDatabaseExample(language: string, frameworks: string[]): string {
+    return `// Database query optimization
+const findUsersWithPagination = async (page = 1, limit = 20) => {
+  const offset = (page - 1) * limit;
+  
+  const [users, total] = await Promise.all([
+    db.users.findMany({
+      skip: offset,
+      take: limit,
+      select: { id: true, name: true, email: true }
+    }),
+    db.users.count()
+  ]);
+  
+  return {
+    users,
+    pagination: {
+      page,
+      limit,
+      total,
+      pages: Math.ceil(total / limit)
+    }
+  };
+};`;
+  }
+
+  private generatePerformanceExample(language: string): string {
+    return `// Performance optimization implementation
+const memoizedExpensiveOperation = useMemo(() => {
+  return data.map(item => ({
+    ...item,
+    computed: expensiveCalculation(item)
+  }));
+}, [data]);
+
+// Lazy loading implementation
+const LazyComponent = lazy(() => import('./HeavyComponent'));`;
+  }
+
+  private generateGenericExample(language: string, contentInsight: any): string {
+    return `// Solution implementation
+class SolutionPattern {
+  constructor(config) {
+    this.config = config;
+  }
+  
+  execute() {
+    // Implementation based on: ${contentInsight.solution.approach}
+    return this.process(this.config);
+  }
+  
+  process(config) {
+    // Core logic implementation
+    return { success: true, result: config };
+  }
+}`;
+  }
+
+  private generateContextualUsageGuidelines(contentInsight: any, repositoryContext: any, isPositive: boolean): string {
+    const guidelines = [];
+    const { projectType, domain, architecturalStyle } = repositoryContext;
+    
+    if (isPositive) {
+      guidelines.push(`- ${projectType} projects experiencing similar challenges`);
+      guidelines.push(`- ${domain} domain applications requiring reliability`);
+      guidelines.push(`- ${architecturalStyle} architectures needing optimization`);
+      
+      if (contentInsight.solution.technologies.length > 0) {
+        guidelines.push(`- Teams using ${contentInsight.solution.technologies.join(', ')}`);
+      }
+    } else {
+      guidelines.push(`- Simple ${projectType} projects without complexity needs`);
+      guidelines.push(`- Prototype or proof-of-concept development`);
+      guidelines.push(`- Systems with fundamentally different architecture than ${architecturalStyle}`);
+      
+      if (contentInsight.solution.tradeoffs.length > 0) {
+        guidelines.push(`- When ${contentInsight.solution.tradeoffs[0].toLowerCase()}`);
+      }
+    }
+    
+    return guidelines.join('\n');
+  }
+
+  private generateRealProcessDescription(contentInsight: any, vibeAnalysis: any, gitAnalysis: any): string {
+    const process = [];
+    
+    process.push(`1. **Problem Identification**: ${contentInsight.problem.description}`);
+    process.push(`2. **Solution Design**: ${contentInsight.solution.approach}`);
+    
+    if (contentInsight.solution.implementation.length > 0) {
+      process.push(`3. **Implementation Phase**:`);
+      contentInsight.solution.implementation.forEach((impl: string, index: number) => {
+        process.push(`   ${index + 1}. ${impl}`);
+      });
+    }
+    
+    process.push(`4. **Outcome Assessment**: ${contentInsight.outcome.improvements.join(', ')}`);
+    
+    if (contentInsight.outcome.newChallenges.length > 0) {
+      process.push(`5. **Emerging Considerations**: ${contentInsight.outcome.newChallenges.join(', ')}`);
+    }
+    
+    return process.join('\n');
+  }
+
+  private categorizeCommits(commits: any[]): Record<string, number> {
+    const categories = {
+      'Feature Development': 0,
+      'Bug Fixes': 0,
+      'Refactoring': 0,
+      'Performance': 0,
+      'Documentation': 0,
+      'Configuration': 0,
+      'Testing': 0
+    };
+    
+    commits.forEach(commit => {
+      const message = commit.message.toLowerCase();
+      
+      if (message.includes('feat') || message.includes('add') || message.includes('implement')) {
+        categories['Feature Development']++;
+      } else if (message.includes('fix') || message.includes('bug')) {
+        categories['Bug Fixes']++;
+      } else if (message.includes('refactor') || message.includes('restructure')) {
+        categories['Refactoring']++;
+      } else if (message.includes('perf') || message.includes('optimize')) {
+        categories['Performance']++;
+      } else if (message.includes('doc') || message.includes('readme')) {
+        categories['Documentation']++;
+      } else if (message.includes('config') || message.includes('setup')) {
+        categories['Configuration']++;
+      } else if (message.includes('test') || message.includes('spec')) {
+        categories['Testing']++;
+      }
+    });
+    
+    return categories;
   }
 }

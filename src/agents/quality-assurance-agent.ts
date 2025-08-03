@@ -980,7 +980,7 @@ export class QualityAssuranceAgent {
         // Add missing link observation
         correctedObs.observations.push({
           type: 'link',
-          content: `Details: http://localhost:8080/knowledge-management/insights/${obs.name}.md`,
+          content: `Details: knowledge-management/insights/${obs.name}.md`,
           date: new Date().toISOString()
         });
         obsChanged = true;

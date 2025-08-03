@@ -19,6 +19,16 @@ export interface CheckpointData {
   lastFullAnalysis?: string;
   analysisCount: number;
   lastEntitySync?: string;
+  
+  // Enhanced checkpoint data
+  lastAnalyzedCommit?: string;
+  lastProcessedVibeSession?: string;
+  repositoryContextVersion?: string;
+  processedCommitCount: number;
+  processedVibeSessionCount: number;
+  extractedPatterns: number;
+  analysisCompleteness: number; // 0-100%
+  confidenceScore: number;
 }
 
 export interface SharedMemoryEntity {
@@ -73,6 +83,16 @@ export interface SharedMemoryStructure {
     lastSuccessfulWorkflowCompletion?: string;
     lastCompletedWorkflow?: string;
     successfulWorkflowCount?: number;
+    
+    // Enhanced checkpoint fields
+    lastAnalyzedCommit?: string;
+    lastProcessedVibeSession?: string;
+    repositoryContextVersion?: string;
+    processedCommitCount?: number;
+    processedVibeSessionCount?: number;
+    extractedPatterns?: number;
+    analysisCompleteness?: number;
+    confidenceScore?: number;
   };
 }
 
@@ -102,7 +122,7 @@ export class PersistenceAgent {
       gitAnalysis = results.analyze_git_history;
       vibeAnalysis = results.analyze_vibe_history;
       semanticAnalysis = results.semantic_analysis;
-      observations = results.generate_observations || [];
+      observations = results.generate_observations?.observations || results.generate_observations || [];
       insightGeneration = results.generate_insights;
     } else if (arguments.length > 1) {
       // Called directly with separate parameters (backward compatibility)
@@ -111,12 +131,20 @@ export class PersistenceAgent {
       semanticAnalysis = arguments[2];
       observations = arguments[3] || [];
       insightGeneration = arguments[4];
+    } else if (parameters.workflow_results) {
+      // Called by coordinator with workflow_results wrapper
+      const results = parameters.workflow_results;
+      gitAnalysis = results.git_history;
+      vibeAnalysis = results.vibe_history;
+      semanticAnalysis = results.semantic_analysis;
+      observations = results.observations?.observations || results.observations || [];
+      insightGeneration = results.insights;
     } else {
       // Single parameter call without context
       gitAnalysis = parameters.gitAnalysis;
       vibeAnalysis = parameters.vibeAnalysis;
       semanticAnalysis = parameters.semanticAnalysis;
-      observations = parameters.observations || [];
+      observations = parameters.observations?.observations || parameters.observations || [];
       insightGeneration = parameters.insightGeneration;
     }
 
@@ -447,13 +475,71 @@ export class PersistenceAgent {
         lastSemanticAnalysis: sharedMemory.metadata.lastSemanticAnalysis,
         lastFullAnalysis: sharedMemory.metadata.last_updated,
         analysisCount: sharedMemory.metadata.analysisCount || 0,
-        lastEntitySync: sharedMemory.metadata.last_updated
+        lastEntitySync: sharedMemory.metadata.last_updated,
+        
+        // Enhanced checkpoint data
+        lastAnalyzedCommit: sharedMemory.metadata.lastAnalyzedCommit,
+        lastProcessedVibeSession: sharedMemory.metadata.lastProcessedVibeSession,
+        repositoryContextVersion: sharedMemory.metadata.repositoryContextVersion,
+        processedCommitCount: sharedMemory.metadata.processedCommitCount || 0,
+        processedVibeSessionCount: sharedMemory.metadata.processedVibeSessionCount || 0,
+        extractedPatterns: sharedMemory.metadata.extractedPatterns || 0,
+        analysisCompleteness: sharedMemory.metadata.analysisCompleteness || 0,
+        confidenceScore: sharedMemory.metadata.confidenceScore || 0
       };
     } catch (error) {
       log('Failed to get analysis checkpoints', 'error', error);
       return {
-        analysisCount: 0
+        analysisCount: 0,
+        processedCommitCount: 0,
+        processedVibeSessionCount: 0,
+        extractedPatterns: 0,
+        analysisCompleteness: 0,
+        confidenceScore: 0
       };
+    }
+  }
+
+  async updateEnhancedCheckpoint(checkpointUpdates: Partial<CheckpointData>): Promise<boolean> {
+    try {
+      const sharedMemory = await this.loadSharedMemory();
+      
+      // Update enhanced checkpoint fields
+      if (checkpointUpdates.lastAnalyzedCommit !== undefined) {
+        sharedMemory.metadata.lastAnalyzedCommit = checkpointUpdates.lastAnalyzedCommit;
+      }
+      if (checkpointUpdates.lastProcessedVibeSession !== undefined) {
+        sharedMemory.metadata.lastProcessedVibeSession = checkpointUpdates.lastProcessedVibeSession;
+      }
+      if (checkpointUpdates.repositoryContextVersion !== undefined) {
+        sharedMemory.metadata.repositoryContextVersion = checkpointUpdates.repositoryContextVersion;
+      }
+      if (checkpointUpdates.processedCommitCount !== undefined) {
+        sharedMemory.metadata.processedCommitCount = checkpointUpdates.processedCommitCount;
+      }
+      if (checkpointUpdates.processedVibeSessionCount !== undefined) {
+        sharedMemory.metadata.processedVibeSessionCount = checkpointUpdates.processedVibeSessionCount;
+      }
+      if (checkpointUpdates.extractedPatterns !== undefined) {
+        sharedMemory.metadata.extractedPatterns = checkpointUpdates.extractedPatterns;
+      }
+      if (checkpointUpdates.analysisCompleteness !== undefined) {
+        sharedMemory.metadata.analysisCompleteness = checkpointUpdates.analysisCompleteness;
+      }
+      if (checkpointUpdates.confidenceScore !== undefined) {
+        sharedMemory.metadata.confidenceScore = checkpointUpdates.confidenceScore;
+      }
+      
+      // Update timestamp
+      sharedMemory.metadata.last_updated = new Date().toISOString();
+      
+      await this.saveSharedMemory(sharedMemory);
+      
+      log('Enhanced checkpoint updated successfully', 'info', checkpointUpdates);
+      return true;
+    } catch (error) {
+      log('Failed to update enhanced checkpoint', 'error', error);
+      return false;
     }
   }
 

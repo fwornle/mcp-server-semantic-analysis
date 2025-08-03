@@ -69,42 +69,75 @@ export class ObservationGenerationAgent {
     semanticAnalysis: any,
     webSearchResults?: any
   ): Promise<ObservationGenerationResult> {
+    // Handle both direct parameters and coordinator parameter object
+    let actualGitAnalysis = gitAnalysis;
+    let actualVibeAnalysis = vibeAnalysis;
+    let actualSemanticAnalysis = semanticAnalysis;
+    let actualWebSearchResults = webSearchResults;
+    let insightsResults: any = null;
+    
+    // Check if called with single parameter object from coordinator
+    if (arguments.length === 1 && typeof gitAnalysis === 'object' && 
+        (gitAnalysis.git_analysis_results || gitAnalysis.insights_results)) {
+      const params = gitAnalysis;
+      actualGitAnalysis = params.git_analysis_results || params.gitAnalysis;
+      actualVibeAnalysis = params.vibe_analysis_results || params.vibeAnalysis;
+      actualSemanticAnalysis = params.semantic_analysis_results || params.semanticAnalysis;
+      actualWebSearchResults = params.web_search_results || params.webSearchResults;
+      insightsResults = params.insights_results || params.insights;
+      
+      log('Detected coordinator parameter format', 'info', {
+        hasGitAnalysis: !!actualGitAnalysis,
+        hasVibeAnalysis: !!actualVibeAnalysis,
+        hasSemanticAnalysis: !!actualSemanticAnalysis,
+        hasInsightsResults: !!insightsResults
+      });
+    }
+    
     log('Starting structured observation generation', 'info', {
-      gitCommits: gitAnalysis?.commits?.length || 0,
-      vibeSessions: vibeAnalysis?.sessions?.length || 0,
-      hasSemanticAnalysis: !!semanticAnalysis
+      gitCommits: actualGitAnalysis?.commits?.length || 0,
+      vibeSessions: actualVibeAnalysis?.sessions?.length || 0,
+      hasSemanticAnalysis: !!actualSemanticAnalysis,
+      hasInsightsResults: !!insightsResults
     });
 
     try {
       const observations: StructuredObservation[] = [];
 
       // Generate observations from git analysis
-      if (gitAnalysis) {
-        const gitObservations = await this.generateFromGitAnalysis(gitAnalysis);
+      if (actualGitAnalysis) {
+        const gitObservations = await this.generateFromGitAnalysis(actualGitAnalysis);
         observations.push(...gitObservations);
       }
 
       // Generate observations from vibe analysis
-      if (vibeAnalysis) {
-        const vibeObservations = await this.generateFromVibeAnalysis(vibeAnalysis);
+      if (actualVibeAnalysis) {
+        const vibeObservations = await this.generateFromVibeAnalysis(actualVibeAnalysis);
         observations.push(...vibeObservations);
       }
 
       // Generate observations from semantic analysis
-      if (semanticAnalysis) {
-        const semanticObservations = await this.generateFromSemanticAnalysis(semanticAnalysis);
+      if (actualSemanticAnalysis) {
+        const semanticObservations = await this.generateFromSemanticAnalysis(actualSemanticAnalysis);
         observations.push(...semanticObservations);
+      }
+      
+      // Generate observations from insights results
+      if (insightsResults) {
+        const insightObservations = await this.generateFromInsightsResults(insightsResults);
+        observations.push(...insightObservations);
+        log(`Generated ${insightObservations.length} observations from insights`, 'info');
       }
 
       // Generate cross-analysis observations
       const crossObservations = await this.generateCrossAnalysisObservations(
-        gitAnalysis, vibeAnalysis, semanticAnalysis
+        actualGitAnalysis, actualVibeAnalysis, actualSemanticAnalysis
       );
       observations.push(...crossObservations);
 
       // Enhance with web search results
-      if (webSearchResults) {
-        await this.enhanceWithWebSearch(observations, webSearchResults);
+      if (actualWebSearchResults) {
+        await this.enhanceWithWebSearch(observations, actualWebSearchResults);
       }
 
       // Validate observations
@@ -593,6 +626,191 @@ export class ObservationGenerationAgent {
     }
 
     return observations;
+  }
+
+  private async generateFromInsightsResults(insightsResults: any): Promise<StructuredObservation[]> {
+    const observations: StructuredObservation[] = [];
+    
+    log('Processing insights results', 'info', {
+      hasInsightDocument: !!insightsResults?.insightDocument,
+      hasInsightDocuments: !!insightsResults?.insightDocuments,
+      insightDocumentsCount: insightsResults?.insightDocuments?.length || 0,
+      hasPatternCatalog: !!insightsResults?.patternCatalog
+    });
+    
+    // Process multiple insight documents if available
+    if (insightsResults?.insightDocuments && Array.isArray(insightsResults.insightDocuments)) {
+      for (const insightDoc of insightsResults.insightDocuments) {
+        const observation = await this.createInsightDocumentObservation(insightDoc);
+        if (observation) {
+          observations.push(observation);
+          log(`Created observation for insight: ${insightDoc.name}`, 'info');
+        }
+      }
+    } 
+    // Process single insight document if available
+    else if (insightsResults?.insightDocument) {
+      const observation = await this.createInsightDocumentObservation(insightsResults.insightDocument);
+      if (observation) {
+        observations.push(observation);
+      }
+    }
+    
+    // Process pattern catalog if available
+    if (insightsResults?.patternCatalog?.patterns) {
+      for (const pattern of insightsResults.patternCatalog.patterns) {
+        const observation = await this.createPatternObservation(pattern);
+        if (observation) {
+          observations.push(observation);
+        }
+      }
+    }
+    
+    return observations;
+  }
+  
+  private async createInsightDocumentObservation(insightDoc: any): Promise<StructuredObservation | null> {
+    try {
+      const currentDate = new Date().toISOString();
+      const cleanName = insightDoc.name || 'UnknownInsight';
+      
+      const observations: ObservationTemplate[] = [
+        {
+          type: 'insight',
+          content: `${cleanName} - ${insightDoc.title || 'Comprehensive Pattern Analysis'}`,
+          date: currentDate,
+          metadata: {
+            transferable: true,
+            domain: 'pattern-analysis',
+            significance: insightDoc.metadata?.significance || 8
+          }
+        },
+        {
+          type: 'solution',
+          content: insightDoc.content?.substring(0, 500) || 'Pattern implementation and analysis',
+          date: currentDate,
+          metadata: {
+            technical: true,
+            patterns: insightDoc.metadata?.tags || []
+          }
+        },
+        {
+          type: 'link',
+          content: `Details: knowledge-management/insights/${cleanName}.md`,
+          date: currentDate,
+          metadata: {
+            source: 'insight-generation',
+            fileValidated: true
+          }
+        }
+      ];
+      
+      // Add metrics if available
+      if (insightDoc.metadata?.patternCount) {
+        observations.push({
+          type: 'metric',
+          content: `Pattern analysis identified ${insightDoc.metadata.patternCount} distinct patterns`,
+          date: currentDate,
+          metadata: {
+            count: insightDoc.metadata.patternCount,
+            analysisTypes: insightDoc.metadata.analysisTypes || []
+          }
+        });
+      }
+      
+      return {
+        name: cleanName,
+        entityType: 'TransferablePattern',
+        significance: insightDoc.metadata?.significance || 8,
+        observations,
+        tags: insightDoc.metadata?.tags || ['pattern', 'insight', 'analysis'],
+        relationships: [],
+        metadata: {
+          created_at: currentDate,
+          last_updated: currentDate,
+          created_by: 'insight-generation-agent',
+          version: '1.0',
+          team: 'coding',
+          generatedAt: insightDoc.metadata?.generatedAt || currentDate,
+          sourceData: {
+            analysisTypes: insightDoc.metadata?.analysisTypes || [],
+            patternCount: insightDoc.metadata?.patternCount || 0
+          }
+        }
+      };
+    } catch (error) {
+      log('Failed to create insight document observation', 'error', error);
+      return null;
+    }
+  }
+  
+  private async createPatternObservation(pattern: any): Promise<StructuredObservation | null> {
+    try {
+      const currentDate = new Date().toISOString();
+      const patternName = pattern.name || 'UnknownPattern';
+      
+      const observations: ObservationTemplate[] = [
+        {
+          type: 'insight',
+          content: pattern.description || 'Pattern identified through analysis',
+          date: currentDate,
+          metadata: {
+            category: pattern.category,
+            significance: pattern.significance
+          }
+        }
+      ];
+      
+      // Add implementation details if available
+      if (pattern.implementation) {
+        observations.push({
+          type: 'implementation',
+          content: pattern.implementation.codeExample || pattern.implementation.usageNotes?.join('; ') || 'Implementation details',
+          date: currentDate,
+          metadata: {
+            language: pattern.implementation.language,
+            reusable: true
+          }
+        });
+      }
+      
+      // Add evidence if available
+      if (pattern.evidence && pattern.evidence.length > 0) {
+        observations.push({
+          type: 'validation',
+          content: `Evidence: ${pattern.evidence.slice(0, 3).join('; ')}`,
+          date: currentDate,
+          metadata: {
+            evidenceCount: pattern.evidence.length
+          }
+        });
+      }
+      
+      return {
+        name: patternName,
+        entityType: pattern.category || 'Pattern',
+        significance: pattern.significance || 5,
+        observations,
+        tags: [pattern.category, 'pattern', ...pattern.relatedComponents || []],
+        relationships: pattern.relatedComponents?.map((comp: string) => ({
+          from: patternName,
+          to: comp,
+          relationType: 'relatesTo',
+          type: 'relatesTo',
+          target: comp
+        })) || [],
+        metadata: {
+          created_at: currentDate,
+          last_updated: currentDate,
+          created_by: 'pattern-analysis',
+          version: '1.0',
+          team: 'coding'
+        }
+      };
+    } catch (error) {
+      log('Failed to create pattern observation', 'error', error);
+      return null;
+    }
   }
 
   private async createSemanticInsightObservation(

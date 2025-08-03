@@ -4,7 +4,7 @@ import { log } from "../logging.js";
 
 export interface AnalysisOptions {
   context?: string;
-  analysisType?: "general" | "code" | "patterns" | "architecture";
+  analysisType?: "general" | "code" | "patterns" | "architecture" | "diagram";
   provider?: "anthropic" | "openai" | "custom" | "auto";
 }
 
@@ -244,6 +244,25 @@ Please provide:
 3. System structure insights
 4. Scalability considerations
 5. Maintainability assessment`;
+        break;
+
+      case "diagram":
+        prompt = `Generate a PlantUML diagram based on the following analysis data.
+
+${context ? `Context: ${context}\n\n` : ""}
+
+Analysis Data:
+${content}
+
+IMPORTANT REQUIREMENTS:
+- You MUST respond with a complete PlantUML diagram enclosed in @startuml and @enduml tags
+- Use proper PlantUML syntax for the requested diagram type
+- Make the diagram visually clear and informative with real components from the analysis
+- Include meaningful relationships and annotations based on the actual data
+- Do NOT provide explanatory text - ONLY the PlantUML code
+- The diagram should represent the actual architectural patterns and components found in the analysis
+
+Generate the PlantUML diagram now:`;
         break;
 
       default:

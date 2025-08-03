@@ -326,7 +326,7 @@ export class ContentAgnosticAnalyzer {
     }
     
     log('ERROR: Using generic problem description - this should be repository-specific', 'error');
-    log('DEBUG: codeQuality:', codeQuality, 'complexity:', complexity, 'codeIssues:', codeIssues);
+    log('DEBUG: Analysis data structure inspection', 'debug', { codeQuality, complexity, codeIssues });
     throw new Error('CONTENT_GENERATION_ERROR: Generic problem fallback triggered - repository analysis failed');
   }
 
@@ -369,8 +369,8 @@ export class ContentAgnosticAnalyzer {
     
     // NO MORE FALLBACKS - throw error instead
     log('ERROR: Cannot generate repository-specific problem - no specific patterns found', 'error');
-    log('DEBUG: gitAnalysis structure:', JSON.stringify(Object.keys(gitAnalysis || {})), 'debug');
-    log('DEBUG: semanticAnalysis structure:', JSON.stringify(Object.keys(semanticAnalysis || {})), 'debug');
+    log('DEBUG: gitAnalysis structure', 'debug', { keys: Object.keys(gitAnalysis || {}) });
+    log('DEBUG: semanticAnalysis structure', 'debug', { keys: Object.keys(semanticAnalysis || {}) });
     throw new Error('CONTENT_GENERATION_ERROR: No specific patterns found for problem generation - analysis data incomplete');
   }
 
@@ -491,7 +491,7 @@ export class ContentAgnosticAnalyzer {
     
     // NO MORE FALLBACKS - throw error instead
     log('ERROR: Cannot generate repository-specific solution - no recognized patterns found', 'error');
-    log('DEBUG: Total commits:', totalCommits, 'technologies:', technologies, 'patterns:', patterns);
+    log('DEBUG: Solution generation data', 'debug', { totalCommits, technologies, patterns });
     throw new Error('CONTENT_GENERATION_ERROR: No repository-specific solution patterns found - insufficient analysis data');
   }
 

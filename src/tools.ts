@@ -518,7 +518,20 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
   
   try {
     // Initialize coordinator and execute real workflow
-    const coordinator = new CoordinatorAgent();
+    // Use repository_path from parameters or default to current directory
+    let repositoryPath = parameters?.repository_path || '.';
+    
+    // If we're running from the semantic analysis subdirectory, resolve the main repo path
+    if (repositoryPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {
+      // Go up two levels from integrations/mcp-server-semantic-analysis to the main repo
+      repositoryPath = path.join(process.cwd(), '../..');
+    } else if (repositoryPath && !path.isAbsolute(repositoryPath)) {
+      // Make relative paths absolute
+      repositoryPath = path.resolve(repositoryPath);
+    }
+    
+    log(`Using repository path: ${repositoryPath}`, "info");
+    const coordinator = new CoordinatorAgent(repositoryPath);
     const execution = await coordinator.executeWorkflow(workflow_name, parameters);
     
     // Format execution results
@@ -818,10 +831,60 @@ async function handleCreateInsightReport(args: any): Promise<any> {
 async function handleGeneratePlantUMLDiagrams(args: any): Promise<any> {
   const { diagram_type, content, name, analysis_result } = args;
   
+  // 🔍 TRACE: Log what arguments we received
+  log(`🔍 DEBUG: handleGeneratePlantUMLDiagrams called with:`, "debug", {
+    diagram_type,
+    content,
+    name,
+    hasAnalysisResult: !!analysis_result,
+    analysisResultType: typeof analysis_result,
+    analysisResultKeys: analysis_result ? Object.keys(analysis_result) : [],
+    argsKeys: Object.keys(args)
+  });
+  
   log(`Generating PlantUML diagram: ${name}`, "info", { diagram_type });
   
-  // Generate context-aware diagrams based on analysis results
-  const diagramContent = generateContextAwareDiagram(diagram_type, content, name, analysis_result);
+  // Use LLM-enhanced diagram generation instead of static templates
+  const insightAgent = new InsightGenerationAgent();
+  let diagramContent = '';
+  
+  try {
+    // Try LLM-enhanced generation first
+    log(`Attempting LLM-enhanced ${diagram_type} diagram generation`, "info");
+    
+    const dataForLLM = { 
+      patternCatalog: analysis_result,
+      content,
+      name 
+    };
+    
+    log(`🔍 DEBUG: Data being passed to LLM:`, "debug", {
+      hasPatternCatalog: !!dataForLLM.patternCatalog,
+      patternCatalogType: typeof dataForLLM.patternCatalog,
+      content: dataForLLM.content,
+      name: dataForLLM.name
+    });
+    
+    diagramContent = await insightAgent.generateLLMEnhancedDiagram(diagram_type, dataForLLM);
+    
+    if (diagramContent && diagramContent.includes('@startuml')) {
+      log(`LLM-enhanced diagram generated successfully`, "info", { length: diagramContent.length });
+    } else {
+      log(`LLM-enhanced diagram generation failed, content: ${diagramContent}`, "warning");
+      throw new Error('LLM diagram generation failed - no valid PlantUML content');
+    }
+  } catch (error) {
+    log(`LLM diagram generation failed: ${error}`, "error");
+    return {
+      content: [
+        {
+          type: "text",
+          text: `❌ LLM-Enhanced PlantUML Generation Failed\n\n**Error:** ${error instanceof Error ? error.message : String(error)}\n\n**Diagram Type:** ${diagram_type}\n**Name:** ${name}\n\n**Root Cause:** The LLM provider could not generate repository-specific diagram content. This indicates either:\n1. Missing analysis data in the input\n2. LLM provider configuration issues\n3. Insufficient semantic analysis results\n\n**Solution:** Please check the semantic analysis results and ensure they contain meaningful patterns and components before attempting diagram generation.`
+        }
+      ],
+      isError: true,
+    };
+  }
   
   try {
     // Set up directory structure

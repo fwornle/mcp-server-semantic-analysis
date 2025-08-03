@@ -66,8 +66,10 @@ export class CoordinatorAgent {
   private executions: Map<string, WorkflowExecution> = new Map();
   private agents: Map<string, any> = new Map();
   private running: boolean = true;
+  private repositoryPath: string;
   
-  constructor() {
+  constructor(repositoryPath: string = '.') {
+    this.repositoryPath = repositoryPath;
     this.initializeWorkflows();
     this.initializeAgents();
     this.startBackgroundMonitor();
@@ -136,7 +138,7 @@ export class CoordinatorAgent {
               vibe_analysis_results: "{{analyze_vibe_history.result}}"
             },
             dependencies: ["semantic_analysis", "web_search"],
-            timeout: 120,
+            timeout: 300,
           },
           {
             name: "generate_observations",
@@ -337,7 +339,7 @@ export class CoordinatorAgent {
       const webSearchAgent = new WebSearchAgent();
       this.agents.set("web_search", webSearchAgent);
       
-      const insightGenerationAgent = new InsightGenerationAgent();
+      const insightGenerationAgent = new InsightGenerationAgent(this.repositoryPath);
       this.agents.set("insight_generation", insightGenerationAgent);
       
       const observationGenerationAgent = new ObservationGenerationAgent();

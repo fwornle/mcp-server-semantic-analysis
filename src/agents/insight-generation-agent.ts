@@ -499,6 +499,20 @@ export class InsightGenerationAgent {
         const diagram = await this.generatePlantUMLDiagram(type, name, data);
         diagrams.push(diagram);
       } catch (error) {
+        // Write error details to file for debugging
+        const errorDetails = {
+          type,
+          name,
+          error: error instanceof Error ? error.message : String(error),
+          timestamp: new Date().toISOString(),
+          dataKeys: Object.keys(data || {}),
+          dataTypes: data ? Object.keys(data).reduce((acc, key) => ({ ...acc, [key]: typeof data[key] }), {}) : {}
+        };
+        
+        // Use existing ES module imports
+        const errorFile = path.join(this.outputDir, 'plantuml_errors.json');
+        fs.writeFileSync(errorFile, JSON.stringify(errorDetails, null, 2));
+        
         log(`Failed to generate ${type} diagram`, 'warning', error);
         diagrams.push({
           type,
@@ -531,26 +545,31 @@ export class InsightGenerationAgent {
     let diagramContent = '';
     
     // Try LLM-enhanced diagram generation first
-    if (this.semanticAnalyzer && (type === 'architecture' || type === 'class')) {
-      diagramContent = await this.generateLLMEnhancedDiagram(type, data);
+    if (this.semanticAnalyzer) {
+      // Extract only relevant data to prevent LLM timeouts from 2MB+ payload
+      const cleanData = {
+        patternCatalog: data.patternCatalog || data.semanticAnalysis || data,
+        content: `${name} architectural analysis`,
+        name: name
+      };
+      
+      log(`🔍 DEBUG: Cleaned data for LLM (original size: ${JSON.stringify(data).length}, cleaned size: ${JSON.stringify(cleanData).length})`, 'debug');
+      
+      diagramContent = await this.generateLLMEnhancedDiagram(type, cleanData);
     }
     
-    // Fallback to template-based generation if LLM fails or for other types
+    // ERROR: No fallback - force debugging of LLM generation failure
     if (!diagramContent) {
-      switch (type) {
-        case 'architecture':
-          diagramContent = this.generateArchitectureDiagram(data);
-          break;
-        case 'sequence':
-          diagramContent = this.generateSequenceDiagram(data);
-          break;
-        case 'use-cases':
-          diagramContent = this.generateUseCasesDiagram(data);
-          break;
-        case 'class':
-          diagramContent = this.generateClassDiagram(data);
-          break;
-      }
+      const debugInfo = {
+        type,
+        dataKeys: Object.keys(data || {}),
+        dataTypes: data ? Object.keys(data).reduce((acc, key) => ({ ...acc, [key]: typeof data[key] }), {}) : {},
+        semanticAnalyzerExists: !!this.semanticAnalyzer,
+        hasData: !!data,
+        dataSize: JSON.stringify(data || {}).length
+      };
+      
+      throw new Error(`LLM-enhanced diagram generation failed completely. Debug info: ${JSON.stringify(debugInfo, null, 2)}`);
     }
 
     // Write PlantUML file
@@ -605,34 +624,68 @@ export class InsightGenerationAgent {
     }
   }
 
-  private async generateLLMEnhancedDiagram(type: PlantUMLDiagram['type'], data: any): Promise<string> {
+  public async generateLLMEnhancedDiagram(type: PlantUMLDiagram['type'], data: any): Promise<string> {
     if (!this.semanticAnalyzer) {
+      log(`🚨 DEBUG: No semanticAnalyzer available for LLM diagram generation`, 'debug');
       return '';
     }
 
     try {
+      // 🔍 TRACE: Log what data we're receiving
+      log(`🔍 DEBUG: generateLLMEnhancedDiagram called with:`, 'debug', {
+        type,
+        dataKeys: Object.keys(data || {}),
+        dataTypes: Object.fromEntries(Object.entries(data || {}).map(([k, v]) => [k, typeof v])),
+        patternCatalogExists: !!data.patternCatalog,
+        patternCount: data.patternCatalog?.patterns?.length || 0,
+        dataStringified: JSON.stringify(data, null, 2).substring(0, 500) + '...'
+      });
+      
+      // 🚨 SPECIAL WORKFLOW DEBUG: Log a more detailed breakdown
+      console.error(`🔥 WORKFLOW DEBUG: generateLLMEnhancedDiagram for ${type}`);
+      console.error(`🔥 Data keys: ${Object.keys(data || {}).join(', ')}`);
+      console.error(`🔥 Pattern catalog: ${data.patternCatalog ? 'EXISTS' : 'MISSING'}`);
+      console.error(`🔥 Git analysis: ${data.gitAnalysis ? 'EXISTS' : 'MISSING'}`);
+      console.error(`🔥 Semantic analyzer: ${this.semanticAnalyzer ? 'EXISTS' : 'MISSING'}`);
+      if (data.gitAnalysis) {
+        console.error(`🔥 Git commits: ${data.gitAnalysis.commits?.length || 'NO COMMITS'}`);
+      }
+
       const diagramPrompt = this.buildDiagramPrompt(type, data);
+      log(`🔍 DEBUG: Built diagram prompt (${diagramPrompt.length} chars)`, 'debug');
       log(`Generating LLM-enhanced ${type} diagram`, 'info');
       
       const analysisResult = await this.semanticAnalyzer.analyzeContent(diagramPrompt, {
-        analysisType: 'architecture',
+        analysisType: 'diagram',
         context: `PlantUML ${type} diagram generation`,
         provider: 'auto'
+      });
+
+      // 🔍 TRACE: Log the LLM response
+      log(`🔍 DEBUG: LLM response received:`, 'debug', {
+        hasAnalysisResult: !!analysisResult,
+        provider: analysisResult?.provider,
+        hasInsights: !!analysisResult?.insights,
+        insightsLength: analysisResult?.insights?.length || 0,
+        containsStartuml: analysisResult?.insights?.includes('@startuml') || false,
+        insightsPreview: analysisResult?.insights?.substring(0, 200) + '...'
       });
 
       if (analysisResult?.insights && analysisResult.insights.includes('@startuml')) {
         // Extract PlantUML content from LLM response
         const pumlMatch = analysisResult.insights.match(/@startuml[\s\S]*?@enduml/);
         if (pumlMatch) {
-          log(`LLM-enhanced ${type} diagram generated successfully`, 'info', {
+          log(`✅ LLM-enhanced ${type} diagram generated successfully`, 'info', {
             provider: analysisResult.provider,
             contentLength: pumlMatch[0].length
           });
           return pumlMatch[0];
+        } else {
+          log(`🚨 DEBUG: Found @startuml but no valid match in response`, 'debug');
         }
       }
       
-      log(`LLM diagram generation failed for ${type} - no valid PlantUML found`, 'warning');
+      log(`❌ LLM diagram generation failed for ${type} - no valid PlantUML found`, 'warning');
       return '';
     } catch (error) {
       log(`LLM diagram generation failed for ${type}`, 'warning', error);

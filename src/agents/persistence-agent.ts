@@ -777,23 +777,31 @@ export class PersistenceAgent {
         const detailedObservations = [
           {
             type: 'insight',
-            content: `${cleanName} - Comprehensive Pattern Analysis`,
+            content: `Implementation Analysis for ${cleanName}`,
             date: now,
             metadata: {
-              generatedAt: insight.metadata?.generatedAt,
-              analysisTypes: insight.metadata?.analysisTypes,
-              patternCount: insight.metadata?.patternCount
+              transferable: true,
+              domain: 'pattern-analysis',
+              significance: insight.metadata?.significance || 7
             }
           },
           {
-            type: 'summary',
-            content: this.generateEntitySummary(analysisData),
-            date: now
+            type: 'solution',
+            content: insight.content ? insight.content.substring(0, 200) + '...' : 'Pattern analysis and implementation details',
+            date: now,
+            metadata: {
+              technical: true,
+              patterns: insight.metadata?.analysisTypes || ['semantic-analysis']
+            }
           },
           {
             type: 'link',
-            content: `Details: knowledge-management/insights/${cleanName}.md`,
-            date: now
+            content: `Details: ${cleanName}.md`,
+            date: now,
+            metadata: {
+              source: 'insight-generation',
+              fileValidated: true
+            }
           }
         ];
 
@@ -1102,8 +1110,12 @@ export class PersistenceAgent {
         },
         {
           type: 'link',
-          content: `Details: http://localhost:8080/knowledge-management/insights/${entityData.name}.md`,
-          date: currentDate
+          content: `Details: ${entityData.name}.md`,
+          date: currentDate,
+          metadata: {
+            source: 'ukb_tool',
+            fileValidated: true
+          }
         }
       ];
 

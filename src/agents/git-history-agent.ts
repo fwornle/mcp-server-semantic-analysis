@@ -483,7 +483,10 @@ export class GitHistoryAgent {
 
   private isDependencyChange(files: string[]): boolean {
     const depFiles = ['package.json', 'package-lock.json', 'yarn.lock', 'requirements.txt', 'Cargo.toml'];
-    return files.some(file => depFiles.includes(path.basename(file)));
+    return files.some(file => {
+      const fileName = typeof file === 'string' ? file : String(file);
+      return depFiles.includes(path.basename(fileName));
+    });
   }
 
   private calculateImpact(stats: GitCommit['stats'], fileCount: number): 'low' | 'medium' | 'high' {
@@ -561,7 +564,10 @@ export class GitHistoryAgent {
     ];
 
     for (const { pattern, test } of filePatterns) {
-      if (files.some(test)) {
+      if (files.some(file => {
+        const fileName = typeof file === 'string' ? file : String(file);
+        return test(fileName);
+      })) {
         this.updatePattern(patterns, pattern, commit);
       }
     }

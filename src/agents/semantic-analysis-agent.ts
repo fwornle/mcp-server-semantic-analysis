@@ -544,7 +544,10 @@ export class SemanticAnalysisAgent {
     if (gitAnalysis?.codeEvolution) {
       gitAnalysis.codeEvolution.forEach((pattern: any) => {
         const relatedFiles = codeFiles.filter(file => 
-          pattern.files.some((gitFile: string) => file.path.includes(gitFile))
+          pattern.files.some((gitFile: any) => {
+            const fileName = typeof gitFile === 'string' ? gitFile : String(gitFile);
+            return file.path.includes(fileName);
+          })
         );
         if (relatedFiles.length > 0) {
           const codePatterns = [...new Set(relatedFiles.flatMap(f => f.patterns))];

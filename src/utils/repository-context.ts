@@ -506,7 +506,10 @@ export class RepositoryContextManager {
       // This is a simplified implementation
       const cleanPattern = pattern.replace('**/', '').replace('*', '');
       const files = this.getAllFiles('.');
-      if (files.some(file => file.includes(cleanPattern))) {
+      if (files.some(file => {
+        const fileName = typeof file === 'string' ? file : String(file);
+        return fileName.includes(cleanPattern);
+      })) {
         return true;
       }
     }

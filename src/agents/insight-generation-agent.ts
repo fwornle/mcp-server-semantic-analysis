@@ -87,7 +87,7 @@ export class InsightGenerationAgent {
   }
 
   async generateComprehensiveInsights(params: any): Promise<InsightGenerationResult> {
-    console.log('🚀 generateComprehensiveInsights called!');
+    log('generateComprehensiveInsights called', 'info');
     const startTime = Date.now();
     
     // Extract parameters from the params object
@@ -96,7 +96,7 @@ export class InsightGenerationAgent {
     const semanticAnalysis = params.semantic_analysis_results || params.semanticAnalysis;
     const webResults = params.web_search_results || params.webResults;
     
-    console.log('📊 Data availability:', {
+    log('Data availability checked', 'debug', {
       gitAnalysis: !!gitAnalysis,
       vibeAnalysis: !!vibeAnalysis,
       semanticAnalysis: !!semanticAnalysis,
@@ -1040,9 +1040,24 @@ SemanticAnalysisAgent --> InsightGenerationAgent
 
     // Use content-agnostic analyzer to generate real insights
     log('Starting content-agnostic insight generation', 'info');
-    const contentInsight = await this.contentAnalyzer.analyzeWithContext(
-      gitAnalysis, vibeAnalysis, semanticAnalysis
-    );
+    let contentInsight;
+    try {
+      console.log('🔍 DEBUG: About to call contentAnalyzer.analyzeWithContext');
+      console.log('🔍 DEBUG: gitAnalysis type:', typeof gitAnalysis, 'has files:', gitAnalysis?.files);
+      console.log('🔍 DEBUG: vibeAnalysis type:', typeof vibeAnalysis);
+      console.log('🔍 DEBUG: semanticAnalysis type:', typeof semanticAnalysis);
+      
+      contentInsight = await this.contentAnalyzer.analyzeWithContext(
+        gitAnalysis, vibeAnalysis, semanticAnalysis
+      );
+      console.log('🔍 DEBUG: contentAnalyzer completed successfully');
+      console.log('🔍 DEBUG: contentInsight.problem.description:', contentInsight.problem.description);
+      console.log('🔍 DEBUG: contentInsight.solution.approach:', contentInsight.solution.approach);
+    } catch (error: any) {
+      console.error('❌ ERROR in contentAnalyzer.analyzeWithContext:', error);
+      console.error('❌ ERROR stack:', error.stack);
+      throw error; // Re-throw to see full context
+    }
 
     // Get repository context for specific details
     const repositoryContext = await this.contextManager.getRepositoryContext();
@@ -1053,6 +1068,12 @@ SemanticAnalysisAgent --> InsightGenerationAgent
     
     const patternType = this.determinePatternType(contentInsight, repositoryContext);
     const significance = contentInsight.significance;
+
+    // DEBUG: Log exactly what we're about to write
+    console.log('🎯 DEBUG: About to write insight with:');
+    console.log('  - Problem description:', contentInsight.problem.description);
+    console.log('  - Solution approach:', contentInsight.solution.approach);
+    console.log('  - Pattern name:', patternName);
 
     return `# ${patternName}
 
@@ -1915,7 +1936,7 @@ skinparam sequence {
       ],
       relatedComponents: Array.from(allFiles) as string[],
       implementation: {
-        language: this.detectLanguageFromFiles(Array.from(allFiles) as string[]),
+        language: this.detectLanguageFromFiles(Array.from(allFiles).map((f: any) => typeof f === 'string' ? f : f.path)),
         usageNotes: [`Applied across ${allFiles.size} files`, `${commits.length} related commits`]
       }
     };

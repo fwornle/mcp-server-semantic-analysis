@@ -916,6 +916,16 @@ function generateArchitectureDiagram(title: string, analysis: any): string {
   let components = [];
   
   // Debug: log what we received
+  console.log(`🎨 PlantUML generateArchitectureDiagram called:`, {
+    title,
+    hasAnalysis: !!analysis, 
+    hasSemanticInsights: !!analysis?.semanticInsights,
+    hasPatterns: !!analysis?.semanticInsights?.patterns,
+    hasCommits: !!analysis?.commits,
+    hasArchDecisions: !!analysis?.architecturalDecisions,
+    analysisKeys: analysis ? Object.keys(analysis) : []
+  });
+  
   log(`generateArchitectureDiagram called with analysis:`, 'debug', { 
     hasAnalysis: !!analysis, 
     hasSemanticInsights: !!analysis?.semanticInsights,
@@ -937,14 +947,15 @@ function generateArchitectureDiagram(title: string, analysis: any): string {
     const fileTypes = new Set<string>();
     analysis.commits.forEach((commit: any) => {
       if (commit.files) {
-        commit.files.forEach((file: string) => {
-          const ext = file.split('.').pop();
+        commit.files.forEach((file: any) => {
+          const fileName = typeof file === 'string' ? file : String(file);
+          const ext = fileName.split('.').pop();
           if (ext) {
             if (ext.includes('ts') || ext.includes('js')) fileTypes.add('TypeScript/JavaScript Engine');
             if (ext.includes('json')) fileTypes.add('Configuration Manager');
             if (ext.includes('md')) fileTypes.add('Documentation System');
-            if (file.includes('agent')) fileTypes.add('Agent Framework');
-            if (file.includes('mcp')) fileTypes.add('MCP Protocol Handler');
+            if (fileName.includes('agent')) fileTypes.add('Agent Framework');
+            if (fileName.includes('mcp')) fileTypes.add('MCP Protocol Handler');
           }
         });
       }

@@ -1364,14 +1364,18 @@ ${entityData.insights}
    */
   private extractSimpleObservations(insight: any, cleanName: string, now: string): string[] {
     const observations: string[] = [];
-    const content = insight.content || '';
+    const content = insight.content || insight.description || '';
+    
+    // Try structured sections first
     const sections = this.parseInsightSections(content);
+    let hasStructuredContent = false;
 
     // Problem statement
     if (sections.problem) {
       const problemText = sections.problem.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
       if (problemText.length > 20) {
-        observations.push(problemText.substring(0, 300) + (problemText.length > 300 ? '...' : ''));
+        observations.push(`Problem: ${problemText.substring(0, 250) + (problemText.length > 250 ? '...' : '')}`);
+        hasStructuredContent = true;
       }
     }
 
@@ -1379,7 +1383,8 @@ ${entityData.insights}
     if (sections.solution) {
       const solutionText = sections.solution.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
       if (solutionText.length > 20) {
-        observations.push(solutionText.substring(0, 300) + (solutionText.length > 300 ? '...' : ''));
+        observations.push(`Solution: ${solutionText.substring(0, 250) + (solutionText.length > 250 ? '...' : '')}`);
+        hasStructuredContent = true;
       }
     }
 
@@ -1387,20 +1392,91 @@ ${entityData.insights}
     if (sections.implementation) {
       const implText = sections.implementation.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
       if (implText.length > 20) {
-        observations.push(implText.substring(0, 300) + (implText.length > 300 ? '...' : ''));
+        observations.push(`Implementation: ${implText.substring(0, 250) + (implText.length > 250 ? '...' : '')}`);
+        hasStructuredContent = true;
       }
     }
 
-    // Key learnings/rationale
-    const learnings = this.extractKeyLearnings(sections);
-    if (learnings) {
-      observations.push(learnings);
+    // If no structured content found, extract meaningful content from insight files
+    if (!hasStructuredContent && content) {
+      // Extract pattern description from Overview section
+      const overviewMatch = content.match(/## Overview[\s\S]*?(?=##|$)/i);
+      if (overviewMatch) {
+        const overview = overviewMatch[0].replace(/## Overview\s*/i, '').trim();
+        const problemMatch = overview.match(/\*\*Problem:\*\*\s*([^*\n]+)/i);
+        const solutionMatch = overview.match(/\*\*Solution:\*\*\s*([^*\n]+)/i);
+        
+        if (problemMatch) {
+          observations.push(`Problem: ${problemMatch[1].trim()}`);
+        }
+        if (solutionMatch) {
+          observations.push(`Solution: ${solutionMatch[1].trim()}`);
+        }
+      }
+      
+      // Extract from Problem & Solution section
+      const problemSolutionMatch = content.match(/## Problem & Solution[\s\S]*?(?=##|$)/i);
+      if (problemSolutionMatch && observations.length === 0) {
+        const section = problemSolutionMatch[0];
+        const descMatch = section.match(/\*\*Description:\*\*\s*([^*\n]+)/i);
+        const approachMatch = section.match(/\*\*Approach:\*\*\s*([^*\n]+)/i);
+        
+        if (descMatch) {
+          observations.push(`Pattern: ${descMatch[1].trim()}`);
+        }
+        if (approachMatch) {
+          observations.push(`Approach: ${approachMatch[1].trim()}`);
+        }
+      }
+      
+      // Extract implementation bullets from Implementation section
+      const implMatch = content.match(/## Implementation Details[\s\S]*?(?=##|$)/i);
+      if (implMatch) {
+        const implSection = implMatch[0];
+        const bullets = implSection.match(/^- (.+)$/gm);
+        if (bullets && bullets.length > 0) {
+          const implList = bullets.slice(0, 4).map((b: string) => b.replace(/^- /, '')).join(', ');
+          observations.push(`Implementation: ${implList}`);
+        }
+      }
+      
+      // Extract significance rating
+      const sigMatch = content.match(/\*\*Significance:\*\*\s*(\d+\/\d+)[^*]*([^*\n]+)/i);
+      if (sigMatch) {
+        observations.push(`Significance: ${sigMatch[1]} - ${sigMatch[2].trim()}`);
+      }
+      
+      // Extract applicability from context
+      const contextMatch = content.match(/\*\*Domain:\*\*\s*([^*\n]+)/i);
+      const langMatch = content.match(/\*\*Primary Languages:\*\*\s*([^*\n]+)/i);
+      if (contextMatch || langMatch) {
+        const domains = [];
+        if (contextMatch) domains.push(contextMatch[1].trim().toLowerCase());
+        if (langMatch) domains.push(langMatch[1].trim().toLowerCase());
+        observations.push(`Applies to: ${domains.join(', ')} and similar contexts`);
+      }
+      
+      // Fallback to generic content only if nothing else worked
+      if (observations.length === 0 && typeof content === 'string') {
+        const applicability = this.extractApplicability(content);
+        if (applicability) {
+          observations.push(applicability);
+        }
+      }
     }
 
-    // Applicability
-    const applicability = this.extractApplicability(sections);
-    if (applicability) {
-      observations.push(applicability);
+    // Key learnings/rationale - only if we have structured content
+    if (hasStructuredContent) {
+      const learnings = this.extractKeyLearnings(sections);
+      if (learnings) {
+        observations.push(`Learning: ${learnings}`);
+      }
+    }
+
+    // Applicability - enhanced for better domain detection
+    const applicability = this.extractApplicability(sections.solution || sections.implementation || content || '');
+    if (applicability && !applicability.includes('General software development')) {
+      observations.push(`Applies to: ${applicability}`);
     }
 
     // Link with full URL like VkbCli
@@ -1668,8 +1744,11 @@ ${entityData.insights}
   /**
    * Extract applicability for simple observations
    */
-  private extractApplicability(sections: any): string | null {
-    const content = (sections.solution || sections.implementation || '').toLowerCase();
+  private extractApplicability(contentOrSections: any): string | null {
+    const content = (typeof contentOrSections === 'string' 
+      ? contentOrSections 
+      : (contentOrSections?.solution || contentOrSections?.implementation || '')
+    ).toLowerCase();
     
     // Build applicability based on content domains
     const domains = [];

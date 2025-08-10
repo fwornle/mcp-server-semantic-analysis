@@ -1,93 +1,126 @@
 @startuml agent-coordination-flow
 !include _standard-style.puml
 
-title Agent Coordination Flow - Workflow Execution
+title 11-Agent Coordination Flow - Workflow Execution
 
 participant "Claude Code" as CLAUDE
 participant "MCP Handler" as MCP
 participant "Coordinator Agent" as COORD
-participant "Semantic Analyzer" as SEMANTIC
-participant "Knowledge Manager" as KNOWLEDGE
-participant "Repository Analyzer" as REPO
-participant "Documentation Agent" as DOC
+participant "Git History Agent" as GIT
+participant "Vibe History Agent" as VIBE
+participant "Semantic Analysis Agent" as SEMANTIC
 participant "Web Search Agent" as WEB
+participant "Insight Generation Agent" as INSIGHT
+participant "Observation Generation Agent" as OBS
+participant "Quality Assurance Agent" as QA
+participant "Persistence Agent" as PERSIST
 participant "Synchronization Agent" as SYNC
+participant "Deduplication Agent" as DEDUP
 
-CLAUDE ->> MCP : tool_call(analyze_repository)
+CLAUDE ->> MCP : tool_call(execute_workflow)
 activate MCP
 
-MCP ->> COORD : execute_workflow(repo-analysis)
+MCP ->> COORD : execute_workflow(complete-analysis)
 activate COORD
 
 note over COORD
-  Validate input parameters
-  Initialize workflow context
-  Create execution plan
+  Orchestrate 10-agent workflow:
+  Initialize execution context
+  Manage task dependencies
+  Monitor agent performance
 end note
 
-COORD ->> REPO : analyze_structure(repo_path)
-activate REPO
-REPO ->> REPO : scan_files()
-REPO ->> REPO : extract_patterns()
-REPO -->> COORD : structure_analysis
-deactivate REPO
+COORD ->> GIT : analyze_git_history()
+activate GIT
+GIT ->> GIT : scan_commits_since_checkpoint()
+GIT ->> GIT : extract_architectural_changes()
+GIT -->> COORD : git_analysis_results
+deactivate GIT
 
-COORD ->> SEMANTIC : analyze_content(code_samples)
+COORD ->> VIBE : analyze_vibe_history()
+activate VIBE
+VIBE ->> VIBE : parse_specstory_files()
+VIBE ->> VIBE : extract_conversation_context()
+VIBE -->> COORD : vibe_analysis_results
+deactivate VIBE
+
+COORD ->> SEMANTIC : analyze_semantics(git_results, vibe_results)
 activate SEMANTIC
-SEMANTIC ->> SEMANTIC : call_llm_provider()
-SEMANTIC -->> COORD : insights
+SEMANTIC ->> SEMANTIC : correlate_code_and_conversation()
+SEMANTIC ->> SEMANTIC : identify_patterns()
+SEMANTIC -->> COORD : semantic_analysis_results
 deactivate SEMANTIC
 
-COORD ->> WEB : validate_references(patterns)
+COORD ->> WEB : search_similar_patterns(semantic_results)
 activate WEB
-WEB ->> WEB : search_documentation()
-WEB -->> COORD : validation_results
+WEB ->> WEB : search_external_references()
+WEB ->> WEB : validate_documentation()
+WEB -->> COORD : web_search_results
 deactivate WEB
 
-note over COORD
-  QA Validation:
-  - Verify output quality
-  - Check completeness
-  - Validate references
-end note
+COORD ->> INSIGHT : generate_comprehensive_insights(all_results)
+activate INSIGHT
+INSIGHT ->> INSIGHT : synthesize_findings()
+INSIGHT ->> INSIGHT : create_plantuml_diagrams()
+INSIGHT -->> COORD : insights_and_diagrams
+deactivate INSIGHT
 
-COORD ->> DOC : generate_report(analysis_data)
-activate DOC
-DOC ->> DOC : create_markdown()
-DOC ->> DOC : generate_diagrams()
-DOC -->> COORD : documentation
-deactivate DOC
+COORD ->> OBS : generate_structured_observations(insights)
+activate OBS
+OBS ->> OBS : create_ukb_compatible_format()
+OBS ->> OBS : add_metadata_and_references()
+OBS -->> COORD : structured_observations
+deactivate OBS
 
-COORD ->> KNOWLEDGE : store_insights(results)
-activate KNOWLEDGE
-KNOWLEDGE ->> KNOWLEDGE : create_entities()
-KNOWLEDGE ->> KNOWLEDGE : establish_relations()
-KNOWLEDGE -->> COORD : storage_status
-deactivate KNOWLEDGE
+COORD ->> QA : validate_outputs(observations)
+activate QA
+QA ->> QA : quality_assessment()
+QA ->> QA : auto_correction_if_needed()
+QA -->> COORD : validated_results
+deactivate QA
+
+COORD ->> PERSIST : store_knowledge(validated_results)
+activate PERSIST
+PERSIST ->> PERSIST : create_checkpoint()
+PERSIST ->> PERSIST : update_knowledge_base()
+PERSIST -->> COORD : persistence_complete
+deactivate PERSIST
 
 COORD ->> SYNC : sync_knowledge_bases()
 activate SYNC
-SYNC ->> SYNC : update_files()
-SYNC ->> SYNC : sync_memory()
+SYNC ->> SYNC : sync_mcp_memory()
+SYNC ->> SYNC : update_shared_memory_files()
 SYNC -->> COORD : sync_complete
 deactivate SYNC
 
+COORD ->> DEDUP : detect_and_merge_duplicates()
+activate DEDUP
+DEDUP ->> DEDUP : semantic_similarity_analysis()
+DEDUP ->> DEDUP : merge_duplicate_entities()
+DEDUP -->> COORD : deduplication_complete
+deactivate DEDUP
+
 note over COORD
-  Final validation and
-  result compilation
+  Final coordination:
+  Compile comprehensive results
+  Generate execution summary
+  Update workflow metrics
 end note
 
-COORD -->> MCP : workflow_results
+COORD -->> MCP : complete_workflow_results
 deactivate COORD
 
-MCP -->> CLAUDE : formatted_response
+MCP -->> CLAUDE : formatted_analysis_response
 deactivate MCP
 
 note right of CLAUDE
-  Comprehensive analysis
-  including insights,
-  documentation, and
-  knowledge base updates
+  Complete 11-agent analysis:
+  - Git & conversation correlation
+  - External pattern validation  
+  - Comprehensive insights
+  - Quality-assured outputs
+  - Knowledge base updates
+  - Synchronized storage
 end note
 
 @enduml

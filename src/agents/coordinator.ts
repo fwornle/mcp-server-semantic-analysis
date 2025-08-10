@@ -80,7 +80,7 @@ export class CoordinatorAgent {
     const workflows: WorkflowDefinition[] = [
       {
         name: "complete-analysis",
-        description: "Full 8-agent semantic analysis workflow",
+        description: "Complete 10-agent semantic analysis workflow",
         agents: ["git_history", "vibe_history", "semantic_analysis", "web_search", 
                  "insight_generation", "observation_generation", "quality_assurance", "persistence", "deduplication"],
         steps: [

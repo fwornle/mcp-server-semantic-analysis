@@ -1,7 +1,7 @@
 @startuml tool-overview
 !include _standard-style.puml
 
-title MCP Server Tools - Complete Overview
+title MCP Server Tools - Complete Overview (11-Agent System)
 
 package "Connection & Health Tools" <<api>> {
   component [heartbeat] as HEARTBEAT <<api>>
@@ -27,12 +27,24 @@ package "Documentation & Reporting Tools" <<util>> {
   component [generate_lessons_learned] as LESSONS <<util>>
 }
 
-package "Agent Support Layer" <<agent>> {
-  component [Semantic Analyzer] as SEMANTIC_AGENT <<agent>>
-  component [Repository Analyzer] as REPO_AGENT <<agent>>
-  component [Knowledge Manager] as KNOWLEDGE_AGENT <<agent>>
-  component [Documentation Agent] as DOC_AGENT <<agent>>
-  component [Coordinator Agent] as COORD_AGENT <<agent>>
+package "11-Agent Support Layer" <<agent>> {
+  package "Orchestration (1)" {
+    component [Coordinator Agent] as COORD_AGENT <<agent>>
+  }
+  package "Core Analysis Agents (8)" {
+    component [Git History Agent] as GIT_AGENT <<agent>>
+    component [Vibe History Agent] as VIBE_AGENT <<agent>>
+    component [Semantic Analysis Agent] as SEMANTIC_AGENT <<agent>>
+    component [Web Search Agent] as WEB_AGENT <<agent>>
+    component [Insight Generation Agent] as INSIGHT_AGENT <<agent>>
+    component [Observation Generation Agent] as OBS_AGENT <<agent>>
+    component [Quality Assurance Agent] as QA_AGENT <<agent>>
+    component [Persistence Agent] as PERSIST_AGENT <<agent>>
+  }
+  package "Infrastructure (2)" {
+    component [Synchronization Agent] as SYNC_AGENT <<agent>>
+    component [Deduplication Agent] as DEDUP_AGENT <<agent>>
+  }
 }
 
 ' Tool to Agent mappings
@@ -41,22 +53,28 @@ TEST --> COORD_AGENT
 
 INSIGHTS --> SEMANTIC_AGENT
 CODE --> SEMANTIC_AGENT
-REPO --> REPO_AGENT
+REPO --> GIT_AGENT
 PATTERNS --> SEMANTIC_AGENT
 
-UKB --> KNOWLEDGE_AGENT
+UKB --> PERSIST_AGENT
 WORKFLOW --> COORD_AGENT
 
-DOCS --> DOC_AGENT
-REPORT --> DOC_AGENT
-DIAGRAMS --> DOC_AGENT
-LESSONS --> DOC_AGENT
+DOCS --> INSIGHT_AGENT
+REPORT --> INSIGHT_AGENT
+DIAGRAMS --> INSIGHT_AGENT
+LESSONS --> INSIGHT_AGENT
 
-' Cross-agent coordination
-COORD_AGENT --> SEMANTIC_AGENT
-COORD_AGENT --> REPO_AGENT
-COORD_AGENT --> KNOWLEDGE_AGENT
-COORD_AGENT --> DOC_AGENT
+' Agent workflow coordination
+COORD_AGENT --> GIT_AGENT : "1. Git Analysis"
+COORD_AGENT --> VIBE_AGENT : "2. Conversation Analysis"
+COORD_AGENT --> SEMANTIC_AGENT : "3. Semantic Correlation"
+COORD_AGENT --> WEB_AGENT : "4. External Research"
+COORD_AGENT --> INSIGHT_AGENT : "5. Insight Generation"
+COORD_AGENT --> OBS_AGENT : "6. Observation Creation"
+COORD_AGENT --> QA_AGENT : "7. Quality Assurance"
+COORD_AGENT --> PERSIST_AGENT : "8. Knowledge Persistence"
+COORD_AGENT --> SYNC_AGENT : "9. Synchronization"
+COORD_AGENT --> DEDUP_AGENT : "10. Deduplication"
 
 note top of HEARTBEAT
   Server health monitoring
@@ -71,9 +89,9 @@ note top of INSIGHTS
 end note
 
 note top of REPO
-  Repository structure analysis
-  Pattern identification
-  Architecture insights
+  Git repository analysis
+  Commit pattern identification
+  Architecture change tracking
 end note
 
 note top of UKB
@@ -83,15 +101,22 @@ note top of UKB
 end note
 
 note top of WORKFLOW
-  Multi-agent orchestration
-  Complex analysis pipelines
-  QA validation
+  11-agent orchestration
+  Sequential workflow execution
+  Quality assurance coordination
 end note
 
 note top of DIAGRAMS
   PlantUML generation
   Architecture visualization
   Documentation support
+end note
+
+note right of COORD_AGENT
+  Orchestrates all 10 worker agents
+  Manages sequential workflow
+  Handles error recovery
+  Provides quality coordination
 end note
 
 @enduml

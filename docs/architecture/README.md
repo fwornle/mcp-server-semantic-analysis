@@ -57,75 +57,125 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 - **`generate_plantuml_diagrams`**: Architecture diagram generation
 - **`generate_lessons_learned`**: Lessons learned document creation
 
-### 3. Agent Layer (7 Specialized Agents)
+### 3. Agent Layer (11 Specialized Agents)
 **Purpose**: Implements the core business logic and intelligence
 
 ![Agent Coordination Flow](../images/agent-coordination-flow.png)
 
-#### Core Agents
+#### Orchestration Agent
 
 ##### CoordinatorAgent
 **Responsibilities**:
 - Workflow orchestration and task scheduling
-- Quality assurance and output validation
 - Inter-agent communication coordination
-- Error recovery and retry logic
+- Error recovery and rollback management
+- Performance monitoring and metrics
 
 **Key Features**:
 - Multi-step workflow execution
-- QA validation pipeline
 - Agent lifecycle management
-- Performance monitoring
+- Quality assurance coordination
+- Rollback capabilities
 
-##### SemanticAnalyzer
+#### Core Analysis Agents (8 Agents)
+
+##### GitHistoryAgent
 **Responsibilities**:
-- AI-powered content and code analysis
-- Multi-provider LLM management
-- Context-aware insight extraction
+- Git commit analysis from checkpoint
+- Repository change pattern extraction
+- Development timeline analysis
 
 **Key Features**:
-- Provider fallback chain (Anthropic → OpenAI → Custom)
-- Intelligent prompt engineering
-- Response quality assessment
-- Token usage optimization
+- Commit traversal optimization
+- Change significance scoring
+- Architectural decision identification
+- Checkpoint management
 
-##### RepositoryAnalyzer
+##### VibeHistoryAgent
 **Responsibilities**:
-- Repository structure analysis
-- File pattern recognition
-- Architecture insight extraction
+- Conversation history processing
+- Context extraction from .specstory/history
+- Session continuity analysis
 
 **Key Features**:
-- Recursive directory traversal
-- File type classification
-- Pattern matching algorithms
-- Dependency analysis
+- Markdown parsing and analysis
+- Session correlation
+- Context preservation
+- Insight extraction from discussions
 
-##### KnowledgeManager
+##### SemanticAnalysisAgent
 **Responsibilities**:
-- Knowledge base integration and management
-- Entity creation and relationship mapping
-- Cross-system synchronization
+- Deep code analysis and correlation
+- Git and conversation data integration
+- Pattern recognition and extraction
 
 **Key Features**:
-- UKB/VKB integration
-- Entity validation and deduplication
-- Relationship inference
-- Version management
-
-#### Infrastructure Agents
+- Multi-source correlation
+- Semantic pattern analysis
+- Architectural insight generation
+- Code quality assessment
 
 ##### WebSearchAgent
 **Responsibilities**:
+- External pattern research
+- Reference validation and discovery
 - Technical documentation search
-- Reference validation
-- External knowledge acquisition
 
 **Key Features**:
 - Multiple search provider support
 - Intelligent query construction
 - Result relevance scoring
 - Rate limiting and caching
+
+##### InsightGenerationAgent
+**Responsibilities**:
+- Comprehensive insight generation
+- PlantUML diagram creation
+- Pattern documentation
+
+**Key Features**:
+- Multi-provider LLM support
+- Diagram generation pipeline
+- Insight quality validation
+- Template-based generation
+
+##### ObservationGenerationAgent
+**Responsibilities**:
+- Structured observation creation
+- UKB-compatible formatting
+- Knowledge base integration
+
+**Key Features**:
+- Observation structuring
+- Metadata generation
+- Quality validation
+- Cross-referencing
+
+##### QualityAssuranceAgent
+**Responsibilities**:
+- Output validation and correction
+- Quality metrics assessment
+- Error detection and recovery
+
+**Key Features**:
+- Multi-level validation
+- Auto-correction capabilities
+- Quality scoring
+- Retry logic management
+
+##### PersistenceAgent
+**Responsibilities**:
+- Knowledge base persistence
+- Checkpoint creation and management
+- Storage coordination
+
+**Key Features**:
+- Multi-target persistence
+- Checkpoint optimization
+- Storage validation
+- Recovery management
+
+#### Infrastructure Agents (2 Agents)
 
 ##### SynchronizationAgent
 **Responsibilities**:
@@ -150,18 +200,6 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 - Configurable merge strategies
 - Batch processing optimization
 - Performance metrics
-
-##### DocumentationAgent
-**Responsibilities**:
-- Automated documentation generation
-- PlantUML diagram creation
-- Report formatting and styling
-
-**Key Features**:
-- Template-based generation
-- Multi-format output support
-- Diagram compilation
-- Style consistency enforcement
 
 ## Data Flow Architecture
 
@@ -205,19 +243,23 @@ interface WorkflowExecution {
 ### Project Structure
 ```
 src/
-├── index.ts              # MCP server entry point
-├── server.ts             # Core MCP server implementation
-├── tools.ts              # Tool definitions and handlers
-├── logging.ts            # Logging utilities
-└── agents/               # Agent implementations
-    ├── coordinator.ts
-    ├── semantic-analyzer.ts
-    ├── repository-analyzer.ts
-    ├── knowledge-manager.ts
+├── index.ts                        # MCP server entry point
+├── server.ts                       # Core MCP server implementation
+├── tools.ts                        # Tool definitions and handlers
+├── logging.ts                      # Logging utilities
+└── agents/                         # Agent implementations (11 agents)
+    ├── coordinator.ts              # Orchestration agent
+    ├── git-history-agent.ts        # Core analysis agents
+    ├── vibe-history-agent.ts
+    ├── semantic-analysis-agent.ts
     ├── web-search.ts
-    ├── synchronization.ts
+    ├── insight-generation-agent.ts
+    ├── observation-generation-agent.ts
+    ├── quality-assurance-agent.ts
+    ├── persistence-agent.ts
+    ├── synchronization.ts          # Infrastructure agents
     ├── deduplication.ts
-    └── documentation.ts
+    └── semantic-analyzer.ts        # Utility class (not an agent)
 ```
 
 ### Key Design Patterns

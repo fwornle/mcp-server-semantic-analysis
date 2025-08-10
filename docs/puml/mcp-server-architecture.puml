@@ -1,7 +1,7 @@
 @startuml mcp-server-architecture
 !include _standard-style.puml
 
-title MCP Semantic Analysis Server - Architecture Overview
+title MCP Semantic Analysis Server - 11-Agent Architecture Overview
 
 ' Define the main system layers
 package "Claude Code Client" {
@@ -11,7 +11,7 @@ package "Claude Code Client" {
 package "MCP Server Core" <<infra>> {
   component [MCP Protocol Handler] as MCP_HANDLER <<infra>>
   component [Tool Registry] as TOOL_REG <<api>>
-  component [Agent Coordinator] as COORDINATOR <<agent>>
+  component [Coordinator Agent] as COORDINATOR <<agent>>
 }
 
 package "Tool Layer (12 Tools)" <<api>> {
@@ -21,14 +21,21 @@ package "Tool Layer (12 Tools)" <<api>> {
   component [Documentation Tools] as DOC_TOOLS <<api>>
 }
 
-package "Agent Layer (7 Agents)" <<agent>> {
-  component [Semantic Analyzer] as SEMANTIC <<agent>>
-  component [Repository Analyzer] as REPO <<agent>>
-  component [Knowledge Manager] as KNOWLEDGE <<agent>>
-  component [Web Search Agent] as WEBSEARCH <<agent>>
-  component [Synchronization Agent] as SYNC <<agent>>
-  component [Deduplication Agent] as DEDUP <<agent>>
-  component [Documentation Agent] as DOCGEN <<agent>>
+package "Agent Layer (11 Agents)" <<agent>> {
+  package "Core Analysis Agents (8)" {
+    component [Git History Agent] as GIT <<agent>>
+    component [Vibe History Agent] as VIBE <<agent>>
+    component [Semantic Analysis Agent] as SEMANTIC <<agent>>
+    component [Web Search Agent] as WEBSEARCH <<agent>>
+    component [Insight Generation Agent] as INSIGHT <<agent>>
+    component [Observation Generation Agent] as OBS <<agent>>
+    component [Quality Assurance Agent] as QA <<agent>>
+    component [Persistence Agent] as PERSIST <<agent>>
+  }
+  package "Infrastructure Agents (2)" {
+    component [Synchronization Agent] as SYNC <<agent>>
+    component [Deduplication Agent] as DEDUP <<agent>>
+  }
 }
 
 package "External Services" <<external>> {
@@ -36,6 +43,8 @@ package "External Services" <<external>> {
   cloud [OpenAI GPT] as OPENAI <<external>>
   cloud [Web Search APIs] as WEB_API <<external>>
   database [Knowledge Bases] as KB <<storage>>
+  database [Git Repository] as GIT_REPO <<storage>>
+  database [.specstory/history] as VIBE_FILES <<storage>>
 }
 
 ' Define connections
@@ -48,35 +57,55 @@ COORDINATOR --> ANALYSIS_TOOLS
 COORDINATOR --> KNOWLEDGE_TOOLS
 COORDINATOR --> DOC_TOOLS
 
-CONN_TOOLS --> SEMANTIC
-ANALYSIS_TOOLS --> SEMANTIC
-ANALYSIS_TOOLS --> REPO
-KNOWLEDGE_TOOLS --> KNOWLEDGE
-DOC_TOOLS --> DOCGEN
+' Coordinator orchestrates all agents
+COORDINATOR --> GIT
+COORDINATOR --> VIBE
+COORDINATOR --> SEMANTIC
+COORDINATOR --> WEBSEARCH
+COORDINATOR --> INSIGHT
+COORDINATOR --> OBS
+COORDINATOR --> QA
+COORDINATOR --> PERSIST
+COORDINATOR --> SYNC
+COORDINATOR --> DEDUP
 
+' Agent connections to external services
+GIT --> GIT_REPO
+VIBE --> VIBE_FILES
 SEMANTIC ..> ANTHROPIC
 SEMANTIC .> OPENAI
+INSIGHT ..> ANTHROPIC
+INSIGHT .> OPENAI
 WEBSEARCH ..> WEB_API
-KNOWLEDGE --> KB
+PERSIST --> KB
 SYNC <--> KB
-DEDUP --> KNOWLEDGE
+DEDUP --> KB
 
 note right of COORDINATOR
-  Orchestrates workflow execution
-  Provides QA validation
-  Manages agent lifecycle
+  Orchestrates all 10 worker agents
+  Manages workflow execution
+  Provides QA coordination
+  Handles error recovery & rollback
 end note
 
 note right of SEMANTIC
   Multi-provider LLM support
   Anthropic (primary) → OpenAI (fallback)
-  Content and code analysis
+  Code & conversation correlation
 end note
 
 note right of KB
   UKB/VKB Integration
   MCP Memory Service
   Cross-session persistence
+  Multi-source synchronization
+end note
+
+note right of GIT
+  Sequential workflow:
+  Git → Vibe → Semantic → Web
+  → Insight → Observation → QA
+  → Persistence → Sync → Dedup
 end note
 
 @enduml

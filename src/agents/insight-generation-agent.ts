@@ -126,10 +126,11 @@ export class InsightGenerationAgent {
       const insightDocuments: InsightDocument[] = [];
       
       if (significantPatterns.length >= 1 && significantPatterns.length <= 5) {
-        // Generate separate insights for each significant pattern (improved logic)
-        log(`Generating separate insights for ${significantPatterns.length} significant patterns (≥7 significance)`, 'info');
+        // PERFORMANCE OPTIMIZATION: Generate insights in parallel instead of sequentially
+        log(`Generating separate insights for ${significantPatterns.length} significant patterns (≥7 significance) IN PARALLEL`, 'info');
         
-        for (const pattern of significantPatterns) {
+        // Create insight generation tasks for parallel execution
+        const insightTasks = significantPatterns.map(pattern => {
           const singlePatternCatalog: PatternCatalog = {
             patterns: [pattern],
             summary: {
@@ -140,11 +141,14 @@ export class InsightGenerationAgent {
             }
           };
           
-          const insightDoc = await this.generateInsightDocument(
+          return this.generateInsightDocument(
             gitAnalysis, vibeAnalysis, semanticAnalysis, singlePatternCatalog, webResults
           );
-          insightDocuments.push(insightDoc);
-        }
+        });
+        
+        // Execute all insight generation tasks in parallel
+        const parallelResults = await Promise.all(insightTasks);
+        insightDocuments.push(...parallelResults);
       } else {
         // Generate single comprehensive insight document
         const insightDocument = await this.generateInsightDocument(
@@ -494,10 +498,13 @@ export class InsightGenerationAgent {
     const diagrams: PlantUMLDiagram[] = [];
     const diagramTypes: PlantUMLDiagram['type'][] = ['architecture', 'sequence', 'use-cases', 'class'];
 
-    for (const type of diagramTypes) {
+    // PERFORMANCE OPTIMIZATION: Generate diagrams in parallel instead of sequentially
+    log(`Generating ${diagramTypes.length} diagrams IN PARALLEL for ${name}`, 'info');
+    
+    // Create diagram generation tasks for parallel execution
+    const diagramTasks = diagramTypes.map(async (type): Promise<PlantUMLDiagram> => {
       try {
-        const diagram = await this.generatePlantUMLDiagram(type, name, data);
-        diagrams.push(diagram);
+        return await this.generatePlantUMLDiagram(type, name, data);
       } catch (error) {
         // Write error details to file for debugging
         const errorDetails = {
@@ -509,20 +516,28 @@ export class InsightGenerationAgent {
           dataTypes: data ? Object.keys(data).reduce((acc, key) => ({ ...acc, [key]: typeof data[key] }), {}) : {}
         };
         
-        // Use existing ES module imports
+        // PERFORMANCE OPTIMIZATION: Use async file operations
         const errorFile = path.join(this.outputDir, 'plantuml_errors.json');
-        fs.writeFileSync(errorFile, JSON.stringify(errorDetails, null, 2));
+        await fs.promises.writeFile(errorFile, JSON.stringify(errorDetails, null, 2)).catch(e => 
+          log('Failed to write error file', 'warning', e)
+        );
         
         log(`Failed to generate ${type} diagram`, 'warning', error);
-        diagrams.push({
+        return {
           type,
           name: `${name}_${type}`,
           content: '',
           pumlFile: '',
           success: false
-        });
+        };
       }
-    }
+    });
+    
+    // Execute all diagram generation tasks in parallel and collect results
+    const parallelDiagrams = await Promise.all(diagramTasks);
+    diagrams.push(...parallelDiagrams);
+    
+    log(`Completed parallel diagram generation for ${name}: ${diagrams.filter(d => d.success).length}/${diagrams.length} successful`, 'info');
 
     return diagrams;
   }
@@ -1592,16 +1607,25 @@ ${pattern.implementation.usageNotes.map(note => `- ${note}`).join('\n')}
 
   // Utility methods
   private initializeDirectories(): void {
+    // PERFORMANCE OPTIMIZATION: Use async directory creation to avoid blocking
     const dirs = [
       this.outputDir,
       path.join(this.outputDir, 'puml'),
       path.join(this.outputDir, 'images')
     ];
     
-    dirs.forEach(dir => {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+    // Create directories asynchronously in parallel
+    Promise.all(dirs.map(async dir => {
+      try {
+        await fs.promises.mkdir(dir, { recursive: true });
+      } catch (error) {
+        // Directory might already exist, ignore EEXIST errors
+        if ((error as any).code !== 'EEXIST') {
+          log(`Failed to create directory ${dir}`, 'warning', error);
+        }
       }
+    })).catch(error => {
+      log('Directory initialization failed', 'warning', error);
     });
   }
 

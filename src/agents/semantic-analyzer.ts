@@ -49,6 +49,17 @@ export class SemanticAnalyzer {
   private customClient: OpenAI | null = null;
   private anthropicClient: Anthropic | null = null;
   private openaiClient: OpenAI | null = null;
+  
+  // PERFORMANCE OPTIMIZATION: Request batching for improved throughput
+  private batchQueue: Array<{ 
+    prompt: string; 
+    options: AnalysisOptions; 
+    resolve: (result: AnalysisResult) => void; 
+    reject: (error: any) => void;
+  }> = [];
+  private batchTimer: NodeJS.Timeout | null = null;
+  private readonly BATCH_SIZE = 5;
+  private readonly BATCH_TIMEOUT = 100; // ms
 
   constructor() {
     this.initializeClients();
@@ -91,6 +102,73 @@ export class SemanticAnalyzer {
     }
   }
 
+  // PERFORMANCE OPTIMIZATION: Batch processing methods
+  private async processBatch(): Promise<void> {
+    if (this.batchQueue.length === 0) return;
+    
+    const currentBatch = this.batchQueue.splice(0, this.BATCH_SIZE);
+    log(`Processing batch of ${currentBatch.length} requests`, 'info');
+    
+    try {
+      // Process batch requests in parallel
+      const batchPromises = currentBatch.map(async (item) => {
+        try {
+          const result = await this.analyzeContentDirectly(item.prompt, item.options);
+          item.resolve(result);
+        } catch (error) {
+          item.reject(error);
+        }
+      });
+      
+      await Promise.all(batchPromises);
+      log(`Completed batch processing of ${currentBatch.length} requests`, 'info');
+      
+    } catch (error) {
+      log(`Batch processing failed`, 'error', error);
+      // Reject all remaining items in this batch
+      currentBatch.forEach(item => item.reject(error));
+    }
+    
+    // Schedule next batch if queue has items
+    if (this.batchQueue.length > 0) {
+      this.scheduleBatch();
+    }
+  }
+  
+  private scheduleBatch(): void {
+    if (this.batchTimer) return; // Already scheduled
+    
+    this.batchTimer = setTimeout(() => {
+      this.batchTimer = null;
+      this.processBatch();
+    }, this.BATCH_TIMEOUT);
+  }
+  
+  // New method for direct analysis (used by batch processor)
+  private async analyzeContentDirectly(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
+    const { context, analysisType = "general", provider = "auto" } = options;
+    const prompt = this.buildAnalysisPrompt(content, context, analysisType);
+    
+    // Use existing provider selection logic
+    if (provider === "custom" && this.customClient) {
+      return await this.analyzeWithCustom(prompt);
+    } else if (provider === "anthropic" && this.anthropicClient) {
+      return await this.analyzeWithAnthropic(prompt);
+    } else if (provider === "openai" && this.openaiClient) {
+      return await this.analyzeWithOpenAI(prompt);
+    } else if (provider === "auto") {
+      if (this.customClient) {
+        return await this.analyzeWithCustom(prompt);
+      } else if (this.anthropicClient) {
+        return await this.analyzeWithAnthropic(prompt);
+      } else if (this.openaiClient) {
+        return await this.analyzeWithOpenAI(prompt);
+      }
+    }
+    
+    throw new Error("No available LLM provider");
+  }
+
   async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
     const { context, analysisType = "general", provider = "auto" } = options;
 
@@ -104,6 +182,28 @@ export class SemanticAnalyzer {
     });
 
     const prompt = this.buildAnalysisPrompt(content, context, analysisType);
+
+    // PERFORMANCE OPTIMIZATION: Use batching for non-urgent requests
+    // For diagram generation and similar tasks, use batching to improve throughput
+    const shouldBatch = analysisType === "diagram" || analysisType === "patterns";
+    
+    if (shouldBatch) {
+      return new Promise<AnalysisResult>((resolve, reject) => {
+        this.batchQueue.push({ prompt, options, resolve, reject });
+        
+        // If we have enough items for a batch, process immediately
+        if (this.batchQueue.length >= this.BATCH_SIZE) {
+          if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+          }
+          this.processBatch();
+        } else {
+          // Otherwise, schedule processing
+          this.scheduleBatch();
+        }
+      });
+    }
 
     let result: AnalysisResult;
 

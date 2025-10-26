@@ -1,21 +1,21 @@
 @startuml agent-coordination-flow
 !include _standard-style.puml
 
-title 11-Agent Coordination Flow - Workflow Execution
+title 10-Agent Coordination Flow - Workflow Execution
 
 participant "Claude Code" as CLAUDE
 participant "MCP Handler" as MCP
-participant "Coordinator Agent" as COORD
-participant "Git History Agent" as GIT
-participant "Vibe History Agent" as VIBE
-participant "Semantic Analysis Agent" as SEMANTIC
-participant "Web Search Agent" as WEB
-participant "Insight Generation Agent" as INSIGHT
-participant "Observation Generation Agent" as OBS
-participant "Quality Assurance Agent" as QA
-participant "Persistence Agent" as PERSIST
-participant "Synchronization Agent" as SYNC
-participant "Deduplication Agent" as DEDUP
+participant "Coordinator Agent" as COORD #FFE6CC
+participant "Git History Agent" as GIT #E6F3FF
+participant "Vibe History Agent" as VIBE #E6F3FF
+participant "Semantic Analysis Agent" as SEMANTIC #FFE6E6
+participant "Web Search Agent" as WEB #E6F3FF
+participant "Insight Generation Agent" as INSIGHT #FFE6E6
+participant "Observation Generation Agent" as OBS #E6F3FF
+participant "Quality Assurance Agent" as QA #FFE6E6
+participant "Persistence Agent" as PERSIST #E6F3FF
+participant "Deduplication Agent" as DEDUP #E6F3FF
+database "GraphDB\n(Graphology+LevelDB)" as GRAPHDB #D4EDDA
 
 CLAUDE ->> MCP : tool_call(execute_workflow)
 activate MCP
@@ -24,7 +24,8 @@ MCP ->> COORD : execute_workflow(complete-analysis)
 activate COORD
 
 note over COORD
-  Orchestrate 10-agent workflow:
+  Orchestrate 9-worker-agent workflow:
+  Initialize GraphDB adapter
   Initialize execution context
   Manage task dependencies
   Monitor agent performance
@@ -46,6 +47,7 @@ deactivate VIBE
 
 COORD ->> SEMANTIC : analyze_semantics(git_results, vibe_results)
 activate SEMANTIC
+note right of SEMANTIC: **Uses LLM**\n3-tier chain
 SEMANTIC ->> SEMANTIC : correlate_code_and_conversation()
 SEMANTIC ->> SEMANTIC : identify_patterns()
 SEMANTIC -->> COORD : semantic_analysis_results
@@ -60,6 +62,7 @@ deactivate WEB
 
 COORD ->> INSIGHT : generate_comprehensive_insights(all_results)
 activate INSIGHT
+note right of INSIGHT: **Uses LLM**\n3-tier chain
 INSIGHT ->> INSIGHT : synthesize_findings()
 INSIGHT ->> INSIGHT : create_plantuml_diagrams()
 INSIGHT -->> COORD : insights_and_diagrams
@@ -74,6 +77,7 @@ deactivate OBS
 
 COORD ->> QA : validate_outputs(observations)
 activate QA
+note right of QA: **Uses LLM**\nfor auto-correction
 QA ->> QA : quality_assessment()
 QA ->> QA : auto_correction_if_needed()
 QA -->> COORD : validated_results
@@ -82,19 +86,23 @@ deactivate QA
 COORD ->> PERSIST : store_knowledge(validated_results)
 activate PERSIST
 PERSIST ->> PERSIST : create_checkpoint()
-PERSIST ->> PERSIST : update_knowledge_base()
+PERSIST ->> GRAPHDB : storeEntity()
+activate GRAPHDB
+GRAPHDB -->> PERSIST : stored
+deactivate GRAPHDB
+PERSIST ->> GRAPHDB : storeRelationship()
+activate GRAPHDB
+GRAPHDB -->> PERSIST : stored
+deactivate GRAPHDB
 PERSIST -->> COORD : persistence_complete
 deactivate PERSIST
 
-COORD ->> SYNC : sync_knowledge_bases()
-activate SYNC
-SYNC ->> SYNC : sync_mcp_memory()
-SYNC ->> SYNC : update_shared_memory_files()
-SYNC -->> COORD : sync_complete
-deactivate SYNC
-
 COORD ->> DEDUP : detect_and_merge_duplicates()
 activate DEDUP
+DEDUP ->> GRAPHDB : queryEntities()
+activate GRAPHDB
+GRAPHDB -->> DEDUP : entities
+deactivate GRAPHDB
 DEDUP ->> DEDUP : semantic_similarity_analysis()
 DEDUP ->> DEDUP : merge_duplicate_entities()
 DEDUP -->> COORD : deduplication_complete
@@ -114,13 +122,22 @@ MCP -->> CLAUDE : formatted_analysis_response
 deactivate MCP
 
 note right of CLAUDE
-  Complete 11-agent analysis:
+  Complete 10-agent analysis:
   - Git & conversation correlation
-  - External pattern validation  
-  - Comprehensive insights
+  - External pattern validation
+  - Comprehensive insights (3 LLM agents)
   - Quality-assured outputs
-  - Knowledge base updates
-  - Synchronized storage
+  - GraphDB persistence (Graphology+LevelDB)
+  - Auto-export to shared-memory-coding.json
+  - No MCP Memory server
 end note
+
+legend right
+  |= Color |= Agent Type |
+  | <back:#FFE6E6>   </back> | Uses LLMs (3 agents) |
+  | <back:#E6F3FF>   </back> | No LLM (6 agents) |
+  | <back:#FFE6CC>   </back> | Orchestrator (1) |
+  | <back:#D4EDDA>   </back> | Storage |
+endlegend
 
 @enduml

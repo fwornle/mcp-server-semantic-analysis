@@ -5,7 +5,6 @@ import { SemanticAnalyzer } from "./agents/semantic-analyzer.js";
 import { CoordinatorAgent } from "./agents/coordinator.js";
 import { InsightGenerationAgent } from "./agents/insight-generation-agent.js";
 import { DeduplicationAgent } from "./agents/deduplication.js";
-import { SynchronizationAgent } from "./agents/synchronization.js";
 import { WebSearchAgent } from "./agents/web-search.js";
 import { PersistenceAgent } from "./agents/persistence-agent.js";
 import fs from "fs/promises";

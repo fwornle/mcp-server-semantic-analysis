@@ -1,7 +1,7 @@
 @startuml mcp-server-architecture
 !include _standard-style.puml
 
-title MCP Semantic Analysis Server - 11-Agent Architecture Overview
+title MCP Semantic Analysis Server - 10-Agent Architecture Overview
 
 ' Define the main system layers
 package "Claude Code Client" {
@@ -21,7 +21,7 @@ package "Tool Layer (12 Tools)" <<api>> {
   component [Documentation Tools] as DOC_TOOLS <<api>>
 }
 
-package "Agent Layer (11 Agents)" <<agent>> {
+package "Agent Layer (10 Agents)" <<agent>> {
   package "Core Analysis Agents (8)" {
     component [Git History Agent] as GIT <<agent>>
     component [Vibe History Agent] as VIBE <<agent>>
@@ -32,17 +32,23 @@ package "Agent Layer (11 Agents)" <<agent>> {
     component [Quality Assurance Agent] as QA <<agent>>
     component [Persistence Agent] as PERSIST <<agent>>
   }
-  package "Infrastructure Agents (2)" {
-    component [Synchronization Agent] as SYNC <<agent>>
+  package "Infrastructure Agents (1)" {
     component [Deduplication Agent] as DEDUP <<agent>>
   }
+  component [Coordinator Agent] as COORD_MAIN <<agent>> #FFE6CC
+}
+
+package "Storage Layer" <<storage>> {
+  database "GraphDB\nGraphology+LevelDB\n.data/knowledge-graph/" as GRAPHDB <<storage>> #D4EDDA
+  component [GraphKnowledgeExporter] as EXPORTER <<infra>>
+  file "shared-memory-\ncoding.json" as SHARED_JSON <<storage>>
 }
 
 package "External Services" <<external>> {
-  cloud [Anthropic Claude] as ANTHROPIC <<external>>
-  cloud [OpenAI GPT] as OPENAI <<external>>
+  cloud [Custom LLM] as CUSTOM_LLM <<external>> #FFE6E6
+  cloud [Anthropic Claude] as ANTHROPIC <<external>> #FFE6E6
+  cloud [OpenAI GPT] as OPENAI <<external>> #FFE6E6
   cloud [Web Search APIs] as WEB_API <<external>>
-  database [Knowledge Bases] as KB <<storage>>
   database [Git Repository] as GIT_REPO <<storage>>
   database [.specstory/history] as VIBE_FILES <<storage>>
 }
@@ -66,46 +72,68 @@ COORDINATOR --> INSIGHT
 COORDINATOR --> OBS
 COORDINATOR --> QA
 COORDINATOR --> PERSIST
-COORDINATOR --> SYNC
 COORDINATOR --> DEDUP
+COORDINATOR ..> GRAPHDB : "Initializes &\nProvides"
 
 ' Agent connections to external services
-GIT --> GIT_REPO
-VIBE --> VIBE_FILES
-SEMANTIC ..> ANTHROPIC
-SEMANTIC .> OPENAI
-INSIGHT ..> ANTHROPIC
-INSIGHT .> OPENAI
-WEBSEARCH ..> WEB_API
-PERSIST --> KB
-SYNC <--> KB
-DEDUP --> KB
+GIT --> GIT_REPO : "Reads commits"
+VIBE --> VIBE_FILES : "Reads sessions"
+
+' LLM usage (3-tier provider chain)
+SEMANTIC ..> CUSTOM_LLM : "Primary"
+SEMANTIC ..> ANTHROPIC : "Secondary"
+SEMANTIC .> OPENAI : "Fallback"
+INSIGHT ..> CUSTOM_LLM : "Primary"
+INSIGHT ..> ANTHROPIC : "Secondary"
+INSIGHT .> OPENAI : "Fallback"
+QA ..> CUSTOM_LLM : "Primary"
+QA ..> ANTHROPIC : "Secondary"
+QA .> OPENAI : "Fallback"
+
+WEBSEARCH ..> WEB_API : "Searches"
+
+' Storage layer connections
+PERSIST --> GRAPHDB : "Stores entities\n& relations"
+DEDUP --> GRAPHDB : "Queries for\nduplicates"
+GRAPHDB --> EXPORTER : "Auto-persist\n30s intervals"
+EXPORTER --> SHARED_JSON : "Exports to JSON"
 
 note right of COORDINATOR
-  Orchestrates all 10 worker agents
-  Manages workflow execution
+  Orchestrates all 9 worker agents
+  Manages workflow execution via step definitions
+  Initializes GraphDB adapter
   Provides QA coordination
   Handles error recovery & rollback
 end note
 
 note right of SEMANTIC
-  Multi-provider LLM support
-  Anthropic (primary) → OpenAI (fallback)
-  Code & conversation correlation
+  3-tier LLM provider chain:
+  Custom LLM → Anthropic → OpenAI
+  Correlates code changes with conversations
+  Deep semantic code analysis
 end note
 
-note right of KB
-  UKB/VKB Integration
-  MCP Memory Service
-  Cross-session persistence
-  Multi-source synchronization
+note right of GRAPHDB
+  Graphology (in-memory multi-graph)
+  LevelDB (persistent storage)
+  Auto-persist every 30 seconds
+  No MCP Memory server used
+  GraphKnowledgeExporter handles JSON export
 end note
 
-note right of GIT
-  Sequential workflow:
-  Git → Vibe → Semantic → Web
-  → Insight → Observation → QA
-  → Persistence → Sync → Dedup
+note bottom of GIT
+  **Workflow orchestration via CoordinatorAgent:**
+  1. GitHistoryAgent → reads commits
+  2. VibeHistoryAgent → reads conversations
+  3. SemanticAnalysisAgent → correlates data (LLM)
+  4. WebSearchAgent → external research
+  5. InsightGenerationAgent → creates insights (LLM)
+  6. ObservationGenerationAgent → structures observations
+  7. QualityAssuranceAgent → validates & corrects (LLM)
+  8. PersistenceAgent → stores to GraphDB
+  9. DeduplicationAgent → prevents duplicates
+
+  **Data flows through coordinator, not agent-to-agent**
 end note
 
 @enduml

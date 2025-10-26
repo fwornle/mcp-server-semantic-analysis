@@ -247,7 +247,7 @@ src/
 ├── server.ts                       # Core MCP server implementation
 ├── tools.ts                        # Tool definitions and handlers
 ├── logging.ts                      # Logging utilities
-└── agents/                         # Agent implementations (11 agents)
+└── agents/                         # Agent implementations (10 agents)
     ├── coordinator.ts              # Orchestration agent
     ├── git-history-agent.ts        # Core analysis agents
     ├── vibe-history-agent.ts

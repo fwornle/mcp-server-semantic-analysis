@@ -4,9 +4,9 @@
 
 ## Overview
 
-This MCP server integrates seamlessly with Claude Code to provide advanced semantic analysis capabilities. Built entirely in Node.js with TypeScript, it offers **12 specialized tools** and **11 intelligent agents** for comprehensive code and knowledge analysis.
+This MCP server integrates seamlessly with Claude Code to provide advanced semantic analysis capabilities. Built entirely in Node.js with TypeScript, it offers **12 specialized tools** and **10 intelligent agents** with **Graphology+LevelDB graph database** persistence for comprehensive code and knowledge analysis.
 
-### 🤖 Intelligent Agents (11 Total)
+### 🤖 Intelligent Agents (10 Total)
 
 #### Core Analysis Agents (8 Agents)
 1. **`GitHistoryAgent`** - Analyzes git commits from checkpoint with architectural decisions
@@ -16,14 +16,13 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 5. **`InsightGenerationAgent`** - Generates insights with PlantUML diagrams and patterns
 6. **`ObservationGenerationAgent`** - Creates structured UKB-compatible observations
 7. **`QualityAssuranceAgent`** - Validates outputs with auto-correction capabilities
-8. **`PersistenceAgent`** - Manages knowledge base persistence and checkpoints
+8. **`PersistenceAgent`** - Persists entities to Graphology+LevelDB graph database
 
-#### Infrastructure Agents (2 Agents)
-9. **`SynchronizationAgent`** - Multi-source data synchronization
-10. **`DeduplicationAgent`** - Semantic duplicate detection and merging
+#### Infrastructure Agents (1 Agent)
+9. **`DeduplicationAgent`** - Semantic duplicate detection and merging
 
 #### Orchestration Agent (1 Agent)
-11. **`CoordinatorAgent`** - Workflow orchestration, task scheduling, and agent coordination
+10. **`CoordinatorAgent`** - Workflow orchestration, task scheduling, and agent coordination with GraphDB integration
 
 ## ✨ Key Features
 
@@ -44,7 +43,8 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 ### 🔗 Integration Capabilities
 - **Claude Code Integration** - Full MCP compatibility
 - **Multiple LLM Providers** - Custom LLM (primary), Anthropic Claude (secondary), OpenAI GPT (fallback)
-- **Knowledge Base Support** - UKB/VKB integration with shared-memory-*.json files
+- **Graph Database Persistence** - Graphology (in-memory) + LevelDB (persistent storage) at `.data/knowledge-graph/`
+- **Knowledge Base Support** - UKB/VKB integration with automatic graph export to shared-memory-*.json
 - **PlantUML Diagrams** - Architecture visualization
 - **Web Search** - Technical documentation discovery
 - **Git & Conversation Analysis** - Cross-correlates code changes with development discussions
@@ -127,47 +127,60 @@ generate_lessons_learned(analysis_result, title?, metadata?) → LessonsLearned
 
 ## 🏗️ Architecture Overview
 
-### 11-Agent Workflow System
+### 10-Agent Workflow System
+
+**CRITICAL**: The `CoordinatorAgent` orchestrates ALL agents through workflow definitions, not just a few. Agents don't call each other directly - data flows through the coordinator via step dependencies and result templating.
 
 ```mermaid
 graph TB
-    subgraph "11-Agent Semantic Analysis System"
-        COORD[1. CoordinatorAgent<br/>Workflow Orchestration]
+    subgraph "10-Agent Semantic Analysis System"
+        COORD[1. CoordinatorAgent<br/>Orchestrates ALL agents via workflows<br/>+GraphDB Integration]
         GIT[2. GitHistoryAgent<br/>Git Commits Analysis]
         VIBE[3. VibeHistoryAgent<br/>Conversation Analysis]
-        SEM[4. SemanticAnalysisAgent<br/>Deep Code Analysis]
-        WEB[5. WebSearchAgent<br/>External Research]
-        INS[6. InsightGenerationAgent<br/>Insights & Diagrams]
+        SEM[4. SemanticAnalysisAgent<br/>Deep Code Analysis + LLM]
+        WEB[5. WebSearchAgent<br/>External Research - No LLM]
+        INS[6. InsightGenerationAgent<br/>Insights & Diagrams + LLM]
         OBS[7. ObservationGenerationAgent<br/>Structured Observations]
-        QA[8. QualityAssuranceAgent<br/>Validation & Correction]
-        PER[9. PersistenceAgent<br/>Knowledge Base Update]
-        SYNC[10. SynchronizationAgent<br/>Data Synchronization]
-        DEDUP[11. DeduplicationAgent<br/>Duplicate Detection]
+        QA[8. QualityAssuranceAgent<br/>Validation & Correction + LLM]
+        PER[9. PersistenceAgent<br/>GraphDB Persistence]
+        DEDUP[10. DeduplicationAgent<br/>Duplicate Detection]
     end
-    
-    COORD -->|Orchestrates| GIT
-    GIT -->|Commits| SEM
-    VIBE -->|Context| SEM
-    SEM -->|Analysis| WEB
-    WEB -->|Research| INS
-    INS -->|Insights| OBS
-    OBS -->|Observations| QA
-    QA -->|Validated| PER
-    PER -->|Updates| SYNC
-    SYNC -->|Syncs| DEDUP
-    
+
+    subgraph "Storage Layer"
+        GRAPHDB[(GraphDB<br/>Graphology+LevelDB<br/>.data/knowledge-graph/)]
+    end
+
+    COORD -->|Step 1: Execute| GIT
+    COORD -->|Step 2: Execute| VIBE
+    COORD -->|Step 3: Execute with {{git}} {{vibe}}| SEM
+    COORD -->|Step 4: Execute with {{semantic}}| WEB
+    COORD -->|Step 5: Execute with {{semantic}} {{web}}| INS
+    COORD -->|Step 6: Execute with {{insights}}| OBS
+    COORD -->|Step 7: Execute with {{observations}}| QA
+    COORD -->|Step 8: Execute with {{qa}}| PER
+    COORD -->|Infrastructure| DEDUP
+
+    COORD -.->|Initializes & Provides| GRAPHDB
+    PER -->|Stores Entities & Relations| GRAPHDB
+
     style GIT fill:#e6f3ff
     style VIBE fill:#e6f3ff
-    style SEM fill:#e6f3ff
+    style SEM fill:#ffe6e6
     style WEB fill:#e6f3ff
-    style INS fill:#e6f3ff
+    style INS fill:#ffe6e6
     style OBS fill:#e6f3ff
-    style QA fill:#e6f3ff
+    style QA fill:#ffe6e6
     style PER fill:#e6f3ff
     style COORD fill:#fff2e6
-    style SYNC fill:#e8f4fd
     style DEDUP fill:#e8f4fd
+    style GRAPHDB fill:#d4edda
 ```
+
+**Legend**:
+- 🔴 Pink = Uses LLMs (via SemanticAnalyzer, 3-tier provider chain)
+- 🔵 Blue = No LLM usage
+- 🟡 Yellow = Orchestrator
+- 🟢 Green = Graph Database Storage
 
 ### System Architecture
 
@@ -176,50 +189,68 @@ graph TB
     subgraph "Claude Code Client"
         CLAUDE[Claude Interface]
     end
-    
+
     subgraph "MCP Server Core"
         MCP[MCP Protocol Handler]
         TOOLS[Tool Layer<br/>12 Tools]
-        AGENTS[Agent Layer<br/>10 Agents]
+        COORD[CoordinatorAgent<br/>Orchestrator]
+        AGENTS[Agent Layer<br/>10 Worker Agents]
         INTEG[Integration Layer]
     end
-    
+
+    subgraph "Storage Layer"
+        GRAPHDB[(GraphDatabaseService<br/>Graphology + LevelDB<br/>.data/knowledge-graph/)]
+        EXPORT[GraphKnowledgeExporter<br/>Auto-export to JSON]
+        SHARED[shared-memory-coding.json<br/>Git-tracked export]
+    end
+
     subgraph "External Services"
         CUSTOM[Custom LLM<br/>Primary]
         ANTHROPIC[Anthropic Claude<br/>Secondary]
         OPENAI[OpenAI GPT<br/>Fallback]
         SEARCH[Web Search APIs<br/>DuckDuckGo]
-        KB[Knowledge Bases<br/>UKB/VKB]
         GIT[Git Repository]
         HIST[.specstory/history]
     end
-    
+
     CLAUDE -->|MCP Protocol| MCP
     MCP --> TOOLS
-    MCP --> AGENTS
-    MCP --> INTEG
-    
-    AGENTS -->|Primary| CUSTOM
-    AGENTS -->|Secondary| ANTHROPIC
-    AGENTS -->|Fallback| OPENAI
-    AGENTS --> SEARCH
-    AGENTS --> KB
-    AGENTS --> GIT
-    AGENTS --> HIST
-    
+    TOOLS --> COORD
+    COORD -->|Orchestrates| AGENTS
+
+    AGENTS -->|LLM Agents Use| CUSTOM
+    AGENTS -->|LLM Agents Use| ANTHROPIC
+    AGENTS -->|LLM Agents Use| OPENAI
+    AGENTS -->|WebSearch Agent| SEARCH
+    AGENTS -->|Analysis Source| GIT
+    AGENTS -->|Analysis Source| HIST
+
+    COORD -->|Initializes & Provides| GRAPHDB
+    AGENTS -->|Via PersistenceAgent| GRAPHDB
+    GRAPHDB -->|Auto-persist 30s| EXPORT
+    EXPORT -->|Writes| SHARED
+
     style CLAUDE fill:#e8f4fd
     style MCP fill:#fff2e6
     style TOOLS fill:#e8f4fd
+    style COORD fill:#fff2e6
     style AGENTS fill:#e6f3ff
     style INTEG fill:#fff2e6
-    style CUSTOM fill:#f5f5f5
-    style ANTHROPIC fill:#f5f5f5
-    style OPENAI fill:#f5f5f5
-    style SEARCH fill:#f5f5f5
-    style KB fill:#fff9e6
+    style CUSTOM fill:#ffe6e6
+    style ANTHROPIC fill:#ffe6e6
+    style OPENAI fill:#ffe6e6
+    style SEARCH fill:#e6ffe6
+    style GRAPHDB fill:#fff9e6
+    style SHARED fill:#fff9e6
+    style MCPMEM fill:#f0f0f0
     style GIT fill:#e8f4fd
     style HIST fill:#e8f4fd
 ```
+
+**Storage Architecture Notes:**
+- **Graphology+LevelDB**: In-memory graph (Graphology) with persistent storage (LevelDB) at `.data/knowledge-graph/`
+- **GraphKnowledgeExporter**: Separate process that auto-exports from LevelDB to `shared-memory-coding.json` (30s intervals)
+- **shared-memory-coding.json**: Git-tracked JSON export for collaboration and cross-session persistence
 
 ## 📚 Detailed Documentation
 
@@ -357,7 +388,6 @@ graph TD
     agents --> qa["quality-assurance-agent.ts"]
     agents --> persistence["persistence-agent.ts"]
     agents --> coordinator["coordinator.ts"]
-    agents --> sync["synchronization.ts"]
     agents --> dedup["deduplication.ts"]
     
     classDef mainFile fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
@@ -365,7 +395,7 @@ graph TD
     classDef folderStyle fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
     
     class index,server,tools,logging mainFile
-    class git,vibe,semantic,web,insight,observation,qa,persistence,coordinator,sync,dedup agentFile
+    class git,vibe,semantic,web,insight,observation,qa,persistence,coordinator,dedup agentFile
     class agents folderStyle
 ```
 
@@ -398,4 +428,4 @@ For issues and support:
 - [UKB Documentation](../../docs/ukb/README.md) - Universal Knowledge Base
 - [VKB Documentation](../../docs/vkb/README.md) - Knowledge Visualization
 
-**🏷️ Tags:** MCP, Semantic Analysis, Claude Code, Node.js, TypeScript, AI, Knowledge Management, 11-Agent System
+**🏷️ Tags:** MCP, Semantic Analysis, Claude Code, Node.js, TypeScript, AI, Knowledge Management, 10-Agent System

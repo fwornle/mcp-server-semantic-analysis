@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
+import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
 
 export interface PersistenceResult {
   success: boolean;
@@ -106,12 +107,20 @@ export class PersistenceAgent {
   private repositoryPath: string;
   private sharedMemoryPath: string;
   private insightsDir: string;
+  private graphDB: GraphDatabaseAdapter | null;
 
-  constructor(repositoryPath: string = '.') {
+  constructor(repositoryPath: string = '.', graphDB?: GraphDatabaseAdapter) {
     this.repositoryPath = repositoryPath;
     this.sharedMemoryPath = path.join(repositoryPath, 'shared-memory-coding.json');
     this.insightsDir = path.join(repositoryPath, 'knowledge-management', 'insights');
+    this.graphDB = graphDB || null;
     this.ensureDirectories();
+
+    if (!this.graphDB) {
+      log('PersistenceAgent initialized WITHOUT GraphDB - will fall back to JSON file writes', 'warning');
+    } else {
+      log('PersistenceAgent initialized WITH GraphDB - will use Graphology+LevelDB persistence', 'info');
+    }
   }
 
   async persistAnalysisResults(
@@ -579,6 +588,50 @@ export class PersistenceAgent {
     }
   }
 
+  /**
+   * Store an entity to the graph database
+   * Falls back to JSON file if GraphDB is not available
+   */
+  private async storeEntityToGraph(entity: SharedMemoryEntity): Promise<string | null> {
+    if (!this.graphDB) {
+      log('GraphDB not available - entity will be stored in JSON only', 'warning', {
+        entityName: entity.name
+      });
+      return null;
+    }
+
+    try {
+      const graphEntity = {
+        name: entity.name,
+        entityType: entity.entityType,
+        observations: entity.observations,
+        confidence: 1.0,
+        source: entity.metadata.source || 'mcp-semantic-analysis',
+        significance: entity.significance,
+        relationships: entity.relationships,
+        metadata: entity.metadata,
+        quick_reference: entity.quick_reference
+      };
+
+      const nodeId = await this.graphDB.storeEntity(graphEntity);
+
+      log('Entity stored to graph database', 'info', {
+        entityName: entity.name,
+        nodeId
+      });
+
+      return nodeId;
+    } catch (error) {
+      log('Failed to store entity to graph database', 'error', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Save shared memory structure
+   * DEPRECATED: This method now uses GraphDB for persistence
+   * Falls back to JSON file only if GraphDB is not available
+   */
   private async saveSharedMemory(sharedMemory: SharedMemoryStructure): Promise<void> {
     try {
       // Update counts
@@ -586,15 +639,38 @@ export class PersistenceAgent {
       sharedMemory.metadata.total_relations = sharedMemory.relations.length;
       sharedMemory.metadata.last_updated = new Date().toISOString();
 
-      // Write with proper formatting
-      const content = JSON.stringify(sharedMemory, null, 2);
-      await fs.promises.writeFile(this.sharedMemoryPath, content, 'utf8');
+      if (this.graphDB) {
+        // Store each entity to the graph database
+        log('Storing entities to GraphDB (Graphology+LevelDB)', 'info', {
+          entitiesCount: sharedMemory.entities.length
+        });
 
-      log('Shared memory saved successfully', 'info', {
-        entitiesCount: sharedMemory.entities.length,
-        relationsCount: sharedMemory.relations.length,
-        path: this.sharedMemoryPath
-      });
+        for (const entity of sharedMemory.entities) {
+          await this.storeEntityToGraph(entity);
+        }
+
+        // Store relationships
+        for (const relation of sharedMemory.relations) {
+          await this.graphDB.storeRelationship(relation);
+        }
+
+        log('Shared memory persisted to GraphDB successfully', 'info', {
+          entitiesCount: sharedMemory.entities.length,
+          relationsCount: sharedMemory.relations.length
+        });
+      } else {
+        // Fallback to JSON file if GraphDB not available
+        log('GraphDB not available - falling back to JSON file persistence', 'warning');
+
+        const content = JSON.stringify(sharedMemory, null, 2);
+        await fs.promises.writeFile(this.sharedMemoryPath, content, 'utf8');
+
+        log('Shared memory saved to JSON file (fallback)', 'warning', {
+          entitiesCount: sharedMemory.entities.length,
+          relationsCount: sharedMemory.relations.length,
+          path: this.sharedMemoryPath
+        });
+      }
     } catch (error) {
       log('Failed to save shared memory', 'error', error);
       throw error;

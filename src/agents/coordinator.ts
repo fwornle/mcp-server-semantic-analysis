@@ -8,8 +8,8 @@ import { InsightGenerationAgent } from "./insight-generation-agent.js";
 import { ObservationGenerationAgent } from "./observation-generation-agent.js";
 import { QualityAssuranceAgent } from "./quality-assurance-agent.js";
 import { PersistenceAgent } from "./persistence-agent.js";
-import { SynchronizationAgent } from "./synchronization.js";
 import { DeduplicationAgent } from "./deduplication.js";
+import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 
 export interface WorkflowDefinition {
   name: string;
@@ -67,11 +67,16 @@ export class CoordinatorAgent {
   private agents: Map<string, any> = new Map();
   private running: boolean = true;
   private repositoryPath: string;
-  
+  private graphDB: GraphDatabaseAdapter;
+
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
+    this.graphDB = new GraphDatabaseAdapter();
     this.initializeWorkflows();
-    this.initializeAgents();
+    // Initialize agents asynchronously (will be awaited in executeWorkflow if needed)
+    this.initializeAgents().catch(error => {
+      log("Failed to initialize agents in constructor", "error", error);
+    });
     this.startBackgroundMonitor();
   }
 
@@ -322,50 +327,54 @@ export class CoordinatorAgent {
     log(`Initialized ${workflows.length} workflows`, "info");
   }
 
-  private initializeAgents(): void {
+  private async initializeAgents(): Promise<void> {
     try {
-      log("Initializing 8-agent semantic analysis system", "info");
-      
+      log("Initializing 8-agent semantic analysis system with GraphDB", "info");
+
+      // Initialize the graph database adapter
+      await this.graphDB.initialize();
+      log("GraphDB initialized successfully", "info");
+
       // Core workflow agents
       const gitHistoryAgent = new GitHistoryAgent();
       this.agents.set("git_history", gitHistoryAgent);
-      
+
       const vibeHistoryAgent = new VibeHistoryAgent();
       this.agents.set("vibe_history", vibeHistoryAgent);
-      
+
       const semanticAnalysisAgent = new SemanticAnalysisAgent();
       this.agents.set("semantic_analysis", semanticAnalysisAgent);
-      
+
       const webSearchAgent = new WebSearchAgent();
       this.agents.set("web_search", webSearchAgent);
-      
+
       const insightGenerationAgent = new InsightGenerationAgent(this.repositoryPath);
       this.agents.set("insight_generation", insightGenerationAgent);
-      
+
       const observationGenerationAgent = new ObservationGenerationAgent();
       this.agents.set("observation_generation", observationGenerationAgent);
-      
+
       const qualityAssuranceAgent = new QualityAssuranceAgent();
       this.agents.set("quality_assurance", qualityAssuranceAgent);
-      
-      const persistenceAgent = new PersistenceAgent();
+
+      // Initialize PersistenceAgent with GraphDB adapter
+      const persistenceAgent = new PersistenceAgent(this.repositoryPath, this.graphDB);
       this.agents.set("persistence", persistenceAgent);
-      
-      // Supporting agents
-      const syncAgent = new SynchronizationAgent();
-      this.agents.set("synchronization", syncAgent);
-      
+
+      // SynchronizationAgent REMOVED - GraphDatabaseService handles persistence automatically
+      // Direct persistence to Graphology+LevelDB via PersistenceAgent
+
       const dedupAgent = new DeduplicationAgent();
       this.agents.set("deduplication", dedupAgent);
-      
+
       // Register other agents with deduplication for access to knowledge graph
       dedupAgent.registerAgent("knowledge_graph", persistenceAgent);
       dedupAgent.registerAgent("persistence", persistenceAgent);
-      
+
       log(`Initialized ${this.agents.size} agents`, "info", {
         agents: Array.from(this.agents.keys())
       });
-      
+
     } catch (error) {
       log("Failed to initialize agents", "error", error);
       throw error;

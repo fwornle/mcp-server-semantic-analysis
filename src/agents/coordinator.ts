@@ -359,6 +359,7 @@ export class CoordinatorAgent {
 
       // Initialize PersistenceAgent with GraphDB adapter
       const persistenceAgent = new PersistenceAgent(this.repositoryPath, this.graphDB);
+      await persistenceAgent.initializeOntology();
       this.agents.set("persistence", persistenceAgent);
 
       // SynchronizationAgent REMOVED - GraphDatabaseService handles persistence automatically

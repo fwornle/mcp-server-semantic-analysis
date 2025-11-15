@@ -492,6 +492,7 @@ async function handleCreateUkbEntity(args: any): Promise<any> {
   });
   
   const knowledgeManager = new PersistenceAgent();
+  await knowledgeManager.initializeOntology();
   const result = await knowledgeManager.createUkbEntity({
     name: entity_name,
     type: entity_type,

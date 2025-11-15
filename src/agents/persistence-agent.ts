@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
+import { createOntologySystem, type OntologySystem } from '../../../../src/ontology/index.js';
 
 export interface PersistenceResult {
   success: boolean;
@@ -103,23 +104,179 @@ export interface SharedMemoryStructure {
   };
 }
 
+export interface PersistenceAgentConfig {
+  enableOntology?: boolean;
+  ontologyTeam?: string;
+  ontologyUpperPath?: string;
+  ontologyLowerPath?: string;
+  ontologyMinConfidence?: number;
+}
+
 export class PersistenceAgent {
   private repositoryPath: string;
   private sharedMemoryPath: string;
   private insightsDir: string;
   private graphDB: GraphDatabaseAdapter | null;
+  private ontologySystem: OntologySystem | null = null;
+  private config: PersistenceAgentConfig;
 
-  constructor(repositoryPath: string = '.', graphDB?: GraphDatabaseAdapter) {
+  constructor(repositoryPath: string = '.', graphDB?: GraphDatabaseAdapter, config?: PersistenceAgentConfig) {
     this.repositoryPath = repositoryPath;
     this.sharedMemoryPath = path.join(repositoryPath, 'shared-memory-coding.json');
     this.insightsDir = path.join(repositoryPath, 'knowledge-management', 'insights');
     this.graphDB = graphDB || null;
+    this.config = {
+      enableOntology: config?.enableOntology ?? true,
+      ontologyTeam: config?.ontologyTeam || 'coding',
+      ontologyUpperPath: config?.ontologyUpperPath || path.join(repositoryPath, '.data', 'ontologies', 'upper', 'cluster-reprocessing-ontology.json'),
+      ontologyLowerPath: config?.ontologyLowerPath || path.join(repositoryPath, '.data', 'ontologies', 'lower', 'coding-ontology.json'),
+      ontologyMinConfidence: config?.ontologyMinConfidence || 0.7
+    };
     this.ensureDirectories();
 
     if (!this.graphDB) {
       log('PersistenceAgent initialized WITHOUT GraphDB - will fall back to JSON file writes', 'warning');
     } else {
       log('PersistenceAgent initialized WITH GraphDB - will use Graphology+LevelDB persistence', 'info');
+    }
+
+    if (this.config.enableOntology) {
+      log('PersistenceAgent: Ontology classification is ENABLED', 'info', {
+        team: this.config.ontologyTeam,
+        minConfidence: this.config.ontologyMinConfidence
+      });
+    } else {
+      log('PersistenceAgent: Ontology classification is DISABLED', 'warning');
+    }
+  }
+
+  /**
+   * Initialize the ontology system asynchronously
+   * Must be called after construction before using classification
+   */
+  async initializeOntology(): Promise<void> {
+    if (!this.config.enableOntology) {
+      log('Ontology disabled, skipping initialization', 'info');
+      return;
+    }
+
+    try {
+      log('Initializing ontology system', 'info', {
+        upperPath: this.config.ontologyUpperPath,
+        lowerPath: this.config.ontologyLowerPath
+      });
+
+      this.ontologySystem = await createOntologySystem({
+        enabled: true,
+        team: this.config.ontologyTeam,
+        upperOntologyPath: this.config.ontologyUpperPath,
+        lowerOntologyPath: this.config.ontologyLowerPath,
+        validation: { mode: 'lenient' },
+        classification: {
+          enableLLM: false,  // Start with heuristics only for performance
+          enableHeuristics: true,
+          minConfidence: this.config.ontologyMinConfidence
+        },
+        caching: { enabled: true, maxEntries: 100 }
+      });
+
+      log('Ontology system initialized successfully', 'success', {
+        team: this.config.ontologyTeam
+      });
+    } catch (error) {
+      log('Failed to initialize ontology system', 'error', error);
+      this.ontologySystem = null;
+      // Don't throw - fall back to unclassified entities
+    }
+  }
+
+  /**
+   * Classify an entity using the ontology system
+   * Returns the classified entity type or falls back to 'TransferablePattern'
+   *
+   * @param entityName - The name/title of the entity
+   * @param entityContent - The content/observations to classify
+   * @returns Classified entity type and metadata
+   */
+  private async classifyEntity(entityName: string, entityContent: string): Promise<{
+    entityType: string;
+    confidence: number;
+    method: string;
+    ontologyMetadata?: any;
+  }> {
+    // If ontology is disabled or not initialized, use default type
+    if (!this.config.enableOntology || !this.ontologySystem) {
+      log('Ontology classification unavailable, using default type', 'debug', {
+        entityName,
+        reason: !this.config.enableOntology ? 'disabled' : 'not initialized'
+      });
+      return {
+        entityType: 'TransferablePattern',
+        confidence: 0,
+        method: 'fallback'
+      };
+    }
+
+    try {
+      // Prepare classification text (combine name and content)
+      const classificationText = `${entityName}\n\n${entityContent}`;
+
+      log('Classifying entity with ontology system', 'debug', {
+        entityName,
+        team: this.config.ontologyTeam,
+        textLength: classificationText.length
+      });
+
+      // Perform classification
+      const classification = await this.ontologySystem.classifier.classify(classificationText, {
+        team: this.config.ontologyTeam,
+        enableHeuristics: true,
+        minConfidence: this.config.ontologyMinConfidence
+      });
+
+      if (classification && classification.confidence >= this.config.ontologyMinConfidence!) {
+        log('Entity classified successfully', 'info', {
+          entityName,
+          entityType: classification.entityClass,
+          confidence: classification.confidence,
+          method: classification.method
+        });
+
+        return {
+          entityType: classification.entityClass,
+          confidence: classification.confidence,
+          method: classification.method || 'ontology',
+          ontologyMetadata: {
+            ontologyName: classification.ontology,
+            classificationMethod: classification.method,
+            confidence: classification.confidence,
+            reasoning: classification.reasoning
+          }
+        };
+      } else {
+        log('Classification confidence below threshold, using fallback', 'warning', {
+          entityName,
+          confidence: classification?.confidence || 0,
+          threshold: this.config.ontologyMinConfidence
+        });
+
+        return {
+          entityType: 'TransferablePattern',
+          confidence: classification?.confidence || 0,
+          method: 'fallback_low_confidence'
+        };
+      }
+    } catch (error) {
+      log('Entity classification failed, using fallback', 'error', {
+        entityName,
+        error: error instanceof Error ? error.message : String(error)
+      });
+
+      return {
+        entityType: 'TransferablePattern',
+        confidence: 0,
+        method: 'fallback_error'
+      };
     }
   }
 
@@ -601,23 +758,46 @@ export class PersistenceAgent {
     }
 
     try {
+      // Prepare entity content for classification
+      const observationsText = entity.observations
+        .map(obs => typeof obs === 'string' ? obs : obs.content)
+        .join('\n');
+      const entityContent = `${observationsText}`;
+
+      // Classify the entity using the ontology system
+      const classification = await this.classifyEntity(entity.name, entityContent);
+
+      // Use classified entity type (or fallback to original if not classified)
+      const entityType = classification.entityType || entity.entityType || 'TransferablePattern';
+
+      // Enhance metadata with ontology classification info
+      const enhancedMetadata = {
+        ...entity.metadata,
+        ontology: classification.ontologyMetadata,
+        classificationConfidence: classification.confidence,
+        classificationMethod: classification.method
+      };
+
       const graphEntity = {
         name: entity.name,
-        entityType: entity.entityType,
+        entityType: entityType,
         observations: entity.observations,
         confidence: 1.0,
         source: entity.metadata.source || 'mcp-semantic-analysis',
         significance: entity.significance,
         relationships: entity.relationships,
-        metadata: entity.metadata,
+        metadata: enhancedMetadata,
         quick_reference: entity.quick_reference
       };
 
       const nodeId = await this.graphDB.storeEntity(graphEntity);
 
-      log('Entity stored to graph database', 'info', {
+      log('Entity stored to graph database with ontology classification', 'info', {
         entityName: entity.name,
-        nodeId
+        nodeId,
+        entityType: entityType,
+        classificationConfidence: classification.confidence,
+        classificationMethod: classification.method
       });
 
       return nodeId;

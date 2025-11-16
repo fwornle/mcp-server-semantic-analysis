@@ -110,6 +110,8 @@ export interface PersistenceAgentConfig {
   ontologyUpperPath?: string;
   ontologyLowerPath?: string;
   ontologyMinConfidence?: number;
+  enableValidation?: boolean;
+  validationMode?: 'strict' | 'lenient' | 'disabled';
 }
 
 export class PersistenceAgent {
@@ -130,7 +132,9 @@ export class PersistenceAgent {
       ontologyTeam: config?.ontologyTeam || 'coding',
       ontologyUpperPath: config?.ontologyUpperPath || path.join(repositoryPath, '.data', 'ontologies', 'upper', 'cluster-reprocessing-ontology.json'),
       ontologyLowerPath: config?.ontologyLowerPath || path.join(repositoryPath, '.data', 'ontologies', 'lower', 'coding-ontology.json'),
-      ontologyMinConfidence: config?.ontologyMinConfidence || 0.7
+      ontologyMinConfidence: config?.ontologyMinConfidence || 0.7,
+      enableValidation: config?.enableValidation ?? false,
+      validationMode: config?.validationMode || 'lenient'
     };
     this.ensureDirectories();
 
@@ -276,6 +280,77 @@ export class PersistenceAgent {
         entityType: 'TransferablePattern',
         confidence: 0,
         method: 'fallback_error'
+      };
+    }
+  }
+
+  /**
+   * Validate an entity against the ontology schema
+   *
+   * @param entityType - The classified entity type
+   * @param entityData - The entity data to validate
+   * @returns Validation result with errors and warnings
+   */
+  private validateEntity(entityType: string, entityData: Record<string, any>): {
+    valid: boolean;
+    errors: string[];
+    warnings: string[];
+  } {
+    // Validation disabled or ontology not available
+    if (!this.config.enableValidation || !this.ontologySystem || this.config.validationMode === 'disabled') {
+      return { valid: true, errors: [], warnings: [] };
+    }
+
+    // Skip validation for TransferablePattern (generic fallback type)
+    if (entityType === 'TransferablePattern') {
+      return { valid: true, errors: [], warnings: [] };
+    }
+
+    try {
+      const result = this.ontologySystem.validator.validate(
+        entityType,
+        entityData,
+        {
+          mode: this.config.validationMode || 'lenient',
+          team: this.config.ontologyTeam,
+          allowUnknownProperties: true,
+          failFast: false
+        }
+      );
+
+      const errors = result.errors.map(e => `${e.path}: ${e.message}`);
+      const warnings = result.warnings.map(w => `${w.path}: ${w.message}`);
+
+      if (!result.valid) {
+        log('Entity validation failed', 'warning', {
+          entityType,
+          errorCount: errors.length,
+          warningCount: warnings.length,
+          mode: this.config.validationMode
+        });
+      } else if (warnings.length > 0) {
+        log('Entity validation passed with warnings', 'info', {
+          entityType,
+          warningCount: warnings.length
+        });
+      }
+
+      return {
+        valid: result.valid,
+        errors,
+        warnings
+      };
+    } catch (error) {
+      log('Validation error', 'error', {
+        entityType,
+        error: error instanceof Error ? error.message : String(error)
+      });
+
+      // In lenient mode, validation errors don't block persistence
+      return {
+        valid: this.config.validationMode !== 'strict',
+        errors: [`Validation error: ${error instanceof Error ? error.message : String(error)}`],
+        warnings: []
       };
     }
   }
@@ -770,12 +845,41 @@ export class PersistenceAgent {
       // Use classified entity type (or fallback to original if not classified)
       const entityType = classification.entityType || entity.entityType || 'TransferablePattern';
 
-      // Enhance metadata with ontology classification info
+      // Prepare entity data for validation
+      const entityDataForValidation = {
+        name: entity.name,
+        observations: entity.observations,
+        significance: entity.significance,
+        relationships: entity.relationships,
+        metadata: entity.metadata
+      };
+
+      // Validate the entity against ontology schema
+      const validation = this.validateEntity(entityType, entityDataForValidation);
+
+      // In strict mode, fail if validation fails
+      if (!validation.valid && this.config.validationMode === 'strict') {
+        const errorMessage = `Entity validation failed in strict mode: ${validation.errors.join(', ')}`;
+        log(errorMessage, 'error', {
+          entityName: entity.name,
+          entityType,
+          errors: validation.errors
+        });
+        throw new Error(errorMessage);
+      }
+
+      // Enhance metadata with both classification and validation info
       const enhancedMetadata = {
         ...entity.metadata,
         ontology: classification.ontologyMetadata,
         classificationConfidence: classification.confidence,
-        classificationMethod: classification.method
+        classificationMethod: classification.method,
+        validation: {
+          valid: validation.valid,
+          errors: validation.errors,
+          warnings: validation.warnings,
+          mode: this.config.validationMode
+        }
       };
 
       const graphEntity = {
@@ -792,12 +896,14 @@ export class PersistenceAgent {
 
       const nodeId = await this.graphDB.storeEntity(graphEntity);
 
-      log('Entity stored to graph database with ontology classification', 'info', {
+      log('Entity stored to graph database with ontology classification and validation', 'info', {
         entityName: entity.name,
         nodeId,
         entityType: entityType,
         classificationConfidence: classification.confidence,
-        classificationMethod: classification.method
+        classificationMethod: classification.method,
+        validationValid: validation.valid,
+        validationWarnings: validation.warnings.length
       });
 
       return nodeId;

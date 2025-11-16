@@ -128,7 +128,8 @@ async function testOntologyIntegration() {
           created_at: new Date().toISOString(),
           last_updated: new Date().toISOString(),
           source: 'ontology-integration-test',
-          team: 'coding'
+          team: 'coding',
+          isTestData: true  // Mark as test data for cleanup
         }
       };
 
@@ -219,6 +220,31 @@ async function testOntologyIntegration() {
       log('  Could not retrieve sample entity for metadata validation', 'error');
       testsFailed++;
     }
+
+    // Cleanup: Delete test entities
+    section('Cleanup: Deleting Test Entities');
+
+    const testEntityNames = ['TestLSLSession', 'TestMCPServer', 'TestGraphDatabase', 'GenericPattern'];
+    for (const entityName of testEntityNames) {
+      try {
+        const entities = await graphDB.queryEntities({ namePattern: entityName });
+        if (entities && entities.length > 0) {
+          // Delete each matching entity
+          for (const entity of entities) {
+            if (entity.metadata?.isTestData) {
+              await graphDB.deleteEntity(entity.id);
+              log(`Deleted test entity: ${entity.name}`, 'success');
+            }
+          }
+        }
+      } catch (error) {
+        log(`Failed to delete test entity ${entityName}: ${error}`, 'warning');
+      }
+    }
+
+    // Close GraphDB
+    await graphDB.close();
+    log('GraphDB closed', 'success');
 
     // Test Summary
     section('Test Summary');

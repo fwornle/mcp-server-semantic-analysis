@@ -7,18 +7,17 @@
     "esModuleInterop": true,
     "allowJs": true,
     "outDir": "./dist",
-    "rootDir": "./src",
     "strict": true,
     "declaration": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "../../src/ontology/**/*"
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "../../src/**/*"
+    "dist"
   ]
 }

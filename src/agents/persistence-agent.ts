@@ -173,7 +173,7 @@ export class PersistenceAgent {
       this.ontologySystem = await createOntologySystem({
         enabled: true,
         team: this.config.ontologyTeam,
-        upperOntologyPath: this.config.ontologyUpperPath,
+        upperOntologyPath: this.config.ontologyUpperPath || '',
         lowerOntologyPath: this.config.ontologyLowerPath,
         validation: { mode: 'lenient' },
         classification: {
@@ -184,7 +184,7 @@ export class PersistenceAgent {
         caching: { enabled: true, maxEntries: 100 }
       });
 
-      log('Ontology system initialized successfully', 'success', {
+      log('Ontology system initialized successfully', 'info', {
         team: this.config.ontologyTeam
       });
     } catch (error) {
@@ -253,8 +253,7 @@ export class PersistenceAgent {
           ontologyMetadata: {
             ontologyName: classification.ontology,
             classificationMethod: classification.method,
-            confidence: classification.confidence,
-            reasoning: classification.reasoning
+            confidence: classification.confidence
           }
         };
       } else {
@@ -319,7 +318,7 @@ export class PersistenceAgent {
       );
 
       const errors = result.errors.map(e => `${e.path}: ${e.message}`);
-      const warnings = result.warnings.map(w => `${w.path}: ${w.message}`);
+      const warnings = (result.warnings || []).map(w => `${w.path}: ${w.message}`);
 
       if (!result.valid) {
         log('Entity validation failed', 'warning', {
@@ -882,6 +881,36 @@ export class PersistenceAgent {
         }
       };
 
+      // Create automatic relationships for graph connectivity
+      const autoRelationships = [...(entity.relationships || [])];
+
+      // Add relationship to CollectiveKnowledge if not already present
+      const hasCollectiveKnowledgeRel = autoRelationships.some(r =>
+        r.to === 'CollectiveKnowledge'
+      );
+      if (!hasCollectiveKnowledgeRel) {
+        autoRelationships.push({
+          from: entity.name,
+          to: 'CollectiveKnowledge',
+          relationType: 'contributes_to'
+        });
+      }
+
+      // Add project relationship if team metadata exists
+      if (entity.metadata?.team) {
+        const projectName = `${entity.metadata.team}Project`;
+        const hasProjectRel = autoRelationships.some(r =>
+          r.from === projectName && r.to === entity.name
+        );
+        if (!hasProjectRel) {
+          autoRelationships.push({
+            from: projectName,
+            to: entity.name,
+            relationType: 'contains'
+          });
+        }
+      }
+
       const graphEntity = {
         name: entity.name,
         entityType: entityType,
@@ -889,7 +918,7 @@ export class PersistenceAgent {
         confidence: 1.0,
         source: entity.metadata.source || 'mcp-semantic-analysis',
         significance: entity.significance,
-        relationships: entity.relationships,
+        relationships: autoRelationships,
         metadata: enhancedMetadata,
         quick_reference: entity.quick_reference
       };

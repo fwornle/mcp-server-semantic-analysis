@@ -383,6 +383,12 @@ export class CoordinatorAgent {
   }
 
   async executeWorkflow(workflowName: string, parameters: Record<string, any> = {}): Promise<WorkflowExecution> {
+    // Ensure agents are initialized before executing workflow
+    if (this.agents.size === 0) {
+      log("Agents not initialized, initializing now...", "warning");
+      await this.initializeAgents();
+    }
+
     const workflow = this.workflows.get(workflowName);
     if (!workflow) {
       throw new Error(`Unknown workflow: ${workflowName}`);

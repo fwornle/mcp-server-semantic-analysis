@@ -421,8 +421,8 @@ For each pattern found, provide:
     try {
       log("Making Anthropic API call", "info");
       const response = await this.anthropicClient.messages.create({
-        model: "claude-3-5-sonnet-20241022",
-        max_tokens: 4000,
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
         messages: [{ role: "user", content: prompt }],
       });
       

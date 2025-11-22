@@ -169,7 +169,7 @@ export class SemanticAnalysisAgent {
   }
 
   private extractFilesFromGitHistory(
-    gitAnalysis: any, 
+    gitAnalysis: any,
     options: { maxFiles?: number; includePatterns?: string[]; excludePatterns?: string[] }
   ): string[] {
     const {
@@ -179,6 +179,20 @@ export class SemanticAnalysisAgent {
     } = options;
 
     const filesSet = new Set<string>();
+
+    // DEBUG: Log what we received
+    log('File extraction - received gitAnalysis', 'info', {
+      hasGitAnalysis: !!gitAnalysis,
+      gitAnalysisType: typeof gitAnalysis,
+      hasCommits: !!gitAnalysis?.commits,
+      commitsLength: gitAnalysis?.commits?.length || 0,
+      gitAnalysisKeys: gitAnalysis ? Object.keys(gitAnalysis) : [],
+      firstCommitSample: gitAnalysis?.commits?.[0] ? {
+        hash: gitAnalysis.commits[0].hash,
+        hasFiles: !!gitAnalysis.commits[0].files,
+        filesCount: gitAnalysis.commits[0].files?.length || 0
+      } : null
+    });
 
     // Extract files from commits
     if (gitAnalysis?.commits) {
@@ -674,8 +688,8 @@ export class SemanticAnalysisAgent {
         log(`Calling Anthropic API (attempt ${attempt + 1}/${maxRetries})`, 'info');
         
         const result = await this.anthropicClient!.messages.create({
-          model: "claude-3-5-sonnet-20241022",
-          max_tokens: 2000,
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 4096,
           messages: [{ role: "user", content: prompt }]
         });
         

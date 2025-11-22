@@ -4,10 +4,18 @@
  * Adapter for the main coding system's GraphDatabaseService.
  * Provides type-safe interface for MCP server agents to interact with
  * the central Graphology + LevelDB knowledge graph.
+ *
+ * LOCK-FREE ARCHITECTURE:
+ * - Uses VKB HTTP API when server is running (lock-free access)
+ * - Falls back to direct GraphDatabaseService when server is stopped
+ * - Prevents LevelDB lock conflicts
  */
 
 import { GraphDatabaseService } from '../../../../src/knowledge-management/GraphDatabaseService.js';
 import { log } from '../logging.js';
+
+// Dynamic import to avoid TypeScript compilation issues
+let VkbApiClient: any;
 
 export interface GraphEntity {
   name: string;
@@ -31,7 +39,9 @@ export interface GraphStorageOptions {
 
 export class GraphDatabaseAdapter {
   private graphDB: GraphDatabaseService | null = null;
+  private apiClient: any = null;
   private isInitialized = false;
+  private useApi = false;
   private readonly dbPath: string;
   private readonly team: string;
 
@@ -42,6 +52,7 @@ export class GraphDatabaseAdapter {
 
   /**
    * Initialize the graph database connection
+   * Uses intelligent routing: VKB API if available, direct access otherwise
    */
   async initialize(): Promise<void> {
     if (this.isInitialized) {
@@ -50,19 +61,39 @@ export class GraphDatabaseAdapter {
     }
 
     try {
-      // Import is dynamic because GraphDatabaseService is JavaScript
-      this.graphDB = new GraphDatabaseService({
-        dbPath: this.dbPath,
-        config: {
-          autoPersist: true, // Enable auto-persistence to LevelDB
-          persistIntervalMs: 30000 // Persist every 30 seconds
-        }
-      });
+      // Dynamically import VkbApiClient to avoid TS compilation issues
+      if (!VkbApiClient) {
+        const module = await import('../../../../lib/ukb-unified/core/VkbApiClient.js');
+        VkbApiClient = module.VkbApiClient;
+      }
 
-      await this.graphDB.initialize();
+      // Initialize API client
+      this.apiClient = new VkbApiClient({ debug: false });
+
+      // Check if VKB server is available
+      this.useApi = await this.apiClient.isServerAvailable();
+
+      if (this.useApi) {
+        log('GraphDatabaseAdapter using VKB API (server is running)', 'info');
+      } else {
+        log('GraphDatabaseAdapter using direct access (server is stopped)', 'info');
+
+        // Import is dynamic because GraphDatabaseService is JavaScript
+        this.graphDB = new GraphDatabaseService({
+          dbPath: this.dbPath,
+          config: {
+            autoPersist: true, // Enable auto-persistence to LevelDB
+            persistIntervalMs: 30000 // Persist every 30 seconds
+          }
+        });
+
+        await this.graphDB.initialize();
+      }
+
       this.isInitialized = true;
 
       log('GraphDatabaseAdapter initialized successfully', 'info', {
+        mode: this.useApi ? 'API' : 'Direct',
         dbPath: this.dbPath,
         team: this.team
       });
@@ -74,9 +105,10 @@ export class GraphDatabaseAdapter {
 
   /**
    * Store an entity in the graph database
+   * Uses intelligent routing: API or direct access
    */
   async storeEntity(entity: GraphEntity): Promise<string> {
-    if (!this.isInitialized || !this.graphDB) {
+    if (!this.isInitialized) {
       throw new Error('GraphDatabaseAdapter not initialized. Call initialize() first.');
     }
 
@@ -87,9 +119,25 @@ export class GraphDatabaseAdapter {
         entityType: entity.entityType || 'Unknown'
       };
 
-      const nodeId = await this.graphDB.storeEntity(entityToStore, { team: this.team });
+      let nodeId: string;
+
+      if (this.useApi) {
+        // Use VKB API
+        const result = await this.apiClient.createEntity({
+          ...entityToStore,
+          team: this.team
+        });
+        nodeId = result.nodeId || entity.name;
+      } else {
+        // Use direct database access
+        if (!this.graphDB) {
+          throw new Error('GraphDatabaseService not available');
+        }
+        nodeId = await this.graphDB.storeEntity(entityToStore, { team: this.team });
+      }
 
       log('Entity stored in graph database', 'info', {
+        mode: this.useApi ? 'API' : 'Direct',
         nodeId,
         entityName: entity.name,
         entityType: entityToStore.entityType
@@ -111,25 +159,41 @@ export class GraphDatabaseAdapter {
 
   /**
    * Store a relationship in the graph database
+   * Uses intelligent routing: API or direct access
    */
   async storeRelationship(relationship: {
     from: string;
     to: string;
     relationType: string;
   }): Promise<void> {
-    if (!this.isInitialized || !this.graphDB) {
+    if (!this.isInitialized) {
       throw new Error('GraphDatabaseAdapter not initialized. Call initialize() first.');
     }
 
     try {
-      await this.graphDB.storeRelationship(
-        relationship.from,
-        relationship.to,
-        relationship.relationType,
-        { team: this.team }
-      );
+      if (this.useApi) {
+        // Use VKB API
+        await this.apiClient.createRelation({
+          from: relationship.from,
+          to: relationship.to,
+          relationType: relationship.relationType,
+          team: this.team
+        });
+      } else {
+        // Use direct database access
+        if (!this.graphDB) {
+          throw new Error('GraphDatabaseService not available');
+        }
+        await this.graphDB.storeRelationship(
+          relationship.from,
+          relationship.to,
+          relationship.relationType,
+          { team: this.team }
+        );
+      }
 
       log('Relationship stored in graph database', 'debug', {
+        mode: this.useApi ? 'API' : 'Direct',
         from: relationship.from,
         to: relationship.to,
         relationType: relationship.relationType

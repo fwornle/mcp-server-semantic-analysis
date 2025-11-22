@@ -14,7 +14,8 @@
   },
   "include": [
     "src/**/*",
-    "../../src/ontology/**/*"
+    "../../src/ontology/**/*",
+    "../../src/knowledge-management/**/*"
   ],
   "exclude": [
     "node_modules",

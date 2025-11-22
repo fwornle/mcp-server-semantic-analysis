@@ -1216,7 +1216,7 @@ export class PersistenceAgent {
         };
 
         // CRITICAL: Validate insight file exists before creating entity (prevents phantom nodes)
-        const insightFilePath = path.join(process.cwd(), 'knowledge-management', 'insights', `${entity.name}.md`);
+        const insightFilePath = path.join(this.repositoryPath, 'knowledge-management', 'insights', `${entity.name}.md`);
         const insightFileExists = fs.existsSync(insightFilePath);
         
         if (!insightFileExists) {
@@ -1239,7 +1239,7 @@ export class PersistenceAgent {
       }
 
       // Process additional insight files that may have been generated
-      const insightsDir = path.join(process.cwd(), 'knowledge-management', 'insights');
+      const insightsDir = path.join(this.repositoryPath, 'knowledge-management', 'insights');
       if (fs.existsSync(insightsDir)) {
         // Look for recently generated insight files (within last 5 minutes)
         const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
@@ -1338,7 +1338,7 @@ export class PersistenceAgent {
         };
 
         // CRITICAL: Validate insight file exists before creating git entity
-        const gitInsightPath = path.join(process.cwd(), 'knowledge-management', 'insights', `${gitEntity.name}.md`);
+        const gitInsightPath = path.join(this.repositoryPath, 'knowledge-management', 'insights', `${gitEntity.name}.md`);
         const gitFileExists = fs.existsSync(gitInsightPath);
         
         if (!gitFileExists) {
@@ -1600,7 +1600,7 @@ export class PersistenceAgent {
       }
 
       // CRITICAL: Validate insight file exists before creating UKB entity
-      const ukbInsightPath = path.join(process.cwd(), 'knowledge-management', 'insights', `${entity.name}.md`);
+      const ukbInsightPath = path.join(this.repositoryPath, 'knowledge-management', 'insights', `${entity.name}.md`);
       const ukbFileExists = fs.existsSync(ukbInsightPath);
       
       if (!ukbFileExists) {

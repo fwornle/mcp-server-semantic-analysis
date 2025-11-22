@@ -246,6 +246,8 @@ export class CoordinatorAgent {
             agent: "semantic_analysis",
             action: "analyzeSemantics",
             parameters: {
+              git_analysis_results: "{{analyze_recent_changes.result}}",
+              vibe_analysis_results: "{{analyze_recent_vibes.result}}",
               incremental: true
             },
             dependencies: ["analyze_recent_changes", "analyze_recent_vibes"],
@@ -256,6 +258,9 @@ export class CoordinatorAgent {
             agent: "observation_generation",
             action: "generateStructuredObservations",
             parameters: {
+              semantic_analysis_results: "{{analyze_semantics.result}}",
+              git_analysis_results: "{{analyze_recent_changes.result}}",
+              vibe_analysis_results: "{{analyze_recent_vibes.result}}",
               incremental: true
             },
             dependencies: ["analyze_semantics"],
@@ -265,7 +270,14 @@ export class CoordinatorAgent {
             name: "persist_incremental",
             agent: "persistence",
             action: "persistAnalysisResults",
-            parameters: {},
+            parameters: {
+              workflow_results: {
+                git_history: "{{analyze_recent_changes.result}}",
+                vibe_history: "{{analyze_recent_vibes.result}}",
+                semantic_analysis: "{{analyze_semantics.result}}",
+                observations: "{{generate_observations.result}}"
+              }
+            },
             dependencies: ["generate_observations"],
             timeout: 30,
           },

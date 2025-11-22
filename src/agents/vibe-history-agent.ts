@@ -275,15 +275,29 @@ export class VibeHistoryAgent {
   }
 
   private extractSessionMetadata(filename: string, content: string): any {
-    // Parse filename: YYYY-MM-DD_HH-MM-SS_project-session.md
-    const filenameMatch = filename.match(/^(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})_(.+)-session\.md$/);
-    if (!filenameMatch) {
+    // Parse filename: YYYY-MM-DD_HHMM-HHMM_hash.md (LSL format)
+    // Also support legacy format: YYYY-MM-DD_HH-MM-SS_project-session.md
+    const lslMatch = filename.match(/^(\d{4}-\d{2}-\d{2})_(\d{4})-(\d{4})_(.+)\.md$/);
+    const legacyMatch = filename.match(/^(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})_(.+)-session\.md$/);
+
+    let datePart, startTime, endTime, identifier, timestamp;
+
+    if (lslMatch) {
+      // LSL format: YYYY-MM-DD_HHMM-HHMM_hash.md
+      [, datePart, startTime, endTime, identifier] = lslMatch;
+      // Convert HHMM to HH:MM
+      const startHHMM = `${startTime.slice(0, 2)}:${startTime.slice(2)}`;
+      timestamp = new Date(`${datePart}T${startHHMM}:00`);
+    } else if (legacyMatch) {
+      // Legacy format: YYYY-MM-DD_HH-MM-SS_project-session.md
+      const timePart = legacyMatch[2];
+      datePart = legacyMatch[1];
+      identifier = legacyMatch[3];
+      timestamp = new Date(`${datePart}T${timePart.replace(/-/g, ':')}:00`);
+    } else {
       log(`Invalid session filename format: ${filename}`, 'warning');
       return null;
     }
-
-    const [, datePart, timePart, project] = filenameMatch;
-    const timestamp = new Date(`${datePart}T${timePart.replace(/-/g, ':')}:00`);
 
     // Extract metadata from content
     const sessionIdMatch = content.match(/\*\*Session ID:\*\* ([^\s\n]+)/);
@@ -294,7 +308,7 @@ export class VibeHistoryAgent {
 
     return {
       timestamp,
-      project: project.replace(/-/g, ' '),
+      project: identifier.replace(/_/g, ' ').replace(/-/g, ' '),
       sessionType: 'development',
       sessionId: sessionIdMatch?.[1],
       summary: summaryMatch?.[1],

@@ -380,6 +380,19 @@ export class PersistenceAgent {
     } else if (parameters.workflow_results) {
       // Called by coordinator with workflow_results wrapper
       const results = parameters.workflow_results;
+
+      // DEBUG: Log what we're receiving
+      log('Persistence received workflow_results', 'debug', {
+        hasWorkflowResults: !!parameters.workflow_results,
+        workflowResultsKeys: Object.keys(parameters.workflow_results || {}),
+        git_history_type: typeof results.git_history,
+        git_history_truthiness: !!results.git_history,
+        vibe_history_type: typeof results.vibe_history,
+        vibe_history_truthiness: !!results.vibe_history,
+        semantic_analysis_type: typeof results.semantic_analysis,
+        observations_type: typeof results.observations
+      });
+
       gitAnalysis = results.git_history;
       vibeAnalysis = results.vibe_history;
       semanticAnalysis = results.semantic_analysis;

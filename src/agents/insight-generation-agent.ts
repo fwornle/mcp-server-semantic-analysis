@@ -298,11 +298,6 @@ export class InsightGenerationAgent {
     const topPattern = patternCatalog?.patterns
       ?.sort((a: any, b: any) => b.significance - a.significance)?.[0];
       
-    // Clean the pattern name immediately at selection
-    if (topPattern?.name) {
-      topPattern.name = this.cleanCorruptedPatternName(topPattern.name);
-    }
-      
     FilenameTracer.trace('PATTERN_SELECTION', 'generateMeaningfulNameAndTitle',
       { 
         allPatterns: patternCatalog?.patterns?.map((p: any) => p.name),
@@ -319,34 +314,18 @@ export class InsightGenerationAgent {
         'Raw pattern name input'
       );
       
-      // Fix all known corruption patterns (case-insensitive)
-      const name = topPattern.name.toLowerCase();
-      if (name.includes('documentationupdates')) {
-        filename = 'DocumentationUpdatesPattern';
-        FilenameTracer.trace('CORRUPTION_FIX', 'generateMeaningfulNameAndTitle',
-          topPattern.name, filename
-        );
-      } else if (name.includes('configuration')) {
-        filename = 'ConfigurationPattern';
-        FilenameTracer.trace('CORRUPTION_FIX', 'generateMeaningfulNameAndTitle',
-          topPattern.name, filename
-        );
-      } else if (name.includes('testfile')) {
-        filename = 'TestFilePattern';
-        FilenameTracer.trace('CORRUPTION_FIX', 'generateMeaningfulNameAndTitle',
-          topPattern.name, filename
-        );
-      } else if (name.includes('bugfix')) {
-        filename = 'BugFixPattern';
-        FilenameTracer.trace('CORRUPTION_FIX', 'generateMeaningfulNameAndTitle',
-          topPattern.name, filename
-        );
-      } else {
-        filename = topPattern.name.replace(/\s+/g, '');
-        FilenameTracer.trace('SPACE_REMOVAL', 'generateMeaningfulNameAndTitle',
-          topPattern.name, filename
-        );
+      // Use actual pattern name directly (no hard-coded fallbacks)
+      // Remove spaces and ensure proper casing
+      filename = topPattern.name.replace(/\s+/g, '');
+
+      // Ensure it ends with 'Pattern' if not already present
+      if (!filename.endsWith('Pattern') && !filename.endsWith('Implementation')) {
+        filename += 'Pattern';
       }
+
+      FilenameTracer.trace('PATTERN_NAME_USED', 'generateMeaningfulNameAndTitle',
+        topPattern.name, filename
+      );
     } else {
       filename = 'SemanticAnalysisPattern';
       FilenameTracer.trace('FALLBACK', 'generateMeaningfulNameAndTitle',
@@ -383,24 +362,12 @@ export class InsightGenerationAgent {
       patternCatalog
     );
 
-    // Generate PlantUML diagrams with clean name  
+    // Generate PlantUML diagrams using actual pattern name
     FilenameTracer.trace('DIAGRAM_INPUT', 'generateInsightDocument',
-      name, 'Diagram name input'
+      name, 'Using pattern name directly for diagrams'
     );
-    
-    let cleanDiagramName = name;
-    if (name.includes('PatternDocumentationupdatespattern') || name.includes('documentationupdates')) {
-      cleanDiagramName = 'DocumentationUpdatesPattern';
-      FilenameTracer.trace('DIAGRAM_CORRUPTION_FIX', 'generateInsightDocument',
-        name, cleanDiagramName
-      );
-    }
-    
-    FilenameTracer.trace('DIAGRAM_FINAL', 'generateInsightDocument',
-      { originalName: name, cleanName: cleanDiagramName }, cleanDiagramName
-    );
-    
-    const diagrams = await this.generateAllDiagrams(cleanDiagramName, {
+
+    const diagrams = await this.generateAllDiagrams(name, {
       gitAnalysis,
       vibeAnalysis,
       semanticAnalysis,
@@ -434,26 +401,15 @@ export class InsightGenerationAgent {
       name, 'Filename for file write operation'
     );
     
-    let cleanName = name;
-    FilenameTracer.trace('FILE_ORIGINAL_NAME', 'generateInsightDocument',
-      name, 'Original name before cleaning'
+    // Use the pattern name directly (no corruption fixes needed)
+    FilenameTracer.trace('FILE_PATH_GENERATION', 'generateInsightDocument',
+      name, 'Using pattern name directly for file path'
     );
-    
-    if (name.includes('PatternDocumentationupdatespattern') || name.includes('documentationupdates')) {
-      cleanName = 'DocumentationUpdatesPattern';
-      FilenameTracer.trace('FILE_CORRUPTION_FIX', 'generateInsightDocument',
-        name, cleanName
-      );
-    } else {
-      FilenameTracer.trace('FILE_NO_CORRUPTION_DETECTED', 'generateInsightDocument',
-        name, 'No corruption patterns matched'
-      );
-    }
-    
-    const filePath = path.join(this.outputDir, `${cleanName}.md`);
-    
+
+    const filePath = path.join(this.outputDir, `${name}.md`);
+
     FilenameTracer.trace('FILE_PATH_FINAL', 'generateInsightDocument',
-      { name, cleanName, outputDir: this.outputDir }, filePath
+      { name, outputDir: this.outputDir }, filePath
     );
     
     debugger; // Breakpoint opportunity for file writing
@@ -479,14 +435,14 @@ export class InsightGenerationAgent {
     if (webResults) analysisTypes.push('web-research');
 
     return {
-      name: cleanName,  // Use cleanName instead of corrupted name
+      name,  // Use actual pattern name from analysis
       title,
       content,
       filePath,
       diagrams,
       metadata: {
         significance,
-        tags: ['semantic-analysis', 'comprehensive', ...analysisTypes],  
+        tags: ['semantic-analysis', 'comprehensive', ...analysisTypes],
         generatedAt: timestamp,
         analysisTypes,
         patternCount: patternCatalog.patterns.length
@@ -1989,10 +1945,40 @@ skinparam sequence {
 
   private extractThemeFromCommit(commit: any): string {
     const message = commit.message.toLowerCase();
-    if (message.includes('refactor')) return 'Refactoring';
-    if (message.includes('api')) return 'API Design';
-    if (message.includes('component')) return 'Component Architecture';
-    return 'General Architecture';
+
+    // Extract actual themes from commit messages based on common patterns
+    if (message.match(/\b(refactor|restructure|reorganize)\b/)) return 'Code Refactoring';
+    if (message.match(/\b(fix|bug|error|issue|resolve)\b/)) return 'Bug Fix';
+    if (message.match(/\b(test|spec|coverage)\b/)) return 'Test Coverage';
+    if (message.match(/\b(doc|documentation|readme|comment)\b/)) return 'Documentation';
+    if (message.match(/\b(config|configuration|setup|env)\b/)) return 'Configuration Management';
+    if (message.match(/\b(api|endpoint|route|controller)\b/)) return 'API Development';
+    if (message.match(/\b(component|ui|interface|view)\b/)) return 'Component Architecture';
+    if (message.match(/\b(database|schema|migration|model)\b/)) return 'Database Design';
+    if (message.match(/\b(performance|optimize|speed|cache)\b/)) return 'Performance Optimization';
+    if (message.match(/\b(security|auth|permission|access)\b/)) return 'Security Enhancement';
+    if (message.match(/\b(feature|add|implement|new)\b/)) return 'Feature Implementation';
+    if (message.match(/\b(typescript|type|interface)\b/)) return 'TypeScript Migration';
+    if (message.match(/\b(agent|mcp|workflow)\b/)) return 'Agent Architecture';
+
+    // Extract theme from conventional commit format (e.g., "feat:", "fix:", "chore:")
+    const conventionalMatch = message.match(/^(\w+)(?:\([^)]+\))?:/);
+    if (conventionalMatch) {
+      const type = conventionalMatch[1];
+      const typeMap: Record<string, string> = {
+        'feat': 'Feature Implementation',
+        'fix': 'Bug Fix',
+        'docs': 'Documentation',
+        'style': 'Code Style',
+        'refactor': 'Code Refactoring',
+        'test': 'Test Coverage',
+        'chore': 'Maintenance',
+        'perf': 'Performance Optimization'
+      };
+      if (typeMap[type]) return typeMap[type];
+    }
+
+    return 'Architecture Evolution';
   }
 
   private createArchitecturalPattern(theme: string, commits: any[]): IdentifiedPattern | null {
@@ -2040,28 +2026,9 @@ skinparam sequence {
   }
 
   /**
-   * Clean corrupted pattern names at the source
+   * Removed: cleanCorruptedPatternName
+   * Hard-coded pattern name fixes removed - now using actual pattern names from analysis
    */
-  private cleanCorruptedPatternName(patternName: string): string {
-    const name = patternName.toLowerCase();
-    
-    // Fix known corruptions immediately
-    if (name.includes('documentationupdates')) {
-      return 'DocumentationUpdatesPattern';
-    }
-    if (name.includes('configuration')) {
-      return 'ConfigurationPattern';
-    }
-    if (name.includes('testfile')) {
-      return 'TestFilePattern';
-    }
-    if (name.includes('bugfix')) {
-      return 'BugFixPattern';
-    }
-    
-    // If no corruption detected, return as-is
-    return patternName;
-  }
 
   /**
    * Generate meaningful pattern names instead of corrupted concatenations

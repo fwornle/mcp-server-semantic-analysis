@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface QualityAssuranceReport {
   stepName: string;
@@ -51,10 +52,12 @@ export interface ValidationRules {
 export class QualityAssuranceAgent {
   private rules: ValidationRules;
   private repositoryPath: string;
+  private semanticAnalyzer: SemanticAnalyzer;
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
     this.rules = this.getDefaultRules();
+    this.semanticAnalyzer = new SemanticAnalyzer();
     this.initializeRules();
   }
 
@@ -785,6 +788,66 @@ export class QualityAssuranceAgent {
     }
   }
 
+  /**
+   * Use LLM to perform semantic quality validation of insight content
+   */
+  private async validateInsightQualityWithLLM(content: string, errors: string[], warnings: string[]): Promise<void> {
+    try {
+      const prompt = `You are a technical documentation quality reviewer. Analyze the following insight document and identify:
+
+1. Conversation fragments or incomplete thoughts
+2. Generic/template content that lacks specificity
+3. Vague patterns without concrete evidence
+4. Content that appears to be copied from chat logs
+5. Overall coherence and technical value
+
+Content to analyze:
+${content.substring(0, 3000)}
+
+Respond with a JSON object:
+{
+  "hasConversationFragments": boolean,
+  "hasGenericContent": boolean,
+  "hasVaguePatterns": boolean,
+  "overallQuality": "high" | "medium" | "low",
+  "specificIssues": string[],
+  "confidence": number (0-1)
+}`;
+
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: "general",
+        provider: "auto"
+      });
+
+      // Parse LLM response
+      const analysis = JSON.parse(result.insights);
+
+      if (analysis.hasConversationFragments) {
+        errors.push("LLM detected conversation fragments in insight document");
+      }
+
+      if (analysis.hasGenericContent) {
+        warnings.push("LLM detected generic/template content");
+      }
+
+      if (analysis.overallQuality === "low") {
+        errors.push(`LLM quality assessment: ${analysis.overallQuality} (confidence: ${analysis.confidence})`);
+      }
+
+      analysis.specificIssues.forEach((issue: string) => {
+        warnings.push(`LLM issue: ${issue}`);
+      });
+
+      log("Semantic quality validation completed", "info", {
+        quality: analysis.overallQuality,
+        confidence: analysis.confidence
+      });
+    } catch (error) {
+      log("Semantic quality validation failed, continuing with rule-based checks", "warning", error);
+      // Don't fail QA if LLM validation fails - it's an enhancement, not a requirement
+    }
+  }
+
   private async validateInsightGeneration(result: any, errors: string[], warnings: string[]): Promise<void> {
     if (!result) {
       errors.push('Insight generation result is null or undefined');
@@ -792,6 +855,11 @@ export class QualityAssuranceAgent {
     }
 
     // CRITICAL: Validate actual content quality, not just file existence
+
+    // ENHANCEMENT: Use LLM for semantic quality validation
+    if (result.insightDocument?.content) {
+      await this.validateInsightQualityWithLLM(result.insightDocument.content, errors, warnings);
+    }
     
     // 1. Validate patterns are meaningful (not garbage conversation fragments)
     if (result.patternCatalog?.patterns) {

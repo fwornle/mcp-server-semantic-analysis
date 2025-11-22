@@ -12,17 +12,39 @@ This guide covers the complete installation and configuration of the MCP Semanti
 - **Storage**: 500MB for server and dependencies
 
 ### API Keys
-Configure at least one LLM provider (Anthropic recommended):
+Configure at least one LLM provider. The system uses the following priority order:
+1. **Groq** (Default - cheap, low-latency)
+2. **Gemini** (Fallback #1 - cheap, good quality)
+3. **Anthropic Claude** (Fallback #2 - high quality)
+4. **OpenAI** (Fallback #3)
 
-#### Anthropic Claude (Recommended)
+#### Groq (Default - Recommended)
+```bash
+export GROQ_API_KEY="your-groq-api-key"
+```
+- Uses: llama-3.3-70b-versatile
+- Benefits: Low cost, low latency
+
+#### Google Gemini (Optional Fallback #1)
+```bash
+export GOOGLE_API_KEY="your-google-api-key"
+```
+- Uses: gemini-2.0-flash-exp
+- Benefits: Low cost, fast, good quality
+
+#### Anthropic Claude (Optional Fallback #2)
 ```bash
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
+- Uses: claude-sonnet-4-20250514
+- Benefits: High quality, reliable
 
-#### OpenAI (Optional Fallback)
+#### OpenAI (Optional Fallback #3)
 ```bash
 export OPENAI_API_KEY="your-openai-api-key"
 ```
+- Uses: gpt-4
+- Benefits: Widely compatible
 
 #### Custom OpenAI-Compatible (Optional)
 ```bash
@@ -68,9 +90,12 @@ npm run test
 Create a `.env` file or set environment variables:
 
 ```bash
-# Required: LLM Provider Configuration
-ANTHROPIC_API_KEY=your-anthropic-key
-OPENAI_API_KEY=your-openai-key-optional
+# LLM Provider Configuration (at least one required)
+# Provider priority: Groq → Gemini → Anthropic → OpenAI
+GROQ_API_KEY=your-groq-key              # Default provider (cheap, low-latency)
+GOOGLE_API_KEY=your-google-key          # Fallback #1 (cheap, good quality)
+ANTHROPIC_API_KEY=your-anthropic-key    # Fallback #2 (high quality)
+OPENAI_API_KEY=your-openai-key          # Fallback #3
 
 # Optional: Custom Endpoints
 OPENAI_BASE_URL=https://custom-endpoint.com/v1
@@ -99,7 +124,10 @@ The server automatically integrates with Claude Code through MCP configuration:
       "command": "node",
       "args": ["/path/to/mcp-server-semantic-analysis/dist/index.js"],
       "env": {
-        "ANTHROPIC_API_KEY": "your-key"
+        "GROQ_API_KEY": "your-groq-key",
+        "GOOGLE_API_KEY": "your-google-key",
+        "ANTHROPIC_API_KEY": "your-anthropic-key",
+        "OPENAI_API_KEY": "your-openai-key"
       }
     }
   }
@@ -195,11 +223,18 @@ npm run build
 
 #### API Key Issues
 ```bash
-# Test API key validity
+# Test Groq API key validity
+curl -H "Authorization: Bearer $GROQ_API_KEY" \
+     https://api.groq.com/openai/v1/models
+
+# Test Google Gemini API key validity
+curl "https://generativelanguage.googleapis.com/v1beta/models?key=$GOOGLE_API_KEY"
+
+# Test Anthropic API key validity
 curl -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
      https://api.anthropic.com/v1/models
 
-# For OpenAI
+# Test OpenAI API key validity
 curl -H "Authorization: Bearer $OPENAI_API_KEY" \
      https://api.openai.com/v1/models
 ```
@@ -277,8 +312,8 @@ export const agentConfig = {
     enableQA: true
   },
   semantic: {
-    preferredProvider: "anthropic",
-    fallbackProviders: ["openai"],
+    preferredProvider: "groq",
+    fallbackProviders: ["gemini", "anthropic", "openai"],
     maxTokens: 4000
   },
   webSearch: {

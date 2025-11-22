@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface ConversationSession {
   filename: string;
@@ -84,10 +85,12 @@ export interface VibeHistoryAnalysisResult {
 export class VibeHistoryAgent {
   private repositoryPath: string;
   private specstoryPath: string;
+  private semanticAnalyzer: SemanticAnalyzer;
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
     this.specstoryPath = path.join(repositoryPath, '.specstory', 'history');
+    this.semanticAnalyzer = new SemanticAnalyzer();
   }
 
   async analyzeVibeHistory(fromTimestampOrParams?: Date | Record<string, any>): Promise<VibeHistoryAnalysisResult> {
@@ -130,7 +133,7 @@ export class VibeHistoryAgent {
       const patterns = this.analyzePatterns(sessions, developmentContexts, problemSolutionPairs);
 
       // Generate summary
-      const summary = this.generateSummary(sessions, developmentContexts, problemSolutionPairs, patterns);
+      const summary = await this.generateSummary(sessions, developmentContexts, problemSolutionPairs, patterns);
 
       const result: VibeHistoryAnalysisResult = {
         checkpointInfo: {
@@ -795,20 +798,20 @@ export class VibeHistoryAgent {
     };
   }
 
-  private generateSummary(
+  private async generateSummary(
     sessions: ConversationSession[],
     contexts: DevelopmentContext[],
     pairs: ProblemSolutionPair[],
     patterns: VibeHistoryAnalysisResult['patterns']
-  ): VibeHistoryAnalysisResult['summary'] {
+  ): Promise<VibeHistoryAnalysisResult['summary']> {
     const totalExchanges = sessions.reduce((sum, s) => sum + s.exchanges.length, 0);
-    
-    const primaryFocus = patterns.developmentThemes.length > 0 
-      ? patterns.developmentThemes[0].theme 
+
+    const primaryFocus = patterns.developmentThemes.length > 0
+      ? patterns.developmentThemes[0].theme
       : 'General Development';
 
     const keyLearnings: string[] = [];
-    
+
     // Extract key learnings from successful problem-solution pairs
     pairs.slice(0, 3).forEach(pair => {
       if (pair.solution.outcome !== 'Solution implemented') {
@@ -821,17 +824,79 @@ export class VibeHistoryAgent {
       keyLearnings.push(`Preferred approach: ${patterns.preferredSolutions[0].solution}`);
     }
 
-    const insights = `Analyzed ${sessions.length} conversation sessions with ${totalExchanges} exchanges. ` +
+    // ENHANCEMENT: Use LLM to generate richer insights from conversation patterns
+    let enhancedInsights = `Analyzed ${sessions.length} conversation sessions with ${totalExchanges} exchanges. ` +
       `Primary development focus: ${primaryFocus}. ` +
       `Identified ${pairs.length} problem-solution patterns and ${contexts.length} development contexts. ` +
       `Most used tool: ${patterns.toolUsage[0]?.tool || 'N/A'}. ` +
       `Success rate: ${Math.round((pairs.length / Math.max(contexts.length, 1)) * 100)}% of contexts resulted in clear solutions.`;
 
+    try {
+      // Build context for LLM analysis
+      const analysisContext = {
+        sessionCount: sessions.length,
+        totalExchanges,
+        primaryTheme: primaryFocus,
+        topProblems: patterns.commonProblems.slice(0, 3).map(p => p.problem),
+        topSolutions: patterns.preferredSolutions.slice(0, 3).map(s => s.solution),
+        mostUsedTools: patterns.toolUsage.slice(0, 5).map(t => t.tool),
+        themes: patterns.developmentThemes.slice(0, 3).map(t => t.theme)
+      };
+
+      const prompt = `Analyze these development session patterns and provide actionable insights:
+
+Context:
+- ${analysisContext.sessionCount} sessions with ${analysisContext.totalExchanges} exchanges
+- Primary focus: ${analysisContext.primaryTheme}
+- Common problems: ${analysisContext.topProblems.join(', ')}
+- Preferred solutions: ${analysisContext.topSolutions.join(', ')}
+- Most used tools: ${analysisContext.mostUsedTools.join(', ')}
+- Development themes: ${analysisContext.themes.join(', ')}
+
+Provide a JSON response:
+{
+  "executiveSummary": string, // 2-3 sentence high-level summary
+  "keyPatterns": string[], // 3-4 important patterns discovered
+  "recommendations": string[], // 2-3 actionable recommendations
+  "trendAnalysis": string // Overall trend or direction
+}`;
+
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: "patterns",
+        provider: "auto"
+      });
+
+      const llmInsights = JSON.parse(result.insights);
+
+      // Enhance key learnings with LLM-discovered patterns
+      if (llmInsights.keyPatterns) {
+        llmInsights.keyPatterns.forEach((pattern: string) => {
+          if (!keyLearnings.includes(pattern)) {
+            keyLearnings.push(pattern);
+          }
+        });
+      }
+
+      // Use LLM-generated summary if available
+      if (llmInsights.executiveSummary) {
+        enhancedInsights = llmInsights.executiveSummary;
+      }
+
+      log("LLM-enhanced session summary generated", "info", {
+        patternsFound: llmInsights.keyPatterns?.length || 0,
+        recommendations: llmInsights.recommendations?.length || 0
+      });
+
+    } catch (error) {
+      log("LLM summary enhancement failed, using template-based summary", "warning", error);
+      // Fall back to template-based insights (already set above)
+    }
+
     return {
       totalExchanges,
       primaryFocus,
-      keyLearnings,
-      insights
+      keyLearnings: keyLearnings.slice(0, 5), // Limit to top 5
+      insights: enhancedInsights
     };
   }
 }

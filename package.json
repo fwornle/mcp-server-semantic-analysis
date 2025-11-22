@@ -19,11 +19,13 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.57.0",
+    "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.0.3",
     "@types/cheerio": "^0.22.35",
     "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",
     "graphology": "^0.25.4",
+    "groq-sdk": "^0.36.0",
     "level": "^10.0.0",
     "openai": "^4.52.0"
   },

@@ -8,18 +8,18 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 
 ### 🤖 Intelligent Agents (10 Total)
 
-#### Core Analysis Agents (8 Agents)
+#### Core Analysis Agents (8 Agents) - 🧠 LLM-Enhanced
 1. **`GitHistoryAgent`** - Analyzes git commits from checkpoint with architectural decisions
-2. **`VibeHistoryAgent`** - Processes .specstory/history conversation files for context
-3. **`SemanticAnalysisAgent`** - Deep code analysis correlating git and conversation data
-4. **`WebSearchAgent`** - External pattern research and reference gathering
-5. **`InsightGenerationAgent`** - Generates insights with PlantUML diagrams and patterns
-6. **`ObservationGenerationAgent`** - Creates structured UKB-compatible observations
-7. **`QualityAssuranceAgent`** - Validates outputs with auto-correction capabilities
+2. **`VibeHistoryAgent`** 🧠 - LLM-powered session summaries with pattern analysis and recommendations
+3. **`SemanticAnalysisAgent`** 🧠 - Deep LLM code analysis correlating git and conversation data
+4. **`WebSearchAgent`** 🧠 - External research with LLM semantic relevance scoring (40% keyword + 60% semantic)
+5. **`InsightGenerationAgent`** 🧠 - LLM-powered insight generation with PlantUML diagrams and patterns
+6. **`ObservationGenerationAgent`** 🧠 - LLM extracts structured insights, domain classification, actionable recommendations
+7. **`QualityAssuranceAgent`** 🧠 - LLM semantic validation detecting conversation fragments, generic content, quality assessment
 8. **`PersistenceAgent`** - Persists entities to Graphology+LevelDB graph database with ontology-based classification
 
-#### Infrastructure Agents (1 Agent)
-9. **`DeduplicationAgent`** - Semantic duplicate detection and merging
+#### Infrastructure Agents (1 Agent) - 🔢 Embedding-Enhanced
+9. **`DeduplicationAgent`** 🔢 - OpenAI embeddings (text-embedding-3-small) with cosine similarity for semantic duplicate detection
 
 #### Orchestration Agent (1 Agent)
 10. **`CoordinatorAgent`** - Workflow orchestration, task scheduling, and agent coordination with GraphDB integration
@@ -42,12 +42,13 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 
 ### 🔗 Integration Capabilities
 - **Claude Code Integration** - Full MCP compatibility
-- **Multiple LLM Providers** - Custom LLM (primary), Anthropic Claude (secondary), OpenAI GPT (fallback)
+- **4-Tier LLM Provider Chain** - Groq (1st) → Gemini (2nd) → Custom LLM (3rd) → Anthropic Claude (4th) → OpenAI GPT (fallback)
+- **OpenAI Embeddings** - text-embedding-3-small for semantic similarity and deduplication
 - **Graph Database Persistence** - Graphology (in-memory) + LevelDB (persistent storage) at `.data/knowledge-graph/`
 - **Knowledge Base Support** - UKB/VKB integration with automatic graph export to shared-memory-*.json
 - **PlantUML Diagrams** - Architecture visualization
-- **Web Search** - Technical documentation discovery
-- **Git & Conversation Analysis** - Cross-correlates code changes with development discussions
+- **Web Search** - Technical documentation discovery with semantic relevance scoring
+- **Git & Conversation Analysis** - Cross-correlates code changes with development discussions using LLM semantic understanding
 - **Ontology-Based Classification** - Automatic entity type classification using hybrid heuristics + LLM approach
 
 ### 🎯 Ontology Classification System
@@ -81,6 +82,58 @@ const persistenceAgent = new PersistenceAgent(repoPath, graphDB, {
 });
 ```
 
+### 🧠 LLM Enhancement System
+
+Five core agents now leverage advanced LLM capabilities through the `SemanticAnalyzer` service:
+
+#### Enhanced Agents
+
+**1. Vibe History Agent** - Session Analysis
+- **Capability**: Generates executive summaries from conversation patterns
+- **Output**: Key patterns discovered, actionable recommendations, trend analysis
+- **Benefit**: Transforms raw session logs into strategic insights
+
+**2. Observation Generation Agent** - Insight Extraction
+- **Capability**: Extracts structured insights with domain classification
+- **Output**: Key learnings, technical domain, applicability scope, actionable recommendations
+- **Benefit**: Enriches observations with deeper semantic understanding
+
+**3. Quality Assurance Agent** - Semantic Validation
+- **Capability**: Detects conversation fragments, generic content, vague patterns
+- **Output**: Quality assessment (high/medium/low) with confidence scores and specific issues
+- **Benefit**: Prevents low-quality content from entering knowledge base
+
+**4. Web Search Agent** - Relevance Scoring
+- **Capability**: Blends keyword matching (40%) with semantic understanding (60%)
+- **Output**: Semantically-ranked search results with relevance reasoning
+- **Benefit**: Surfaces most contextually relevant results beyond keyword matches
+
+**5. Semantic Analysis Agent** - Code Correlation
+- **Capability**: Correlates code changes with conversation context using deep semantic analysis
+- **Output**: Insights connecting implementation decisions to discussion context
+- **Benefit**: Captures the "why" behind code changes
+
+#### Embedding-Based Deduplication
+
+**Deduplication Agent** now uses OpenAI `text-embedding-3-small`:
+- **Capability**: Vector-based semantic similarity with cosine distance
+- **Fallback**: Graceful degradation to Jaccard text similarity
+- **Benefit**: Detects semantically similar entities even with different wording
+
+#### 4-Tier LLM Provider Chain
+
+All LLM-enhanced agents use the `SemanticAnalyzer` with automatic failover:
+
+```
+Groq → Gemini → Custom LLM → Anthropic → OpenAI
+```
+
+**Benefits:**
+- 🚀 Fast responses from Groq when available
+- 💪 Reliability through multiple fallback providers
+- 💰 Cost optimization by preferring cheaper providers
+- 🔄 Automatic provider switching on failures
+
 ### 🚀 Performance & Stability
 - **Node.js Advantages** - No Python environment issues, stable connections
 - **Smart Fallbacks** - Automatic provider switching on failures
@@ -90,8 +143,13 @@ const persistenceAgent = new PersistenceAgent(repoPath, graphDB, {
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 18+ 
-- API keys for LLM providers (Anthropic recommended, OpenAI optional)
+- Node.js 18+
+- API keys for LLM providers:
+  - **Groq** (recommended for speed) - GROQ_API_KEY
+  - **Gemini** (recommended for reliability) - GEMINI_API_KEY
+  - **Anthropic** (high quality) - ANTHROPIC_API_KEY
+  - **OpenAI** (embeddings + fallback) - OPENAI_API_KEY
+  - Note: Only OPENAI_API_KEY is required for deduplication embeddings; others are optional with automatic fallback
 
 ### Installation
 
@@ -113,7 +171,7 @@ npm run dev
 
 1. **API Keys Setup**: Configure in your environment or the parent system
 2. **Claude Code Integration**: The server automatically integrates when started via `claude-mcp`
-3. **LLM Provider Priority**: Custom LLM (primary) → Anthropic (secondary) → OpenAI (fallback)
+3. **LLM Provider Priority**: Groq (1st) → Gemini (2nd) → Custom LLM (3rd) → Anthropic (4th) → OpenAI (fallback)
 
 ### Usage with Claude Code
 

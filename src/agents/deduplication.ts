@@ -1,4 +1,5 @@
 import { log } from "../logging.js";
+import OpenAI from "openai";
 
 export interface SimilarityConfig {
   embeddingModel?: string;
@@ -51,6 +52,7 @@ export class DeduplicationAgent {
   private mergingStrategy: MergingStrategy;
   private agents: Map<string, any> = new Map();
   private embeddingModel: any = null;
+  private openaiClient: OpenAI | null = null;
 
   constructor() {
     this.similarityConfig = {
@@ -75,13 +77,21 @@ export class DeduplicationAgent {
 
   private async initializeEmbeddingModel(): Promise<void> {
     try {
-      // For now, skip embedding model initialization to avoid dependency issues
-      // This will use simple text similarity instead
-      log("Using simple text similarity (embedding model disabled for stability)", "info");
+      const openaiKey = process.env.OPENAI_API_KEY;
+      if (openaiKey && openaiKey !== "your-openai-api-key") {
+        this.openaiClient = new OpenAI({ apiKey: openaiKey });
+        this.embeddingModel = "text-embedding-3-small";
+        log("OpenAI embedding client initialized", "info");
+        return;
+      }
+
+      log("No embedding provider available, using text similarity", "warning");
       this.embeddingModel = null;
+      this.openaiClient = null;
     } catch (error) {
-      log("Failed to initialize embedding model, using text similarity", "warning", error);
+      log("Failed to initialize embedding model", "warning", error);
       this.embeddingModel = null;
+      this.openaiClient = null;
     }
   }
 
@@ -223,27 +233,73 @@ export class DeduplicationAgent {
 
   private entityToText(entity: any): string {
     const textParts = [entity.name];
-    
+
     if (entity.observations) {
       // Limit to first 3 observations to avoid too much text
       const obs = Array.isArray(entity.observations) ? entity.observations : [entity.observations];
       textParts.push(...obs.slice(0, 3));
     }
-    
+
     return textParts.join(" ");
   }
 
+  private async generateEmbedding(text: string): Promise<number[]> {
+    if (!this.openaiClient) {
+      throw new Error("OpenAI client not initialized");
+    }
+
+    try {
+      const response = await this.openaiClient.embeddings.create({
+        model: this.embeddingModel || "text-embedding-3-small",
+        input: text,
+      });
+
+      return response.data[0].embedding;
+    } catch (error) {
+      log("Failed to generate embedding", "error", error);
+      throw error;
+    }
+  }
+
+  private cosineSimilarity(vec1: number[], vec2: number[]): number {
+    if (vec1.length !== vec2.length) {
+      throw new Error("Vectors must have the same length");
+    }
+
+    let dotProduct = 0;
+    let magnitude1 = 0;
+    let magnitude2 = 0;
+
+    for (let i = 0; i < vec1.length; i++) {
+      dotProduct += vec1[i] * vec2[i];
+      magnitude1 += vec1[i] * vec1[i];
+      magnitude2 += vec2[i] * vec2[i];
+    }
+
+    magnitude1 = Math.sqrt(magnitude1);
+    magnitude2 = Math.sqrt(magnitude2);
+
+    if (magnitude1 === 0 || magnitude2 === 0) {
+      return 0;
+    }
+
+    return dotProduct / (magnitude1 * magnitude2);
+  }
+
   private async semanticSimilarity(text1: string, text2: string): Promise<number> {
-    if (this.embeddingModel) {
-      try {
-        // TODO: Implement actual embedding-based similarity
-        // For now, fall back to text similarity
-        return this.calculateStringSimilarity(text1, text2);
-      } catch (error) {
-        log("Semantic similarity failed, falling back to text similarity", "warning", error);
-        return this.calculateStringSimilarity(text1, text2);
-      }
-    } else {
+    if (!this.openaiClient) {
+      return this.calculateStringSimilarity(text1, text2);
+    }
+
+    try {
+      const [emb1, emb2] = await Promise.all([
+        this.generateEmbedding(text1),
+        this.generateEmbedding(text2),
+      ]);
+
+      return this.cosineSimilarity(emb1, emb2);
+    } catch (error) {
+      log("Embedding similarity failed, falling back to text similarity", "warning", error);
       return this.calculateStringSimilarity(text1, text2);
     }
   }

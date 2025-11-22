@@ -1,11 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+import Groq from "groq-sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { log } from "../logging.js";
 
 export interface AnalysisOptions {
   context?: string;
   analysisType?: "general" | "code" | "patterns" | "architecture" | "diagram";
-  provider?: "anthropic" | "openai" | "custom" | "auto";
+  provider?: "groq" | "gemini" | "anthropic" | "openai" | "custom" | "auto";
 }
 
 export interface CodeAnalysisOptions {
@@ -46,6 +48,8 @@ export interface PatternExtractionResult {
 }
 
 export class SemanticAnalyzer {
+  private groqClient: Groq | null = null;
+  private geminiClient: GoogleGenerativeAI | null = null;
   private customClient: OpenAI | null = null;
   private anthropicClient: Anthropic | null = null;
   private openaiClient: OpenAI | null = null;
@@ -66,9 +70,25 @@ export class SemanticAnalyzer {
   }
 
   private initializeClients(): void {
-    // Priority order: (1) Custom API (corporate/local), (2) Anthropic, (3) OpenAI
+    // Priority order: (1) Groq (default), (2) Gemini, (3) Custom API, (4) Anthropic, (5) OpenAI
 
-    // Initialize Custom OpenAI-compatible client (highest priority)
+    // Initialize Groq client (highest priority - cheap, low-latency)
+    const groqKey = process.env.GROQ_API_KEY;
+    if (groqKey && groqKey !== "your-groq-api-key") {
+      this.groqClient = new Groq({
+        apiKey: groqKey,
+      });
+      log("Groq client initialized (default provider)", "info");
+    }
+
+    // Initialize Gemini client (second priority - cheap, good quality)
+    const googleKey = process.env.GOOGLE_API_KEY;
+    if (googleKey && googleKey !== "your-google-api-key") {
+      this.geminiClient = new GoogleGenerativeAI(googleKey);
+      log("Gemini client initialized (fallback #1)", "info");
+    }
+
+    // Initialize Custom OpenAI-compatible client (third priority)
     const customBaseUrl = process.env.OPENAI_BASE_URL;
     const customKey = process.env.OPENAI_API_KEY;
     if (customBaseUrl && customKey && customKey !== "your-openai-api-key") {
@@ -76,28 +96,28 @@ export class SemanticAnalyzer {
         apiKey: customKey,
         baseURL: customBaseUrl,
       });
-      log("Custom OpenAI-compatible client initialized", "info", { baseURL: customBaseUrl });
+      log("Custom OpenAI-compatible client initialized (fallback #2)", "info", { baseURL: customBaseUrl });
     }
 
-    // Initialize Anthropic client (second priority)
+    // Initialize Anthropic client (fourth priority)
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
     if (anthropicKey && anthropicKey !== "your-anthropic-api-key") {
       this.anthropicClient = new Anthropic({
         apiKey: anthropicKey,
       });
-      log("Anthropic client initialized", "info");
+      log("Anthropic client initialized (fallback #3)", "info");
     }
 
-    // Initialize OpenAI client (third priority - only if no custom base URL)
+    // Initialize OpenAI client (fifth priority - only if no custom base URL)
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey && openaiKey !== "your-openai-api-key" && !customBaseUrl) {
       this.openaiClient = new OpenAI({
         apiKey: openaiKey,
       });
-      log("OpenAI client initialized", "info");
+      log("OpenAI client initialized (fallback #4)", "info");
     }
 
-    if (!this.customClient && !this.anthropicClient && !this.openaiClient) {
+    if (!this.groqClient && !this.geminiClient && !this.customClient && !this.anthropicClient && !this.openaiClient) {
       log("No LLM clients available - check API keys", "warning");
     }
   }
@@ -148,16 +168,24 @@ export class SemanticAnalyzer {
   private async analyzeContentDirectly(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
     const { context, analysisType = "general", provider = "auto" } = options;
     const prompt = this.buildAnalysisPrompt(content, context, analysisType);
-    
+
     // Use existing provider selection logic
-    if (provider === "custom" && this.customClient) {
+    if (provider === "groq" && this.groqClient) {
+      return await this.analyzeWithGroq(prompt);
+    } else if (provider === "gemini" && this.geminiClient) {
+      return await this.analyzeWithGemini(prompt);
+    } else if (provider === "custom" && this.customClient) {
       return await this.analyzeWithCustom(prompt);
     } else if (provider === "anthropic" && this.anthropicClient) {
       return await this.analyzeWithAnthropic(prompt);
     } else if (provider === "openai" && this.openaiClient) {
       return await this.analyzeWithOpenAI(prompt);
     } else if (provider === "auto") {
-      if (this.customClient) {
+      if (this.groqClient) {
+        return await this.analyzeWithGroq(prompt);
+      } else if (this.geminiClient) {
+        return await this.analyzeWithGemini(prompt);
+      } else if (this.customClient) {
         return await this.analyzeWithCustom(prompt);
       } else if (this.anthropicClient) {
         return await this.analyzeWithAnthropic(prompt);
@@ -165,7 +193,7 @@ export class SemanticAnalyzer {
         return await this.analyzeWithOpenAI(prompt);
       }
     }
-    
+
     throw new Error("No available LLM provider");
   }
 
@@ -176,6 +204,8 @@ export class SemanticAnalyzer {
       contentLength: content.length,
       analysisType,
       hasContext: !!context,
+      groqClient: !!this.groqClient,
+      geminiClient: !!this.geminiClient,
       customClient: !!this.customClient,
       anthropicClient: !!this.anthropicClient,
       openaiClient: !!this.openaiClient,
@@ -209,8 +239,18 @@ export class SemanticAnalyzer {
 
     // Determine which provider to use with correct precedence:
     // 1. If specific provider requested, use it
-    // 2. If auto: Custom → Anthropic → OpenAI
-    if (provider === "custom") {
+    // 2. If auto: Groq → Gemini → Custom → Anthropic → OpenAI
+    if (provider === "groq") {
+      if (!this.groqClient) {
+        throw new Error("Groq client not available");
+      }
+      result = await this.analyzeWithGroq(prompt);
+    } else if (provider === "gemini") {
+      if (!this.geminiClient) {
+        throw new Error("Gemini client not available");
+      }
+      result = await this.analyzeWithGemini(prompt);
+    } else if (provider === "custom") {
       if (!this.customClient) {
         throw new Error("Custom client not available");
       }
@@ -226,21 +266,29 @@ export class SemanticAnalyzer {
       }
       result = await this.analyzeWithOpenAI(prompt);
     } else if (provider === "auto") {
-      // Auto mode: Custom → Anthropic → OpenAI priority
+      // Auto mode: Groq → Gemini → Custom → Anthropic → OpenAI priority
       log("Entering auto mode provider selection", "info", {
+        hasGroq: !!this.groqClient,
+        hasGemini: !!this.geminiClient,
         hasCustom: !!this.customClient,
         hasAnthropic: !!this.anthropicClient,
         hasOpenAI: !!this.openaiClient
       });
-      
-      if (this.customClient) {
-        log("Using Custom client (auto mode top priority)", "info");
+
+      if (this.groqClient) {
+        log("Using Groq client (auto mode default)", "info");
+        result = await this.analyzeWithGroq(prompt);
+      } else if (this.geminiClient) {
+        log("Using Gemini client (auto mode fallback #1)", "info");
+        result = await this.analyzeWithGemini(prompt);
+      } else if (this.customClient) {
+        log("Using Custom client (auto mode fallback #2)", "info");
         result = await this.analyzeWithCustom(prompt);
       } else if (this.anthropicClient) {
-        log("Using Anthropic client (auto mode second priority)", "info");
+        log("Using Anthropic client (auto mode fallback #3)", "info");
         result = await this.analyzeWithAnthropic(prompt);
       } else if (this.openaiClient) {
-        log("Using OpenAI client (auto mode fallback)", "info");
+        log("Using OpenAI client (auto mode fallback #4)", "info");
         result = await this.analyzeWithOpenAI(prompt);
       } else {
         throw new Error("No available LLM provider");
@@ -406,6 +454,98 @@ For each pattern found, provide:
 3. Clear description
 4. Code example
 5. Usage recommendations`;
+  }
+
+  private async analyzeWithGroq(prompt: string): Promise<AnalysisResult> {
+    log("analyzeWithGroq called", "info", {
+      hasClient: !!this.groqClient,
+      promptLength: prompt.length
+    });
+
+    if (!this.groqClient) {
+      throw new Error("Groq client not initialized");
+    }
+
+    try {
+      log("Making Groq API call", "info");
+      const response = await this.groqClient.chat.completions.create({
+        model: "llama-3.3-70b-versatile",
+        max_tokens: 4096,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7
+      });
+
+      log("Groq API response received", "info", {
+        hasChoices: !!response.choices,
+        choicesLength: response.choices?.length
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error("No content in Groq response");
+      }
+
+      const result = {
+        insights: content,
+        provider: "groq",
+        confidence: 0.85,
+      };
+
+      log("analyzeWithGroq returning result", "info", {
+        hasInsights: !!result.insights,
+        insightsLength: result.insights?.length,
+        provider: result.provider
+      });
+
+      return result;
+    } catch (error) {
+      log("Groq analysis failed", "error", error);
+      throw error;
+    }
+  }
+
+  private async analyzeWithGemini(prompt: string): Promise<AnalysisResult> {
+    log("analyzeWithGemini called", "info", {
+      hasClient: !!this.geminiClient,
+      promptLength: prompt.length
+    });
+
+    if (!this.geminiClient) {
+      throw new Error("Gemini client not initialized");
+    }
+
+    try {
+      log("Making Gemini API call", "info");
+      const model = this.geminiClient.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+      const response = await model.generateContent(prompt);
+      const text = response.response.text();
+
+      log("Gemini API response received", "info", {
+        hasText: !!text,
+        textLength: text?.length
+      });
+
+      if (!text) {
+        throw new Error("No content in Gemini response");
+      }
+
+      const result = {
+        insights: text,
+        provider: "gemini",
+        confidence: 0.88,
+      };
+
+      log("analyzeWithGemini returning result", "info", {
+        hasInsights: !!result.insights,
+        insightsLength: result.insights?.length,
+        provider: result.provider
+      });
+
+      return result;
+    } catch (error) {
+      log("Gemini analysis failed", "error", error);
+      throw error;
+    }
   }
 
   private async analyzeWithAnthropic(prompt: string): Promise<AnalysisResult> {

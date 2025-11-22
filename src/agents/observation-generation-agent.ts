@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import crypto from 'crypto';
 import { log } from '../logging.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface ObservationTemplate {
   type: 'rule' | 'implementation' | 'validation' | 'workflow' | 'benefits' | 'link' | 'insight' | 'metric' | 'applicability' | 'performance' | 'checklist' | 'critical_rules' | 'tools' | 'compliance' | 'problem' | 'solution' | 'learning' | 'technology' | 'rationale' | 'reference';
@@ -57,9 +58,11 @@ export interface ObservationGenerationResult {
 export class ObservationGenerationAgent {
   private templates: Map<string, ObservationTemplate[]> = new Map();
   private repositoryPath: string;
+  private semanticAnalyzer: SemanticAnalyzer;
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
+    this.semanticAnalyzer = new SemanticAnalyzer();
     this.initializeTemplates();
   }
 
@@ -822,14 +825,45 @@ export class ObservationGenerationAgent {
       const entityName = this.generateEntityName('SemanticInsight', insightText);
       const currentDate = new Date().toISOString();
 
+      // ENHANCEMENT: Use LLM to extract deeper insights and categorization
+      let enhancedInsights: any = null;
+      try {
+        const prompt = `Analyze this technical insight and extract structured information:
+
+Insight: ${insightText}
+
+Provide a JSON response with:
+{
+  "keyLearnings": string[], // 2-3 specific actionable learnings
+  "technicalDomain": string, // e.g., "architecture", "performance", "security"
+  "applicabilityScope": string, // Who can benefit from this
+  "confidence": number, // 0-1
+  "actionableRecommendations": string[] // 2-3 specific recommendations
+}`;
+
+        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+          analysisType: "general",
+          provider: "auto"
+        });
+
+        enhancedInsights = JSON.parse(result.insights);
+        log("LLM-enhanced insight extraction completed", "info", {
+          domain: enhancedInsights.technicalDomain,
+          confidence: enhancedInsights.confidence
+        });
+      } catch (error) {
+        log("LLM insight enhancement failed, using template-based approach", "warning", error);
+      }
+
       const observations: ObservationTemplate[] = [
         {
           type: 'learning',
-          content: insightText,
+          content: enhancedInsights?.keyLearnings?.join('. ') || insightText,
           date: currentDate,
           metadata: {
             transferable: true,
-            domain: 'semantic-analysis'
+            domain: enhancedInsights?.technicalDomain || 'semantic-analysis',
+            confidence: enhancedInsights?.confidence || 0.7
           }
         },
         {
@@ -843,14 +877,29 @@ export class ObservationGenerationAgent {
         },
         {
           type: 'applicability',
-          content: 'Applies to similar software development projects with rich commit and conversation history',
+          content: enhancedInsights?.applicabilityScope || 'Applies to similar software development projects with rich commit and conversation history',
           date: currentDate,
           metadata: {
-            scope: 'software-development',
+            scope: enhancedInsights?.technicalDomain || 'software-development',
             generalizability: 'high'
           }
         }
       ];
+
+      // Add actionable recommendations if available
+      if (enhancedInsights?.actionableRecommendations) {
+        enhancedInsights.actionableRecommendations.forEach((recommendation: string) => {
+          observations.push({
+            type: 'implementation',
+            content: recommendation,
+            date: currentDate,
+            metadata: {
+              priority: 'medium',
+              actionable: true
+            }
+          });
+        });
+      }
 
       return {
         name: entityName,

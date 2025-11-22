@@ -1,6 +1,7 @@
 import { log } from "../logging.js";
 import axios, { AxiosRequestConfig } from "axios";
 import * as cheerio from "cheerio";
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface SearchOptions {
   maxResults?: number;
@@ -43,8 +44,10 @@ export class WebSearchAgent {
       extractLinks: true,
     },
   };
+  private semanticAnalyzer: SemanticAnalyzer;
 
   constructor() {
+    this.semanticAnalyzer = new SemanticAnalyzer();
     log("WebSearchAgent initialized", "info");
   }
 
@@ -161,31 +164,37 @@ export class WebSearchAgent {
 
       const response = await axios.get(url, config);
       const $ = cheerio.load(response.data);
-      
-      const results: SearchResult[] = [];
-      
+
+      // First pass: collect raw results without relevance scores
+      const rawResults: Array<{title: string; url: string; snippet: string}> = [];
+
       $('.result').each((i: number, elem: any) => {
-        if (results.length >= (options.maxResults || 10)) return false;
-        
+        if (rawResults.length >= (options.maxResults || 10)) return false;
+
         const $elem = $(elem);
         const $link = $elem.find('a.result__a');
         const $snippet = $elem.find('a.result__snippet');
-        
+
         if ($link.length) {
           const title = $link.text().trim();
           const url = $link.attr('href') || '';
           const snippet = $snippet.text().trim();
-          
+
           if (title && url) {
-            results.push({
-              title,
-              url,
-              snippet,
-              relevanceScore: this.calculateRelevance(title, snippet, query),
-            });
+            rawResults.push({ title, url, snippet });
           }
         }
       });
+
+      // Second pass: calculate relevance scores asynchronously
+      const results: SearchResult[] = await Promise.all(
+        rawResults.map(async ({ title, url, snippet }) => ({
+          title,
+          url,
+          snippet,
+          relevanceScore: await this.calculateRelevance(title, snippet, query),
+        }))
+      );
 
       // Extract content if requested
       if (options.contentExtraction?.extractCode || options.contentExtraction?.extractLinks) {
@@ -239,39 +248,45 @@ export class WebSearchAgent {
 
       const response = await axios.get(url, config);
       const $ = cheerio.load(response.data);
-      
-      const results: SearchResult[] = [];
-      
+
+      // First pass: collect raw results without relevance scores
+      const rawResults: Array<{title: string; url: string; snippet: string}> = [];
+
       // Google search result parsing (note: Google actively blocks scraping)
       $('div.g').each((i: number, elem: any) => {
-        if (results.length >= (options.maxResults || 10)) return false;
-        
+        if (rawResults.length >= (options.maxResults || 10)) return false;
+
         const $elem = $(elem);
         const $link = $elem.find('h3').closest('a');
         const $snippet = $elem.find('[data-sncf]').first();
-        
+
         if ($link.length) {
           const title = $link.find('h3').text().trim();
           const href = $link.attr('href') || '';
           const snippet = $snippet.text().trim();
-          
+
           // Clean up Google's redirect URLs
           let cleanUrl = href;
           if (href.startsWith('/url?q=')) {
             const urlParams = new URLSearchParams(href.substring(6));
             cleanUrl = urlParams.get('q') || href;
           }
-          
+
           if (title && cleanUrl && !cleanUrl.startsWith('/search')) {
-            results.push({
-              title,
-              url: cleanUrl,
-              snippet,
-              relevanceScore: this.calculateRelevance(title, snippet, query),
-            });
+            rawResults.push({ title, url: cleanUrl, snippet });
           }
         }
       });
+
+      // Second pass: calculate relevance scores asynchronously
+      const results: SearchResult[] = await Promise.all(
+        rawResults.map(async ({ title, url, snippet }) => ({
+          title,
+          url,
+          snippet,
+          relevanceScore: await this.calculateRelevance(title, snippet, query),
+        }))
+      );
 
       // Extract content if requested (limit to top 3 results)
       if (options.contentExtraction?.extractCode || options.contentExtraction?.extractLinks) {
@@ -302,35 +317,82 @@ export class WebSearchAgent {
     }
   }
 
-  private calculateRelevance(title: string, snippet: string, query: string): number {
+  private async calculateRelevance(title: string, snippet: string, query: string): Promise<number> {
+    // Calculate keyword-based relevance (fast baseline)
     const queryWords = query.toLowerCase().split(/\s+/);
     const titleWords = title.toLowerCase().split(/\s+/);
     const snippetWords = snippet.toLowerCase().split(/\s+/);
-    
-    let score = 0;
+
+    let keywordScore = 0;
     let totalWords = queryWords.length;
-    
+
     for (const word of queryWords) {
       // Exact matches in title (highest weight)
       if (titleWords.some(tw => tw === word)) {
-        score += 0.4;
+        keywordScore += 0.4;
       }
       // Partial matches in title
       else if (titleWords.some(tw => tw.includes(word) || word.includes(tw))) {
-        score += 0.2;
+        keywordScore += 0.2;
       }
-      
+
       // Exact matches in snippet
       if (snippetWords.some(sw => sw === word)) {
-        score += 0.3;
+        keywordScore += 0.3;
       }
       // Partial matches in snippet
       else if (snippetWords.some(sw => sw.includes(word) || word.includes(sw))) {
-        score += 0.1;
+        keywordScore += 0.1;
       }
     }
-    
-    return Math.min(score / totalWords, 1.0);
+
+    const baselineScore = Math.min(keywordScore / totalWords, 1.0);
+
+    // ENHANCEMENT: Use LLM for semantic relevance scoring
+    try {
+      const prompt = `Rate the relevance of this search result to the query on a scale of 0.0 to 1.0:
+
+Query: "${query}"
+Title: "${title}"
+Snippet: "${snippet}"
+
+Consider:
+- Semantic meaning beyond keyword matching
+- Context and intent of the query
+- Quality and depth of the result
+
+Respond with only a JSON object:
+{
+  "relevanceScore": number, // 0.0 to 1.0
+  "reasoning": string, // Brief explanation
+  "confidence": number // 0.0 to 1.0
+}`;
+
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: "general",
+        provider: "auto"
+      });
+
+      const llmScore = JSON.parse(result.insights);
+
+      // Blend keyword and semantic scores (weighted average)
+      // 40% keyword matching + 60% semantic understanding
+      const blendedScore = (baselineScore * 0.4) + (llmScore.relevanceScore * 0.6);
+
+      log("LLM-enhanced relevance scoring", "debug", {
+        query,
+        title: title.substring(0, 50),
+        keywordScore: baselineScore.toFixed(2),
+        semanticScore: llmScore.relevanceScore.toFixed(2),
+        blendedScore: blendedScore.toFixed(2),
+        confidence: llmScore.confidence
+      });
+
+      return Math.min(blendedScore, 1.0);
+    } catch (error) {
+      log("LLM relevance scoring failed, using keyword-based score", "warning", error);
+      return baselineScore;
+    }
   }
 
   private extractCodeBlocks(content: string): string[] {

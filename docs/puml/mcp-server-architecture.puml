@@ -45,6 +45,8 @@ package "Storage Layer" <<storage>> {
 }
 
 package "External Services" <<external>> {
+  cloud [Groq LLM] as GROQ_LLM <<external>> #FFE6E6
+  cloud [Gemini] as GEMINI <<external>> #FFE6E6
   cloud [Custom LLM] as CUSTOM_LLM <<external>> #FFE6E6
   cloud [Anthropic Claude] as ANTHROPIC <<external>> #FFE6E6
   cloud [OpenAI GPT] as OPENAI <<external>> #FFE6E6
@@ -79,18 +81,41 @@ COORDINATOR ..> GRAPHDB : "Initializes &\nProvides"
 GIT --> GIT_REPO : "Reads commits"
 VIBE --> VIBE_FILES : "Reads sessions"
 
-' LLM usage (3-tier provider chain)
-SEMANTIC ..> CUSTOM_LLM : "Primary"
-SEMANTIC ..> ANTHROPIC : "Secondary"
-SEMANTIC .> OPENAI : "Fallback"
-INSIGHT ..> CUSTOM_LLM : "Primary"
-INSIGHT ..> ANTHROPIC : "Secondary"
-INSIGHT .> OPENAI : "Fallback"
-QA ..> CUSTOM_LLM : "Primary"
-QA ..> ANTHROPIC : "Secondary"
-QA .> OPENAI : "Fallback"
+' LLM usage (4-tier provider chain via SemanticAnalyzer)
+SEMANTIC ..> GROQ_LLM : "1st: Groq"
+SEMANTIC ..> GEMINI : "2nd: Gemini"
+SEMANTIC ..> CUSTOM_LLM : "3rd: Custom"
+SEMANTIC ..> ANTHROPIC : "4th: Anthropic"
+SEMANTIC .> OPENAI : "Fallback: OpenAI"
 
+INSIGHT ..> GROQ_LLM : "1st: Groq"
+INSIGHT ..> GEMINI : "2nd: Gemini"
+INSIGHT ..> CUSTOM_LLM : "3rd: Custom"
+INSIGHT ..> ANTHROPIC : "4th: Anthropic"
+INSIGHT .> OPENAI : "Fallback: OpenAI"
+
+QA ..> GROQ_LLM : "1st: Groq"
+QA ..> GEMINI : "2nd: Gemini"
+QA ..> CUSTOM_LLM : "3rd: Custom"
+QA ..> ANTHROPIC : "4th: Anthropic"
+QA .> OPENAI : "Fallback: OpenAI"
+
+OBS ..> GROQ_LLM : "1st: Groq"
+OBS ..> GEMINI : "2nd: Gemini"
+OBS ..> CUSTOM_LLM : "3rd: Custom"
+OBS ..> ANTHROPIC : "4th: Anthropic"
+OBS .> OPENAI : "Fallback: OpenAI"
+
+VIBE ..> GROQ_LLM : "1st: Groq"
+VIBE ..> GEMINI : "2nd: Gemini"
+VIBE ..> CUSTOM_LLM : "3rd: Custom"
+VIBE ..> ANTHROPIC : "4th: Anthropic"
+VIBE .> OPENAI : "Fallback: OpenAI"
+
+WEBSEARCH ..> GROQ_LLM : "Semantic\nrelevance"
 WEBSEARCH ..> WEB_API : "Searches"
+
+DEDUP ..> OPENAI : "Embeddings\ntext-embedding-3-small"
 
 ' Storage layer connections
 PERSIST --> GRAPHDB : "Stores entities\n& relations"
@@ -107,10 +132,11 @@ note right of COORDINATOR
 end note
 
 note right of SEMANTIC
-  3-tier LLM provider chain:
-  Custom LLM → Anthropic → OpenAI
+  4-tier LLM provider chain:
+  Groq → Gemini → Custom → Anthropic → OpenAI
   Correlates code changes with conversations
   Deep semantic code analysis
+  All LLM agents use SemanticAnalyzer
 end note
 
 note right of GRAPHDB
@@ -124,15 +150,16 @@ end note
 note bottom of GIT
   **Workflow orchestration via CoordinatorAgent:**
   1. GitHistoryAgent → reads commits
-  2. VibeHistoryAgent → reads conversations
-  3. SemanticAnalysisAgent → correlates data (LLM)
-  4. WebSearchAgent → external research
-  5. InsightGenerationAgent → creates insights (LLM)
-  6. ObservationGenerationAgent → structures observations
-  7. QualityAssuranceAgent → validates & corrects (LLM)
+  2. VibeHistoryAgent → LLM session summaries
+  3. SemanticAnalysisAgent → LLM correlation
+  4. WebSearchAgent → LLM semantic relevance
+  5. InsightGenerationAgent → LLM insights
+  6. ObservationGenerationAgent → LLM extraction
+  7. QualityAssuranceAgent → LLM validation
   8. PersistenceAgent → stores to GraphDB
-  9. DeduplicationAgent → prevents duplicates
+  9. DeduplicationAgent → embedding similarity
 
+  **LLM-Enhanced Agents: 5 analysis + embeddings**
   **Data flows through coordinator, not agent-to-agent**
 end note
 

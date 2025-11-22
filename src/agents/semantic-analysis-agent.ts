@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+import Groq from "groq-sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { log } from '../logging.js';
 
 export interface CodeFile {
@@ -61,6 +63,8 @@ export interface SemanticAnalysisResult {
 }
 
 export class SemanticAnalysisAgent {
+  private groqClient: Groq | null = null;
+  private geminiClient: GoogleGenerativeAI | null = null;
   private anthropicClient: Anthropic | null = null;
   private openaiClient: OpenAI | null = null;
   private repositoryPath: string;
@@ -145,25 +149,41 @@ export class SemanticAnalysisAgent {
   }
 
   private initializeClients(): void {
-    // Initialize Anthropic client
+    // Initialize Groq client (primary/default - cheap, fast)
+    const groqKey = process.env.GROQ_API_KEY;
+    if (groqKey && groqKey !== "your-groq-api-key") {
+      this.groqClient = new Groq({
+        apiKey: groqKey,
+      });
+      log("Groq client initialized for semantic analysis (default provider)", "info");
+    }
+
+    // Initialize Gemini client (fallback #1 - cheap, good quality)
+    const googleKey = process.env.GOOGLE_API_KEY;
+    if (googleKey && googleKey !== "your-google-api-key") {
+      this.geminiClient = new GoogleGenerativeAI(googleKey);
+      log("Gemini client initialized for semantic analysis (fallback #1)", "info");
+    }
+
+    // Initialize Anthropic client (fallback #2)
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
     if (anthropicKey && anthropicKey !== "your-anthropic-api-key") {
       this.anthropicClient = new Anthropic({
         apiKey: anthropicKey,
       });
-      log("Anthropic client initialized for semantic analysis", "info");
+      log("Anthropic client initialized for semantic analysis (fallback #2)", "info");
     }
 
-    // Initialize OpenAI client
+    // Initialize OpenAI client (fallback #3)
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey && openaiKey !== "your-openai-api-key") {
       this.openaiClient = new OpenAI({
         apiKey: openaiKey,
       });
-      log("OpenAI client initialized for semantic analysis", "info");
+      log("OpenAI client initialized for semantic analysis (fallback #3)", "info");
     }
 
-    if (!this.anthropicClient && !this.openaiClient) {
+    if (!this.groqClient && !this.geminiClient && !this.anthropicClient && !this.openaiClient) {
       log("No LLM clients available for semantic analysis", "warning");
     }
   }
@@ -610,7 +630,7 @@ export class SemanticAnalysisAgent {
     crossAnalysis: any
   ): Promise<SemanticAnalysisResult['semanticInsights']> {
     // Generate insights using LLM if available
-    if (this.anthropicClient || this.openaiClient) {
+    if (this.groqClient || this.geminiClient || this.anthropicClient || this.openaiClient) {
       return await this.generateLLMInsights(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis);
     }
 
@@ -626,11 +646,87 @@ export class SemanticAnalysisAgent {
   ): Promise<SemanticAnalysisResult['semanticInsights']> {
     try {
       const analysisPrompt = this.buildAnalysisPrompt(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis);
-      
+
       let response: string;
-      
-      // Try Anthropic first with rate limit handling
-      if (this.anthropicClient) {
+
+      // Try Groq first (default, cheap, low-latency)
+      if (this.groqClient) {
+        try {
+          response = await this.callGroqWithRetry(analysisPrompt);
+        } catch (groqError: any) {
+          log('Groq call failed, trying Gemini fallback', 'warning', {
+            error: groqError.message,
+            status: groqError.status
+          });
+
+          // If Groq fails due to rate limiting, try Gemini
+          if (this.geminiClient && this.isRateLimitError(groqError)) {
+            try {
+              response = await this.callGeminiWithRetry(analysisPrompt);
+            } catch (geminiError: any) {
+              log('Gemini fallback failed, trying Anthropic', 'warning', {
+                error: geminiError.message,
+                status: geminiError.status
+              });
+
+              // If Gemini also fails, try Anthropic
+              if (this.anthropicClient && this.isRateLimitError(geminiError)) {
+                try {
+                  response = await this.callAnthropicWithRetry(analysisPrompt);
+                } catch (anthropicError: any) {
+                  log('Anthropic fallback failed, trying OpenAI', 'warning', {
+                    error: anthropicError.message,
+                    status: anthropicError.status
+                  });
+
+                  // If Anthropic fails, try OpenAI as last resort
+                  if (this.openaiClient && this.isRateLimitError(anthropicError)) {
+                    response = await this.callOpenAIWithRetry(analysisPrompt);
+                  } else {
+                    throw anthropicError;
+                  }
+                }
+              } else {
+                throw geminiError;
+              }
+            }
+          } else {
+            throw groqError;
+          }
+        }
+      } else if (this.geminiClient) {
+        // Fallback #1: Gemini if Groq not available
+        try {
+          response = await this.callGeminiWithRetry(analysisPrompt);
+        } catch (geminiError: any) {
+          log('Gemini call failed, trying Anthropic fallback', 'warning', {
+            error: geminiError.message,
+            status: geminiError.status
+          });
+
+          // If Gemini fails due to rate limiting, try Anthropic
+          if (this.anthropicClient && this.isRateLimitError(geminiError)) {
+            try {
+              response = await this.callAnthropicWithRetry(analysisPrompt);
+            } catch (anthropicError: any) {
+              log('Anthropic fallback failed, trying OpenAI', 'warning', {
+                error: anthropicError.message,
+                status: anthropicError.status
+              });
+
+              // If Anthropic fails, try OpenAI as last resort
+              if (this.openaiClient && this.isRateLimitError(anthropicError)) {
+                response = await this.callOpenAIWithRetry(analysisPrompt);
+              } else {
+                throw anthropicError;
+              }
+            }
+          } else {
+            throw geminiError;
+          }
+        }
+      } else if (this.anthropicClient) {
+        // Fallback #2: Anthropic if neither Groq nor Gemini available
         try {
           response = await this.callAnthropicWithRetry(analysisPrompt);
         } catch (anthropicError: any) {
@@ -638,7 +734,7 @@ export class SemanticAnalysisAgent {
             error: anthropicError.message,
             status: anthropicError.status
           });
-          
+
           // If Anthropic fails due to rate limiting, try OpenAI
           if (this.openaiClient && this.isRateLimitError(anthropicError)) {
             response = await this.callOpenAIWithRetry(analysisPrompt);
@@ -647,6 +743,7 @@ export class SemanticAnalysisAgent {
           }
         }
       } else if (this.openaiClient) {
+        // Fallback #3: OpenAI if no other providers available
         response = await this.callOpenAIWithRetry(analysisPrompt);
       } else {
         throw new Error('No LLM client available');
@@ -675,6 +772,118 @@ export class SemanticAnalysisAgent {
    */
   private async sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Call Groq with exponential backoff retry
+   * Using llama-3.3-70b-versatile: cheap, low-latency model
+   */
+  private async callGroqWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
+    let lastError: any;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        log(`Calling Groq API (attempt ${attempt + 1}/${maxRetries})`, 'info');
+
+        const result = await this.groqClient!.chat.completions.create({
+          model: "llama-3.3-70b-versatile", // Cheap, low-latency model
+          max_tokens: 4096,
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.7
+        });
+
+        const response = result.choices[0]?.message?.content || '';
+        log(`Groq API call successful`, 'info', {
+          responseLength: response.length,
+          attempt: attempt + 1,
+          model: "llama-3.3-70b-versatile"
+        });
+
+        return response;
+
+      } catch (error: any) {
+        lastError = error;
+
+        if (this.isRateLimitError(error)) {
+          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
+          log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
+            attempt: attempt + 1,
+            maxRetries,
+            status: error.status,
+            backoffMs
+          });
+
+          if (attempt < maxRetries - 1) {
+            await this.sleep(backoffMs);
+            continue;
+          }
+        }
+
+        // For non-rate-limit errors, don't retry
+        log(`Groq API call failed`, 'error', {
+          attempt: attempt + 1,
+          error: error.message,
+          status: error.status
+        });
+        break;
+      }
+    }
+
+    throw lastError;
+  }
+
+  /**
+   * Call Gemini with exponential backoff retry
+   * Using gemini-2.0-flash-exp: cheap, fast model with good quality
+   */
+  private async callGeminiWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
+    let lastError: any;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        log(`Calling Gemini API (attempt ${attempt + 1}/${maxRetries})`, 'info');
+
+        const model = this.geminiClient!.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+        const result = await model.generateContent(prompt);
+        const response = result.response.text();
+
+        log(`Gemini API call successful`, 'info', {
+          responseLength: response.length,
+          attempt: attempt + 1,
+          model: "gemini-2.0-flash-exp"
+        });
+
+        return response;
+
+      } catch (error: any) {
+        lastError = error;
+
+        if (this.isRateLimitError(error)) {
+          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
+          log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
+            attempt: attempt + 1,
+            maxRetries,
+            status: error.status,
+            backoffMs
+          });
+
+          if (attempt < maxRetries - 1) {
+            await this.sleep(backoffMs);
+            continue;
+          }
+        }
+
+        // For non-rate-limit errors, don't retry
+        log(`Gemini API call failed`, 'error', {
+          attempt: attempt + 1,
+          error: error.message,
+          status: error.status
+        });
+        break;
+      }
+    }
+
+    throw lastError;
   }
 
   /**

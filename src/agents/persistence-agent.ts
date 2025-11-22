@@ -365,9 +365,10 @@ export class PersistenceAgent {
       const context = parameters._context;
       const results = context.previousResults || {};
       
-      gitAnalysis = results.analyze_git_history;
-      vibeAnalysis = results.analyze_vibe_history;
-      semanticAnalysis = results.semantic_analysis;
+      // Support both complete-analysis and incremental-analysis step names
+      gitAnalysis = results.analyze_git_history || results.analyze_recent_changes;
+      vibeAnalysis = results.analyze_vibe_history || results.analyze_recent_vibes;
+      semanticAnalysis = results.semantic_analysis || results.analyze_semantics;
       observations = results.generate_observations?.observations || results.generate_observations || [];
       insightGeneration = results.generate_insights;
     } else if (arguments.length > 1) {

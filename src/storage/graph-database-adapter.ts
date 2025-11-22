@@ -63,7 +63,10 @@ export class GraphDatabaseAdapter {
     try {
       // Dynamically import VkbApiClient to avoid TS compilation issues
       if (!VkbApiClient) {
-        const module = await import('../../../../lib/ukb-unified/core/VkbApiClient.js');
+        // Extract repository root from dbPath (remove /.data/knowledge-graph)
+        const repoRoot = this.dbPath.replace(/\/.data\/knowledge-graph$/, '');
+        const vkbClientPath = `${repoRoot}/lib/ukb-unified/core/VkbApiClient.js`;
+        const module = await import(vkbClientPath);
         VkbApiClient = module.VkbApiClient;
       }
 

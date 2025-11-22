@@ -224,18 +224,20 @@ export class CoordinatorAgent {
           {
             name: "analyze_recent_changes",
             agent: "git_history",
-            action: "analyzeRecentChanges",
-            parameters: { 
-              since_last_checkpoint: true
+            action: "analyzeGitHistory",
+            parameters: {
+              repository: null,  // Will be filled from workflow params
+              maxCommits: 10,
+              sinceCommit: null
             },
             timeout: 60,
           },
           {
             name: "analyze_recent_vibes",
-            agent: "vibe_history", 
-            action: "analyzeRecentVibes",
+            agent: "vibe_history",
+            action: "analyzeVibeHistory",
             parameters: {
-              since_last_checkpoint: true
+              maxSessions: 5
             },
             timeout: 60,
           },
@@ -262,7 +264,7 @@ export class CoordinatorAgent {
           {
             name: "persist_incremental",
             agent: "persistence",
-            action: "persistIncremental",
+            action: "persistAnalysisResults",
             parameters: {},
             dependencies: ["generate_observations"],
             timeout: 30,

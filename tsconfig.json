@@ -6,16 +6,16 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "allowJs": true,
+    "rootDir": "./src",
     "outDir": "./dist",
     "strict": true,
     "declaration": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "skipDefaultLibCheck": true
   },
   "include": [
-    "src/**/*",
-    "../../src/ontology/**/*",
-    "../../src/knowledge-management/**/*"
+    "src/**/*"
   ],
   "exclude": [
     "node_modules",

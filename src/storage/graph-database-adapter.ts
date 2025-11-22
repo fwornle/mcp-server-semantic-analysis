@@ -11,7 +11,7 @@
  * - Prevents LevelDB lock conflicts
  */
 
-import { GraphDatabaseService } from '../../../../src/knowledge-management/GraphDatabaseService.js';
+import { GraphDatabaseService } from '../knowledge-management/GraphDatabaseService.js';
 import { log } from '../logging.js';
 
 // Dynamic import to avoid TypeScript compilation issues

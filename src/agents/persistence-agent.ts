@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
-import { createOntologySystem, type OntologySystem } from '../../../../src/ontology/index.js';
+import { createOntologySystem, type OntologySystem } from '../ontology/index.js';
 
 export interface PersistenceResult {
   success: boolean;

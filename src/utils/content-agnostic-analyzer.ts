@@ -262,23 +262,29 @@ export class ContentAgnosticAnalyzer {
     // PERFORMANCE: Simplified solution extraction
     const technologies = this.extractTechnologiesFromGit(gitAnalysis);
     const patterns = this.extractPatternsFromSemantic(semanticAnalysis);
-    
+
+    // Check if we have correlations WITH actual decisions
     if (correlations.length > 0) {
       const mainCorrelation = correlations[0];
       const decisions = mainCorrelation.vibeDiscussion.decisions || [];
-      
-      return {
-        approach: decisions[0] || (() => {
-          log('ERROR: No decisions found in vibe correlations, cannot generate approach', 'error');
-          throw new Error('CONTENT_GENERATION_ERROR: Missing approach data - no decisions in correlations');
-        })(),
-        implementation: decisions.slice(0, 5), // Limit implementation steps
-        technologies: technologies.slice(0, 5), // Limit technologies
-        tradeoffs: ['Implementation complexity vs. maintainability']
-      };
+
+      // Only use correlation-based solution if we actually have decisions
+      if (decisions.length > 0) {
+        log('Using correlation-based solution with decisions', 'debug');
+        return {
+          approach: decisions[0],
+          implementation: decisions.slice(0, 5), // Limit implementation steps
+          technologies: technologies.slice(0, 5), // Limit technologies
+          tradeoffs: ['Implementation complexity vs. maintainability']
+        };
+      }
+
+      // Correlations exist but no decisions - fall through to repository-specific generation
+      log('Correlations found but no decisions - generating repository-specific solution', 'debug');
     }
 
     // Generate repository-specific solution instead of generic fallback
+    log('Generating repository-specific solution from git/semantic analysis', 'debug');
     return this.generateRepositorySpecificSolution(gitAnalysis, semanticAnalysis, technologies, patterns);
   }
 

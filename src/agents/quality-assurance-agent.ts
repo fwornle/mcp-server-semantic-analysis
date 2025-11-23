@@ -324,14 +324,8 @@ export class QualityAssuranceAgent {
         return;
       }
 
-      // Check for malformed component definitions
-      if (trimmed.startsWith('component ') && trimmed.includes('\\n')) {
-        issues.push({
-          type: 'error',
-          line: lineNum,
-          message: 'Invalid component definition with escaped newline'
-        });
-      }
+      // REMOVED: \n in component definitions is VALID PlantUML syntax for multi-line labels
+      // Do NOT flag this as an error!
 
       // Check for unmatched quotes
       const quotes = (trimmed.match(/"/g) || []).length;
@@ -358,40 +352,12 @@ export class QualityAssuranceAgent {
   }
 
   /**
-   * Auto-fix common PlantUML syntax errors
+   * REMOVED: Auto-fix was corrupting valid PlantUML files by removing \n from multi-line labels
+   * PlantUML component labels can contain \n for multi-line text - this is VALID syntax
    */
   private fixPlantUMLFile(filePath: string): boolean {
-    try {
-      const content = fs.readFileSync(filePath, 'utf8');
-      let lines = content.split('\n');
-      let fixed = false;
-
-      // Fix component definitions with escaped newlines
-      lines = lines.map(line => {
-        if (line.includes('component ') && line.includes('\\n')) {
-          const parts = line.split('\\n');
-          if (parts.length === 2) {
-            fixed = true;
-            return parts[0]; // Return first part, second will be handled separately
-          }
-        }
-        return line;
-      });
-
-      if (fixed) {
-        // Write fixed content directly without creating backup
-        fs.writeFileSync(filePath, lines.join('\n'));
-        
-        log(`Fixed PlantUML file: ${path.basename(filePath)}`, 'info');
-        
-        return true;
-      }
-      
-      return false;
-    } catch (error) {
-      log(`Failed to fix PlantUML file: ${filePath}`, 'error', error);
-      return false;
-    }
+    // DO NOT AUTO-FIX PUML FILES - manual review required
+    return false;
   }
 
   /**

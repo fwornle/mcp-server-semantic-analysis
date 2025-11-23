@@ -581,10 +581,13 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     // Add artifacts information
     if (execution.status === "completed") {
       resultText += "## Generated Artifacts\n";
-      resultText += "Check the following locations for generated files:\n";
+      resultText += "**IMPORTANT**: Verify actual file modifications with `git status` before trusting this report.\n\n";
+      resultText += "Expected locations for generated files:\n";
       resultText += "- `knowledge-management/insights/` - Insight documents\n";
-      resultText += "- `shared-memory-coding.json` - Updated knowledge base\n";
-      resultText += "- Generated PlantUML diagrams and documentation\n";
+      resultText += "- `.data/knowledge-export/coding.json` - Knowledge base export (git-tracked)\n";
+      resultText += "- `.data/knowledge-graph/` - LevelDB persistent storage\n";
+      resultText += "- Generated PlantUML diagrams (.puml and .png files)\n\n";
+      resultText += "**VERIFY**: Run `git status` to confirm which files were actually modified.\n";
     }
     
     return {

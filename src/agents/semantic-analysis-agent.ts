@@ -85,11 +85,35 @@ export class SemanticAnalysisAgent {
     } = {}
   ): Promise<SemanticAnalysisResult> {
     const startTime = Date.now();
-    
+
+    // ULTRA DEBUG: Write input data to trace file
+    const fs = await import('fs');
+    const traceFile = `${process.cwd()}/logs/semantic-analysis-trace-${Date.now()}.json`;
+    await fs.promises.writeFile(traceFile, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      phase: 'INPUT_DATA',
+      gitAnalysis: {
+        hasData: !!gitAnalysis,
+        commitsCount: gitAnalysis?.commits?.length || 0,
+        firstCommit: gitAnalysis?.commits?.[0] || null,
+        lastCommit: gitAnalysis?.commits?.[gitAnalysis?.commits?.length - 1] || null,
+        fullData: gitAnalysis
+      },
+      vibeAnalysis: {
+        hasData: !!vibeAnalysis,
+        sessionsCount: vibeAnalysis?.sessions?.length || 0,
+        firstSession: vibeAnalysis?.sessions?.[0] || null,
+        fullData: vibeAnalysis
+      },
+      options
+    }, null, 2));
+    log(`🔍 TRACE: Input data written to ${traceFile}`, 'info');
+
     log('Starting comprehensive semantic analysis', 'info', {
       gitCommits: gitAnalysis?.commits?.length || 0,
       vibeSessions: vibeAnalysis?.sessions?.length || 0,
-      analysisDepth: options.analysisDepth || 'deep'
+      analysisDepth: options.analysisDepth || 'deep',
+      traceFile
     });
 
     try {
@@ -647,6 +671,12 @@ export class SemanticAnalysisAgent {
     try {
       const analysisPrompt = this.buildAnalysisPrompt(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis);
 
+      // ULTRA DEBUG: Write LLM prompt to trace file
+      const fs2 = await import('fs');
+      const promptTraceFile = `${process.cwd()}/logs/semantic-analysis-prompt-${Date.now()}.txt`;
+      await fs2.promises.writeFile(promptTraceFile, `=== LLM PROMPT ===\n${analysisPrompt}\n\n=== END PROMPT ===\n`);
+      log(`🔍 TRACE: LLM prompt written to ${promptTraceFile}`, 'info');
+
       let response: string;
 
       // Try Groq first (default, cheap, low-latency)
@@ -749,7 +779,24 @@ export class SemanticAnalysisAgent {
         throw new Error('No LLM client available');
       }
 
-      return this.parseInsightsFromLLMResponse(response);
+      // ULTRA DEBUG: Write LLM response to trace file
+      const fs3 = await import('fs');
+      const responseTraceFile = `${process.cwd()}/logs/semantic-analysis-response-${Date.now()}.txt`;
+      await fs3.promises.writeFile(responseTraceFile, `=== LLM RESPONSE ===\n${response}\n\n=== END RESPONSE ===\n`);
+      log(`🔍 TRACE: LLM response written to ${responseTraceFile}`, 'info');
+
+      const parsedInsights = this.parseInsightsFromLLMResponse(response);
+
+      // ULTRA DEBUG: Write parsed insights to trace file
+      const parsedTraceFile = `${process.cwd()}/logs/semantic-analysis-parsed-${Date.now()}.json`;
+      await fs3.promises.writeFile(parsedTraceFile, JSON.stringify({
+        timestamp: new Date().toISOString(),
+        phase: 'PARSED_INSIGHTS',
+        parsedInsights
+      }, null, 2));
+      log(`🔍 TRACE: Parsed insights written to ${parsedTraceFile}`, 'info');
+
+      return parsedInsights;
 
     } catch (error) {
       log('LLM insight generation failed, falling back to rule-based', 'warning', error);
@@ -1188,20 +1235,63 @@ Focus on:
     });
   }
 
-  async analyzeContent(content: string, context?: string, analysisType?: string): Promise<any> {
-    // Legacy compatibility method
-    const mockGitAnalysis = { commits: [], codeEvolution: [] };
-    const mockVibeAnalysis = { sessions: [], problemSolutionPairs: [] };
-    
-    // Create a single file analysis
-    const result = await this.analyzeGitAndVibeData(mockGitAnalysis, mockVibeAnalysis);
-    
-    return {
-      analysis: result.semanticInsights.keyPatterns.join(', '),
-      findings: result.semanticInsights.technicalDebt,
-      recommendations: result.codeAnalysis.codeQuality.recommendations,
-      confidence: result.confidence
-    };
+  async analyzeContent(content: string, context?: any, analysisType?: string): Promise<any> {
+    // FIXED: Use the actual content parameter instead of mock data
+    // This method is called by insight-generation-agent with real LLM prompts
+
+    log('analyzeContent called with real prompt', 'info', {
+      contentLength: content.length,
+      hasContext: !!context,
+      analysisType: analysisType || 'general',
+      contextType: typeof context
+    });
+
+    try {
+      // Build the full prompt with context if provided
+      let fullPrompt = content;
+      if (context && typeof context === 'object' && context.context) {
+        fullPrompt = `${context.context}\n\n${content}`;
+      }
+
+      // Call LLM with the actual prompt using the same logic as generateLLMInsights
+      let response: string;
+
+      if (this.groqClient) {
+        try {
+          response = await this.callGroqWithRetry(fullPrompt);
+        } catch (groqError: any) {
+          if (this.geminiClient && this.isRateLimitError(groqError)) {
+            response = await this.callGeminiWithRetry(fullPrompt);
+          } else if (this.anthropicClient) {
+            response = await this.callAnthropicWithRetry(fullPrompt);
+          } else {
+            throw groqError;
+          }
+        }
+      } else if (this.geminiClient) {
+        response = await this.callGeminiWithRetry(fullPrompt);
+      } else if (this.anthropicClient) {
+        response = await this.callAnthropicWithRetry(fullPrompt);
+      } else if (this.openaiClient) {
+        response = await this.callOpenAIWithRetry(fullPrompt);
+      } else {
+        throw new Error('No LLM client available');
+      }
+
+      log('LLM analysis completed successfully', 'info', {
+        responseLength: response.length
+      });
+
+      return {
+        insights: response,
+        provider: this.groqClient ? 'groq' : this.geminiClient ? 'gemini' : this.anthropicClient ? 'anthropic' : 'openai',
+        confidence: 0.8
+      };
+
+    } catch (error) {
+      log('analyzeContent failed', 'error', error);
+      throw error;
+    }
   }
 
   async analyzeCode(code: string, language?: string, filePath?: string): Promise<any> {

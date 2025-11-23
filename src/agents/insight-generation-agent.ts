@@ -113,9 +113,48 @@ export class InsightGenerationAgent {
     });
 
     try {
+      // Filter git commits BEFORE pattern extraction to prevent analysis of infrastructure changes
+      let filteredGitAnalysis = gitAnalysis;
+      if (gitAnalysis?.commits) {
+        const originalCommitCount = gitAnalysis.commits.length;
+        const significantCommits = gitAnalysis.commits.filter((commit: any) => {
+          const msg = commit.message.toLowerCase();
+
+          // Reject infrastructure/config commits
+          if (msg.match(/^(fix|chore|docs|style|refactor|test):/)) {
+            return false;
+          }
+
+          // Reject small changes (likely bug fixes)
+          if (commit.additions + commit.deletions < 50) {
+            return false;
+          }
+
+          // Accept feature commits with significant changes
+          if (msg.match(/^feat:/) && commit.additions + commit.deletions > 100) {
+            return true;
+          }
+
+          // Accept commits with architectural keywords
+          return this.isArchitecturalCommit(commit.message);
+        });
+
+        log(`Filtered commits from ${originalCommitCount} to ${significantCommits.length} architecturally significant commits`, 'info');
+
+        if (significantCommits.length === 0) {
+          log('No architecturally significant commits found - skipping pattern extraction', 'info');
+          throw new Error('SKIP_INSIGHT_GENERATION: No architecturally significant commits found');
+        }
+
+        filteredGitAnalysis = {
+          ...gitAnalysis,
+          commits: significantCommits
+        };
+      }
+
       // Extract patterns from all analyses
       const patternCatalog = await this.generatePatternCatalog(
-        gitAnalysis, vibeAnalysis, semanticAnalysis, webResults
+        filteredGitAnalysis, vibeAnalysis, semanticAnalysis, webResults
       );
 
       // Solution 1: Skip insight generation when no real patterns found

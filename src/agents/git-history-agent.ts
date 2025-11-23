@@ -498,40 +498,20 @@ export class GitHistoryAgent {
   }
 
   private extractCodeEvolution(commits: GitCommit[]): CodeEvolutionPattern[] {
-    const patterns: Map<string, {
-      occurrences: number;
-      files: Set<string>;
-      commits: Set<string>;
-      timestamps: Date[];
-    }> = new Map();
+    // DISABLED: Hardcoded pattern matching has been removed in favor of LLM-based pattern extraction
+    // The InsightGenerationAgent.extractArchitecturalPatternsFromCommits() method uses LLM to
+    // extract meaningful, context-specific patterns instead of generic regex-based patterns.
+    //
+    // Previous implementation used hardcoded patterns like:
+    // - "bug fixes" (regex: /fix|bug|error|issue/)
+    // - "JavaScript development" (test: f.endsWith('.js'))
+    // - "Documentation updates" (test: f.endsWith('.md'))
+    // etc.
+    //
+    // These generic patterns were dominating the results and preventing meaningful
+    // LLM-extracted patterns from being used.
 
-    // Analyze patterns from commit messages and file changes
-    for (const commit of commits) {
-      const message = commit.message.toLowerCase();
-      const files = commit.files.map(f => f.path);
-
-      // Extract patterns from commit messages
-      this.extractMessagePatterns(message, commit, patterns);
-      
-      // Extract patterns from file changes
-      this.extractFilePatterns(files, commit, patterns);
-    }
-
-    // Convert to result format
-    const result: CodeEvolutionPattern[] = [];
-    for (const [pattern, data] of patterns.entries()) {
-      if (data.occurrences >= 2) { // Only include patterns that occur multiple times
-        result.push({
-          pattern,
-          occurrences: data.occurrences,
-          files: Array.from(data.files),
-          commits: Array.from(data.commits),
-          trend: this.calculateTrend(data.timestamps)
-        });
-      }
-    }
-
-    return result.sort((a, b) => b.occurrences - a.occurrences);
+    return [];
   }
 
   private extractMessagePatterns(message: string, commit: GitCommit, patterns: Map<string, any>): void {

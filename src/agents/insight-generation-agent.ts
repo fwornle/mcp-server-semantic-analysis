@@ -89,13 +89,25 @@ export class InsightGenerationAgent {
   async generateComprehensiveInsights(params: any): Promise<InsightGenerationResult> {
     log('generateComprehensiveInsights called', 'info');
     const startTime = Date.now();
-    
+
+    // ULTRA DEBUG: Write input parameters to trace file
+    const insightInputTrace = `${process.cwd()}/logs/insight-generation-input-${Date.now()}.json`;
+    await fs.promises.writeFile(insightInputTrace, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      phase: 'INSIGHT_GENERATION_INPUT',
+      params: {
+        keys: Object.keys(params || {}),
+        fullParams: params
+      }
+    }, null, 2));
+    log(`🔍 TRACE: Insight generation input written to ${insightInputTrace}`, 'info');
+
     // Extract parameters from the params object
     const gitAnalysis = params.git_analysis_results || params.gitAnalysis;
     const vibeAnalysis = params.vibe_analysis_results || params.vibeAnalysis;
     const semanticAnalysis = params.semantic_analysis_results || params.semanticAnalysis;
     const webResults = params.web_search_results || params.webResults;
-    
+
     log('Data availability checked', 'debug', {
       gitAnalysis: !!gitAnalysis,
       vibeAnalysis: !!vibeAnalysis,
@@ -113,37 +125,36 @@ export class InsightGenerationAgent {
     });
 
     try {
-      // Filter git commits BEFORE pattern extraction to prevent analysis of infrastructure changes
+      // Filter git commits to focus on meaningful development work
+      // Accept most commits but reject only truly trivial changes
       let filteredGitAnalysis = gitAnalysis;
       if (gitAnalysis?.commits) {
         const originalCommitCount = gitAnalysis.commits.length;
         const significantCommits = gitAnalysis.commits.filter((commit: any) => {
           const msg = commit.message.toLowerCase();
+          const changeSize = commit.additions + commit.deletions;
 
-          // Reject infrastructure/config commits
-          if (msg.match(/^(fix|chore|docs|style|refactor|test):/)) {
+          // Reject only very trivial changes (typos, formatting)
+          if (changeSize < 5 && msg.match(/^(style|typo|format):/)) {
             return false;
           }
 
-          // Reject small changes (likely bug fixes)
-          if (commit.additions + commit.deletions < 50) {
+          // Reject merge commits without meaningful content
+          if (msg.startsWith('merge ') && changeSize < 10) {
             return false;
           }
 
-          // Accept feature commits with significant changes
-          if (msg.match(/^feat:/) && commit.additions + commit.deletions > 100) {
-            return true;
-          }
-
-          // Accept commits with architectural keywords
-          return this.isArchitecturalCommit(commit.message);
+          // Accept all other commits - infrastructure, fixes, features, docs, etc.
+          // In infrastructure projects, ALL meaningful work should be analyzed
+          return true;
         });
 
-        log(`Filtered commits from ${originalCommitCount} to ${significantCommits.length} architecturally significant commits`, 'info');
+        log(`Filtered commits from ${originalCommitCount} to ${significantCommits.length} meaningful commits`, 'info');
 
+        // Only skip if there are literally no commits at all
         if (significantCommits.length === 0) {
-          log('No architecturally significant commits found - skipping pattern extraction', 'info');
-          throw new Error('SKIP_INSIGHT_GENERATION: No architecturally significant commits found');
+          log('No commits found - skipping pattern extraction', 'info');
+          throw new Error('SKIP_INSIGHT_GENERATION: No commits found');
         }
 
         filteredGitAnalysis = {
@@ -157,22 +168,70 @@ export class InsightGenerationAgent {
         filteredGitAnalysis, vibeAnalysis, semanticAnalysis, webResults
       );
 
+      // DEBUGGING: Log all pattern significance scores BEFORE filtering
+      log(`\n━━━ SIGNIFICANCE GRADING ANALYSIS ━━━`, 'info');
+      log(`Total patterns extracted: ${patternCatalog.patterns.length}`, 'info');
+
+      if (patternCatalog.patterns.length > 0) {
+        // Group patterns by significance score for analysis
+        const significanceDistribution = patternCatalog.patterns.reduce((acc, p) => {
+          const sig = p.significance || 0;
+          acc[sig] = (acc[sig] || 0) + 1;
+          return acc;
+        }, {} as Record<number, number>);
+
+        log(`Significance distribution:`, 'info');
+        Object.keys(significanceDistribution)
+          .sort((a, b) => Number(b) - Number(a))
+          .forEach(sig => {
+            const count = significanceDistribution[Number(sig)];
+            const bar = '█'.repeat(Math.min(count, 50));
+            log(`  ${sig}: ${count} patterns ${bar}`, 'info');
+          });
+
+        // Log top 10 patterns with their scores
+        log(`\nTop 10 patterns by significance:`, 'info');
+        const sortedPatterns = [...patternCatalog.patterns]
+          .sort((a, b) => (b.significance || 0) - (a.significance || 0))
+          .slice(0, 10);
+
+        sortedPatterns.forEach((p, i) => {
+          log(`  ${i + 1}. [${p.significance || 0}] ${p.name} (${p.category})`, 'info');
+        });
+
+        // Log patterns that would be filtered out
+        const filteredOut = patternCatalog.patterns.filter(p => (p.significance || 0) < 5);
+        if (filteredOut.length > 0) {
+          log(`\n⚠️  ${filteredOut.length} patterns will be FILTERED OUT (significance < 5):`, 'info');
+          filteredOut.slice(0, 5).forEach(p => {
+            log(`     [${p.significance || 0}] ${p.name}`, 'info');
+          });
+          if (filteredOut.length > 5) {
+            log(`     ... and ${filteredOut.length - 5} more`, 'info');
+          }
+        }
+      }
+      log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`, 'info');
+
       // Solution 1: Skip insight generation when no real patterns found
+      // LOWERED THRESHOLD: Changed from ≥7 to ≥5 to include standard infrastructure patterns
       const significantPatterns = patternCatalog.patterns
-        .filter(p => p.significance >= 7) // Only patterns with high significance
+        .filter(p => p.significance >= 5) // Include standard significance patterns (was >=7)
         .sort((a, b) => b.significance - a.significance);
 
       // If no significant patterns found, skip insight generation
       if (significantPatterns.length === 0) {
         log('No significant patterns found - skipping insight generation', 'info');
-        throw new Error('SKIP_INSIGHT_GENERATION: No patterns with sufficient significance (≥7) found');
+        log(`DIAGNOSIS: All ${patternCatalog.patterns.length} patterns had significance < 5`, 'error');
+        log(`This suggests the significance calculation needs adjustment for this repository type`, 'error');
+        throw new Error('SKIP_INSIGHT_GENERATION: No patterns with sufficient significance (≥5) found');
       }
 
       const insightDocuments: InsightDocument[] = [];
 
       if (significantPatterns.length >= 1 && significantPatterns.length <= 5) {
         // PERFORMANCE OPTIMIZATION: Generate insights in parallel instead of sequentially
-        log(`Generating separate insights for ${significantPatterns.length} significant patterns (≥7 significance) IN PARALLEL`, 'info');
+        log(`Generating separate insights for ${significantPatterns.length} significant patterns (≥5 significance) IN PARALLEL`, 'info');
         
         // Create insight generation tasks for parallel execution
         const insightTasks = significantPatterns.map(pattern => {
@@ -1932,6 +1991,11 @@ Pattern: [Specific Descriptive Name]
 Description: [What this pattern specifically accomplishes]
 Significance: [1-10]`;
 
+      // ULTRA DEBUG: Write pattern extraction prompt to trace file
+      const patternPromptTrace = `${process.cwd()}/logs/pattern-extraction-prompt-${Date.now()}.txt`;
+      await fs.promises.writeFile(patternPromptTrace, `=== PATTERN EXTRACTION PROMPT ===\n${prompt}\n\n=== COMMIT SUMMARY ===\n${JSON.stringify(commitSummary, null, 2)}\n\n=== END ===\n`);
+      log(`🔍 TRACE: Pattern extraction prompt written to ${patternPromptTrace}`, 'info');
+
       const analysisResult = await this.semanticAnalyzer.analyzeContent(
         prompt,
         {
@@ -1940,6 +2004,15 @@ Significance: [1-10]`;
           provider: 'auto'
         }
       );
+
+      // ULTRA DEBUG: Write pattern extraction result to trace file
+      const patternResultTrace = `${process.cwd()}/logs/pattern-extraction-result-${Date.now()}.json`;
+      await fs.promises.writeFile(patternResultTrace, JSON.stringify({
+        timestamp: new Date().toISOString(),
+        phase: 'PATTERN_EXTRACTION_RESULT',
+        analysisResult
+      }, null, 2));
+      log(`🔍 TRACE: Pattern extraction result written to ${patternResultTrace}`, 'info');
 
       // Extract patterns from LLM response
       if (analysisResult.insights) {

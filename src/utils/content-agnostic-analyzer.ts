@@ -743,6 +743,26 @@ export class ContentAgnosticAnalyzer {
       significance += 1;
     }
 
+    // ENHANCEMENT: Recognize infrastructure/architectural patterns (typically high significance)
+    const infrastructureKeywords = [
+      'infrastructure', 'architecture', 'build', 'deploy', 'ci/cd', 'pipeline',
+      'monitoring', 'logging', 'health', 'observability', 'reliability',
+      'performance', 'scalability', 'security', 'authentication', 'authorization',
+      'database', 'cache', 'api', 'integration', 'workflow', 'automation',
+      'testing', 'quality', 'documentation', 'configuration', 'environment'
+    ];
+
+    const problemText = (problem.description || '').toLowerCase();
+    const solutionText = (solution.approach || solution.description || '').toLowerCase();
+    const combinedText = `${problemText} ${solutionText}`;
+
+    const matchedKeywords = infrastructureKeywords.filter(kw => combinedText.includes(kw));
+    if (matchedKeywords.length >= 3) {
+      significance += 2; // Strong infrastructure pattern
+    } else if (matchedKeywords.length >= 1) {
+      significance += 1; // Infrastructure-related
+    }
+
     // Increase based on solution complexity
     if (solution.implementation.length > 3) {
       significance += 1;

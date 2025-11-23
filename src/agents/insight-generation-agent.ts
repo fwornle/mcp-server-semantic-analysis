@@ -118,13 +118,19 @@ export class InsightGenerationAgent {
         gitAnalysis, vibeAnalysis, semanticAnalysis, webResults
       );
 
-      // Determine if we should generate separate insights for distinct patterns
+      // Solution 1: Skip insight generation when no real patterns found
       const significantPatterns = patternCatalog.patterns
         .filter(p => p.significance >= 7) // Only patterns with high significance
         .sort((a, b) => b.significance - a.significance);
-      
+
+      // If no significant patterns found, skip insight generation
+      if (significantPatterns.length === 0) {
+        log('No significant patterns found - skipping insight generation', 'info');
+        throw new Error('SKIP_INSIGHT_GENERATION: No patterns with sufficient significance (≥7) found');
+      }
+
       const insightDocuments: InsightDocument[] = [];
-      
+
       if (significantPatterns.length >= 1 && significantPatterns.length <= 5) {
         // PERFORMANCE OPTIMIZATION: Generate insights in parallel instead of sequentially
         log(`Generating separate insights for ${significantPatterns.length} significant patterns (≥7 significance) IN PARALLEL`, 'info');
@@ -289,31 +295,31 @@ export class InsightGenerationAgent {
     semanticAnalysis: any,
     patternCatalog: PatternCatalog
   ): { name: string; title: string } {
-    
-    FilenameTracer.trace('START', 'generateMeaningfulNameAndTitle', 
-      { patternsCount: patternCatalog?.patterns?.length }, 
+
+    FilenameTracer.trace('START', 'generateMeaningfulNameAndTitle',
+      { patternsCount: patternCatalog?.patterns?.length },
       'Starting filename generation'
     );
-    
+
     const topPattern = patternCatalog?.patterns
       ?.sort((a: any, b: any) => b.significance - a.significance)?.[0];
-      
+
     FilenameTracer.trace('PATTERN_SELECTION', 'generateMeaningfulNameAndTitle',
-      { 
+      {
         allPatterns: patternCatalog?.patterns?.map((p: any) => p.name),
-        topPattern: topPattern?.name 
+        topPattern: topPattern?.name
       },
       topPattern?.name || 'NO_PATTERN_FOUND'
     );
-    
+
     let filename: string;
-    
+
     if (topPattern?.name) {
       FilenameTracer.trace('PATTERN_INPUT', 'generateMeaningfulNameAndTitle',
-        topPattern.name, 
+        topPattern.name,
         'Raw pattern name input'
       );
-      
+
       // Use actual pattern name directly (no hard-coded fallbacks)
       // Remove spaces and ensure proper casing
       filename = topPattern.name.replace(/\s+/g, '');
@@ -332,17 +338,17 @@ export class InsightGenerationAgent {
         'NO_PATTERN', filename
       );
     }
-    
+
     const title = `${filename} - Implementation Analysis`;
-    
+
     FilenameTracer.trace('FINAL_OUTPUT', 'generateMeaningfulNameAndTitle',
       { originalPattern: topPattern?.name, filename, title },
       { name: filename, title }
     );
-    
+
     // Add breakpoint opportunity
     debugger; // Will pause here when running with debugger
-    
+
     return { name: filename, title };
   }
 
@@ -1821,17 +1827,38 @@ skinparam sequence {
   // NEW METHODS FOR REAL PATTERN ANALYSIS
   private async extractArchitecturalPatternsFromCommits(commits: any[]): Promise<IdentifiedPattern[]> {
     const patterns: IdentifiedPattern[] = [];
-    
+
     // Limit processing to prevent performance issues
     const limitedCommits = commits.slice(0, 50);
-    
-    // Group commits by potential architectural significance
-    const significantCommits = limitedCommits.filter(commit => 
-      commit.additions + commit.deletions > 20 || // Significant code changes
-      this.isArchitecturalCommit(commit.message)
-    );
 
-    if (significantCommits.length === 0) return patterns;
+    // Solution 4: Only analyze commits with architectural significance
+    // Filter out infrastructure/config/bug fix commits
+    const significantCommits = limitedCommits.filter(commit => {
+      const msg = commit.message.toLowerCase();
+
+      // Reject infrastructure/config commits
+      if (msg.match(/^(fix|chore|docs|style|refactor|test):/)) {
+        return false;
+      }
+
+      // Reject small changes (likely bug fixes)
+      if (commit.additions + commit.deletions < 50) {
+        return false;
+      }
+
+      // Accept feature commits with significant changes
+      if (msg.match(/^feat:/) && commit.additions + commit.deletions > 100) {
+        return true;
+      }
+
+      // Accept commits with architectural keywords
+      return this.isArchitecturalCommit(commit.message);
+    });
+
+    if (significantCommits.length === 0) {
+      log('No architecturally significant commits found', 'info');
+      return patterns;
+    }
 
     try {
       // Use LLM to analyze commit patterns
@@ -1841,11 +1868,36 @@ skinparam sequence {
         changes: c.additions + c.deletions
       }));
 
+      // Solution 2: Improve LLM prompt to avoid generic names
+      const prompt = `Analyze these git commits and extract SPECIFIC architectural patterns.
+
+COMMITS:
+${JSON.stringify(commitSummary, null, 2)}
+
+REQUIREMENTS:
+- Pattern names must be SPECIFIC and DESCRIPTIVE based on actual implementation details
+- Names should describe WHAT the pattern does, not just the technology
+- Avoid generic names like "JavascriptDevelopmentPattern" or "ConfigurationChangesPattern"
+- Examples of GOOD pattern names:
+  * "GraphDatabasePersistencePattern" (describes the specific technology + purpose)
+  * "MultiAgentCoordinationPattern" (describes specific architectural approach)
+  * "OntologyClassificationWorkflow" (describes specific domain + process)
+- Examples of BAD pattern names (DO NOT USE):
+  * "JavascriptDevelopmentPattern" (too generic)
+  * "ConfigurationChangesPattern" (just describes commit type)
+  * "ImplementationPattern" (meaningless)
+
+OUTPUT FORMAT:
+For each pattern found, use this format:
+Pattern: [Specific Descriptive Name]
+Description: [What this pattern specifically accomplishes]
+Significance: [1-10]`;
+
       const analysisResult = await this.semanticAnalyzer.analyzeContent(
-        JSON.stringify(commitSummary, null, 2),
+        prompt,
         {
           analysisType: 'patterns',
-          context: 'Git commit history analysis for architectural patterns',
+          context: 'Git commit history analysis - extract specific architectural patterns with meaningful names',
           provider: 'auto'
         }
       );

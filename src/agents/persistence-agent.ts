@@ -124,9 +124,9 @@ export class PersistenceAgent {
 
   constructor(repositoryPath: string = '.', graphDB?: GraphDatabaseAdapter, config?: PersistenceAgentConfig) {
     this.repositoryPath = repositoryPath;
-    this.sharedMemoryPath = path.join(repositoryPath, 'shared-memory-coding.json');
-    this.insightsDir = path.join(repositoryPath, 'knowledge-management', 'insights');
     this.graphDB = graphDB || null;
+
+    // Configure team FIRST so we can use it for paths
     this.config = {
       enableOntology: config?.enableOntology ?? true,
       ontologyTeam: config?.ontologyTeam || 'coding',
@@ -136,6 +136,12 @@ export class PersistenceAgent {
       enableValidation: config?.enableValidation ?? false,
       validationMode: config?.validationMode || 'lenient'
     };
+
+    // CORRECTED: Use team-specific export path (e.g., coding.json, resi.coding.json, ui.coding.json)
+    // This matches the actual GraphDB export structure
+    this.sharedMemoryPath = path.join(repositoryPath, '.data', 'knowledge-export', `${this.config.ontologyTeam}.json`);
+    this.insightsDir = path.join(repositoryPath, 'knowledge-management', 'insights');
+
     this.ensureDirectories();
 
     if (!this.graphDB) {
@@ -570,7 +576,7 @@ export class PersistenceAgent {
               last_updated: new Date().toISOString(),
               created_by: 'semantic-analysis-agent',
               version: '1.0',
-              team: 'coding',
+              team: this.config.ontologyTeam,
               source: 'semantic-analysis',
               context: 'comprehensive-analysis',
               tags: observation.tags || [],
@@ -824,7 +830,7 @@ export class PersistenceAgent {
       if (!data.metadata.last_updated) data.metadata.last_updated = new Date().toISOString();
       if (!data.metadata.total_entities) data.metadata.total_entities = data.entities.length;
       if (!data.metadata.total_relations) data.metadata.total_relations = data.relations.length;
-      if (!data.metadata.team) data.metadata.team = 'coding';
+      if (!data.metadata.team) data.metadata.team = this.config.ontologyTeam;
 
       return data as SharedMemoryStructure;
     } catch (error) {
@@ -1014,7 +1020,7 @@ export class PersistenceAgent {
         last_updated: new Date().toISOString(),
         total_entities: 0,
         total_relations: 0,
-        team: 'coding',
+        team: this.config.ontologyTeam || 'coding',
         analysisCount: 0
       }
     };

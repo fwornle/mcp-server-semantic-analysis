@@ -1027,10 +1027,15 @@ ${workflow.steps.map(step => {
 ` : ''}
 
 ## Generated Artifacts
-Check the following locations for generated files:
-- \`knowledge-management/insights/\` - Insight documents
-- \`shared-memory-coding.json\` - Updated knowledge base
-- Generated PlantUML diagrams and documentation
+**IMPORTANT**: Verify actual file modifications with \`git status\` before trusting this report.
+
+Expected locations for generated files:
+- \`knowledge-management/insights/\` - Insight documents and markdown files
+- \`.data/knowledge-export/coding.json\` - Knowledge base export (git-tracked)
+- \`.data/knowledge-graph/\` - LevelDB persistent storage (not git-tracked)
+- Generated PlantUML diagrams (.puml and .png files)
+
+**VERIFY**: Run \`git status\` to confirm which files were actually modified.
 `;
     
     return summary.trim();

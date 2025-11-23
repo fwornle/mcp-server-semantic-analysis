@@ -484,14 +484,19 @@ async function handleExtractPatterns(args: any): Promise<any> {
 
 async function handleCreateUkbEntity(args: any): Promise<any> {
   const { entity_name, entity_type, insights, significance, tags } = args;
-  
+
   log(`Creating UKB entity: ${entity_name}`, "info", {
     entity_type,
     significance,
     tags,
   });
-  
-  const knowledgeManager = new PersistenceAgent();
+
+  // CORRECTED: Import and use GraphDatabaseAdapter so entities persist to LevelDB
+  const { GraphDatabaseAdapter } = await import('./storage/graph-database-adapter.js');
+  const graphDB = new GraphDatabaseAdapter();
+  await graphDB.initialize();
+
+  const knowledgeManager = new PersistenceAgent('.', graphDB);
   await knowledgeManager.initializeOntology();
   const result = await knowledgeManager.createUkbEntity({
     name: entity_name,

@@ -86,9 +86,11 @@ export class VibeHistoryAgent {
   private repositoryPath: string;
   private specstoryPath: string;
   private semanticAnalyzer: SemanticAnalyzer;
+  private team: string;
 
-  constructor(repositoryPath: string = '.') {
+  constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
+    this.team = team;
     this.specstoryPath = path.join(repositoryPath, '.specstory', 'history');
     this.semanticAnalyzer = new SemanticAnalyzer();
   }
@@ -173,7 +175,7 @@ export class VibeHistoryAgent {
 
   private async getLastAnalysisCheckpoint(): Promise<Date | null> {
     try {
-      const sharedMemoryPath = path.join(this.repositoryPath, 'shared-memory-coding.json');
+      const sharedMemoryPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
       if (fs.existsSync(sharedMemoryPath)) {
         const data = JSON.parse(fs.readFileSync(sharedMemoryPath, 'utf8'));
         if (data.metadata?.lastVibeAnalysis) {
@@ -189,7 +191,7 @@ export class VibeHistoryAgent {
 
   private async saveAnalysisCheckpoint(timestamp: Date): Promise<void> {
     try {
-      const sharedMemoryPath = path.join(this.repositoryPath, 'shared-memory-coding.json');
+      const sharedMemoryPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
       let data: any = { entities: [], metadata: {} };
       
       if (fs.existsSync(sharedMemoryPath)) {

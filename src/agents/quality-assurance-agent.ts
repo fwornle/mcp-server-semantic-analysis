@@ -53,9 +53,11 @@ export class QualityAssuranceAgent {
   private rules: ValidationRules;
   private repositoryPath: string;
   private semanticAnalyzer: SemanticAnalyzer;
+  private team: string;
 
-  constructor(repositoryPath: string = '.') {
+  constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
+    this.team = team;
     this.rules = this.getDefaultRules();
     this.semanticAnalyzer = new SemanticAnalyzer();
     this.initializeRules();
@@ -1074,22 +1076,22 @@ Respond with a JSON object:
       return;
     }
 
-    // Check shared-memory file update
-    const sharedMemoryPath = path.join(this.repositoryPath, 'shared-memory-coding.json');
-    if (!fs.existsSync(sharedMemoryPath)) {
-      errors.push('shared-memory-coding.json file does not exist');
+    // Check knowledge export file update
+    const knowledgeExportPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
+    if (!fs.existsSync(knowledgeExportPath)) {
+      errors.push(`Knowledge export file ${this.team}.json does not exist`);
     } else {
       try {
-        const data = JSON.parse(fs.readFileSync(sharedMemoryPath, 'utf8'));
+        const data = JSON.parse(fs.readFileSync(knowledgeExportPath, 'utf8'));
         if (!data.entities || !Array.isArray(data.entities)) {
-          errors.push('shared-memory-coding.json has invalid structure');
+          errors.push(`Knowledge export ${this.team}.json has invalid structure`);
         }
-        
+
         if (!data.metadata || !data.metadata.last_updated) {
-          warnings.push('shared-memory-coding.json missing update timestamp');
+          warnings.push(`Knowledge export ${this.team}.json missing update timestamp`);
         }
       } catch (error) {
-        errors.push('shared-memory-coding.json is not valid JSON');
+        errors.push(`Knowledge export ${this.team}.json is not valid JSON`);
       }
     }
 

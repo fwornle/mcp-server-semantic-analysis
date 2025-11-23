@@ -59,6 +59,7 @@ export interface GitHistoryAnalysisResult {
 
 export class GitHistoryAgent {
   private repositoryPath: string;
+  private team: string;
   private excludePatterns: string[] = [
     'node_modules',
     '.git',
@@ -69,8 +70,9 @@ export class GitHistoryAgent {
     '.DS_Store'
   ];
 
-  constructor(repositoryPath: string = '.') {
+  constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
+    this.team = team;
   }
 
   async analyzeGitHistory(fromTimestampOrParams?: Date | Record<string, any>): Promise<GitHistoryAnalysisResult> {
@@ -194,7 +196,7 @@ export class GitHistoryAgent {
   private async getLastAnalysisCheckpoint(): Promise<Date | null> {
     try {
       // Try to read from shared memory file - use lastSuccessfulWorkflowCompletion instead of lastGitAnalysis
-      const sharedMemoryPath = path.join(this.repositoryPath, 'shared-memory-coding.json');
+      const sharedMemoryPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
       if (fs.existsSync(sharedMemoryPath)) {
         const data = JSON.parse(fs.readFileSync(sharedMemoryPath, 'utf8'));
         // Check for successful workflow checkpoint first, fallback to old format for compatibility
@@ -221,7 +223,7 @@ export class GitHistoryAgent {
 
   private async saveAnalysisCheckpoint(timestamp: Date): Promise<void> {
     try {
-      const sharedMemoryPath = path.join(this.repositoryPath, 'shared-memory-coding.json');
+      const sharedMemoryPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
       let data: any = { entities: [], metadata: {} };
       
       if (fs.existsSync(sharedMemoryPath)) {

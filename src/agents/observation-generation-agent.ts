@@ -59,9 +59,11 @@ export class ObservationGenerationAgent {
   private templates: Map<string, ObservationTemplate[]> = new Map();
   private repositoryPath: string;
   private semanticAnalyzer: SemanticAnalyzer;
+  private team: string;
 
-  constructor(repositoryPath: string = '.') {
+  constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
+    this.team = team;
     this.semanticAnalyzer = new SemanticAnalyzer();
     this.initializeTemplates();
   }
@@ -313,7 +315,7 @@ export class ObservationGenerationAgent {
           last_updated: currentDate,
           created_by: 'semantic-analysis-agent',
           version: '1.0',
-          team: 'coding'
+          team: this.team
         }
       };
 
@@ -495,7 +497,7 @@ export class ObservationGenerationAgent {
           last_updated: currentDate,
           created_by: 'semantic-analysis-agent',
           version: '1.0',
-          team: 'coding'
+          team: this.team
         }
       };
 
@@ -733,7 +735,7 @@ export class ObservationGenerationAgent {
           last_updated: currentDate,
           created_by: 'insight-generation-agent',
           version: '1.0',
-          team: 'coding',
+          team: this.team,
           generatedAt: insightDoc.metadata?.generatedAt || currentDate,
           sourceData: {
             analysisTypes: insightDoc.metadata?.analysisTypes || [],
@@ -807,7 +809,7 @@ export class ObservationGenerationAgent {
           last_updated: currentDate,
           created_by: 'pattern-analysis',
           version: '1.0',
-          team: 'coding'
+          team: this.team
         }
       };
     } catch (error) {

@@ -181,17 +181,43 @@ export class SemanticAnalyzer {
     } else if (provider === "openai" && this.openaiClient) {
       return await this.analyzeWithOpenAI(prompt);
     } else if (provider === "auto") {
-      if (this.groqClient) {
-        return await this.analyzeWithGroq(prompt);
-      } else if (this.geminiClient) {
-        return await this.analyzeWithGemini(prompt);
-      } else if (this.customClient) {
-        return await this.analyzeWithCustom(prompt);
-      } else if (this.anthropicClient) {
-        return await this.analyzeWithAnthropic(prompt);
-      } else if (this.openaiClient) {
-        return await this.analyzeWithOpenAI(prompt);
+      // Auto mode with fallback cascade: try each provider in order until one succeeds
+      const providers = [
+        { name: 'groq', client: this.groqClient, method: this.analyzeWithGroq.bind(this) },
+        { name: 'gemini', client: this.geminiClient, method: this.analyzeWithGemini.bind(this) },
+        { name: 'custom', client: this.customClient, method: this.analyzeWithCustom.bind(this) },
+        { name: 'anthropic', client: this.anthropicClient, method: this.analyzeWithAnthropic.bind(this) },
+        { name: 'openai', client: this.openaiClient, method: this.analyzeWithOpenAI.bind(this) }
+      ];
+
+      const errors: Array<{ provider: string; error: any }> = [];
+
+      for (const { name, client, method } of providers) {
+        if (!client) continue;
+
+        try {
+          log(`Attempting analysis with ${name}`, 'info');
+          const result = await method(prompt);
+          if (errors.length > 0) {
+            log(`Successfully fell back to ${name} after ${errors.length} failure(s)`, 'info', {
+              failedProviders: errors.map(e => e.provider)
+            });
+          }
+          return result;
+        } catch (error: any) {
+          const isRateLimit = error?.status === 429 || error?.message?.includes('rate limit');
+          log(`${name} analysis failed${isRateLimit ? ' (rate limit)' : ''}`, 'warning', {
+            error: error?.message,
+            status: error?.status
+          });
+          errors.push({ provider: name, error });
+          // Continue to next provider
+        }
       }
+
+      // All providers failed
+      log('All LLM providers failed', 'error', { errors });
+      throw new Error(`All LLM providers failed. Errors: ${errors.map(e => `${e.provider}: ${e.error?.message || 'Unknown error'}`).join('; ')}`);
     }
 
     throw new Error("No available LLM provider");
@@ -266,8 +292,8 @@ export class SemanticAnalyzer {
       }
       result = await this.analyzeWithOpenAI(prompt);
     } else if (provider === "auto") {
-      // Auto mode: Groq → Gemini → Custom → Anthropic → OpenAI priority
-      log("Entering auto mode provider selection", "info", {
+      // Auto mode with fallback cascade: try each provider in order until one succeeds
+      log("Entering auto mode provider selection with fallback", "info", {
         hasGroq: !!this.groqClient,
         hasGemini: !!this.geminiClient,
         hasCustom: !!this.customClient,
@@ -275,23 +301,43 @@ export class SemanticAnalyzer {
         hasOpenAI: !!this.openaiClient
       });
 
-      if (this.groqClient) {
-        log("Using Groq client (auto mode default)", "info");
-        result = await this.analyzeWithGroq(prompt);
-      } else if (this.geminiClient) {
-        log("Using Gemini client (auto mode fallback #1)", "info");
-        result = await this.analyzeWithGemini(prompt);
-      } else if (this.customClient) {
-        log("Using Custom client (auto mode fallback #2)", "info");
-        result = await this.analyzeWithCustom(prompt);
-      } else if (this.anthropicClient) {
-        log("Using Anthropic client (auto mode fallback #3)", "info");
-        result = await this.analyzeWithAnthropic(prompt);
-      } else if (this.openaiClient) {
-        log("Using OpenAI client (auto mode fallback #4)", "info");
-        result = await this.analyzeWithOpenAI(prompt);
-      } else {
-        throw new Error("No available LLM provider");
+      const providers = [
+        { name: 'groq', client: this.groqClient, method: this.analyzeWithGroq.bind(this) },
+        { name: 'gemini', client: this.geminiClient, method: this.analyzeWithGemini.bind(this) },
+        { name: 'custom', client: this.customClient, method: this.analyzeWithCustom.bind(this) },
+        { name: 'anthropic', client: this.anthropicClient, method: this.analyzeWithAnthropic.bind(this) },
+        { name: 'openai', client: this.openaiClient, method: this.analyzeWithOpenAI.bind(this) }
+      ];
+
+      const errors: Array<{ provider: string; error: any }> = [];
+
+      for (const { name, client, method } of providers) {
+        if (!client) continue;
+
+        try {
+          log(`Attempting analysis with ${name}`, 'info');
+          result = await method(prompt);
+          if (errors.length > 0) {
+            log(`Successfully fell back to ${name} after ${errors.length} failure(s)`, 'info', {
+              failedProviders: errors.map(e => e.provider)
+            });
+          }
+          break; // Success - exit loop
+        } catch (error: any) {
+          const isRateLimit = error?.status === 429 || error?.message?.includes('rate limit');
+          log(`${name} analysis failed${isRateLimit ? ' (rate limit)' : ''}`, 'warning', {
+            error: error?.message,
+            status: error?.status
+          });
+          errors.push({ provider: name, error });
+          // Continue to next provider
+        }
+      }
+
+      // Check if we got a result
+      if (!result!) {
+        log('All LLM providers failed', 'error', { errors });
+        throw new Error(`All LLM providers failed. Errors: ${errors.map(e => `${e.provider}: ${e.error?.message || 'Unknown error'}`).join('; ')}`);
       }
     } else {
       throw new Error(`Unknown provider: ${provider}`);

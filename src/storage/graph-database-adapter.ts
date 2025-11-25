@@ -175,11 +175,11 @@ export class GraphDatabaseAdapter {
 
     try {
       if (this.useApi) {
-        // Use VKB API
+        // Use VKB API (expects 'type' not 'relationType')
         await this.apiClient.createRelation({
           from: relationship.from,
           to: relationship.to,
-          relationType: relationship.relationType,
+          type: relationship.relationType,
           team: this.team
         });
       } else {

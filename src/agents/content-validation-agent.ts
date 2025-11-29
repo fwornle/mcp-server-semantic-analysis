@@ -101,7 +101,7 @@ export interface StaleEntitiesValidationResult {
   staleEntities: StaleEntityInfo[];
   refreshActions: {
     entityName: string;
-    action: 'scheduled_for_refresh' | 'auto_refreshed' | 'manual_review_required';
+    action: 'deleted' | 'delete_failed' | 'scheduled_for_refresh' | 'auto_refreshed' | 'manual_review_required';
     reason: string;
   }[];
   summary: string;
@@ -195,6 +195,11 @@ export class ContentValidationAgent {
         // Initialize graphDB if not set
         this.graphDB = new GraphDatabaseAdapter();
         await this.graphDB.initialize();
+        log('GraphDatabaseAdapter initialized for content validation', 'info');
+      } else if (!this.graphDB.initialized) {
+        // graphDB was set but not initialized
+        await this.graphDB.initialize();
+        log('GraphDatabaseAdapter re-initialized for content validation', 'info');
       }
 
       const entities = await this.graphDB.queryEntities({}) || [];
@@ -301,9 +306,22 @@ export class ContentValidationAgent {
           if (params.autoRefresh && staleness === 'critical') {
             result.refreshActions.push({
               entityName,
-              action: 'scheduled_for_refresh',
-              reason: `Critical staleness detected: ${issues.length} issues found`
+              action: 'deleted',
+              reason: `Critical staleness detected: ${issues.length} issues found - entity deleted`
             });
+
+            // Actually delete the stale entity
+            try {
+              const entityId = entity.id || entityName;
+              await this.graphDB.deleteEntity(entityId);
+              log(`Deleted stale entity: ${entityName}`, 'info', { entityId, issues: issues.length });
+            } catch (deleteError) {
+              log(`Failed to delete stale entity: ${entityName}`, 'error', deleteError);
+              // Update the action to reflect failure
+              result.refreshActions[result.refreshActions.length - 1].action = 'delete_failed';
+              result.refreshActions[result.refreshActions.length - 1].reason =
+                `Delete failed: ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`;
+            }
           } else if (staleness === 'critical') {
             result.refreshActions.push({
               entityName,

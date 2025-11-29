@@ -3,6 +3,7 @@ import * as path from 'path';
 import { log } from '../logging.js';
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
 import { createOntologySystem, type OntologySystem } from '../ontology/index.js';
+import { ContentValidationAgent, type EntityValidationReport } from './content-validation-agent.js';
 
 export interface PersistenceResult {
   success: boolean;
@@ -112,6 +113,10 @@ export interface PersistenceAgentConfig {
   ontologyMinConfidence?: number;
   enableValidation?: boolean;
   validationMode?: 'strict' | 'lenient' | 'disabled';
+  // Content validation (codebase accuracy checking)
+  enableContentValidation?: boolean;
+  contentValidationMode?: 'strict' | 'lenient' | 'report-only';
+  stalenessThresholdDays?: number;
 }
 
 export class PersistenceAgent {
@@ -120,6 +125,7 @@ export class PersistenceAgent {
   private insightsDir: string;
   private graphDB: GraphDatabaseAdapter | null;
   private ontologySystem: OntologySystem | null = null;
+  private contentValidationAgent: ContentValidationAgent | null = null;
   private config: PersistenceAgentConfig;
 
   constructor(repositoryPath: string = '.', graphDB?: GraphDatabaseAdapter, config?: PersistenceAgentConfig) {
@@ -134,8 +140,25 @@ export class PersistenceAgent {
       ontologyLowerPath: config?.ontologyLowerPath || path.join(repositoryPath, '.data', 'ontologies', 'lower', 'coding-ontology.json'),
       ontologyMinConfidence: config?.ontologyMinConfidence || 0.7,
       enableValidation: config?.enableValidation ?? false,
-      validationMode: config?.validationMode || 'lenient'
+      validationMode: config?.validationMode || 'lenient',
+      // Content validation (codebase accuracy checking)
+      enableContentValidation: config?.enableContentValidation ?? true,
+      contentValidationMode: config?.contentValidationMode || 'lenient',
+      stalenessThresholdDays: config?.stalenessThresholdDays || 30
     };
+
+    // Initialize content validation agent if enabled
+    if (this.config.enableContentValidation) {
+      this.contentValidationAgent = new ContentValidationAgent({
+        repositoryPath: this.repositoryPath,
+        enableDeepValidation: true,
+        stalenessThresholdDays: this.config.stalenessThresholdDays
+      });
+      log('PersistenceAgent: Content validation is ENABLED', 'info', {
+        mode: this.config.contentValidationMode,
+        stalenessThresholdDays: this.config.stalenessThresholdDays
+      });
+    }
 
     // CORRECTED: Use team-specific export path (e.g., coding.json, resi.coding.json, ui.coding.json)
     // This matches the actual GraphDB export structure
@@ -864,6 +887,63 @@ export class PersistenceAgent {
       // Use classified entity type (or fallback to original if not classified)
       const entityType = classification.entityType || entity.entityType || 'TransferablePattern';
 
+      // CONTENT VALIDATION: Check if existing entity content is accurate
+      let contentValidationReport: EntityValidationReport | null = null;
+      if (this.contentValidationAgent && this.config.enableContentValidation) {
+        // Check if entity already exists (this is an update, not a create)
+        const existingEntity = await this.graphDB?.queryEntities({ namePattern: entity.name });
+
+        if (existingEntity && existingEntity.length > 0) {
+          log('Running content validation for existing entity', 'info', {
+            entityName: entity.name
+          });
+
+          contentValidationReport = await this.contentValidationAgent.validateEntityAccuracy(
+            entity.name,
+            this.config.ontologyTeam || 'coding'
+          );
+
+          if (!contentValidationReport.overallValid) {
+            const mode = this.config.contentValidationMode;
+            const report = this.contentValidationAgent.generateRefreshReport(contentValidationReport);
+
+            if (mode === 'strict') {
+              // In strict mode, block the update and suggest entity-refresh workflow
+              log('Content validation failed in strict mode', 'error', {
+                entityName: entity.name,
+                overallScore: contentValidationReport.overallScore,
+                totalIssues: contentValidationReport.totalIssues,
+                criticalIssues: contentValidationReport.criticalIssues
+              });
+              throw new Error(
+                `Entity content validation failed (score: ${contentValidationReport.overallScore}/100). ` +
+                `Run 'entity-refresh' workflow to fix: ${contentValidationReport.recommendations[0]}`
+              );
+            } else if (mode === 'lenient') {
+              // In lenient mode, log warning but continue
+              log('Content validation found issues (lenient mode)', 'warning', {
+                entityName: entity.name,
+                overallScore: contentValidationReport.overallScore,
+                totalIssues: contentValidationReport.totalIssues,
+                recommendations: contentValidationReport.recommendations
+              });
+            } else {
+              // report-only mode: just log the report
+              log('Content validation report (report-only mode)', 'info', {
+                entityName: entity.name,
+                overallScore: contentValidationReport.overallScore,
+                overallValid: contentValidationReport.overallValid
+              });
+            }
+          } else {
+            log('Content validation passed', 'info', {
+              entityName: entity.name,
+              overallScore: contentValidationReport.overallScore
+            });
+          }
+        }
+      }
+
       // Prepare entity data for validation
       const entityDataForValidation = {
         name: entity.name,
@@ -898,7 +978,16 @@ export class PersistenceAgent {
           errors: validation.errors,
           warnings: validation.warnings,
           mode: this.config.validationMode
-        }
+        },
+        // Content validation (codebase accuracy) results
+        contentValidation: contentValidationReport ? {
+          overallValid: contentValidationReport.overallValid,
+          overallScore: contentValidationReport.overallScore,
+          totalIssues: contentValidationReport.totalIssues,
+          criticalIssues: contentValidationReport.criticalIssues,
+          validatedAt: contentValidationReport.validatedAt,
+          mode: this.config.contentValidationMode
+        } : undefined
       };
 
       // Create automatic relationships for graph connectivity

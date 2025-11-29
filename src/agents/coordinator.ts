@@ -9,6 +9,7 @@ import { ObservationGenerationAgent } from "./observation-generation-agent.js";
 import { QualityAssuranceAgent } from "./quality-assurance-agent.js";
 import { PersistenceAgent } from "./persistence-agent.js";
 import { DeduplicationAgent } from "./deduplication.js";
+import { ContentValidationAgent } from "./content-validation-agent.js";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 
 export interface WorkflowDefinition {
@@ -332,6 +333,78 @@ export class CoordinatorAgent {
           timeout: 300,
         },
       },
+      {
+        name: "entity-refresh",
+        description: "Validate and refresh outdated entity content",
+        agents: ["content_validation", "semantic_analysis", "insight_generation", "quality_assurance", "persistence"],
+        steps: [
+          {
+            name: "validate_entity_content",
+            agent: "content_validation",
+            action: "validateEntityAccuracy",
+            parameters: {
+              entityName: "{{params.entityName}}",
+              team: "{{params.team}}"
+            },
+            timeout: 60,
+          },
+          {
+            name: "analyze_current_state",
+            agent: "semantic_analysis",
+            action: "analyzeEntityContext",
+            parameters: {
+              validation_report: "{{validate_entity_content.result}}",
+              entityName: "{{params.entityName}}"
+            },
+            dependencies: ["validate_entity_content"],
+            timeout: 120,
+          },
+          {
+            name: "generate_fresh_insights",
+            agent: "insight_generation",
+            action: "refreshEntityInsights",
+            parameters: {
+              validation_report: "{{validate_entity_content.result}}",
+              current_analysis: "{{analyze_current_state.result}}",
+              entityName: "{{params.entityName}}",
+              regenerate_diagrams: true
+            },
+            dependencies: ["analyze_current_state"],
+            timeout: 180,
+          },
+          {
+            name: "qa_verification",
+            agent: "quality_assurance",
+            action: "validateRefreshedEntity",
+            parameters: {
+              entityName: "{{params.entityName}}",
+              validation_report: "{{validate_entity_content.result}}",
+              fresh_insights: "{{generate_fresh_insights.result}}"
+            },
+            dependencies: ["generate_fresh_insights"],
+            timeout: 60,
+          },
+          {
+            name: "persist_refreshed_entity",
+            agent: "persistence",
+            action: "persistRefreshedEntity",
+            parameters: {
+              entityName: "{{params.entityName}}",
+              team: "{{params.team}}",
+              validation_report: "{{validate_entity_content.result}}",
+              fresh_insights: "{{generate_fresh_insights.result}}",
+              qa_result: "{{qa_verification.result}}"
+            },
+            dependencies: ["qa_verification"],
+            timeout: 60,
+          }
+        ],
+        config: {
+          timeout: 600, // 10 minutes
+          quality_validation: true,
+          requires_entity_param: true
+        },
+      },
     ];
 
     workflows.forEach(workflow => {
@@ -343,7 +416,7 @@ export class CoordinatorAgent {
 
   private async initializeAgents(): Promise<void> {
     try {
-      log("Initializing 8-agent semantic analysis system with GraphDB", "info");
+      log("Initializing 9-agent semantic analysis system with GraphDB", "info");
 
       // Initialize the graph database adapter
       await this.graphDB.initialize();
@@ -381,6 +454,13 @@ export class CoordinatorAgent {
 
       const dedupAgent = new DeduplicationAgent();
       this.agents.set("deduplication", dedupAgent);
+
+      // Content Validation Agent for entity accuracy checking
+      const contentValidationAgent = new ContentValidationAgent({
+        repositoryPath: this.repositoryPath,
+        enableDeepValidation: true
+      });
+      this.agents.set("content_validation", contentValidationAgent);
 
       // Register other agents with deduplication for access to knowledge graph
       dedupAgent.registerAgent("knowledge_graph", persistenceAgent);

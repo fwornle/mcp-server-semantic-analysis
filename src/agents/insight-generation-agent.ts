@@ -3157,4 +3157,254 @@ class SolutionPattern {
     
     return categories;
   }
+
+  /**
+   * Refresh entity insights based on validation report
+   * Called by entity-refresh workflow to regenerate stale content
+   */
+  async refreshEntityInsights(params: {
+    validation_report: any;
+    current_analysis: any;
+    entityName: string;
+    regenerate_diagrams?: boolean;
+  }): Promise<{
+    success: boolean;
+    refreshedInsightPath?: string;
+    regeneratedDiagrams: string[];
+    removedObservations: string[];
+    updatedObservations: string[];
+    summary: string;
+  }> {
+    const { validation_report, current_analysis, entityName, regenerate_diagrams = true } = params;
+
+    log(`Refreshing insights for entity: ${entityName}`, 'info');
+
+    const result = {
+      success: false,
+      refreshedInsightPath: undefined as string | undefined,
+      regeneratedDiagrams: [] as string[],
+      removedObservations: [] as string[],
+      updatedObservations: [] as string[],
+      summary: ''
+    };
+
+    try {
+      // If validation report indicates diagram staleness, regenerate diagrams
+      if (regenerate_diagrams && validation_report?.suggestedActions?.regenerateDiagrams?.length > 0) {
+        for (const diagramPath of validation_report.suggestedActions.regenerateDiagrams) {
+          try {
+            // Extract diagram type from path
+            const diagramName = path.basename(diagramPath, path.extname(diagramPath));
+            const diagramType = this.inferDiagramType(diagramName);
+
+            // Generate fresh diagram based on current analysis
+            const freshDiagram = await this.generateDiagramFromCurrentState(
+              entityName,
+              diagramType,
+              current_analysis
+            );
+
+            if (freshDiagram) {
+              result.regeneratedDiagrams.push(freshDiagram);
+              log(`Regenerated diagram: ${freshDiagram}`, 'info');
+            }
+          } catch (error) {
+            log(`Failed to regenerate diagram ${diagramPath}: ${error}`, 'warning');
+          }
+        }
+      }
+
+      // Track observations to remove/update based on validation
+      if (validation_report?.suggestedActions?.removeObservations) {
+        result.removedObservations = validation_report.suggestedActions.removeObservations;
+      }
+
+      if (validation_report?.suggestedActions?.updateObservations) {
+        result.updatedObservations = validation_report.suggestedActions.updateObservations;
+      }
+
+      // If insight refresh is needed, regenerate the insight document
+      if (validation_report?.suggestedActions?.refreshInsight) {
+        const insightResult = await this.generateRefreshedInsightDocument(
+          entityName,
+          current_analysis,
+          result.regeneratedDiagrams
+        );
+
+        if (insightResult) {
+          result.refreshedInsightPath = insightResult.path;
+        }
+      }
+
+      result.success = true;
+      result.summary = this.generateRefreshSummary(result, validation_report);
+
+      log(`Entity insights refreshed successfully`, 'info', {
+        entityName,
+        regeneratedDiagrams: result.regeneratedDiagrams.length,
+        removedObservations: result.removedObservations.length,
+        updatedObservations: result.updatedObservations.length
+      });
+
+    } catch (error) {
+      log(`Failed to refresh entity insights: ${error}`, 'error');
+      result.summary = `Failed to refresh insights: ${error}`;
+    }
+
+    return result;
+  }
+
+  /**
+   * Infer diagram type from filename
+   */
+  private inferDiagramType(diagramName: string): 'architecture' | 'sequence' | 'class' | 'use-cases' {
+    const nameLower = diagramName.toLowerCase();
+    if (nameLower.includes('arch')) return 'architecture';
+    if (nameLower.includes('seq')) return 'sequence';
+    if (nameLower.includes('class')) return 'class';
+    if (nameLower.includes('use')) return 'use-cases';
+    return 'architecture'; // Default
+  }
+
+  /**
+   * Generate a diagram based on current codebase state
+   */
+  private async generateDiagramFromCurrentState(
+    entityName: string,
+    diagramType: 'architecture' | 'sequence' | 'class' | 'use-cases',
+    currentAnalysis: any
+  ): Promise<string | null> {
+    const diagramBaseName = `${entityName.toLowerCase().replace(/\s+/g, '-')}-${diagramType}`;
+
+    try {
+      // Build context from current analysis for diagram generation
+      const diagramContext = {
+        entityName,
+        components: currentAnalysis?.components || [],
+        patterns: currentAnalysis?.patterns || [],
+        relationships: currentAnalysis?.relationships || [],
+        files: currentAnalysis?.files || []
+      };
+
+      // Use existing diagram generation methods based on type
+      let diagram: any;
+      switch (diagramType) {
+        case 'architecture':
+          diagram = await this.generateArchitectureDiagram({
+            patterns: diagramContext.patterns,
+            components: diagramContext.components,
+            name: entityName
+          });
+          break;
+        case 'sequence':
+          diagram = await this.generateSequenceDiagram({
+            patterns: diagramContext.patterns,
+            name: entityName
+          });
+          break;
+        case 'class':
+          diagram = await this.generateClassDiagram({
+            patterns: diagramContext.patterns,
+            components: diagramContext.components,
+            name: entityName
+          });
+          break;
+        case 'use-cases':
+          diagram = await this.generateUseCasesDiagram({
+            patterns: diagramContext.patterns,
+            name: entityName
+          });
+          break;
+      }
+
+      if (diagram) {
+        return diagram.filePath || diagram.path || diagramBaseName;
+      }
+    } catch (error) {
+      log(`Error generating ${diagramType} diagram: ${error}`, 'warning');
+    }
+
+    return null;
+  }
+
+  /**
+   * Generate a refreshed insight document with current state
+   */
+  private async generateRefreshedInsightDocument(
+    entityName: string,
+    currentAnalysis: any,
+    regeneratedDiagrams: string[]
+  ): Promise<{ path: string; content: string } | null> {
+    try {
+      // Build pattern catalog from current analysis
+      const patterns = currentAnalysis?.patterns || [];
+      const patternCatalog: PatternCatalog = {
+        patterns,
+        summary: {
+          totalPatterns: patterns.length,
+          byCategory: {},
+          avgSignificance: 7,
+          topPatterns: patterns.slice(0, 5).map((p: any) => p.name || 'Unknown')
+        }
+      };
+
+      // Call generateInsightDocument with correct arguments
+      const insightDocument = await this.generateInsightDocument(
+        currentAnalysis?.git_analysis || null,
+        currentAnalysis?.vibe_analysis || null,
+        currentAnalysis,
+        patternCatalog,
+        currentAnalysis?.web_results || null
+      );
+
+      if (insightDocument) {
+        return {
+          path: insightDocument.filePath,
+          content: insightDocument.content
+        };
+      }
+    } catch (error) {
+      log(`Error generating refreshed insight document: ${error}`, 'warning');
+    }
+
+    return null;
+  }
+
+  /**
+   * Generate a summary of the refresh operation
+   */
+  private generateRefreshSummary(
+    result: {
+      regeneratedDiagrams: string[];
+      removedObservations: string[];
+      updatedObservations: string[];
+      refreshedInsightPath?: string;
+    },
+    validationReport: any
+  ): string {
+    const parts = [];
+
+    if (result.regeneratedDiagrams.length > 0) {
+      parts.push(`Regenerated ${result.regeneratedDiagrams.length} diagrams`);
+    }
+
+    if (result.removedObservations.length > 0) {
+      parts.push(`Flagged ${result.removedObservations.length} observations for removal`);
+    }
+
+    if (result.updatedObservations.length > 0) {
+      parts.push(`Flagged ${result.updatedObservations.length} observations for update`);
+    }
+
+    if (result.refreshedInsightPath) {
+      parts.push(`Refreshed insight document at ${result.refreshedInsightPath}`);
+    }
+
+    const originalScore = validationReport?.overallScore || 0;
+    parts.push(`Original validation score: ${originalScore}/100`);
+
+    return parts.length > 0
+      ? parts.join('. ') + '.'
+      : 'No refresh actions were necessary.';
+  }
 }

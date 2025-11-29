@@ -68,6 +68,20 @@ export class ObservationGenerationAgent {
     this.initializeTemplates();
   }
 
+  /**
+   * Check if an insight document file exists
+   * Used to only add "Details:" links when the file actually exists
+   */
+  private insightFileExists(entityName: string): boolean {
+    const insightsDir = path.join(this.repositoryPath, 'knowledge-management', 'insights');
+    const filePath = path.join(insightsDir, `${entityName}.md`);
+    try {
+      return fs.existsSync(filePath);
+    } catch {
+      return false;
+    }
+  }
+
   async generateStructuredObservations(
     gitAnalysis: any,
     vibeAnalysis: any,
@@ -285,13 +299,17 @@ export class ObservationGenerationAgent {
           type: 'metric',
           content: `Files: ${decision.files.length}, Impact: ${decision.impact}, Commit: ${decision.commit}`,
           date: currentDate
-        },
-        {
+        }
+      ];
+
+      // Only add Details link if the insight file actually exists
+      if (this.insightFileExists(entityName)) {
+        observations.push({
           type: 'link',
           content: `Details: http://localhost:8080/knowledge-management/insights/${entityName}.md`,
           date: currentDate
-        }
-      ];
+        });
+      }
 
       return {
         name: entityName,
@@ -467,13 +485,17 @@ export class ObservationGenerationAgent {
           type: 'metric',
           content: `Solution steps: ${pair.solution.steps.length}, Technologies: ${pair.solution.technologies.length}, Outcome: ${pair.solution.outcome}`,
           date: currentDate
-        },
-        {
+        }
+      ];
+
+      // Only add Details link if the insight file actually exists
+      if (this.insightFileExists(entityName)) {
+        observations.push({
           type: 'link',
           content: `Details: http://localhost:8080/knowledge-management/insights/${entityName}.md`,
           date: currentDate
-        }
-      ];
+        });
+      }
 
       return {
         name: entityName,
@@ -678,7 +700,7 @@ export class ObservationGenerationAgent {
     try {
       const currentDate = new Date().toISOString();
       const cleanName = insightDoc.name || 'UnknownInsight';
-      
+
       const observations: ObservationTemplate[] = [
         {
           type: 'insight',
@@ -698,17 +720,21 @@ export class ObservationGenerationAgent {
             technical: true,
             patterns: insightDoc.metadata?.tags || []
           }
-        },
-        {
+        }
+      ];
+
+      // Only add Details link if the insight file actually exists
+      if (this.insightFileExists(cleanName)) {
+        observations.push({
           type: 'link',
-          content: `Details: knowledge-management/insights/${cleanName}.md`,
+          content: `Details: http://localhost:8080/knowledge-management/insights/${cleanName}.md`,
           date: currentDate,
           metadata: {
             source: 'insight-generation',
             fileValidated: true
           }
-        }
-      ];
+        });
+      }
       
       // Add metrics if available
       if (insightDoc.metadata?.patternCount) {

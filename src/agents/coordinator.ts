@@ -219,8 +219,10 @@ export class CoordinatorAgent {
       },
       {
         name: "incremental-analysis",
-        description: "Incremental analysis since last checkpoint with stale entity validation",
-        agents: ["git_history", "vibe_history", "semantic_analysis", "observation_generation", "content_validation", "persistence", "deduplication"],
+        description: "Incremental analysis since last checkpoint",
+        // NOTE: content_validation agent removed due to synchronous fs.existsSync blocking event loop
+        // See: validateAndRefreshStaleEntities uses blocking file checks causing Claude freezes
+        agents: ["git_history", "vibe_history", "semantic_analysis", "observation_generation", "persistence", "deduplication"],
         steps: [
           {
             name: "analyze_recent_changes",
@@ -268,19 +270,6 @@ export class CoordinatorAgent {
             timeout: 60,
           },
           {
-            name: "validate_stale_entities",
-            agent: "content_validation",
-            action: "validateAndRefreshStaleEntities",
-            parameters: {
-              semantic_analysis_results: "{{analyze_semantics.result}}",
-              observations: "{{generate_observations.result}}",
-              stalenessThresholdDays: 30,
-              autoRefresh: true
-            },
-            dependencies: ["generate_observations"],
-            timeout: 120,
-          },
-          {
             name: "persist_incremental",
             agent: "persistence",
             action: "persistAnalysisResults",
@@ -289,11 +278,10 @@ export class CoordinatorAgent {
                 git_history: "{{analyze_recent_changes.result}}",
                 vibe_history: "{{analyze_recent_vibes.result}}",
                 semantic_analysis: "{{analyze_semantics.result}}",
-                observations: "{{generate_observations.result}}",
-                stale_entity_validation: "{{validate_stale_entities.result}}"
+                observations: "{{generate_observations.result}}"
               }
             },
-            dependencies: ["validate_stale_entities"],
+            dependencies: ["generate_observations"],
             timeout: 30,
           },
           {
@@ -309,7 +297,7 @@ export class CoordinatorAgent {
         ],
         config: {
           max_concurrent_steps: 2,
-          timeout: 420, // 7 minutes
+          timeout: 300, // 5 minutes (reduced since validation step removed)
         },
       },
       {

@@ -172,17 +172,22 @@ export class SemanticAnalysisAgent {
     }
   }
 
+  // Request timeout for LLM API calls (30 seconds)
+  private static readonly LLM_TIMEOUT_MS = 30000;
+
   private initializeClients(): void {
     // Initialize Groq client (primary/default - cheap, fast)
     const groqKey = process.env.GROQ_API_KEY;
     if (groqKey && groqKey !== "your-groq-api-key") {
       this.groqClient = new Groq({
         apiKey: groqKey,
+        timeout: SemanticAnalysisAgent.LLM_TIMEOUT_MS,
       });
       log("Groq client initialized for semantic analysis (default provider)", "info");
     }
 
     // Initialize Gemini client (fallback #1 - cheap, good quality)
+    // Note: Gemini SDK doesn't support timeout in constructor, handled per-request
     const googleKey = process.env.GOOGLE_API_KEY;
     if (googleKey && googleKey !== "your-google-api-key") {
       this.geminiClient = new GoogleGenerativeAI(googleKey);
@@ -194,6 +199,7 @@ export class SemanticAnalysisAgent {
     if (anthropicKey && anthropicKey !== "your-anthropic-api-key") {
       this.anthropicClient = new Anthropic({
         apiKey: anthropicKey,
+        timeout: SemanticAnalysisAgent.LLM_TIMEOUT_MS,
       });
       log("Anthropic client initialized for semantic analysis (fallback #2)", "info");
     }
@@ -203,6 +209,7 @@ export class SemanticAnalysisAgent {
     if (openaiKey && openaiKey !== "your-openai-api-key") {
       this.openaiClient = new OpenAI({
         apiKey: openaiKey,
+        timeout: SemanticAnalysisAgent.LLM_TIMEOUT_MS,
       });
       log("OpenAI client initialized for semantic analysis (fallback #3)", "info");
     }
@@ -891,7 +898,16 @@ export class SemanticAnalysisAgent {
         log(`Calling Gemini API (attempt ${attempt + 1}/${maxRetries})`, 'info');
 
         const model = this.geminiClient!.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
-        const result = await model.generateContent(prompt);
+
+        // Wrap Gemini call with timeout since SDK doesn't support it natively
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error(`Gemini API timeout after ${SemanticAnalysisAgent.LLM_TIMEOUT_MS}ms`)), SemanticAnalysisAgent.LLM_TIMEOUT_MS);
+        });
+
+        const result = await Promise.race([
+          model.generateContent(prompt),
+          timeoutPromise
+        ]);
         const response = result.response.text();
 
         log(`Gemini API call successful`, 'info', {

@@ -69,6 +69,9 @@ export class SemanticAnalyzer {
     this.initializeClients();
   }
 
+  // Request timeout for LLM API calls (30 seconds)
+  private static readonly LLM_TIMEOUT_MS = 30000;
+
   private initializeClients(): void {
     // Priority order: (1) Groq (default), (2) Gemini, (3) Custom API, (4) Anthropic, (5) OpenAI
 
@@ -77,11 +80,13 @@ export class SemanticAnalyzer {
     if (groqKey && groqKey !== "your-groq-api-key") {
       this.groqClient = new Groq({
         apiKey: groqKey,
+        timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
       });
       log("Groq client initialized (default provider)", "info");
     }
 
     // Initialize Gemini client (second priority - cheap, good quality)
+    // Note: Gemini SDK doesn't support timeout in constructor, handled per-request
     const googleKey = process.env.GOOGLE_API_KEY;
     if (googleKey && googleKey !== "your-google-api-key") {
       this.geminiClient = new GoogleGenerativeAI(googleKey);
@@ -95,6 +100,7 @@ export class SemanticAnalyzer {
       this.customClient = new OpenAI({
         apiKey: customKey,
         baseURL: customBaseUrl,
+        timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
       });
       log("Custom OpenAI-compatible client initialized (fallback #2)", "info", { baseURL: customBaseUrl });
     }
@@ -104,6 +110,7 @@ export class SemanticAnalyzer {
     if (anthropicKey && anthropicKey !== "your-anthropic-api-key") {
       this.anthropicClient = new Anthropic({
         apiKey: anthropicKey,
+        timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
       });
       log("Anthropic client initialized (fallback #3)", "info");
     }
@@ -113,6 +120,7 @@ export class SemanticAnalyzer {
     if (openaiKey && openaiKey !== "your-openai-api-key" && !customBaseUrl) {
       this.openaiClient = new OpenAI({
         apiKey: openaiKey,
+        timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
       });
       log("OpenAI client initialized (fallback #4)", "info");
     }

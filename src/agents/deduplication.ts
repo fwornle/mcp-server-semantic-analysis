@@ -75,11 +75,17 @@ export class DeduplicationAgent {
     });
   }
 
+  // Request timeout for embedding API calls (30 seconds)
+  private static readonly EMBEDDING_TIMEOUT_MS = 30000;
+
   private async initializeEmbeddingModel(): Promise<void> {
     try {
       const openaiKey = process.env.OPENAI_API_KEY;
       if (openaiKey && openaiKey !== "your-openai-api-key") {
-        this.openaiClient = new OpenAI({ apiKey: openaiKey });
+        this.openaiClient = new OpenAI({
+          apiKey: openaiKey,
+          timeout: DeduplicationAgent.EMBEDDING_TIMEOUT_MS,
+        });
         this.embeddingModel = "text-embedding-3-small";
         log("OpenAI embedding client initialized", "info");
         return;

@@ -202,10 +202,18 @@ export class ContentValidationAgent {
         log('GraphDatabaseAdapter re-initialized for content validation', 'info');
       }
 
-      const entities = await this.graphDB.queryEntities({}) || [];
+      const allEntities = await this.graphDB.queryEntities({}) || [];
+
+      // Limit processing to prevent extremely long runs
+      const MAX_ENTITIES_TO_CHECK = 100;
+      const entities = allEntities.slice(0, MAX_ENTITIES_TO_CHECK);
       result.totalEntitiesChecked = entities.length;
 
-      log(`Checking ${entities.length} entities for staleness`, 'info');
+      if (allEntities.length > MAX_ENTITIES_TO_CHECK) {
+        log(`Large knowledge base: ${allEntities.length} entities, checking first ${MAX_ENTITIES_TO_CHECK}`, 'warning');
+      } else {
+        log(`Checking ${entities.length} entities for staleness`, 'info');
+      }
 
       // Known deprecated/outdated patterns to check for
       const deprecatedPatterns = [
@@ -217,7 +225,17 @@ export class ContentValidationAgent {
         { pattern: /shared-memory\.json/gi, replacement: 'LevelDB graph storage', severity: 'critical' as const },
       ];
 
+      // Process entities in batches with event loop yields to prevent blocking
+      const BATCH_SIZE = 10;
+      let processedCount = 0;
+
       for (const entity of entities) {
+        // Yield to event loop every BATCH_SIZE entities to prevent blocking
+        if (processedCount > 0 && processedCount % BATCH_SIZE === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+        processedCount++;
+
         const entityName = entity.name || entity.id || 'Unknown';
         const entityType = entity.type || entity.entityType || 'Unknown';
         const observations = entity.observations || [];

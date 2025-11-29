@@ -184,6 +184,19 @@ export class PersistenceAgent {
   }
 
   /**
+   * Check if an insight document file exists
+   * Used to only add "Details:" links when the file actually exists
+   */
+  private insightFileExists(entityName: string): boolean {
+    const filePath = path.join(this.insightsDir, `${entityName}.md`);
+    try {
+      return fs.existsSync(filePath);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Initialize the ontology system asynchronously
    * Must be called after construction before using classification
    */
@@ -1645,7 +1658,7 @@ export class PersistenceAgent {
       const currentDate = new Date().toISOString();
       
       // Create structured observation from insights
-      const observations = [
+      const observations: any[] = [
         {
           type: 'insight',
           content: entityData.insights,
@@ -1654,17 +1667,21 @@ export class PersistenceAgent {
             source: 'manual_creation',
             significance: entityData.significance || 5
           }
-        },
-        {
+        }
+      ];
+
+      // Only add Details link if the insight file actually exists
+      if (this.insightFileExists(entityData.name)) {
+        observations.push({
           type: 'link',
-          content: `Details: ${entityData.name}.md`,
+          content: `Details: http://localhost:8080/knowledge-management/insights/${entityData.name}.md`,
           date: currentDate,
           metadata: {
             source: 'ukb_tool',
             fileValidated: true
           }
-        }
-      ];
+        });
+      }
 
       // Create entity structure
       const entity: SharedMemoryEntity = {
@@ -1849,12 +1866,14 @@ ${entityData.insights}
       date: now
     });
 
-    // Link observation
-    observations.push({
-      type: 'link',
-      content: `Details: knowledge-management/insights/${cleanName}.md`,
-      date: now
-    });
+    // Only add Details link if the insight file actually exists
+    if (this.insightFileExists(cleanName)) {
+      observations.push({
+        type: 'link',
+        content: `Details: http://localhost:8080/knowledge-management/insights/${cleanName}.md`,
+        date: now
+      });
+    }
 
     return observations;
   }
@@ -1979,8 +1998,10 @@ ${entityData.insights}
       observations.push(`Applies to: ${applicability}`);
     }
 
-    // Link with full URL like VkbCli
-    observations.push(`Details: http://localhost:8080/knowledge-management/insights/${cleanName}.md`);
+    // Only add Details link if the insight file actually exists
+    if (this.insightFileExists(cleanName)) {
+      observations.push(`Details: http://localhost:8080/knowledge-management/insights/${cleanName}.md`);
+    }
 
     return observations;
   }

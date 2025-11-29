@@ -280,7 +280,7 @@ export class GraphDatabaseAdapter {
   /**
    * Delete an entity from the graph database
    * Used by ContentValidationAgent to remove stale entities
-   * NOTE: Only available via VKB API - GraphDatabaseService doesn't have deleteEntity method
+   * Supports both VKB API and direct GraphDatabaseService access
    */
   async deleteEntity(entityId: string): Promise<boolean> {
     if (!this.isInitialized) {
@@ -293,13 +293,15 @@ export class GraphDatabaseAdapter {
         await this.apiClient.deleteEntity(entityId, { team: this.team });
         log('Entity deleted via VKB API', 'info', { entityId, team: this.team });
         return true;
+      } else if (this.graphDB) {
+        // Use direct GraphDatabaseService access
+        // EntityId might be "team:name" or just "name" - extract the name part
+        const entityName = entityId.includes(':') ? entityId.split(':')[1] : entityId;
+        await this.graphDB.deleteEntity(entityName, this.team);
+        log('Entity deleted via direct GraphDB access', 'info', { entityId, entityName, team: this.team });
+        return true;
       } else {
-        // Direct database access not supported for deletion
-        // Fall back to API if possible, otherwise throw
-        throw new Error(
-          'Entity deletion requires VKB API (GraphDatabaseService lacks deleteEntity). ' +
-          'Ensure VKB server is running on port 8080.'
-        );
+        throw new Error('No database access available. Neither VKB API nor GraphDatabaseService is initialized.');
       }
     } catch (error) {
       log('Failed to delete entity from graph database', 'error', { entityId, error });

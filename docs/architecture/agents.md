@@ -1,6 +1,6 @@
 # Agent Architecture
 
-The semantic analysis system consists of 11 specialized agents, each responsible for specific aspects of code analysis and knowledge management.
+The semantic analysis system consists of 11 specialized agents (10 worker agents + 1 orchestrator), each responsible for specific aspects of code analysis and knowledge management.
 
 ## Agent Overview
 
@@ -116,18 +116,7 @@ The semantic analysis system consists of 11 specialized agents, each responsible
 
 **Location**: `src/agents/persistence-agent.ts`
 
-### 9. SynchronizationAgent
-**Purpose**: Multi-source data synchronization
-
-**Key Capabilities**:
-- Merges data from multiple sources
-- Resolves conflicts
-- Maintains data consistency
-- Handles concurrent updates
-
-**Location**: `src/agents/synchronization.ts`
-
-### 10. DeduplicationAgent 🔢
+### 9. DeduplicationAgent 🔢
 **Purpose**: Semantic duplicate detection and removal using OpenAI embeddings
 
 **Key Capabilities**:
@@ -141,6 +130,25 @@ The semantic analysis system consists of 11 specialized agents, each responsible
 **Embedding Model**: OpenAI text-embedding-3-small
 
 **Location**: `src/agents/deduplication.ts`
+
+### 10. ContentValidationAgent
+**Purpose**: Validate entity content accuracy and detect stale knowledge
+
+**Key Capabilities**:
+- Validates entity observations against current codebase state
+- Detects deprecated patterns (ukb references, shared-memory.json, etc.)
+- Checks file reference validity
+- Identifies stale entities requiring refresh
+- Generates refresh reports with actionable recommendations
+- Integrates with incremental-analysis workflow for automatic staleness detection
+
+**Key Methods**:
+- `validateEntityAccuracy()`: Full entity validation with scoring
+- `validateAndRefreshStaleEntities()`: Batch validation during workflows
+- `validateObservations()`: Check individual observations for staleness
+- `generateRefreshReport()`: Human-readable staleness reports
+
+**Location**: `src/agents/content-validation-agent.ts`
 
 ### 11. CoordinatorAgent
 **Purpose**: Orchestrate multi-agent workflows

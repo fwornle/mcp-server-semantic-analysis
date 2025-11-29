@@ -58,7 +58,7 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 - **`generate_lessons_learned`**: Lessons learned document creation
 
 ### 3. Agent Layer (11 Specialized Agents)
-**Purpose**: Implements the core business logic and intelligence
+**Purpose**: Implements the core business logic and intelligence (10 worker agents + 1 orchestrator)
 
 ![Agent Coordination Flow](../images/agent-coordination-flow.png)
 
@@ -70,6 +70,7 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 - Inter-agent communication coordination
 - Error recovery and rollback management
 - Performance monitoring and metrics
+- GraphDB initialization and lifecycle management
 
 **Key Features**:
 - Multi-step workflow execution
@@ -177,18 +178,6 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 
 #### Infrastructure Agents (2 Agents)
 
-##### SynchronizationAgent
-**Responsibilities**:
-- Multi-source data synchronization
-- Conflict resolution
-- Backup management
-
-**Key Features**:
-- Real-time sync monitoring
-- Conflict detection and resolution
-- Rollback capabilities
-- Data integrity validation
-
 ##### DeduplicationAgent
 **Responsibilities**:
 - Semantic duplicate detection
@@ -200,6 +189,19 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 - Configurable merge strategies
 - Batch processing optimization
 - Performance metrics
+
+##### ContentValidationAgent
+**Responsibilities**:
+- Entity content accuracy validation
+- Stale knowledge detection
+- Deprecated pattern identification
+- Refresh recommendations
+
+**Key Features**:
+- Validates observations against codebase state
+- Detects deprecated patterns (ukb, shared-memory.json, etc.)
+- Integrates with incremental-analysis workflow
+- Generates actionable refresh reports
 
 ## Data Flow Architecture
 
@@ -247,7 +249,7 @@ src/
 ├── server.ts                       # Core MCP server implementation
 ├── tools.ts                        # Tool definitions and handlers
 ├── logging.ts                      # Logging utilities
-└── agents/                         # Agent implementations (10 agents)
+└── agents/                         # Agent implementations (11 agents)
     ├── coordinator.ts              # Orchestration agent
     ├── git-history-agent.ts        # Core analysis agents
     ├── vibe-history-agent.ts
@@ -257,8 +259,8 @@ src/
     ├── observation-generation-agent.ts
     ├── quality-assurance-agent.ts
     ├── persistence-agent.ts
-    ├── synchronization.ts          # Infrastructure agents
-    ├── deduplication.ts
+    ├── deduplication.ts            # Infrastructure agents
+    ├── content-validation-agent.ts
     └── semantic-analyzer.ts        # Utility class (not an agent)
 ```
 

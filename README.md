@@ -4,9 +4,9 @@
 
 ## Overview
 
-This MCP server integrates seamlessly with Claude Code to provide advanced semantic analysis capabilities. Built entirely in Node.js with TypeScript, it offers **12 specialized tools** and **10 intelligent agents** with **Graphology+LevelDB graph database** persistence for comprehensive code and knowledge analysis.
+This MCP server integrates seamlessly with Claude Code to provide advanced semantic analysis capabilities. Built entirely in Node.js with TypeScript, it offers **12 specialized tools** and **11 intelligent agents** with **Graphology+LevelDB graph database** persistence for comprehensive code and knowledge analysis.
 
-### 🤖 Intelligent Agents (10 Total)
+### 🤖 Intelligent Agents (11 Total)
 
 #### Core Analysis Agents (8 Agents) - 🧠 LLM-Enhanced
 1. **`GitHistoryAgent`** - Analyzes git commits from checkpoint with architectural decisions
@@ -18,11 +18,12 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 7. **`QualityAssuranceAgent`** 🧠 - LLM semantic validation detecting conversation fragments, generic content, quality assessment
 8. **`PersistenceAgent`** - Persists entities to Graphology+LevelDB graph database with ontology-based classification
 
-#### Infrastructure Agents (1 Agent) - 🔢 Embedding-Enhanced
+#### Infrastructure Agents (2 Agents) - 🔢 Embedding-Enhanced
 9. **`DeduplicationAgent`** 🔢 - OpenAI embeddings (text-embedding-3-small) with cosine similarity for semantic duplicate detection
+10. **`ContentValidationAgent`** - Validates entity content accuracy, detects stale knowledge, and generates refresh recommendations
 
 #### Orchestration Agent (1 Agent)
-10. **`CoordinatorAgent`** - Workflow orchestration, task scheduling, and agent coordination with GraphDB integration
+11. **`CoordinatorAgent`** - Workflow orchestration, task scheduling, and agent coordination with GraphDB integration
 
 ## ✨ Key Features
 
@@ -34,7 +35,7 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 - **`analyze_repository`** - Repository-wide architecture analysis
 - **`extract_patterns`** - Reusable design pattern identification
 - **`create_ukb_entity_with_insight`** - Knowledge base entity creation
-- **`execute_workflow`** - Coordinated 10-agent workflows
+- **`execute_workflow`** - Coordinated 11-agent workflows
 - **`generate_documentation`** - Automated documentation generation
 - **`create_insight_report`** - Detailed analysis reports
 - **`generate_plantuml_diagrams`** - Architecture diagram generation
@@ -217,13 +218,13 @@ generate_lessons_learned(analysis_result, title?, metadata?) → LessonsLearned
 
 ## 🏗️ Architecture Overview
 
-### 10-Agent Workflow System
+### 11-Agent Workflow System
 
 **CRITICAL**: The `CoordinatorAgent` orchestrates ALL agents through workflow definitions, not just a few. Agents don't call each other directly - data flows through the coordinator via step dependencies and result templating.
 
 ```mermaid
 graph TB
-    subgraph "10-Agent Semantic Analysis System"
+    subgraph "11-Agent Semantic Analysis System"
         COORD[1. CoordinatorAgent<br/>Orchestrates ALL agents via workflows<br/>+GraphDB Integration]
         GIT[2. GitHistoryAgent<br/>Git Commits Analysis]
         VIBE[3. VibeHistoryAgent<br/>Conversation Analysis]
@@ -234,6 +235,7 @@ graph TB
         QA[8. QualityAssuranceAgent<br/>Validation & Correction + LLM]
         PER[9. PersistenceAgent<br/>GraphDB Persistence]
         DEDUP[10. DeduplicationAgent<br/>Duplicate Detection]
+        CONTENT[11. ContentValidationAgent<br/>Stale Entity Detection]
     end
 
     subgraph "Storage Layer"
@@ -246,12 +248,14 @@ graph TB
     COORD -->|Step 4: Execute with {{semantic}}| WEB
     COORD -->|Step 5: Execute with {{semantic}} {{web}}| INS
     COORD -->|Step 6: Execute with {{insights}}| OBS
-    COORD -->|Step 7: Execute with {{observations}}| QA
-    COORD -->|Step 8: Execute with {{qa}}| PER
+    COORD -->|Step 7: Execute with {{observations}}| CONTENT
+    COORD -->|Step 8: Execute with {{content}}| QA
+    COORD -->|Step 9: Execute with {{qa}}| PER
     COORD -->|Infrastructure| DEDUP
 
     COORD -.->|Initializes & Provides| GRAPHDB
     PER -->|Stores Entities & Relations| GRAPHDB
+    CONTENT -.->|Queries for stale entities| GRAPHDB
 
     style GIT fill:#e6f3ff
     style VIBE fill:#e6f3ff
@@ -263,6 +267,7 @@ graph TB
     style PER fill:#e6f3ff
     style COORD fill:#fff2e6
     style DEDUP fill:#e8f4fd
+    style CONTENT fill:#e8f4fd
     style GRAPHDB fill:#d4edda
 ```
 
@@ -284,7 +289,7 @@ graph TB
         MCP[MCP Protocol Handler]
         TOOLS[Tool Layer<br/>12 Tools]
         COORD[CoordinatorAgent<br/>Orchestrator]
-        AGENTS[Agent Layer<br/>10 Worker Agents]
+        AGENTS[Agent Layer<br/>10 Worker Agents + ContentValidation]
         INTEG[Integration Layer]
     end
 
@@ -479,13 +484,14 @@ graph TD
     agents --> persistence["persistence-agent.ts"]
     agents --> coordinator["coordinator.ts"]
     agents --> dedup["deduplication.ts"]
-    
+    agents --> content["content-validation-agent.ts"]
+
     classDef mainFile fill:#e1f5fe,stroke:#0277bd,stroke-width:2px
     classDef agentFile fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1px
     classDef folderStyle fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    
+
     class index,server,tools,logging mainFile
-    class git,vibe,semantic,web,insight,observation,qa,persistence,coordinator,dedup agentFile
+    class git,vibe,semantic,web,insight,observation,qa,persistence,coordinator,dedup,content agentFile
     class agents folderStyle
 ```
 

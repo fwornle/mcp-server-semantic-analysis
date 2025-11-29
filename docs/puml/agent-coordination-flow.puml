@@ -1,7 +1,7 @@
 @startuml agent-coordination-flow
 !include _standard-style.puml
 
-title 10-Agent Coordination Flow - Workflow Execution
+title 11-Agent Coordination Flow - Workflow Execution
 
 participant "Claude Code" as CLAUDE
 participant "MCP Handler" as MCP
@@ -12,6 +12,7 @@ participant "Semantic Analysis Agent" as SEMANTIC #FFE6E6
 participant "Web Search Agent" as WEB #E6F3FF
 participant "Insight Generation Agent" as INSIGHT #FFE6E6
 participant "Observation Generation Agent" as OBS #E6F3FF
+participant "Content Validation Agent" as CONTENT #E6F3FF
 participant "Quality Assurance Agent" as QA #FFE6E6
 participant "Persistence Agent" as PERSIST #E6F3FF
 participant "Deduplication Agent" as DEDUP #E6F3FF
@@ -24,7 +25,7 @@ MCP ->> COORD : execute_workflow(complete-analysis)
 activate COORD
 
 note over COORD
-  Orchestrate 9-worker-agent workflow:
+  Orchestrate 10-worker-agent workflow:
   Initialize GraphDB adapter
   Initialize execution context
   Manage task dependencies
@@ -83,6 +84,13 @@ QA ->> QA : auto_correction_if_needed()
 QA -->> COORD : validated_results
 deactivate QA
 
+COORD ->> CONTENT : validate_stale_entities()
+activate CONTENT
+CONTENT ->> CONTENT : check_deprecated_patterns()
+CONTENT ->> CONTENT : validate_file_references()
+CONTENT -->> COORD : validation_results
+deactivate CONTENT
+
 COORD ->> PERSIST : store_knowledge(validated_results)
 activate PERSIST
 PERSIST ->> PERSIST : create_checkpoint()
@@ -122,20 +130,21 @@ MCP -->> CLAUDE : formatted_analysis_response
 deactivate MCP
 
 note right of CLAUDE
-  Complete 10-agent analysis:
+  Complete 11-agent analysis:
   - Git & conversation correlation
   - External pattern validation
   - Comprehensive insights (3 LLM agents)
   - Quality-assured outputs
+  - Stale entity detection & validation
   - GraphDB persistence (Graphology+LevelDB)
-  - Auto-export to shared-memory-coding.json
+  - Auto-export to shared-memory-<project>.json
   - No MCP Memory server
 end note
 
 legend right
   |= Color |= Agent Type |
   | <back:#FFE6E6>   </back> | Uses LLMs (3 agents) |
-  | <back:#E6F3FF>   </back> | No LLM (6 agents) |
+  | <back:#E6F3FF>   </back> | No LLM (7 agents) |
   | <back:#FFE6CC>   </back> | Orchestrator (1) |
   | <back:#D4EDDA>   </back> | Storage |
 endlegend

@@ -1,7 +1,7 @@
 @startuml mcp-server-architecture
 !include _standard-style.puml
 
-title MCP Semantic Analysis Server - 10-Agent Architecture Overview
+title MCP Semantic Analysis Server - 11-Agent Architecture Overview
 
 ' Define the main system layers
 package "Claude Code Client" {
@@ -21,7 +21,7 @@ package "Tool Layer (12 Tools)" <<api>> {
   component [Documentation Tools] as DOC_TOOLS <<api>>
 }
 
-package "Agent Layer (10 Agents)" <<agent>> {
+package "Agent Layer (11 Agents)" <<agent>> {
   package "Core Analysis Agents (8)" {
     component [Git History Agent] as GIT <<agent>>
     component [Vibe History Agent] as VIBE <<agent>>
@@ -32,8 +32,9 @@ package "Agent Layer (10 Agents)" <<agent>> {
     component [Quality Assurance Agent] as QA <<agent>>
     component [Persistence Agent] as PERSIST <<agent>>
   }
-  package "Infrastructure Agents (1)" {
+  package "Infrastructure Agents (2)" {
     component [Deduplication Agent] as DEDUP <<agent>>
+    component [Content Validation Agent] as CONTENT <<agent>>
   }
   component [Coordinator Agent] as COORD_MAIN <<agent>> #FFE6CC
 }
@@ -41,7 +42,7 @@ package "Agent Layer (10 Agents)" <<agent>> {
 package "Storage Layer" <<storage>> {
   database "GraphDB\nGraphology+LevelDB\n.data/knowledge-graph/" as GRAPHDB <<storage>> #D4EDDA
   component [GraphKnowledgeExporter] as EXPORTER <<infra>>
-  file "shared-memory-\ncoding.json" as SHARED_JSON <<storage>>
+  file "shared-memory-\n<project>.json" as SHARED_JSON <<storage>>
 }
 
 package "External Services" <<external>> {
@@ -75,6 +76,7 @@ COORDINATOR --> OBS
 COORDINATOR --> QA
 COORDINATOR --> PERSIST
 COORDINATOR --> DEDUP
+COORDINATOR --> CONTENT
 COORDINATOR ..> GRAPHDB : "Initializes &\nProvides"
 
 ' Agent connections to external services
@@ -120,11 +122,12 @@ DEDUP ..> OPENAI : "Embeddings\ntext-embedding-3-small"
 ' Storage layer connections
 PERSIST --> GRAPHDB : "Stores entities\n& relations"
 DEDUP --> GRAPHDB : "Queries for\nduplicates"
+CONTENT --> GRAPHDB : "Validates\nentities"
 GRAPHDB --> EXPORTER : "Auto-persist\n30s intervals"
 EXPORTER --> SHARED_JSON : "Exports to JSON"
 
 note right of COORDINATOR
-  Orchestrates all 9 worker agents
+  Orchestrates all 10 worker agents
   Manages workflow execution via step definitions
   Initializes GraphDB adapter
   Provides QA coordination
@@ -156,8 +159,9 @@ note bottom of GIT
   5. InsightGenerationAgent → LLM insights
   6. ObservationGenerationAgent → LLM extraction
   7. QualityAssuranceAgent → LLM validation
-  8. PersistenceAgent → stores to GraphDB
-  9. DeduplicationAgent → embedding similarity
+  8. ContentValidationAgent → stale entity detection
+  9. PersistenceAgent → stores to GraphDB
+  10. DeduplicationAgent → embedding similarity
 
   **LLM-Enhanced Agents: 5 analysis + embeddings**
   **Data flows through coordinator, not agent-to-agent**

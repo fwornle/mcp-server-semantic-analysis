@@ -200,25 +200,19 @@ async function testValidationIntegration() {
       testsFailed++;
     }
 
-    // Cleanup: Delete test entities
+    // Cleanup: Delete test entities - CRITICAL: Always cleanup to prevent orphaned nodes
     section('Cleanup: Deleting Test Entities');
 
     const testEntityNames = ['ValidLSLSession', 'StrictValidEntity', 'DisabledValidationEntity'];
     for (const entityName of testEntityNames) {
       try {
-        const entities = await graphDB.queryEntities({ namePattern: entityName });
-        if (entities && entities.length > 0) {
-          // Delete each matching entity
-          for (const entity of entities) {
-            if (entity.metadata?.isTestData) {
-              // Delete the entity from graph
-              await graphDB.deleteEntity(entity.id);
-              log(`Deleted test entity: ${entity.name}`, 'success');
-            }
-          }
-        }
+        // FIXED: Delete unconditionally by name - don't rely on metadata flag
+        // This prevents orphaned test nodes from polluting the production graph
+        await graphDB.deleteEntity(entityName, 'coding');
+        log(`Deleted test entity: ${entityName}`, 'success');
       } catch (error) {
-        log(`Failed to delete test entity ${entityName}: ${error}`, 'warning');
+        // Entity might not exist, which is fine
+        log(`Cleanup for ${entityName}: ${error}`, 'warning');
       }
     }
 

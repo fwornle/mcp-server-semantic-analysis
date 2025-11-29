@@ -1070,6 +1070,71 @@ Respond with a JSON object:
     if (!result.checkpointUpdated) {
       warnings.push('Analysis checkpoints may not have been updated');
     }
+
+    // CRITICAL: Check for orphaned nodes (entities not connected to CollectiveKnowledge)
+    await this.validateNoOrphanedNodes(errors, warnings);
+  }
+
+  /**
+   * Validate that all entities are connected to CollectiveKnowledge
+   * This prevents phantom/orphaned nodes in the knowledge graph
+   */
+  private async validateNoOrphanedNodes(errors: string[], warnings: string[]): Promise<void> {
+    try {
+      const knowledgeExportPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
+
+      if (!fs.existsSync(knowledgeExportPath)) {
+        return; // Can't validate if file doesn't exist
+      }
+
+      const data = JSON.parse(fs.readFileSync(knowledgeExportPath, 'utf8'));
+      const entities = data.entities || [];
+      const relations = data.relations || [];
+
+      // Build set of all entities that participate in relations
+      const entitiesInRelations = new Set<string>();
+      for (const relation of relations) {
+        if (relation.from) entitiesInRelations.add(relation.from);
+        if (relation.to) entitiesInRelations.add(relation.to);
+        if (relation.from_name) entitiesInRelations.add(relation.from_name);
+        if (relation.to_name) entitiesInRelations.add(relation.to_name);
+      }
+
+      // Project nodes and central nodes don't need to be connected
+      const exemptNodes = new Set(['CollectiveKnowledge', 'Coding', 'DynArch', 'Timeline', 'Normalisa']);
+
+      // Find orphaned entities
+      const orphanedEntities: string[] = [];
+      for (const entity of entities) {
+        const entityName = entity.name || entity.entity_name;
+        if (!entityName) continue;
+
+        // Skip exempt nodes
+        if (exemptNodes.has(entityName)) continue;
+        if (entity.entityType === 'Project' || entity.entityType === 'CentralKnowledge') continue;
+
+        // Check if entity participates in any relation
+        if (!entitiesInRelations.has(entityName)) {
+          orphanedEntities.push(entityName);
+        }
+      }
+
+      if (orphanedEntities.length > 0) {
+        errors.push(`ORPHANED NODES DETECTED: ${orphanedEntities.length} entities not connected to knowledge graph: ${orphanedEntities.slice(0, 5).join(', ')}${orphanedEntities.length > 5 ? '...' : ''}`);
+
+        log('Orphaned nodes validation failed', 'error', {
+          orphanedCount: orphanedEntities.length,
+          orphanedEntities: orphanedEntities.slice(0, 10)
+        });
+      } else {
+        log('Orphaned nodes validation passed', 'info', {
+          totalEntities: entities.length,
+          relationsCount: relations.length
+        });
+      }
+    } catch (error) {
+      warnings.push(`Orphaned nodes validation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private async validateGenericOutput(result: any, errors: string[], warnings: string[]): Promise<void> {

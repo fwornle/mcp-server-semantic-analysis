@@ -69,16 +69,16 @@ export class CoordinatorAgent {
   private running: boolean = true;
   private repositoryPath: string;
   private graphDB: GraphDatabaseAdapter;
+  private initializationPromise: Promise<void> | null = null;
+  private isInitializing: boolean = false;
+  private monitorIntervalId: ReturnType<typeof setInterval> | null = null;
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
     this.graphDB = new GraphDatabaseAdapter();
     this.initializeWorkflows();
-    // Initialize agents asynchronously (will be awaited in executeWorkflow if needed)
-    this.initializeAgents().catch(error => {
-      log("Failed to initialize agents in constructor", "error", error);
-    });
-    this.startBackgroundMonitor();
+    // Note: Agents are initialized lazily when executeWorkflow is called
+    // This avoids constructor side effects and race conditions
   }
 
   private initializeWorkflows(): void {
@@ -429,6 +429,43 @@ export class CoordinatorAgent {
   }
 
   private async initializeAgents(): Promise<void> {
+    // Prevent concurrent initialization - return existing promise if initialization is in progress
+    if (this.initializationPromise) {
+      log("Agent initialization already in progress, waiting...", "debug");
+      return this.initializationPromise;
+    }
+
+    // Already initialized
+    if (this.agents.size > 0 && this.graphDB.initialized) {
+      log("Agents already initialized, skipping", "debug");
+      return;
+    }
+
+    // Set flag and create promise to prevent concurrent calls
+    this.isInitializing = true;
+
+    // Add timeout to prevent indefinite hang during initialization
+    const INIT_TIMEOUT_MS = 30000; // 30 seconds
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`Agent initialization timed out after ${INIT_TIMEOUT_MS}ms. This may indicate a deadlock or blocking operation.`));
+      }, INIT_TIMEOUT_MS);
+    });
+
+    this.initializationPromise = Promise.race([
+      this.doInitializeAgents(),
+      timeoutPromise
+    ]);
+
+    try {
+      await this.initializationPromise;
+    } finally {
+      this.isInitializing = false;
+      this.initializationPromise = null;
+    }
+  }
+
+  private async doInitializeAgents(): Promise<void> {
     try {
       log("Initializing 10-agent semantic analysis system with GraphDB", "info");
 
@@ -493,9 +530,15 @@ export class CoordinatorAgent {
 
   async executeWorkflow(workflowName: string, parameters: Record<string, any> = {}): Promise<WorkflowExecution> {
     // Ensure agents are initialized before executing workflow
-    if (this.agents.size === 0) {
-      log("Agents not initialized, initializing now...", "warning");
+    // Use the locking mechanism in initializeAgents to prevent race conditions
+    if (this.agents.size === 0 || this.isInitializing) {
+      log("Agents not initialized or initialization in progress, ensuring initialization...", "info");
       await this.initializeAgents();
+    }
+
+    // Start background monitor only once, after initialization
+    if (!this.monitorIntervalId) {
+      this.startBackgroundMonitor();
     }
 
     const workflow = this.workflows.get(workflowName);
@@ -1207,8 +1250,14 @@ Expected locations for generated files:
   }
 
   private startBackgroundMonitor(): void {
-    setInterval(() => {
-      this.monitorExecutions();
+    // Don't start if already running
+    if (this.monitorIntervalId) {
+      return;
+    }
+    this.monitorIntervalId = setInterval(() => {
+      if (this.running) {
+        this.monitorExecutions();
+      }
     }, 30000);
   }
 
@@ -1269,9 +1318,27 @@ Expected locations for generated files:
     return executions.slice(0, limit);
   }
 
-  shutdown(): void {
+  async shutdown(): Promise<void> {
     this.running = false;
     log("CoordinatorAgent shutting down", "info");
+
+    // Clear background monitor interval
+    if (this.monitorIntervalId) {
+      clearInterval(this.monitorIntervalId);
+      this.monitorIntervalId = null;
+    }
+
+    // Close graph database connection
+    try {
+      await this.graphDB.close();
+      log("GraphDB connection closed", "info");
+    } catch (error) {
+      log("Failed to close GraphDB connection", "error", error);
+    }
+
+    // Clear agents
+    this.agents.clear();
+    log("CoordinatorAgent shutdown complete", "info");
   }
 
   healthCheck(): Record<string, any> {

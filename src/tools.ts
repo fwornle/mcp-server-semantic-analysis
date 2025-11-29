@@ -518,25 +518,26 @@ async function handleCreateUkbEntity(args: any): Promise<any> {
 
 async function handleExecuteWorkflow(args: any): Promise<any> {
   const { workflow_name, parameters } = args;
-  
+
   log(`Executing workflow: ${workflow_name}`, "info", { parameters });
-  
+
+  // Initialize coordinator and execute real workflow
+  // Use repository_path from parameters or default to current directory
+  let repositoryPath = parameters?.repository_path || '.';
+
+  // If we're running from the semantic analysis subdirectory, resolve the main repo path
+  if (repositoryPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {
+    // Go up two levels from integrations/mcp-server-semantic-analysis to the main repo
+    repositoryPath = path.join(process.cwd(), '../..');
+  } else if (repositoryPath && !path.isAbsolute(repositoryPath)) {
+    // Make relative paths absolute
+    repositoryPath = path.resolve(repositoryPath);
+  }
+
+  log(`Using repository path: ${repositoryPath}`, "info");
+  const coordinator = new CoordinatorAgent(repositoryPath);
+
   try {
-    // Initialize coordinator and execute real workflow
-    // Use repository_path from parameters or default to current directory
-    let repositoryPath = parameters?.repository_path || '.';
-    
-    // If we're running from the semantic analysis subdirectory, resolve the main repo path
-    if (repositoryPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {
-      // Go up two levels from integrations/mcp-server-semantic-analysis to the main repo
-      repositoryPath = path.join(process.cwd(), '../..');
-    } else if (repositoryPath && !path.isAbsolute(repositoryPath)) {
-      // Make relative paths absolute
-      repositoryPath = path.resolve(repositoryPath);
-    }
-    
-    log(`Using repository path: ${repositoryPath}`, "info");
-    const coordinator = new CoordinatorAgent(repositoryPath);
     const execution = await coordinator.executeWorkflow(workflow_name, parameters);
     
     // Format execution results
@@ -603,7 +604,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
         },
       ],
     };
-    
+
   } catch (error) {
     log(`Workflow execution failed: ${workflow_name}`, "error", error);
     return {
@@ -614,6 +615,14 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
         },
       ],
     };
+  } finally {
+    // Always cleanup resources after workflow execution
+    try {
+      await coordinator.shutdown();
+      log("Coordinator shutdown completed after workflow", "info");
+    } catch (shutdownError) {
+      log("Error during coordinator shutdown", "error", shutdownError);
+    }
   }
 }
 

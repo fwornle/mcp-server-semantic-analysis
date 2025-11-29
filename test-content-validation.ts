@@ -115,6 +115,39 @@ async function testContentValidation() {
     console.log('...\n');
     passed++;
 
+    // Test 5: Validate Stale Entities (NEW METHOD for incremental-analysis workflow)
+    section('Test 5: Validate Stale Entities in Graph DB');
+
+    const staleResult = await validationAgent.validateAndRefreshStaleEntities({
+      stalenessThresholdDays: 30,
+      autoRefresh: true
+    });
+
+    log(`Stale entity validation complete`, 'info');
+    log(`  Total entities checked: ${staleResult.totalEntitiesChecked}`, 'info');
+    log(`  Stale entities found: ${staleResult.staleEntitiesFound}`, 'info');
+    log(`  Critical stale entities: ${staleResult.criticalStaleEntities}`, 'info');
+
+    if (staleResult.staleEntities.length > 0) {
+      log('Stale entities detected:', 'warning');
+      for (const entity of staleResult.staleEntities.slice(0, 5)) {
+        log(`  - ${entity.entityName} (${entity.staleness}, score: ${entity.score})`, 'info');
+        for (const issue of entity.issues.slice(0, 2)) {
+          log(`    [${issue.type}] ${issue.message}`, 'info');
+        }
+      }
+    }
+
+    if (staleResult.refreshActions.length > 0) {
+      log('Refresh actions:', 'info');
+      for (const action of staleResult.refreshActions.slice(0, 3)) {
+        log(`  - ${action.entityName}: ${action.action}`, 'info');
+      }
+    }
+
+    log(`Summary: ${staleResult.summary.split('\n')[0]}`, 'success');
+    passed++;
+
     // Summary
     section('Test Summary');
     console.log(`${colors.green}Passed:${colors.reset} ${passed}`);

@@ -13,6 +13,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 
 // Simple logger
 const log = (message: string, level: string = "info", data?: any) => {
@@ -82,6 +83,30 @@ export interface EntityValidationReport {
   };
 }
 
+export interface StaleEntityInfo {
+  entityName: string;
+  entityType: string;
+  staleness: 'critical' | 'moderate' | 'low';
+  score: number;
+  issues: ValidationIssue[];
+  requiresRefresh: boolean;
+  lastUpdated?: string;
+}
+
+export interface StaleEntitiesValidationResult {
+  validatedAt: string;
+  totalEntitiesChecked: number;
+  staleEntitiesFound: number;
+  criticalStaleEntities: number;
+  staleEntities: StaleEntityInfo[];
+  refreshActions: {
+    entityName: string;
+    action: 'scheduled_for_refresh' | 'auto_refreshed' | 'manual_review_required';
+    reason: string;
+  }[];
+  summary: string;
+}
+
 export interface ContentValidationAgentConfig {
   repositoryPath: string;
   insightsDirectory: string;
@@ -94,6 +119,7 @@ export class ContentValidationAgent {
   private insightsDirectory: string;
   private enableDeepValidation: boolean;
   private stalenessThresholdDays: number;
+  private graphDB: GraphDatabaseAdapter | null = null;
 
   // Known patterns for reference extraction
   private filePathPatterns = [
@@ -131,6 +157,219 @@ export class ContentValidationAgent {
       insightsDirectory: this.insightsDirectory,
       enableDeepValidation: this.enableDeepValidation
     });
+  }
+
+  /**
+   * Set the GraphDatabaseAdapter for querying entities
+   */
+  setGraphDB(graphDB: GraphDatabaseAdapter): void {
+    this.graphDB = graphDB;
+    log('GraphDatabaseAdapter set for ContentValidationAgent', 'info');
+  }
+
+  /**
+   * Validate all entities in the graph database for staleness
+   * Called during incremental-analysis workflow to detect outdated entities
+   */
+  async validateAndRefreshStaleEntities(params: {
+    semantic_analysis_results?: any;
+    observations?: any;
+    stalenessThresholdDays?: number;
+    autoRefresh?: boolean;
+  }): Promise<StaleEntitiesValidationResult> {
+    log('Starting stale entity validation', 'info', params);
+
+    const result: StaleEntitiesValidationResult = {
+      validatedAt: new Date().toISOString(),
+      totalEntitiesChecked: 0,
+      staleEntitiesFound: 0,
+      criticalStaleEntities: 0,
+      staleEntities: [],
+      refreshActions: [],
+      summary: ''
+    };
+
+    try {
+      // Get all entities from the graph database
+      if (!this.graphDB) {
+        // Initialize graphDB if not set
+        this.graphDB = new GraphDatabaseAdapter();
+        await this.graphDB.initialize();
+      }
+
+      const entities = await this.graphDB.queryEntities({}) || [];
+      result.totalEntitiesChecked = entities.length;
+
+      log(`Checking ${entities.length} entities for staleness`, 'info');
+
+      // Known deprecated/outdated patterns to check for
+      const deprecatedPatterns = [
+        { pattern: /\bukb\b/gi, replacement: 'vkb or graph database operations', severity: 'critical' as const },
+        { pattern: /shared-memory-\w+\.json/gi, replacement: 'GraphDatabaseService', severity: 'critical' as const },
+        { pattern: /\.ukb\//gi, replacement: '.data/knowledge-graph/', severity: 'moderate' as const },
+        { pattern: /SynchronizationAgent/gi, replacement: 'GraphDatabaseAdapter (auto-persistence)', severity: 'moderate' as const },
+        { pattern: /PersistenceFile/gi, replacement: 'GraphDatabaseService', severity: 'moderate' as const },
+        { pattern: /shared-memory\.json/gi, replacement: 'LevelDB graph storage', severity: 'critical' as const },
+      ];
+
+      for (const entity of entities) {
+        const entityName = entity.name || entity.id || 'Unknown';
+        const entityType = entity.type || entity.entityType || 'Unknown';
+        const observations = entity.observations || [];
+
+        const issues: ValidationIssue[] = [];
+        let staleness: 'critical' | 'moderate' | 'low' = 'low';
+        let score = 100;
+
+        // Check observations for deprecated patterns
+        for (const observation of observations) {
+          const obsText = typeof observation === 'string' ? observation : observation.content || '';
+
+          for (const { pattern, replacement, severity } of deprecatedPatterns) {
+            const matches = obsText.match(pattern);
+            if (matches) {
+              issues.push({
+                type: severity === 'critical' ? 'error' : 'warning',
+                category: 'observation_staleness',
+                message: `Observation references deprecated concept: "${matches[0]}"`,
+                reference: obsText.substring(0, 100) + (obsText.length > 100 ? '...' : ''),
+                suggestion: `Update to use: ${replacement}`
+              });
+
+              if (severity === 'critical') {
+                staleness = 'critical';
+                score -= 30;
+              } else if (severity === 'moderate' && staleness !== 'critical') {
+                staleness = 'moderate';
+                score -= 15;
+              }
+            }
+          }
+
+          // Also validate file references in observations
+          const fileRefs = this.extractFileReferences(obsText);
+          for (const fileRef of fileRefs) {
+            if (!this.fileExists(fileRef)) {
+              issues.push({
+                type: 'warning',
+                category: 'file_reference',
+                message: `Referenced file no longer exists: ${fileRef}`,
+                reference: fileRef,
+                suggestion: 'Update or remove this file reference'
+              });
+              score -= 10;
+              if (staleness === 'low') staleness = 'moderate';
+            }
+          }
+        }
+
+        // Check entity name itself for deprecated patterns
+        for (const { pattern, replacement, severity } of deprecatedPatterns) {
+          if (pattern.test(entityName)) {
+            issues.push({
+              type: 'error',
+              category: 'observation_staleness',
+              message: `Entity name contains deprecated concept`,
+              reference: entityName,
+              suggestion: `Consider renaming or updating to reflect: ${replacement}`
+            });
+            staleness = 'critical';
+            score -= 25;
+          }
+        }
+
+        // Add to stale entities if issues found
+        if (issues.length > 0) {
+          result.staleEntitiesFound++;
+          if (staleness === 'critical') {
+            result.criticalStaleEntities++;
+          }
+
+          const staleEntity: StaleEntityInfo = {
+            entityName,
+            entityType,
+            staleness,
+            score: Math.max(0, score),
+            issues,
+            requiresRefresh: staleness === 'critical' || score < 50,
+            lastUpdated: entity.updatedAt || entity.createdAt
+          };
+
+          result.staleEntities.push(staleEntity);
+
+          // Determine action
+          if (params.autoRefresh && staleness === 'critical') {
+            result.refreshActions.push({
+              entityName,
+              action: 'scheduled_for_refresh',
+              reason: `Critical staleness detected: ${issues.length} issues found`
+            });
+          } else if (staleness === 'critical') {
+            result.refreshActions.push({
+              entityName,
+              action: 'manual_review_required',
+              reason: `Critical staleness requires manual review`
+            });
+          }
+        }
+      }
+
+      // Generate summary
+      result.summary = this.generateStalenessSummary(result);
+
+      log('Stale entity validation complete', 'info', {
+        totalChecked: result.totalEntitiesChecked,
+        staleFound: result.staleEntitiesFound,
+        critical: result.criticalStaleEntities
+      });
+
+    } catch (error) {
+      log('Error during stale entity validation', 'error', error);
+      result.summary = `Validation error: ${error instanceof Error ? error.message : String(error)}`;
+    }
+
+    return result;
+  }
+
+  /**
+   * Generate a human-readable summary of staleness validation
+   */
+  private generateStalenessSummary(result: StaleEntitiesValidationResult): string {
+    const lines: string[] = [];
+
+    lines.push(`## Stale Entity Validation Summary`);
+    lines.push(`Validated at: ${result.validatedAt}`);
+    lines.push(`Total entities checked: ${result.totalEntitiesChecked}`);
+    lines.push(`Stale entities found: ${result.staleEntitiesFound}`);
+    lines.push(`Critical stale entities: ${result.criticalStaleEntities}`);
+    lines.push('');
+
+    if (result.staleEntities.length > 0) {
+      lines.push(`### Stale Entities Requiring Attention`);
+      for (const entity of result.staleEntities) {
+        lines.push(`- **${entity.entityName}** (${entity.entityType})`);
+        lines.push(`  - Staleness: ${entity.staleness.toUpperCase()}, Score: ${entity.score}/100`);
+        lines.push(`  - Issues: ${entity.issues.length}`);
+        for (const issue of entity.issues.slice(0, 3)) {
+          lines.push(`    - [${issue.type}] ${issue.message}`);
+        }
+        if (entity.issues.length > 3) {
+          lines.push(`    - ... and ${entity.issues.length - 3} more issues`);
+        }
+      }
+    } else {
+      lines.push('All entities are up-to-date. No staleness detected.');
+    }
+
+    if (result.refreshActions.length > 0) {
+      lines.push('');
+      lines.push(`### Recommended Actions`);
+      for (const action of result.refreshActions) {
+        lines.push(`- ${action.entityName}: ${action.action} - ${action.reason}`);
+      }
+    }
+
+    return lines.join('\n');
   }
 
   /**

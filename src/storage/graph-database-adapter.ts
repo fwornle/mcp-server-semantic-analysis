@@ -215,17 +215,29 @@ export class GraphDatabaseAdapter {
     namePattern?: string;
     minConfidence?: number;
   }): Promise<any[]> {
-    if (!this.isInitialized || !this.graphDB) {
+    if (!this.isInitialized) {
       throw new Error('GraphDatabaseAdapter not initialized. Call initialize() first.');
     }
 
     try {
-      const result = await this.graphDB.queryEntities({
-        team: this.team,
-        ...filters
-      });
-
-      return result;
+      if (this.useApi) {
+        // Use VKB API
+        const result = await this.apiClient.getEntities({
+          team: this.team,
+          ...filters
+        });
+        return result.entities || result || [];
+      } else {
+        // Use direct database access
+        if (!this.graphDB) {
+          throw new Error('GraphDatabaseService not available');
+        }
+        const result = await this.graphDB.queryEntities({
+          team: this.team,
+          ...filters
+        });
+        return result;
+      }
     } catch (error) {
       log('Failed to query entities from graph database', 'error', error);
       throw error;

@@ -219,8 +219,8 @@ export class CoordinatorAgent {
       },
       {
         name: "incremental-analysis",
-        description: "Incremental analysis since last checkpoint",
-        agents: ["git_history", "vibe_history", "semantic_analysis", "observation_generation", "persistence", "deduplication"],
+        description: "Incremental analysis since last checkpoint with stale entity validation",
+        agents: ["git_history", "vibe_history", "semantic_analysis", "observation_generation", "content_validation", "persistence", "deduplication"],
         steps: [
           {
             name: "analyze_recent_changes",
@@ -268,6 +268,19 @@ export class CoordinatorAgent {
             timeout: 60,
           },
           {
+            name: "validate_stale_entities",
+            agent: "content_validation",
+            action: "validateAndRefreshStaleEntities",
+            parameters: {
+              semantic_analysis_results: "{{analyze_semantics.result}}",
+              observations: "{{generate_observations.result}}",
+              stalenessThresholdDays: 30,
+              autoRefresh: true
+            },
+            dependencies: ["generate_observations"],
+            timeout: 120,
+          },
+          {
             name: "persist_incremental",
             agent: "persistence",
             action: "persistAnalysisResults",
@@ -276,10 +289,11 @@ export class CoordinatorAgent {
                 git_history: "{{analyze_recent_changes.result}}",
                 vibe_history: "{{analyze_recent_vibes.result}}",
                 semantic_analysis: "{{analyze_semantics.result}}",
-                observations: "{{generate_observations.result}}"
+                observations: "{{generate_observations.result}}",
+                stale_entity_validation: "{{validate_stale_entities.result}}"
               }
             },
-            dependencies: ["generate_observations"],
+            dependencies: ["validate_stale_entities"],
             timeout: 30,
           },
           {
@@ -416,7 +430,7 @@ export class CoordinatorAgent {
 
   private async initializeAgents(): Promise<void> {
     try {
-      log("Initializing 9-agent semantic analysis system with GraphDB", "info");
+      log("Initializing 10-agent semantic analysis system with GraphDB", "info");
 
       // Initialize the graph database adapter
       await this.graphDB.initialize();
@@ -460,6 +474,7 @@ export class CoordinatorAgent {
         repositoryPath: this.repositoryPath,
         enableDeepValidation: true
       });
+      contentValidationAgent.setGraphDB(this.graphDB);
       this.agents.set("content_validation", contentValidationAgent);
 
       // Register other agents with deduplication for access to knowledge graph

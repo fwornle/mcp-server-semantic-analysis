@@ -652,18 +652,18 @@ export class PersistenceAgent {
     });
 
     for (const entity of recentEntities) {
-      // Relationship to CollectiveKnowledge
+      // Relationship to CollectiveKnowledge (use underscore for consistency)
       const collectiveKnowledgeRelation: EntityRelationship = {
         from: entity.name,
         to: 'CollectiveKnowledge',
-        relationType: 'contributes to'
+        relationType: 'contributes_to'
       };
 
-      // Relationship to Coding project
+      // Relationship to Coding project (use underscore for consistency)
       const codingRelation: EntityRelationship = {
         from: entity.name,
         to: 'Coding',
-        relationType: 'implemented in'
+        relationType: 'implemented_in'
       };
 
       // Check if relationships already exist

@@ -1129,6 +1129,11 @@ export class PersistenceAgent {
         // Fallback to JSON file if GraphDB not available
         log('GraphDB not available - falling back to JSON file persistence', 'warning');
 
+        // Strip volatile checkpoint fields before writing (they belong in workflow-checkpoints.json)
+        delete sharedMemory.metadata.lastVibeAnalysis;
+        delete sharedMemory.metadata.lastGitAnalysis;
+        delete sharedMemory.metadata.lastSemanticAnalysis;
+
         const content = JSON.stringify(sharedMemory, null, 2);
         await fs.promises.writeFile(this.sharedMemoryPath, content, 'utf8');
 

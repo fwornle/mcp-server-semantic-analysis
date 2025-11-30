@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { log } from '../logging.js';
+import { CheckpointManager } from '../utils/checkpoint-manager.js';
 
 export interface GitCommit {
   hash: string;
@@ -60,6 +61,7 @@ export interface GitHistoryAnalysisResult {
 export class GitHistoryAgent {
   private repositoryPath: string;
   private team: string;
+  private checkpointManager: CheckpointManager;
   private excludePatterns: string[] = [
     'node_modules',
     '.git',
@@ -73,6 +75,7 @@ export class GitHistoryAgent {
   constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
     this.team = team;
+    this.checkpointManager = new CheckpointManager(repositoryPath);
   }
 
   async analyzeGitHistory(fromTimestampOrParams?: Date | Record<string, any>): Promise<GitHistoryAnalysisResult> {
@@ -194,53 +197,13 @@ export class GitHistoryAgent {
   }
 
   private async getLastAnalysisCheckpoint(): Promise<Date | null> {
-    try {
-      // Try to read from shared memory file - use lastSuccessfulWorkflowCompletion instead of lastGitAnalysis
-      const sharedMemoryPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
-      if (fs.existsSync(sharedMemoryPath)) {
-        const data = JSON.parse(fs.readFileSync(sharedMemoryPath, 'utf8'));
-        // Check for successful workflow checkpoint first, fallback to old format for compatibility
-        if (data.metadata?.lastSuccessfulWorkflowCompletion) {
-          log('Using workflow completion checkpoint for git analysis', 'info', {
-            checkpoint: data.metadata.lastSuccessfulWorkflowCompletion
-          });
-          return new Date(data.metadata.lastSuccessfulWorkflowCompletion);
-        } else if (data.metadata?.lastGitAnalysis) {
-          log('Using legacy git analysis checkpoint (will be upgraded)', 'warning', {
-            checkpoint: data.metadata.lastGitAnalysis
-          });
-          return new Date(data.metadata.lastGitAnalysis);
-        }
-      } else {
-        log('No shared memory file found - will analyze all commits from repository start', 'info');
-      }
-      return null;
-    } catch (error) {
-      log('Could not read analysis checkpoint', 'warning', error);
-      return null;
-    }
+    // Use CheckpointManager instead of writing directly to git-tracked JSON
+    return this.checkpointManager.getLastGitAnalysis();
   }
 
   private async saveAnalysisCheckpoint(timestamp: Date): Promise<void> {
-    try {
-      const sharedMemoryPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
-      let data: any = { entities: [], metadata: {} };
-      
-      if (fs.existsSync(sharedMemoryPath)) {
-        data = JSON.parse(fs.readFileSync(sharedMemoryPath, 'utf8'));
-      }
-      
-      if (!data.metadata) {
-        data.metadata = {};
-      }
-      
-      data.metadata.lastGitAnalysis = timestamp.toISOString();
-      
-      fs.writeFileSync(sharedMemoryPath, JSON.stringify(data, null, 2));
-      log('Git analysis checkpoint saved', 'info', { timestamp: timestamp.toISOString() });
-    } catch (error) {
-      log('Could not save analysis checkpoint', 'warning', error);
-    }
+    // Use CheckpointManager instead of writing directly to git-tracked JSON
+    this.checkpointManager.setLastGitAnalysis(timestamp);
   }
 
   private async extractCommits(fromTimestamp: Date | null): Promise<{ commits: GitCommit[], filteredCount: number }> {

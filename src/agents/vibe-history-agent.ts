@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
+import { CheckpointManager } from '../utils/checkpoint-manager.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface ConversationSession {
@@ -87,12 +88,14 @@ export class VibeHistoryAgent {
   private specstoryPath: string;
   private semanticAnalyzer: SemanticAnalyzer;
   private team: string;
+  private checkpointManager: CheckpointManager;
 
   constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.specstoryPath = path.join(repositoryPath, '.specstory', 'history');
     this.semanticAnalyzer = new SemanticAnalyzer();
+    this.checkpointManager = new CheckpointManager(repositoryPath);
   }
 
   async analyzeVibeHistory(fromTimestampOrParams?: Date | Record<string, any>): Promise<VibeHistoryAnalysisResult> {
@@ -174,41 +177,13 @@ export class VibeHistoryAgent {
   }
 
   private async getLastAnalysisCheckpoint(): Promise<Date | null> {
-    try {
-      const sharedMemoryPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
-      if (fs.existsSync(sharedMemoryPath)) {
-        const data = JSON.parse(fs.readFileSync(sharedMemoryPath, 'utf8'));
-        if (data.metadata?.lastVibeAnalysis) {
-          return new Date(data.metadata.lastVibeAnalysis);
-        }
-      }
-      return null;
-    } catch (error) {
-      log('Could not read vibe analysis checkpoint', 'warning', error);
-      return null;
-    }
+    // Use CheckpointManager instead of writing directly to git-tracked JSON
+    return this.checkpointManager.getLastVibeAnalysis();
   }
 
   private async saveAnalysisCheckpoint(timestamp: Date): Promise<void> {
-    try {
-      const sharedMemoryPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
-      let data: any = { entities: [], metadata: {} };
-      
-      if (fs.existsSync(sharedMemoryPath)) {
-        data = JSON.parse(fs.readFileSync(sharedMemoryPath, 'utf8'));
-      }
-      
-      if (!data.metadata) {
-        data.metadata = {};
-      }
-      
-      data.metadata.lastVibeAnalysis = timestamp.toISOString();
-      
-      fs.writeFileSync(sharedMemoryPath, JSON.stringify(data, null, 2));
-      log('Vibe analysis checkpoint saved', 'info', { timestamp: timestamp.toISOString() });
-    } catch (error) {
-      log('Could not save vibe analysis checkpoint', 'warning', error);
-    }
+    // Use CheckpointManager instead of writing directly to git-tracked JSON
+    this.checkpointManager.setLastVibeAnalysis(timestamp);
   }
 
   private async parseSessionFiles(fromTimestamp: Date | null): Promise<ConversationSession[]> {

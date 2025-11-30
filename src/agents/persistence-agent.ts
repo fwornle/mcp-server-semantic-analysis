@@ -4,6 +4,7 @@ import { log } from '../logging.js';
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
 import { createOntologySystem, type OntologySystem } from '../ontology/index.js';
 import { ContentValidationAgent, type EntityValidationReport } from './content-validation-agent.js';
+import { CheckpointManager } from '../utils/checkpoint-manager.js';
 
 export interface PersistenceResult {
   success: boolean;
@@ -128,6 +129,7 @@ export class PersistenceAgent {
   private ontologySystem: OntologySystem | null = null;
   private contentValidationAgent: ContentValidationAgent | null = null;
   private config: PersistenceAgentConfig;
+  private checkpointManager: CheckpointManager;
 
   constructor(repositoryPath: string = '.', graphDB?: GraphDatabaseAdapter, config?: PersistenceAgentConfig) {
     this.repositoryPath = repositoryPath;
@@ -165,6 +167,9 @@ export class PersistenceAgent {
     // This matches the actual GraphDB export structure
     this.sharedMemoryPath = path.join(repositoryPath, '.data', 'knowledge-export', `${this.config.ontologyTeam}.json`);
     this.insightsDir = path.join(repositoryPath, 'knowledge-management', 'insights');
+
+    // Initialize checkpoint manager for non-git-tracked checkpoint storage
+    this.checkpointManager = new CheckpointManager(repositoryPath);
 
     this.ensureDirectories();
 
@@ -739,39 +744,32 @@ export class PersistenceAgent {
 
   private async updateAnalysisCheckpoints(analysisData: any): Promise<boolean> {
     try {
-      const sharedMemory = await this.loadSharedMemory();
-      const timestamp = new Date().toISOString();
+      const timestamp = new Date();
       let updated = false;
 
-      // Update specific analysis timestamps
+      // Update specific analysis timestamps using CheckpointManager (NOT git-tracked shared memory)
       if (analysisData.gitAnalysis) {
-        sharedMemory.metadata.lastGitAnalysis = timestamp;
+        this.checkpointManager.setLastGitAnalysis(timestamp);
         updated = true;
       }
 
       if (analysisData.vibeAnalysis) {
-        sharedMemory.metadata.lastVibeAnalysis = timestamp;
+        this.checkpointManager.setLastVibeAnalysis(timestamp);
         updated = true;
       }
 
       if (analysisData.semanticAnalysis) {
-        sharedMemory.metadata.lastSemanticAnalysis = timestamp;
+        // Note: semantic analysis checkpoint could be added to CheckpointManager if needed
         updated = true;
       }
 
-      // Update general metadata
+      // Log checkpoint updates (no shared memory modification - timestamps are in workflow-checkpoints.json)
       if (updated) {
-        sharedMemory.metadata.last_updated = timestamp;
-        sharedMemory.metadata.analysisCount = (sharedMemory.metadata.analysisCount || 0) + 1;
-        sharedMemory.metadata.last_sync = Date.now() / 1000; // Unix timestamp
-        sharedMemory.metadata.sync_source = 'semantic_analysis_agent';
-
-        await this.saveSharedMemory(sharedMemory);
-        log('Analysis checkpoints updated successfully', 'info', {
-          lastGitAnalysis: sharedMemory.metadata.lastGitAnalysis,
-          lastVibeAnalysis: sharedMemory.metadata.lastVibeAnalysis,
-          lastSemanticAnalysis: sharedMemory.metadata.lastSemanticAnalysis,
-          analysisCount: sharedMemory.metadata.analysisCount
+        const checkpoints = this.checkpointManager.loadCheckpoints();
+        log('Analysis checkpoints updated successfully (stored in workflow-checkpoints.json)', 'info', {
+          lastGitAnalysis: checkpoints.lastGitAnalysis,
+          lastVibeAnalysis: checkpoints.lastVibeAnalysis,
+          lastSuccessfulWorkflowCompletion: checkpoints.lastSuccessfulWorkflowCompletion
         });
       }
 
@@ -879,6 +877,12 @@ export class PersistenceAgent {
       if (!data.metadata.total_entities) data.metadata.total_entities = data.entities.length;
       if (!data.metadata.total_relations) data.metadata.total_relations = data.relations.length;
       if (!data.metadata.team) data.metadata.team = this.config.ontologyTeam;
+
+      // Strip volatile checkpoint fields that now belong in CheckpointManager (workflow-checkpoints.json)
+      // These should NOT be persisted in the git-tracked JSON file
+      delete data.metadata.lastVibeAnalysis;
+      delete data.metadata.lastGitAnalysis;
+      delete data.metadata.lastSemanticAnalysis;
 
       return data as SharedMemoryStructure;
     } catch (error) {
@@ -1249,17 +1253,13 @@ export class PersistenceAgent {
     };
 
     try {
-      const sharedMemory = await this.loadSharedMemory();
-      
-      // Update git analysis checkpoint
-      sharedMemory.metadata.lastGitAnalysis = new Date().toISOString();
-      sharedMemory.metadata.last_updated = new Date().toISOString();
-      
-      await this.saveSharedMemory(sharedMemory);
-      
+      // Use CheckpointManager instead of writing to git-tracked shared memory JSON
+      // This prevents meaningless timestamp-only updates to coding.json
+      this.checkpointManager.setLastGitAnalysis(new Date());
+
       result.checkpointUpdated = true;
       result.success = true;
-      result.summary = 'Git analysis checkpoint updated';
+      result.summary = 'Git analysis checkpoint updated (stored in workflow-checkpoints.json)';
 
       return result;
     } catch (error) {
@@ -1282,17 +1282,13 @@ export class PersistenceAgent {
     };
 
     try {
-      const sharedMemory = await this.loadSharedMemory();
-      
-      // Update vibe analysis checkpoint
-      sharedMemory.metadata.lastVibeAnalysis = new Date().toISOString();
-      sharedMemory.metadata.last_updated = new Date().toISOString();
-      
-      await this.saveSharedMemory(sharedMemory);
-      
+      // Use CheckpointManager instead of writing to git-tracked shared memory JSON
+      // This prevents meaningless timestamp-only updates to coding.json
+      this.checkpointManager.setLastVibeAnalysis(new Date());
+
       result.checkpointUpdated = true;
       result.success = true;
-      result.summary = 'Vibe analysis checkpoint updated';
+      result.summary = 'Vibe analysis checkpoint updated (stored in workflow-checkpoints.json)';
 
       return result;
     } catch (error) {

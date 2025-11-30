@@ -1086,9 +1086,23 @@ export class PersistenceAgent {
           await this.storeEntityToGraph(entity);
         }
 
-        // Store relationships
+        // Store relationships (using adapter's object signature)
         for (const relation of sharedMemory.relations) {
-          await this.graphDB.storeRelationship(relation);
+          try {
+            await this.graphDB.storeRelationship(relation);
+          } catch (error: unknown) {
+            // Skip if entities don't exist (e.g., orphan relations)
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes('not found')) {
+              log('Skipping relation to non-existent entity', 'debug', {
+                from: relation.from,
+                to: relation.to,
+                relationType: relation.relationType
+              });
+            } else {
+              throw error;
+            }
+          }
         }
 
         log('Shared memory persisted to GraphDB successfully', 'info', {

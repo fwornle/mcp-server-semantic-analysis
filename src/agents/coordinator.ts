@@ -11,6 +11,7 @@ import { PersistenceAgent } from "./persistence-agent.js";
 import { DeduplicationAgent } from "./deduplication.js";
 import { ContentValidationAgent } from "./content-validation-agent.js";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
+import { WorkflowReportAgent, type StepReport } from "./workflow-report-agent.js";
 
 export interface WorkflowDefinition {
   name: string;
@@ -72,10 +73,12 @@ export class CoordinatorAgent {
   private initializationPromise: Promise<void> | null = null;
   private isInitializing: boolean = false;
   private monitorIntervalId: ReturnType<typeof setInterval> | null = null;
+  private reportAgent: WorkflowReportAgent;
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
     this.graphDB = new GraphDatabaseAdapter();
+    this.reportAgent = new WorkflowReportAgent(repositoryPath);
     this.initializeWorkflows();
     // Note: Agents are initialized lazily when executeWorkflow is called
     // This avoids constructor side effects and race conditions
@@ -554,6 +557,9 @@ export class CoordinatorAgent {
       totalSteps: workflow.steps.length,
     });
 
+    // Start workflow report tracking
+    this.reportAgent.startWorkflowReport(workflowName, executionId, parameters);
+
     try {
       execution.status = "running";
       
@@ -597,6 +603,22 @@ export class CoordinatorAgent {
             timeoutUtilization: `${((stepDuration / 1000) / (step.timeout || 60) * 100).toFixed(1)}%`
           });
 
+          // Record step in workflow report
+          this.reportAgent.recordStep({
+            stepName: step.name,
+            agent: step.agent,
+            action: step.action,
+            startTime: stepStartTime,
+            endTime: stepEndTime,
+            duration: stepDuration,
+            status: 'success',
+            inputs: step.parameters || {},
+            outputs: this.summarizeStepResult(stepResult),
+            decisions: this.extractDecisions(stepResult),
+            warnings: [],
+            errors: []
+          });
+
           // QA Enforcement: Check quality assurance results and implement retry logic
           if (step.name === 'quality_assurance' && stepResult) {
             const qaFailures = this.validateQualityAssuranceResults(stepResult);
@@ -628,15 +650,34 @@ export class CoordinatorAgent {
           
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
+          const stepEndTime = new Date();
+          const stepDuration = stepEndTime.getTime() - stepStartTime.getTime();
+
           execution.results[step.name] = { error: errorMessage };
           execution.errors.push(`Step ${step.name} failed: ${errorMessage}`);
-          
+
+          // Record failed step in workflow report
+          this.reportAgent.recordStep({
+            stepName: step.name,
+            agent: step.agent,
+            action: step.action,
+            startTime: stepStartTime,
+            endTime: stepEndTime,
+            duration: stepDuration,
+            status: 'failed',
+            inputs: step.parameters || {},
+            outputs: {},
+            decisions: [],
+            warnings: [],
+            errors: [errorMessage]
+          });
+
           log(`Step failed: ${step.name}`, "error", {
             step: step.name,
             agent: step.agent,
             error: errorMessage
           });
-          
+
           // Stop workflow on step failure
           throw error;
         }
@@ -680,7 +721,18 @@ export class CoordinatorAgent {
         bottlenecks: performanceMetrics.bottlenecks,
         summary
       });
-      
+
+      // Finalize and save workflow report
+      const reportPath = this.reportAgent.finalizeReport('completed', {
+        stepsCompleted: execution.currentStep + 1,
+        totalSteps: workflow.steps.length,
+        entitiesCreated: persistResult?.entitiesCreated || 0,
+        entitiesUpdated: persistResult?.entitiesUpdated || 0,
+        filesCreated: persistResult?.filesCreated || [],
+        contentChanges: hasContentChanges
+      });
+      log(`Workflow report saved: ${reportPath}`, 'info');
+
     } catch (error) {
       execution.status = "failed";
       execution.endTime = new Date();
@@ -709,6 +761,17 @@ export class CoordinatorAgent {
         duration: execution.endTime.getTime() - execution.startTime.getTime(),
         rolledBack: execution.rolledBack || false
       });
+
+      // Finalize and save workflow report even for failures
+      const reportPath = this.reportAgent.finalizeReport('failed', {
+        stepsCompleted: execution.currentStep,
+        totalSteps: workflow.steps.length,
+        entitiesCreated: 0,
+        entitiesUpdated: 0,
+        filesCreated: [],
+        contentChanges: false
+      });
+      log(`Workflow failure report saved: ${reportPath}`, 'info');
     }
 
     return execution;
@@ -1343,7 +1406,7 @@ Expected locations for generated files:
 
   healthCheck(): Record<string, any> {
     const activeExecutions = this.getActiveExecutions();
-    
+
     return {
       status: "healthy",
       workflows_available: this.workflows.size,
@@ -1352,5 +1415,125 @@ Expected locations for generated files:
       registered_agents: this.agents.size,
       uptime: Date.now(),
     };
+  }
+
+  /**
+   * Summarize a step result for reporting, extracting key metrics and outcomes
+   */
+  private summarizeStepResult(result: any): Record<string, any> {
+    if (!result || typeof result !== 'object') {
+      return { rawValue: result };
+    }
+
+    const summary: Record<string, any> = {};
+
+    // Extract common metrics from results
+    if (result.entitiesCreated !== undefined) summary.entitiesCreated = result.entitiesCreated;
+    if (result.entitiesUpdated !== undefined) summary.entitiesUpdated = result.entitiesUpdated;
+    if (result.filesCreated !== undefined) summary.filesCreated = result.filesCreated;
+    if (result.patternsFound !== undefined) summary.patternsFound = result.patternsFound;
+    if (result.insightsGenerated !== undefined) summary.insightsGenerated = result.insightsGenerated;
+    if (result.commitsAnalyzed !== undefined) summary.commitsAnalyzed = result.commitsAnalyzed;
+    if (result.sessionsAnalyzed !== undefined) summary.sessionsAnalyzed = result.sessionsAnalyzed;
+    if (result.duplicatesRemoved !== undefined) summary.duplicatesRemoved = result.duplicatesRemoved;
+    if (result.validationsPassed !== undefined) summary.validationsPassed = result.validationsPassed;
+    if (result.validationsFailed !== undefined) summary.validationsFailed = result.validationsFailed;
+    if (result.observationsGenerated !== undefined) summary.observationsGenerated = result.observationsGenerated;
+    if (result.totalPatterns !== undefined) summary.totalPatterns = result.totalPatterns;
+    if (result.score !== undefined) summary.score = result.score;
+    if (result.passed !== undefined) summary.passed = result.passed;
+
+    // Handle arrays - summarize counts
+    if (Array.isArray(result.patterns)) summary.patternsCount = result.patterns.length;
+    if (Array.isArray(result.insights)) summary.insightsCount = result.insights.length;
+    if (Array.isArray(result.entities)) summary.entitiesCount = result.entities.length;
+    if (Array.isArray(result.commits)) summary.commitsCount = result.commits.length;
+    if (Array.isArray(result.sessions)) summary.sessionsCount = result.sessions.length;
+    if (Array.isArray(result.observations)) summary.observationsCount = result.observations.length;
+
+    // Extract error info if present
+    if (result.error) summary.error = result.error;
+    if (result.errors && Array.isArray(result.errors)) summary.errorsCount = result.errors.length;
+    if (result.warnings && Array.isArray(result.warnings)) summary.warningsCount = result.warnings.length;
+
+    // Include timing if present
+    if (result._timing) {
+      summary.timing = {
+        duration: result._timing.duration,
+        timeout: result._timing.timeout
+      };
+    }
+
+    // If no specific fields found, include a generic summary
+    if (Object.keys(summary).length === 0) {
+      const keys = Object.keys(result).filter(k => !k.startsWith('_'));
+      summary.fieldsPresent = keys.slice(0, 10);
+      summary.totalFields = keys.length;
+    }
+
+    return summary;
+  }
+
+  /**
+   * Extract decisions made during a step execution
+   */
+  private extractDecisions(result: any): string[] {
+    const decisions: string[] = [];
+
+    if (!result || typeof result !== 'object') {
+      return decisions;
+    }
+
+    // Extract explicit decisions if present
+    if (Array.isArray(result.decisions)) {
+      decisions.push(...result.decisions);
+    }
+
+    // Infer decisions from result state
+    if (result.entitiesCreated === 0 && result.entitiesUpdated === 0) {
+      decisions.push('No new entities created or updated - existing knowledge sufficient');
+    } else if (result.entitiesCreated > 0) {
+      decisions.push(`Created ${result.entitiesCreated} new knowledge entities`);
+    }
+
+    if (result.duplicatesRemoved > 0) {
+      decisions.push(`Removed ${result.duplicatesRemoved} duplicate entries`);
+    }
+
+    if (result.passed === false) {
+      decisions.push('Quality validation failed - flagged for review');
+    } else if (result.passed === true) {
+      decisions.push('Quality validation passed');
+    }
+
+    if (result.skipped) {
+      decisions.push(`Step skipped: ${result.skipReason || 'No changes detected'}`);
+    }
+
+    if (result.filesCreated && result.filesCreated.length > 0) {
+      decisions.push(`Generated ${result.filesCreated.length} output file(s)`);
+    }
+
+    if (result.patternsFound === 0 || (Array.isArray(result.patterns) && result.patterns.length === 0)) {
+      decisions.push('No significant patterns identified in analyzed content');
+    }
+
+    if (result.insightsGenerated === 0 || (Array.isArray(result.insights) && result.insights.length === 0)) {
+      decisions.push('No actionable insights generated from analysis');
+    }
+
+    // Check for incremental analysis decisions
+    if (result.incrementalOnly) {
+      decisions.push('Used incremental analysis mode - only new content analyzed');
+    }
+
+    // Check for content validation decisions
+    if (result.contentValidated === true) {
+      decisions.push('Content passed validation checks');
+    } else if (result.contentValidated === false) {
+      decisions.push('Content failed validation - corrections applied or needed');
+    }
+
+    return decisions;
   }
 }

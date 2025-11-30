@@ -264,6 +264,28 @@ export const TOOLS: Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "reset_analysis_checkpoint",
+    description: "Reset the incremental analysis checkpoint to re-analyze from a specific point in time. Useful when you want to re-process commits/sessions that were already analyzed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        timestamp: {
+          type: "string",
+          description: "ISO timestamp to reset to (e.g., '2025-01-01T00:00:00.000Z'). If not provided, clears the checkpoint entirely to re-analyze everything.",
+        },
+        days_ago: {
+          type: "number",
+          description: "Alternative: Reset to N days ago from now. Ignored if 'timestamp' is provided.",
+        },
+        team: {
+          type: "string",
+          description: "Team name for the checkpoint file (defaults to 'coding')",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 // Tool call handler
@@ -304,8 +326,10 @@ export async function handleToolCall(name: string, args: any): Promise<any> {
         
       case "generate_plantuml_diagrams":
         return await handleGeneratePlantUMLDiagrams(args);
-        
-        
+
+      case "reset_analysis_checkpoint":
+        return await handleResetAnalysisCheckpoint(args);
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -1236,6 +1260,97 @@ note bottom of INSIGHTS
 end note
 
 @enduml`;
+}
+
+/**
+ * Handler for reset_analysis_checkpoint tool
+ * Allows resetting the incremental analysis marker to re-analyze from a specific point
+ */
+async function handleResetAnalysisCheckpoint(args: any): Promise<any> {
+  const { timestamp, days_ago, team = 'coding' } = args;
+
+  log(`Resetting analysis checkpoint for team: ${team}`, "info", { timestamp, days_ago });
+
+  try {
+    // Determine the new checkpoint timestamp
+    let newCheckpoint: string;
+    let description: string;
+
+    if (timestamp) {
+      // Use provided timestamp
+      const date = new Date(timestamp);
+      if (isNaN(date.getTime())) {
+        throw new Error(`Invalid timestamp format: ${timestamp}`);
+      }
+      newCheckpoint = date.toISOString();
+      description = `specific timestamp: ${newCheckpoint}`;
+    } else if (days_ago !== undefined && days_ago >= 0) {
+      // Calculate timestamp from days_ago
+      const date = new Date();
+      date.setDate(date.getDate() - days_ago);
+      newCheckpoint = date.toISOString();
+      description = `${days_ago} days ago (${newCheckpoint})`;
+    } else {
+      // Clear checkpoint entirely - this will re-analyze everything
+      newCheckpoint = '';
+      description = 'cleared (will re-analyze from the beginning)';
+    }
+
+    // Load and update the checkpoint file
+    const repositoryPath = process.env.REPOSITORY_PATH || process.cwd();
+    const checkpointFile = path.join(repositoryPath, '.data', 'knowledge-export', `${team}.json`);
+
+    log(`Checkpoint file: ${checkpointFile}`, "info");
+
+    // Read current file
+    let data: any = { entities: [], relations: [], metadata: {} };
+    try {
+      const content = await fs.readFile(checkpointFile, 'utf8');
+      data = JSON.parse(content);
+    } catch (error) {
+      log(`Checkpoint file not found or invalid, creating new one`, "warning");
+      data.metadata = {};
+    }
+
+    // Store the old value for reporting
+    const oldCheckpoint = data.metadata?.lastSuccessfulWorkflowCompletion || 'not set';
+
+    // Update or clear the checkpoint
+    if (newCheckpoint) {
+      data.metadata.lastSuccessfulWorkflowCompletion = newCheckpoint;
+    } else {
+      delete data.metadata.lastSuccessfulWorkflowCompletion;
+    }
+
+    // Also update related timestamps for consistency
+    data.metadata.last_updated = new Date().toISOString();
+    data.metadata.checkpointResetAt = new Date().toISOString();
+    data.metadata.checkpointResetReason = description;
+
+    // Write back to file
+    await fs.writeFile(checkpointFile, JSON.stringify(data, null, 2), 'utf8');
+
+    log(`Checkpoint reset successfully`, "info", { oldCheckpoint, newCheckpoint: newCheckpoint || 'cleared' });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `# Analysis Checkpoint Reset\n\n**Team:** ${team}\n**Previous checkpoint:** ${oldCheckpoint}\n**New checkpoint:** ${description}\n**File:** ${checkpointFile}\n**Updated:** ${new Date().toISOString()}\n\n---\n\nThe next \`ukb\` (incremental-analysis) run will now analyze changes since ${description}.\n\n**Tip:** Use \`days_ago: 7\` to re-analyze the last week, or omit both parameters to re-analyze everything.`
+        }
+      ],
+      metadata: {
+        team,
+        oldCheckpoint,
+        newCheckpoint: newCheckpoint || null,
+        checkpointFile,
+        description
+      }
+    };
+  } catch (error) {
+    log(`Error resetting checkpoint`, "error", error);
+    throw error;
+  }
 }
 
 

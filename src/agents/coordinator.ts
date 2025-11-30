@@ -644,17 +644,29 @@ export class CoordinatorAgent {
 
       execution.status = "completed";
       execution.endTime = new Date();
-      
-      // Save successful workflow completion checkpoint
-      try {
-        const persistenceAgent = this.agents.get('persistence') as PersistenceAgent;
-        if (persistenceAgent && persistenceAgent.saveSuccessfulWorkflowCompletion) {
-          await persistenceAgent.saveSuccessfulWorkflowCompletion(workflowName, execution.endTime);
-          log('Workflow completion checkpoint saved', 'info', { workflow: workflowName });
+
+      // Check if there were actual content changes before updating the checkpoint
+      // This prevents "empty" updates that only touch timestamps
+      const persistResult = execution.results?.persist_incremental || execution.results?.persist_analysis;
+      const hasContentChanges = persistResult?.hasContentChanges || false;
+
+      // Save successful workflow completion checkpoint ONLY if there were actual content changes
+      if (hasContentChanges) {
+        try {
+          const persistenceAgent = this.agents.get('persistence') as PersistenceAgent;
+          if (persistenceAgent && persistenceAgent.saveSuccessfulWorkflowCompletion) {
+            await persistenceAgent.saveSuccessfulWorkflowCompletion(workflowName, execution.endTime);
+            log('Workflow completion checkpoint saved (content changes detected)', 'info', { workflow: workflowName });
+          }
+        } catch (checkpointError) {
+          log('Failed to save workflow completion checkpoint', 'warning', checkpointError);
+          // Don't fail the workflow for checkpoint issues
         }
-      } catch (checkpointError) {
-        log('Failed to save workflow completion checkpoint', 'warning', checkpointError);
-        // Don't fail the workflow for checkpoint issues
+      } else {
+        log('Workflow completed but no content changes detected - checkpoint NOT updated', 'info', {
+          workflow: workflowName,
+          persistResult: persistResult ? { entitiesCreated: persistResult.entitiesCreated, entitiesUpdated: persistResult.entitiesUpdated } : 'none'
+        });
       }
       
       // Generate summary with enhanced timing analysis

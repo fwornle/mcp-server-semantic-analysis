@@ -13,6 +13,7 @@ export interface PersistenceResult {
   filesCreated: string[];
   errors: string[];
   summary: string;
+  hasContentChanges: boolean;  // True if any actual content was created/modified (not just timestamp updates)
 }
 
 export interface CheckpointData {
@@ -470,7 +471,8 @@ export class PersistenceAgent {
       checkpointUpdated: false,
       filesCreated: [],
       errors: [],
-      summary: ''
+      summary: '',
+      hasContentChanges: false  // Will be set to true if entities/relations/files are actually created/modified
     };
 
     try {
@@ -539,11 +541,21 @@ export class PersistenceAgent {
       result.summary = this.generatePersistenceSummary(result, createdEntities, updatedRelations);
       result.success = true;
 
+      // Determine if there were actual content changes (not just timestamp updates)
+      // updatedRelations is an array of EntityRelationship, check its length
+      const relationsCreated = Array.isArray(updatedRelations) ? updatedRelations.length : 0;
+      result.hasContentChanges =
+        result.entitiesCreated > 0 ||
+        result.entitiesUpdated > 0 ||
+        result.filesCreated.length > 0 ||
+        relationsCreated > 0;
+
       log('Analysis persistence completed successfully', 'info', {
         entitiesCreated: result.entitiesCreated,
         entitiesUpdated: result.entitiesUpdated,
         filesCreated: result.filesCreated.length,
-        checkpointUpdated: result.checkpointUpdated
+        checkpointUpdated: result.checkpointUpdated,
+        hasContentChanges: result.hasContentChanges
       });
 
       return result;
@@ -1232,7 +1244,8 @@ export class PersistenceAgent {
       checkpointUpdated: false,
       filesCreated: [],
       errors: [],
-      summary: ''
+      summary: '',
+      hasContentChanges: false
     };
 
     try {
@@ -1264,7 +1277,8 @@ export class PersistenceAgent {
       checkpointUpdated: false,
       filesCreated: [],
       errors: [],
-      summary: ''
+      summary: '',
+      hasContentChanges: false
     };
 
     try {
@@ -1503,7 +1517,8 @@ export class PersistenceAgent {
       checkpointUpdated: false,
       filesCreated: [],
       errors: [],
-      summary: ''
+      summary: '',
+      hasContentChanges: false
     };
 
     try {

@@ -24,9 +24,16 @@ export interface WorkflowCheckpoints {
 export class CheckpointManager {
   private checkpointPath: string;
   private repositoryPath: string;
+  private team: string;
 
-  constructor(repositoryPath: string) {
+  /**
+   * @param repositoryPath - Path to the repository root
+   * @param team - Optional team name for legacy checkpoint lookups (default: 'coding')
+   *               Supported teams: coding, ui, raas, resi, etc.
+   */
+  constructor(repositoryPath: string, team: string = 'coding') {
     this.repositoryPath = repositoryPath;
+    this.team = team;
     this.checkpointPath = path.join(repositoryPath, '.data', 'workflow-checkpoints.json');
   }
 
@@ -141,10 +148,10 @@ export class CheckpointManager {
    */
   private getLegacyCheckpoint(checkpointName: string): Date | null {
     try {
-      // Try coding.json first (primary export)
+      // Use the team-specific export file (supports coding, ui, raas, resi, etc.)
       const legacyPaths = [
-        path.join(this.repositoryPath, '.data', 'knowledge-export', 'coding.json'),
-        path.join(this.repositoryPath, 'shared-memory-coding.json')
+        path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`),
+        path.join(this.repositoryPath, `shared-memory-${this.team}.json`)
       ];
 
       for (const legacyPath of legacyPaths) {
@@ -195,18 +202,24 @@ export class CheckpointManager {
   }
 }
 
-// Singleton instance for the default repository path
-let defaultInstance: CheckpointManager | null = null;
+// Singleton instances keyed by repositoryPath + team
+const instances: Map<string, CheckpointManager> = new Map();
 
-export function getCheckpointManager(repositoryPath?: string): CheckpointManager {
+/**
+ * Get or create a CheckpointManager instance
+ * @param repositoryPath - Path to the repository root (default: /Users/q284340/Agentic/coding)
+ * @param team - Team name for legacy checkpoint lookups (default: 'coding')
+ */
+export function getCheckpointManager(repositoryPath?: string, team: string = 'coding'): CheckpointManager {
   if (!repositoryPath) {
     // Use the coding repo path
     repositoryPath = '/Users/q284340/Agentic/coding';
   }
 
-  if (!defaultInstance || defaultInstance['repositoryPath'] !== repositoryPath) {
-    defaultInstance = new CheckpointManager(repositoryPath);
+  const key = `${repositoryPath}:${team}`;
+  if (!instances.has(key)) {
+    instances.set(key, new CheckpointManager(repositoryPath, team));
   }
 
-  return defaultInstance;
+  return instances.get(key)!;
 }

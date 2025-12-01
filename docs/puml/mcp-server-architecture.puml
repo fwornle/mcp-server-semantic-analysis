@@ -42,7 +42,7 @@ package "Agent Layer (11 Agents)" <<agent>> {
 package "Storage Layer" <<storage>> {
   database "GraphDB\nGraphology+LevelDB\n.data/knowledge-graph/" as GRAPHDB <<storage>> #D4EDDA
   component [GraphKnowledgeExporter] as EXPORTER <<infra>>
-  file "shared-memory-\n<project>.json" as SHARED_JSON <<storage>>
+  file "knowledge-export/\n<team>.json" as SHARED_JSON <<storage>>
 }
 
 package "External Services" <<external>> {

@@ -46,7 +46,7 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 - **4-Tier LLM Provider Chain** - Groq (1st) → Gemini (2nd) → Custom LLM (3rd) → Anthropic Claude (4th) → OpenAI GPT (fallback)
 - **OpenAI Embeddings** - text-embedding-3-small for semantic similarity and deduplication
 - **Graph Database Persistence** - Graphology (in-memory) + LevelDB (persistent storage) at `.data/knowledge-graph/`
-- **Knowledge Base Support** - UKB/VKB integration with automatic graph export to shared-memory-*.json
+- **Knowledge Base Support** - UKB/VKB integration with automatic graph export to .data/knowledge-export/*.json
 - **PlantUML Diagrams** - Architecture visualization
 - **Web Search** - Technical documentation discovery with semantic relevance scoring
 - **Git & Conversation Analysis** - Cross-correlates code changes with development discussions using LLM semantic understanding
@@ -296,7 +296,7 @@ graph TB
     subgraph "Storage Layer"
         GRAPHDB[(GraphDatabaseService<br/>Graphology + LevelDB<br/>.data/knowledge-graph/)]
         EXPORT[GraphKnowledgeExporter<br/>Auto-export to JSON]
-        SHARED[shared-memory-coding.json<br/>Git-tracked export]
+        SHARED[.data/knowledge-export/coding.json<br/>Git-tracked export]
     end
 
     subgraph "External Services"
@@ -344,8 +344,8 @@ graph TB
 
 **Storage Architecture Notes:**
 - **Graphology+LevelDB**: In-memory graph (Graphology) with persistent storage (LevelDB) at `.data/knowledge-graph/`
-- **GraphKnowledgeExporter**: Separate process that auto-exports from LevelDB to `shared-memory-coding.json` (30s intervals)
-- **shared-memory-coding.json**: Git-tracked JSON export for collaboration and cross-session persistence
+- **GraphKnowledgeExporter**: Separate process that auto-exports from LevelDB to `.data/knowledge-export/coding.json` (30s intervals)
+- **knowledge-export/*.json**: Git-tracked JSON export for collaboration and cross-session persistence
 
 ## 📚 Detailed Documentation
 

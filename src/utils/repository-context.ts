@@ -85,7 +85,7 @@ export class RepositoryContextManager {
     const current = await this.getAnalysisCheckpoint();
     this.checkpointCache = { ...current, ...updates };
     
-    // Note: In real implementation, this would update the shared-memory-*.json metadata
+    // Note: In real implementation, this would update the knowledge-export/*.json metadata
     log('Checkpoint updated', 'info', updates);
   }
 
@@ -453,7 +453,7 @@ export class RepositoryContextManager {
   }
 
   private loadCheckpointFromMetadata(): AnalysisCheckpoint {
-    // In real implementation, this would load from shared-memory-*.json metadata
+    // In real implementation, this would load from knowledge-export/*.json metadata
     // For now, return default checkpoint
     return {
       lastAnalyzedCommit: null,

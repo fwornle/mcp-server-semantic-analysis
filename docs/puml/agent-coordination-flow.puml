@@ -137,7 +137,7 @@ note right of CLAUDE
   - Quality-assured outputs
   - Stale entity detection & validation
   - GraphDB persistence (Graphology+LevelDB)
-  - Auto-export to shared-memory-<project>.json
+  - Auto-export to knowledge-export/<team>.json
   - No MCP Memory server
 end note
 

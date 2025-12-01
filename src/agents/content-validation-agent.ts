@@ -831,19 +831,21 @@ export class ContentValidationAgent {
 
   private async loadEntity(entityName: string, team: string): Promise<any> {
     // In practice, this would query the graph database
-    // For now, we'll read from the shared memory file
-    const sharedMemoryPath = path.join(
+    // For now, we'll read from the knowledge export file
+    const knowledgeExportPath = path.join(
       this.repositoryPath,
-      `shared-memory-${team}.json`
+      '.data',
+      'knowledge-export',
+      `${team}.json`
     );
 
     try {
-      if (fs.existsSync(sharedMemoryPath)) {
-        const content = JSON.parse(fs.readFileSync(sharedMemoryPath, "utf-8"));
+      if (fs.existsSync(knowledgeExportPath)) {
+        const content = JSON.parse(fs.readFileSync(knowledgeExportPath, "utf-8"));
         return content.entities?.find((e: any) => e.name === entityName);
       }
     } catch (error) {
-      log(`Error loading entity from shared memory`, "error", error);
+      log(`Error loading entity from knowledge export`, "error", error);
     }
 
     return null;

@@ -55,7 +55,7 @@ async function testContentValidation() {
 
     const testObservations = [
       'The ukb command is used to update the knowledge base', // Outdated - ukb is deprecated
-      'Data is stored in shared-memory-coding.json', // Outdated - now uses GraphDB
+      'Data is stored in .data/knowledge-export/coding.json', // Outdated reference pattern
       'PersistenceAgent stores entities to the graph database', // Current/Valid
       'The src/agents/coordinator.ts file orchestrates workflows', // Valid if file exists
     ];

@@ -3,7 +3,7 @@ const path = require('path');
 
 console.log('🔍 Checking for phantom nodes...');
 
-const memoryPath = './shared-memory-coding.json';
+const memoryPath = './.data/knowledge-export/coding.json';
 const memory = JSON.parse(fs.readFileSync(memoryPath, 'utf8'));
 
 console.log('Total entities:', memory.entities.length);

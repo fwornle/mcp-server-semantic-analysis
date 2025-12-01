@@ -184,7 +184,7 @@ export class ObservationGenerationAgent {
   }
 
   private initializeTemplates(): void {
-    // Based on existing patterns in shared-memory-coding.json
+    // Based on existing patterns in knowledge-export/coding.json
     
     // Rule template - critical guidelines
     this.templates.set('rule', [

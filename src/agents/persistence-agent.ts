@@ -1436,7 +1436,7 @@ export class PersistenceAgent {
       // FIXED: Don't create separate entities for patterns to prevent phantom nodes
       // Patterns are already included in the main analysis insight document
       // Creating separate entities for patterns without corresponding insight files
-      // was causing phantom nodes in shared-memory-coding.json
+      // was causing phantom nodes in knowledge-export/coding.json
       if (analysisData.insightGeneration?.patternCatalog?.patterns) {
         log('Patterns included in main analysis insight document - no separate entities created', 'info', {
           patternCount: analysisData.insightGeneration.patternCatalog.patterns.length,
@@ -1846,7 +1846,7 @@ ${entityData.insights}
   }
 
   /**
-   * Extract actionable observations from insight content following shared-memory pattern structure
+   * Extract actionable observations from insight content following knowledge-export pattern structure
    */
   private extractActionableObservations(insight: any, cleanName: string, now: string): any[] {
     const observations = [];
@@ -2160,7 +2160,7 @@ ${entityData.insights}
   }
 
   /**
-   * Generate quick reference section like other entities in shared-memory files
+   * Generate quick reference section like other entities in knowledge-export files
    */
   private generateQuickReference(insight: any, cleanName: string): any {
     const content = insight.content || '';

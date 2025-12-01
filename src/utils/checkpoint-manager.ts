@@ -143,28 +143,23 @@ export class CheckpointManager {
   }
 
   /**
-   * Try to read a checkpoint from the legacy location (shared memory JSON)
+   * Try to read a checkpoint from the legacy location (knowledge export JSON)
    * This provides backward compatibility during migration
    */
   private getLegacyCheckpoint(checkpointName: string): Date | null {
     try {
       // Use the team-specific export file (supports coding, ui, raas, resi, etc.)
-      const legacyPaths = [
-        path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`),
-        path.join(this.repositoryPath, `shared-memory-${this.team}.json`)
-      ];
+      const legacyPath = path.join(this.repositoryPath, '.data', 'knowledge-export', `${this.team}.json`);
 
-      for (const legacyPath of legacyPaths) {
-        if (fs.existsSync(legacyPath)) {
-          const data = JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
-          if (data.metadata?.[checkpointName]) {
-            log('Using legacy checkpoint', 'debug', {
-              checkpoint: checkpointName,
-              value: data.metadata[checkpointName],
-              source: legacyPath
-            });
-            return new Date(data.metadata[checkpointName]);
-          }
+      if (fs.existsSync(legacyPath)) {
+        const data = JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
+        if (data.metadata?.[checkpointName]) {
+          log('Using legacy checkpoint', 'debug', {
+            checkpoint: checkpointName,
+            value: data.metadata[checkpointName],
+            source: legacyPath
+          });
+          return new Date(data.metadata[checkpointName]);
         }
       }
     } catch (error) {

@@ -5,7 +5,7 @@ import crypto from "crypto";
 
 export interface SyncTarget {
   name: string;
-  type: "mcp_memory" | "graphology_db" | "shared_memory_file";
+  type: "mcp_memory" | "graphology_db" | "knowledge_export_file";
   path?: string;
   enabled: boolean;
   bidirectional: boolean;
@@ -79,9 +79,9 @@ export class SynchronizationAgent {
         bidirectional: true,
       },
       {
-        name: "shared_memory_coding",
-        type: "shared_memory_file",
-        path: "/Users/q284340/Agentic/coding/shared-memory-coding.json",
+        name: "knowledge_export_coding",
+        type: "knowledge_export_file",
+        path: "/Users/q284340/Agentic/coding/.data/knowledge-export/coding.json",
         enabled: true,
         bidirectional: true,
       },
@@ -149,8 +149,8 @@ export class SynchronizationAgent {
         case "graphology_db":
           await this.syncGraphologyDb(target, result);
           break;
-        case "shared_memory_file":
-          await this.syncSharedMemoryFile(target, result);
+        case "knowledge_export_file":
+          await this.syncKnowledgeExportFile(target, result);
           break;
         default:
           throw new Error(`Unknown target type: ${target.type}`);
@@ -227,12 +227,12 @@ export class SynchronizationAgent {
     result.itemsRemoved = 1;
   }
 
-  private async syncSharedMemoryFile(target: SyncTarget, result: SyncResult): Promise<void> {
+  private async syncKnowledgeExportFile(target: SyncTarget, result: SyncResult): Promise<void> {
     if (!target.path) {
-      throw new Error("No path specified for shared memory file");
+      throw new Error("No path specified for knowledge export file");
     }
 
-    log(`Syncing shared memory file: ${target.path}`, "info");
+    log(`Syncing knowledge export file: ${target.path}`, "info");
 
     try {
       // Get knowledge graph agent for current state
@@ -278,9 +278,9 @@ export class SynchronizationAgent {
       
       // Determine project context for targeted sync
       const currentProject = this.determineCurrentProject();
-      
-      // Only sync if this is the correct project file
-      const expectedFileName = `shared-memory-${currentProject}.json`;
+
+      // Only sync if this is the correct project file (uses .data/knowledge-export/{team}.json format)
+      const expectedFileName = `${currentProject}.json`;
       if (!target.path.endsWith(expectedFileName)) {
         log(`Skipping sync - file ${target.path} doesn't match project ${currentProject}`, "debug");
         result.itemsAdded = 0;
@@ -479,7 +479,7 @@ export class SynchronizationAgent {
   }
 
   // Multi-source synchronization
-  async syncAllSources(sources: string[] = ["mcp_memory", "shared_memory_files"], direction: string = "bidirectional", backup: boolean = true): Promise<any> {
+  async syncAllSources(sources: string[] = ["mcp_memory", "knowledge_export_files"], direction: string = "bidirectional", backup: boolean = true): Promise<any> {
     try {
       log(`Starting multi-source sync`, "info", { sources, direction, backup });
       

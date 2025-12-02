@@ -730,7 +730,7 @@ export class InsightGenerationAgent {
 
     // Write PlantUML file
     const pumlDir = path.join(this.outputDir, 'puml');
-    const pumlFile = path.join(pumlDir, `${name}_${type}.puml`);
+    const pumlFile = path.join(pumlDir, `${toKebabCase(name)}-${type}.puml`);
     
     try {
       await fs.promises.writeFile(pumlFile, diagramContent, 'utf8');
@@ -739,7 +739,7 @@ export class InsightGenerationAgent {
       let pngFile: string | undefined;
       try {
         const imagesDir = path.join(this.outputDir, 'images');
-        pngFile = path.join(imagesDir, `${name}_${type}.png`);
+        pngFile = path.join(imagesDir, `${toKebabCase(name)}-${type}.png`);
         
         const { spawn } = await import('child_process');
         // Use -tpng to specify PNG output and direct output to correct images directory

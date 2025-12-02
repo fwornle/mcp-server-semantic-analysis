@@ -11,6 +11,20 @@ import fs from "fs/promises";
 import { mkdirSync, writeFileSync } from "fs";
 import path from "path";
 
+/**
+ * Convert a name to kebab-case (lowercase with hyphens).
+ * Per documentation-style requirements: only lowercase letters, hyphens, and numbers allowed.
+ */
+function toKebabCase(name: string): string {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[_\s]+/g, '-')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 // Tool definitions
 export const TOOLS: Tool[] = [
   {
@@ -940,8 +954,8 @@ async function handleGeneratePlantUMLDiagrams(args: any): Promise<any> {
     mkdirSync(pumlDir, { recursive: true });
     mkdirSync(imagesDir, { recursive: true });
     
-    // Generate lowercase filename for consistency
-    const fileBaseName = name.toLowerCase();
+    // Generate kebab-case filename for consistency with documentation-style requirements
+    const fileBaseName = toKebabCase(name);
     const pumlFile = path.join(pumlDir, `${fileBaseName}-${diagram_type}.puml`);
     
     // Write the PlantUML file

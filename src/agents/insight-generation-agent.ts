@@ -68,6 +68,30 @@ export interface InsightGenerationResult {
 }
 
 
+/**
+ * Convert a name to kebab-case (lowercase with hyphens).
+ * Per documentation-style requirements: only lowercase letters, hyphens, and numbers allowed.
+ * Examples:
+ *   "DecoratorPattern" -> "decorator-pattern"
+ *   "MCPServerSetup" -> "mcp-server-setup"
+ *   "Some_Name_Here" -> "some-name-here"
+ */
+function toKebabCase(name: string): string {
+  return name
+    // Insert hyphen before uppercase letters (for PascalCase/camelCase)
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    // Replace underscores and spaces with hyphens
+    .replace(/[_\s]+/g, '-')
+    // Convert to lowercase
+    .toLowerCase()
+    // Remove any invalid characters (keep only lowercase, hyphens, numbers)
+    .replace(/[^a-z0-9-]/g, '')
+    // Remove consecutive hyphens
+    .replace(/-+/g, '-')
+    // Remove leading/trailing hyphens
+    .replace(/^-|-$/g, '');
+}
+
 export class InsightGenerationAgent {
   private outputDir: string;
   private plantumlAvailable: boolean = false;
@@ -642,7 +666,7 @@ export class InsightGenerationAgent {
         log(`Failed to generate ${type} diagram`, 'warning', error);
         return {
           type,
-          name: `${name}_${type}`,
+          name: `${toKebabCase(name)}-${type}`,
           content: '',
           pumlFile: '',
           success: false
@@ -667,7 +691,7 @@ export class InsightGenerationAgent {
     if (!this.plantumlAvailable) {
       return {
         type,
-        name: `${name}_${type}`,
+        name: `${toKebabCase(name)}-${type}`,
         content: '',
         pumlFile: '',
         success: false
@@ -743,7 +767,7 @@ export class InsightGenerationAgent {
 
       return {
         type,
-        name: `${name}_${type}`,
+        name: `${toKebabCase(name)}-${type}`,
         content: diagramContent,
         pumlFile,
         pngFile,
@@ -754,7 +778,7 @@ export class InsightGenerationAgent {
       log(`Failed to create PlantUML diagram: ${type}`, 'error', error);
       return {
         type,
-        name: `${name}_${type}`,
+        name: `${toKebabCase(name)}-${type}`,
         content: diagramContent,
         pumlFile: '',
         success: false
@@ -834,18 +858,31 @@ export class InsightGenerationAgent {
   private buildDiagramPrompt(type: PlantUMLDiagram['type'], data: any): string {
     const patternCount = data.patternCatalog?.patterns?.length || 0;
     const patterns = data.patternCatalog?.patterns || [];
-    
+
     let prompt = `Generate a professional PlantUML ${type} diagram based on the following semantic analysis data:
 
 **Analysis Data:**
 ${JSON.stringify(data, null, 2)}
 
-**Requirements:**
-- Create a valid PlantUML diagram enclosed in @startuml and @enduml tags
-- Use proper PlantUML syntax and styling
-- Make the diagram visually clear and informative
-- Include meaningful relationships and annotations
-- Use professional styling with appropriate colors and layouts`;
+**CRITICAL REQUIREMENTS (MUST FOLLOW EXACTLY):**
+1. Start with @startuml on the first line
+2. IMMEDIATELY after @startuml (on the SECOND line), include this EXACT line:
+   !include /Users/q284340/Agentic/coding/docs/puml/_standard-style.puml
+3. Do NOT define any skinparam settings - the style sheet handles all styling
+4. Use proper PlantUML syntax for the diagram type
+5. Make the diagram visually clear and informative
+6. Include meaningful relationships and annotations
+7. End with @enduml on the last line
+
+**Example structure:**
+\`\`\`
+@startuml
+!include /Users/q284340/Agentic/coding/docs/puml/_standard-style.puml
+
+' Your diagram content here (NO skinparam definitions)
+
+@enduml
+\`\`\``;
 
     if (type === 'architecture') {
       prompt += `
@@ -853,10 +890,11 @@ ${JSON.stringify(data, null, 2)}
 **Architecture Diagram Specifics:**
 - Show ${patternCount} identified patterns as components
 - Group related patterns into packages by category
-- Use different styles for different significance levels (<<critical>>, <<important>>, <<standard>>)
+- Use stereotypes like <<api>>, <<core>>, <<storage>>, <<agent>> for different component types (defined in style sheet)
 - Show relationships between related components
 - Include a summary note with key metrics
-- Use component diagram syntax with packages, components, and interfaces`;
+- Use component diagram syntax with packages, components, and interfaces
+- PREFER vertical layout (top-to-bottom) over horizontal to avoid excessive width`;
 
     } else if (type === 'class') {
       prompt += `
@@ -867,12 +905,33 @@ ${JSON.stringify(data, null, 2)}
 - Include key methods and properties where relevant
 - Group related classes into packages
 - Use proper UML class diagram syntax
-- Show dependencies and associations between classes`;
+- Show dependencies and associations between classes
+- PREFER vertical layout to avoid excessive width`;
+
+    } else if (type === 'sequence') {
+      prompt += `
+
+**Sequence Diagram Specifics:**
+- Show interaction between key components/actors
+- Use proper participant declarations
+- Show meaningful message exchanges
+- Group related sequences with alt/opt/loop blocks where appropriate
+- Keep diagram focused and readable`;
+
+    } else if (type === 'use-cases') {
+      prompt += `
+
+**Use Case Diagram Specifics:**
+- Define clear actors (users, systems)
+- Show use cases as ovals
+- Show include/extend relationships where appropriate
+- Group related use cases with rectangles/packages
+- Keep actor relationships clear`;
     }
 
     prompt += `
 
-**Output Format:** Valid PlantUML code only, starting with @startuml and ending with @enduml. No explanatory text outside the diagram.`;
+**Output Format:** Valid PlantUML code only, starting with @startuml and ending with @enduml. No explanatory text outside the diagram. The SECOND LINE must be the !include directive.`;
 
     return prompt;
   }

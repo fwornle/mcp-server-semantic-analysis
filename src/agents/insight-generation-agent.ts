@@ -466,28 +466,56 @@ export class InsightGenerationAgent {
       patternCatalog
     );
 
-    // Generate PlantUML diagrams using actual pattern name
+    const timestamp = new Date().toISOString();
+
+    // FIX: Validate content generation BEFORE creating diagrams to prevent orphan PNGs
+    // This ensures we don't create diagram files if content generation will fail
+    console.log('📝 Pre-validating content generation before diagrams...');
+    let content: string;
+    let diagrams: PlantUMLDiagram[] = [];
+
+    try {
+      // First, generate content WITHOUT diagrams to validate it will succeed
+      // We pass empty diagrams array - the template will use fallback names
+      content = await this.generateInsightContent({
+        title,
+        timestamp,
+        gitAnalysis,
+        vibeAnalysis,
+        semanticAnalysis,
+        patternCatalog,
+        webResults,
+        diagrams: [] // Empty initially for validation
+      });
+      console.log('✅ Content validation passed, content length:', content.length);
+    } catch (contentError: any) {
+      // Content generation failed - don't create any diagrams
+      console.error('❌ Content validation failed - skipping diagram generation to prevent orphan files');
+      console.error('   Error:', contentError.message);
+      throw contentError;
+    }
+
+    // Content validated successfully - now generate diagrams
     FilenameTracer.trace('DIAGRAM_INPUT', 'generateInsightDocument',
       name, 'Using pattern name directly for diagrams'
     );
 
-    const diagrams = await this.generateAllDiagrams(name, {
-      gitAnalysis,
-      vibeAnalysis,
-      semanticAnalysis,
-      patternCatalog
-    });
+    try {
+      diagrams = await this.generateAllDiagrams(name, {
+        gitAnalysis,
+        vibeAnalysis,
+        semanticAnalysis,
+        patternCatalog
+      });
+    } catch (diagramError: any) {
+      console.error('⚠️ Diagram generation failed, continuing with empty diagrams:', diagramError.message);
+      // Continue without diagrams - content is more important
+      diagrams = [];
+    }
 
-    // Generate comprehensive content  
-    const timestamp = new Date().toISOString();
-    console.log('📝 About to call generateInsightContent with:', {
-      title,
-      hasGitAnalysis: !!gitAnalysis,
-      hasVibeAnalysis: !!vibeAnalysis,
-      hasSemanticAnalysis: !!semanticAnalysis
-    });
-    
-    const content = await this.generateInsightContent({
+    // Re-generate content with actual diagram references
+    console.log('📝 Regenerating content with diagram references...');
+    content = await this.generateInsightContent({
       title,
       timestamp,
       gitAnalysis,
@@ -497,14 +525,14 @@ export class InsightGenerationAgent {
       webResults,
       diagrams
     });
-    
+
     console.log('✅ generateInsightContent completed, content length:', content.length);
 
     // Save the document with tracing
     FilenameTracer.trace('FILE_WRITE_INPUT', 'generateInsightDocument',
       name, 'Filename for file write operation'
     );
-    
+
     // Use the pattern name directly (no corruption fixes needed)
     FilenameTracer.trace('FILE_PATH_GENERATION', 'generateInsightDocument',
       name, 'Using pattern name directly for file path'
@@ -515,15 +543,19 @@ export class InsightGenerationAgent {
     FilenameTracer.trace('FILE_PATH_FINAL', 'generateInsightDocument',
       { name, outputDir: this.outputDir }, filePath
     );
-    
-    debugger; // Breakpoint opportunity for file writing
-    
-    await fs.promises.writeFile(filePath, content, 'utf8');
-    
-    FilenameTracer.trace('FILE_WRITTEN', 'generateInsightDocument',
-      filePath, 'File successfully written'
-    );
-    
+
+    try {
+      await fs.promises.writeFile(filePath, content, 'utf8');
+      FilenameTracer.trace('FILE_WRITTEN', 'generateInsightDocument',
+        filePath, 'File successfully written'
+      );
+    } catch (writeError: any) {
+      // If MD file write fails, clean up orphan diagram files
+      console.error('❌ Failed to write MD file, cleaning up diagram files...');
+      await this.cleanupOrphanDiagrams(diagrams);
+      throw writeError;
+    }
+
     FilenameTracer.printSummary();
 
     // Calculate significance based on analysis richness
@@ -552,6 +584,31 @@ export class InsightGenerationAgent {
         patternCount: patternCatalog.patterns.length
       }
     };
+  }
+
+  /**
+   * Clean up orphan diagram files when insight document creation fails
+   */
+  private async cleanupOrphanDiagrams(diagrams: PlantUMLDiagram[]): Promise<void> {
+    for (const diagram of diagrams) {
+      if (diagram.success && diagram.pngFile) {
+        try {
+          await fs.promises.unlink(diagram.pngFile);
+          console.log(`  Cleaned up: ${diagram.pngFile}`);
+          // Also try to clean up the PUML source file
+          if (diagram.pumlFile) {
+            try {
+              await fs.promises.unlink(diagram.pumlFile);
+              console.log(`  Cleaned up: ${diagram.pumlFile}`);
+            } catch {
+              // PUML file may not exist, ignore
+            }
+          }
+        } catch (err) {
+          console.error(`  Failed to clean up ${diagram.pngFile}:`, err);
+        }
+      }
+    }
   }
 
   private async generateAllDiagrams(name: string, data: any): Promise<PlantUMLDiagram[]> {

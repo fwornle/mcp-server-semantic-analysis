@@ -499,6 +499,102 @@ export class QualityAssuranceAgent {
     return result;
   }
 
+  /**
+   * Lightweight QA for incremental analysis - faster checks focused on essential validation
+   * Skips heavy operations like LLM-based content validation and comprehensive PlantUML checks
+   */
+  async performLightweightQA(parameters: { all_results: Record<string, any>, lightweight?: boolean }): Promise<any> {
+    const { all_results } = parameters;
+
+    log('Starting lightweight workflow QA for incremental analysis', 'info', {
+      stepsToValidate: Object.keys(all_results).length
+    });
+
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    // 1. Check insights were generated with valid structure
+    const insightsResult = all_results.insights;
+    if (insightsResult) {
+      if (insightsResult.insightDocument) {
+        // Validate insight document has required fields
+        const doc = insightsResult.insightDocument;
+        if (!doc.name || !doc.title || !doc.content) {
+          errors.push('Insight document missing required fields (name, title, or content)');
+        }
+        if (!doc.filePath) {
+          errors.push('Insight document missing filePath - MD file may not have been written');
+        }
+
+        // Check for orphan diagrams - diagrams exist but no corresponding MD file path
+        if (doc.diagrams && doc.diagrams.length > 0 && !doc.filePath) {
+          errors.push(`Potential orphan diagrams: ${doc.diagrams.length} diagrams generated but no MD file path`);
+        }
+
+        // Validate diagram success
+        if (doc.diagrams) {
+          const failedDiagrams = doc.diagrams.filter((d: any) => !d.success);
+          if (failedDiagrams.length > 0) {
+            warnings.push(`${failedDiagrams.length} diagram(s) failed to generate`);
+          }
+        }
+      } else if (insightsResult.insightDocuments && insightsResult.insightDocuments.length > 0) {
+        // Multiple documents - check each
+        for (const doc of insightsResult.insightDocuments) {
+          if (!doc.filePath) {
+            errors.push(`Insight "${doc.name}" missing filePath`);
+          }
+        }
+      } else {
+        warnings.push('No insight documents found in results');
+      }
+    } else {
+      errors.push('Insights result is missing from workflow output');
+    }
+
+    // 2. Check observations were generated
+    const observationsResult = all_results.observations;
+    if (observationsResult) {
+      if (!observationsResult.observations || observationsResult.observations.length === 0) {
+        warnings.push('No observations were generated');
+      }
+    }
+
+    // 3. Validate data flow - git/vibe analysis should have produced semantic results
+    const gitResult = all_results.git_history;
+    const semanticResult = all_results.semantic_analysis;
+    if (gitResult && gitResult.commits && gitResult.commits.length > 0) {
+      if (!semanticResult || !semanticResult.analysis) {
+        warnings.push('Git analysis found commits but semantic analysis may be incomplete');
+      }
+    }
+
+    const passed = errors.length === 0;
+    const score = passed ? 100 - (warnings.length * 5) : Math.max(0, 50 - (errors.length * 10));
+
+    const result = {
+      passed,
+      errors,
+      warnings,
+      lightweight: true,
+      summary: {
+        checksPerformed: 3,
+        errorsFound: errors.length,
+        warningsFound: warnings.length,
+        score
+      }
+    };
+
+    log('Lightweight QA completed', 'info', {
+      passed,
+      errors: errors.length,
+      warnings: warnings.length,
+      score
+    });
+
+    return result;
+  }
+
   private async validateWorkflowIntegrity(
     allResults: Record<string, any>,
     errors: string[],

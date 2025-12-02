@@ -225,7 +225,7 @@ export class CoordinatorAgent {
         description: "Incremental analysis since last checkpoint",
         // NOTE: content_validation agent removed due to synchronous fs.existsSync blocking event loop
         // See: validateAndRefreshStaleEntities uses blocking file checks causing Claude freezes
-        agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation", "observation_generation", "persistence", "deduplication"],
+        agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation", "observation_generation", "quality_assurance", "persistence", "deduplication"],
         steps: [
           {
             name: "analyze_recent_changes",
@@ -287,6 +287,23 @@ export class CoordinatorAgent {
             timeout: 60,
           },
           {
+            name: "validate_incremental_qa",
+            agent: "quality_assurance",
+            action: "performLightweightQA",
+            parameters: {
+              all_results: {
+                git_history: "{{analyze_recent_changes.result}}",
+                vibe_history: "{{analyze_recent_vibes.result}}",
+                semantic_analysis: "{{analyze_semantics.result}}",
+                insights: "{{generate_insights.result}}",
+                observations: "{{generate_observations.result}}"
+              },
+              lightweight: true // Skip heavy validation for incremental runs
+            },
+            dependencies: ["generate_observations"],
+            timeout: 30,
+          },
+          {
             name: "persist_incremental",
             agent: "persistence",
             action: "persistAnalysisResults",
@@ -296,10 +313,11 @@ export class CoordinatorAgent {
                 vibe_history: "{{analyze_recent_vibes.result}}",
                 semantic_analysis: "{{analyze_semantics.result}}",
                 insights: "{{generate_insights.result}}",
-                observations: "{{generate_observations.result}}"
+                observations: "{{generate_observations.result}}",
+                quality_assurance: "{{validate_incremental_qa.result}}"
               }
             },
-            dependencies: ["generate_observations"],
+            dependencies: ["validate_incremental_qa"],
             timeout: 30,
           },
           {
@@ -315,7 +333,8 @@ export class CoordinatorAgent {
         ],
         config: {
           max_concurrent_steps: 2,
-          timeout: 300, // 5 minutes (reduced since validation step removed)
+          timeout: 360, // 6 minutes (added lightweight QA step)
+          quality_validation: true,
         },
       },
       {

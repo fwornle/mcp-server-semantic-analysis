@@ -225,7 +225,7 @@ export class CoordinatorAgent {
         description: "Incremental analysis since last checkpoint",
         // NOTE: content_validation agent removed due to synchronous fs.existsSync blocking event loop
         // See: validateAndRefreshStaleEntities uses blocking file checks causing Claude freezes
-        agents: ["git_history", "vibe_history", "semantic_analysis", "observation_generation", "persistence", "deduplication"],
+        agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation", "observation_generation", "persistence", "deduplication"],
         steps: [
           {
             name: "analyze_recent_changes",
@@ -260,16 +260,30 @@ export class CoordinatorAgent {
             timeout: 90,
           },
           {
+            name: "generate_insights",
+            agent: "insight_generation",
+            action: "generateComprehensiveInsights",
+            parameters: {
+              git_analysis_results: "{{analyze_recent_changes.result}}",
+              vibe_analysis_results: "{{analyze_recent_vibes.result}}",
+              semantic_analysis_results: "{{analyze_semantics.result}}",
+              incremental: true
+            },
+            dependencies: ["analyze_semantics"],
+            timeout: 90,
+          },
+          {
             name: "generate_observations",
             agent: "observation_generation",
             action: "generateStructuredObservations",
             parameters: {
+              insights_results: "{{generate_insights.result}}",
               semantic_analysis_results: "{{analyze_semantics.result}}",
               git_analysis_results: "{{analyze_recent_changes.result}}",
               vibe_analysis_results: "{{analyze_recent_vibes.result}}",
               incremental: true
             },
-            dependencies: ["analyze_semantics"],
+            dependencies: ["generate_insights"],
             timeout: 60,
           },
           {
@@ -281,6 +295,7 @@ export class CoordinatorAgent {
                 git_history: "{{analyze_recent_changes.result}}",
                 vibe_history: "{{analyze_recent_vibes.result}}",
                 semantic_analysis: "{{analyze_semantics.result}}",
+                insights: "{{generate_insights.result}}",
                 observations: "{{generate_observations.result}}"
               }
             },

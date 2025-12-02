@@ -1296,24 +1296,57 @@ async function handleResetAnalysisCheckpoint(args: any): Promise<any> {
       description = 'cleared (will re-analyze from the beginning)';
     }
 
-    // Load and update the checkpoint file
     const repositoryPath = process.env.REPOSITORY_PATH || process.cwd();
-    const checkpointFile = path.join(repositoryPath, '.data', 'knowledge-export', `${team}.json`);
 
-    log(`Checkpoint file: ${checkpointFile}`, "info");
+    // IMPORTANT: Reset BOTH checkpoint locations
+    // 1. Primary: .data/workflow-checkpoints.json (used by CheckpointManager)
+    // 2. Legacy: .data/knowledge-export/{team}.json (for backwards compatibility)
+
+    // 1. Reset the primary workflow-checkpoints.json file (CheckpointManager reads this FIRST)
+    const workflowCheckpointsFile = path.join(repositoryPath, '.data', 'workflow-checkpoints.json');
+    let workflowCheckpoints: any = {};
+    try {
+      const content = await fs.readFile(workflowCheckpointsFile, 'utf8');
+      workflowCheckpoints = JSON.parse(content);
+    } catch {
+      // File doesn't exist yet
+    }
+
+    const oldWorkflowCheckpoint = workflowCheckpoints.lastGitAnalysis || workflowCheckpoints.lastSuccessfulWorkflowCompletion || 'not set';
+
+    if (newCheckpoint) {
+      workflowCheckpoints.lastGitAnalysis = newCheckpoint;
+      workflowCheckpoints.lastVibeAnalysis = newCheckpoint;
+      workflowCheckpoints.lastSuccessfulWorkflowCompletion = newCheckpoint;
+    } else {
+      delete workflowCheckpoints.lastGitAnalysis;
+      delete workflowCheckpoints.lastVibeAnalysis;
+      delete workflowCheckpoints.lastSuccessfulWorkflowCompletion;
+    }
+    workflowCheckpoints.lastUpdated = new Date().toISOString();
+    workflowCheckpoints.checkpointResetAt = new Date().toISOString();
+    workflowCheckpoints.checkpointResetReason = description;
+
+    await fs.writeFile(workflowCheckpointsFile, JSON.stringify(workflowCheckpoints, null, 2), 'utf8');
+    log(`Primary checkpoint file reset: ${workflowCheckpointsFile}`, "info");
+
+    // 2. Also reset the legacy knowledge-export file (for backwards compatibility)
+    const legacyCheckpointFile = path.join(repositoryPath, '.data', 'knowledge-export', `${team}.json`);
+
+    log(`Legacy checkpoint file: ${legacyCheckpointFile}`, "info");
 
     // Read current file
     let data: any = { entities: [], relations: [], metadata: {} };
     try {
-      const content = await fs.readFile(checkpointFile, 'utf8');
+      const content = await fs.readFile(legacyCheckpointFile, 'utf8');
       data = JSON.parse(content);
     } catch (error) {
-      log(`Checkpoint file not found or invalid, creating new one`, "warning");
+      log(`Legacy checkpoint file not found or invalid, creating new one`, "warning");
       data.metadata = {};
     }
 
     // Store the old value for reporting
-    const oldCheckpoint = data.metadata?.lastSuccessfulWorkflowCompletion || 'not set';
+    const oldCheckpoint = data.metadata?.lastSuccessfulWorkflowCompletion || oldWorkflowCheckpoint;
 
     // Update or clear the checkpoint
     if (newCheckpoint) {
@@ -1328,7 +1361,7 @@ async function handleResetAnalysisCheckpoint(args: any): Promise<any> {
     data.metadata.checkpointResetReason = description;
 
     // Write back to file
-    await fs.writeFile(checkpointFile, JSON.stringify(data, null, 2), 'utf8');
+    await fs.writeFile(legacyCheckpointFile, JSON.stringify(data, null, 2), 'utf8');
 
     log(`Checkpoint reset successfully`, "info", { oldCheckpoint, newCheckpoint: newCheckpoint || 'cleared' });
 
@@ -1336,14 +1369,15 @@ async function handleResetAnalysisCheckpoint(args: any): Promise<any> {
       content: [
         {
           type: "text",
-          text: `# Analysis Checkpoint Reset\n\n**Team:** ${team}\n**Previous checkpoint:** ${oldCheckpoint}\n**New checkpoint:** ${description}\n**File:** ${checkpointFile}\n**Updated:** ${new Date().toISOString()}\n\n---\n\nThe next \`ukb\` (incremental-analysis) run will now analyze changes since ${description}.\n\n**Tip:** Use \`days_ago: 7\` to re-analyze the last week, or omit both parameters to re-analyze everything.`
+          text: `# Analysis Checkpoint Reset\n\n**Team:** ${team}\n**Previous checkpoint:** ${oldCheckpoint}\n**New checkpoint:** ${description}\n\n**Files updated:**\n- Primary: ${workflowCheckpointsFile}\n- Legacy: ${legacyCheckpointFile}\n\n**Updated:** ${new Date().toISOString()}\n\n---\n\nThe next \`ukb\` (incremental-analysis) run will now analyze changes since ${description}.\n\n**Tip:** Use \`days_ago: 7\` to re-analyze the last week, or omit both parameters to re-analyze everything.`
         }
       ],
       metadata: {
         team,
         oldCheckpoint,
         newCheckpoint: newCheckpoint || null,
-        checkpointFile,
+        workflowCheckpointsFile,
+        legacyCheckpointFile,
         description
       }
     };

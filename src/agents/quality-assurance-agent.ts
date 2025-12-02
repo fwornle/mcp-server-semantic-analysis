@@ -429,6 +429,67 @@ export class QualityAssuranceAgent {
     }
   }
 
+  /**
+   * Validates that all PNG image references in insight markdown files actually exist.
+   * Also detects inconsistent formatting (some diagrams showing PNG, others showing PUML link).
+   */
+  private async validateInsightMarkdownImages(errors: string[], warnings: string[]): Promise<void> {
+    const insightsDir = path.join(this.repositoryPath, 'knowledge-management', 'insights');
+    const imagesDir = path.join(insightsDir, 'images');
+
+    if (!fs.existsSync(insightsDir)) return;
+
+    const mdFiles = fs.readdirSync(insightsDir).filter(f => f.endsWith('.md'));
+
+    for (const mdFile of mdFiles) {
+      const mdPath = path.join(insightsDir, mdFile);
+      const content = fs.readFileSync(mdPath, 'utf8');
+
+      // Find all PNG image references: ![...](images/xxx.png)
+      const pngRefs = content.match(/!\[.*?\]\(images\/([^)]+\.png)\)/g) || [];
+      const pumlFallbacks = content.match(/📄 \*\*\[View.*?Diagram Source\]\(puml\/[^)]+\.puml\)\*\*/g) || [];
+
+      // Check if referenced PNGs exist
+      for (const ref of pngRefs) {
+        const match = ref.match(/!\[.*?\]\(images\/([^)]+\.png)\)/);
+        if (match) {
+          const pngName = match[1];
+          const pngPath = path.join(imagesDir, pngName);
+          if (!fs.existsSync(pngPath)) {
+            errors.push(`${mdFile}: Missing PNG file - ${pngName}`);
+          }
+        }
+      }
+
+      // Detect inconsistent diagram formatting (mix of PNG and PUML-only references)
+      if (pngRefs.length > 0 && pumlFallbacks.length > 0) {
+        warnings.push(`${mdFile}: Inconsistent diagram formatting - ${pngRefs.length} PNG refs, ${pumlFallbacks.length} PUML-only refs`);
+
+        // Extract which diagrams fell back to PUML-only
+        for (const fallback of pumlFallbacks) {
+          const typeMatch = fallback.match(/View ([^)]+?) Diagram Source/);
+          if (typeMatch) {
+            const diagramType = typeMatch[1];
+            // Check if PNG actually exists for this diagram
+            const baseName = mdFile.replace('.md', '');
+            const expectedPng = `${baseName}_${diagramType.toLowerCase().replace(' ', '-')}.png`;
+            const pngPath = path.join(imagesDir, expectedPng);
+
+            if (fs.existsSync(pngPath)) {
+              errors.push(`${mdFile}: PNG exists but not referenced - ${expectedPng} (should update markdown to use PNG)`);
+            } else {
+              warnings.push(`${mdFile}: ${diagramType} diagram missing PNG - ${expectedPng}`);
+            }
+          }
+        }
+      }
+    }
+
+    log('Insight markdown image validation completed', 'info', {
+      filesChecked: mdFiles.length
+    });
+  }
+
   // New comprehensive workflow QA method
   async performWorkflowQA(parameters: { all_results: Record<string, any> }): Promise<any> {
     const { all_results } = parameters;
@@ -472,6 +533,7 @@ export class QualityAssuranceAgent {
     await this.validateWorkflowIntegrity(all_results, workflowErrors, workflowWarnings);
     await this.validateWorkflowTiming(all_results, workflowErrors, workflowWarnings);
     await this.validateGeneratedPlantUMLFiles(workflowErrors, workflowWarnings);
+    await this.validateInsightMarkdownImages(workflowErrors, workflowWarnings);
 
     const result = {
       validations,

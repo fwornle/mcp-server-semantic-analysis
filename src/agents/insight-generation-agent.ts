@@ -730,6 +730,12 @@ export class InsightGenerationAgent {
           });
           plantuml.on('error', reject);
         });
+
+        // Verify PNG was actually created (PlantUML may succeed but not create file)
+        if (!fs.existsSync(pngFile)) {
+          log(`PlantUML succeeded but PNG not found at ${pngFile}`, 'warning');
+          pngFile = undefined;
+        }
       } catch (error) {
         log(`Failed to generate PNG for ${type} diagram`, 'warning', error);
         pngFile = undefined;
@@ -1671,31 +1677,49 @@ ${pattern.implementation.usageNotes.map(note => `- ${note}`).join('\n')}
 
   private formatDiagramReferences(diagrams: PlantUMLDiagram[]): string {
     const successful = diagrams.filter(d => d.success);
-    
+
     if (successful.length === 0) {
       return 'No diagrams were successfully generated.';
     }
-    
+
     const references = successful.map(diagram => {
       const diagramTitle = diagram.type.charAt(0).toUpperCase() + diagram.type.slice(1);
       const lines = [`### ${diagramTitle} Diagram`];
-      
+
+      // Try multiple ways to find the PNG file
+      let pngExists = false;
+      let pngFileName = '';
+
       if (diagram.pngFile && fs.existsSync(diagram.pngFile)) {
+        pngExists = true;
+        pngFileName = path.basename(diagram.pngFile);
+      } else {
+        // Fallback: construct expected PNG path from diagram name
+        const expectedPngName = `${diagram.name}.png`;
+        const expectedPngPath = path.join(this.outputDir, 'images', expectedPngName);
+        if (fs.existsSync(expectedPngPath)) {
+          pngExists = true;
+          pngFileName = expectedPngName;
+          log(`Found PNG via fallback path: ${expectedPngPath}`, 'debug');
+        }
+      }
+
+      if (pngExists && pngFileName) {
         // Embed PNG image using markdown image syntax
-        const pngFileName = path.basename(diagram.pngFile);
         lines.push(`![${diagramTitle} Architecture](images/${pngFileName})`);
         lines.push(''); // Empty line for spacing
         // Add reference to PlantUML source for those who want to see/modify it
         lines.push(`*PlantUML source: [${path.basename(diagram.pumlFile)}](puml/${path.basename(diagram.pumlFile)})*`);
       } else {
         // If PNG doesn't exist, link directly to PUML but note it's a source file
+        log(`PNG not found for ${diagram.name}: pngFile=${diagram.pngFile}, checked fallback`, 'warning');
         lines.push(`📄 **[View ${diagramTitle} Diagram Source](puml/${path.basename(diagram.pumlFile)})**`);
         lines.push(`*(PlantUML source file - use PlantUML viewer or generate PNG)*`);
       }
-      
+
       return lines.join('\n');
     });
-    
+
     return references.join('\n\n');
   }
 

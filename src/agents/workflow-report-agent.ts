@@ -366,11 +366,17 @@ export class WorkflowReportAgent {
         const preview = obj.slice(0, 3).map(item =>
           this.summarizeObject(item, maxDepth, currentDepth + 1)
         );
-        return `[${preview.join(', ')}, ... +${obj.length - 3} more]`;
+        // Return valid JSON string representation
+        return JSON.stringify([...preview.map(p => { try { return JSON.parse(p); } catch { return p; } }), `... +${obj.length - 3} more`]);
       }
-      return JSON.stringify(obj.map(item =>
-        JSON.parse(this.summarizeObject(item, maxDepth, currentDepth + 1))
-      ), null, 2);
+      return JSON.stringify(obj.map(item => {
+        const summarized = this.summarizeObject(item, maxDepth, currentDepth + 1);
+        try {
+          return JSON.parse(summarized);
+        } catch {
+          return summarized;
+        }
+      }), null, 2);
     }
 
     if (typeof obj === 'object') {
@@ -385,7 +391,12 @@ export class WorkflowReportAgent {
         if (typeof value === 'string' && value.length > 200) {
           summarized[key] = value.substring(0, 200) + '... [truncated]';
         } else {
-          summarized[key] = JSON.parse(this.summarizeObject(value, maxDepth, currentDepth + 1));
+          const valueSummary = this.summarizeObject(value, maxDepth, currentDepth + 1);
+          try {
+            summarized[key] = JSON.parse(valueSummary);
+          } catch {
+            summarized[key] = valueSummary;
+          }
         }
       }
 

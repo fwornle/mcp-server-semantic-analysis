@@ -430,6 +430,111 @@ export class QualityAssuranceAgent {
   }
 
   /**
+   * Validate PNG files for PlantUML error output (black background with green text).
+   * PlantUML generates error images instead of failing, so we need to detect them by analyzing image content.
+   */
+  private async validateGeneratedPNGFiles(errors: string[], warnings: string[]): Promise<void> {
+    const pngDirs = [
+      path.join(this.repositoryPath, 'knowledge-management', 'insights', 'images'),
+      path.join(this.repositoryPath, 'docs', 'images')
+    ];
+
+    // Detection thresholds for PlantUML error images
+    const ERROR_DETECTION = {
+      BLACK_THRESHOLD: 30,
+      GREEN_MIN_G: 200,
+      GREEN_MAX_R: 100,
+      GREEN_MAX_B: 100,
+      MIN_BLACK_PERCENTAGE: 40,
+      MIN_GREEN_PERCENTAGE: 5,
+    };
+
+    let totalFiles = 0;
+    let errorFiles = 0;
+    const brokenFiles: string[] = [];
+
+    for (const pngDir of pngDirs) {
+      if (!fs.existsSync(pngDir)) continue;
+
+      const files = fs.readdirSync(pngDir).filter(f => f.endsWith('.png'));
+
+      for (const file of files) {
+        const filePath = path.join(pngDir, file);
+        totalFiles++;
+
+        try {
+          // Use sharp to analyze the PNG (already a dependency via @xenova/transformers)
+          const sharp = await import('sharp');
+          const image = sharp.default(filePath);
+          const metadata = await image.metadata();
+          const { width, height } = metadata;
+
+          if (!width || !height) {
+            warnings.push(`PNG file ${file} has invalid dimensions`);
+            continue;
+          }
+
+          // Get raw pixel data
+          const { data } = await image.raw().toBuffer({ resolveWithObject: true });
+
+          const totalPixels = width * height;
+          let blackPixels = 0;
+          let greenPixels = 0;
+
+          // Analyze pixels (3 channels: R, G, B)
+          for (let i = 0; i < data.length; i += 3) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+
+            // Check for black
+            if (r <= ERROR_DETECTION.BLACK_THRESHOLD &&
+                g <= ERROR_DETECTION.BLACK_THRESHOLD &&
+                b <= ERROR_DETECTION.BLACK_THRESHOLD) {
+              blackPixels++;
+            }
+
+            // Check for bright green (PlantUML error text color)
+            if (g >= ERROR_DETECTION.GREEN_MIN_G &&
+                r <= ERROR_DETECTION.GREEN_MAX_R &&
+                b <= ERROR_DETECTION.GREEN_MAX_B) {
+              greenPixels++;
+            }
+          }
+
+          const blackPercentage = (blackPixels / totalPixels) * 100;
+          const greenPercentage = (greenPixels / totalPixels) * 100;
+
+          // Detect error image: high black AND has green text
+          const isError = blackPercentage >= ERROR_DETECTION.MIN_BLACK_PERCENTAGE &&
+                         greenPercentage >= ERROR_DETECTION.MIN_GREEN_PERCENTAGE;
+
+          if (isError) {
+            errorFiles++;
+            brokenFiles.push(file);
+            errors.push(`PNG file ${file} contains PlantUML error output (${blackPercentage.toFixed(1)}% black, ${greenPercentage.toFixed(1)}% green)`);
+          }
+        } catch (error) {
+          warnings.push(`Failed to analyze PNG file ${file}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+
+    if (totalFiles > 0) {
+      log('PNG error detection completed', 'info', {
+        totalFiles,
+        errorFiles,
+        validFiles: totalFiles - errorFiles,
+        brokenFiles: brokenFiles.slice(0, 5)
+      });
+
+      if (errorFiles > 0) {
+        errors.push(`CRITICAL: ${errorFiles} PNG files contain PlantUML error output instead of valid diagrams`);
+      }
+    }
+  }
+
+  /**
    * Validates that all PNG image references in insight markdown files actually exist.
    * Also detects inconsistent formatting (some diagrams showing PNG, others showing PUML link).
    */
@@ -533,6 +638,7 @@ export class QualityAssuranceAgent {
     await this.validateWorkflowIntegrity(all_results, workflowErrors, workflowWarnings);
     await this.validateWorkflowTiming(all_results, workflowErrors, workflowWarnings);
     await this.validateGeneratedPlantUMLFiles(workflowErrors, workflowWarnings);
+    await this.validateGeneratedPNGFiles(workflowErrors, workflowWarnings);
     await this.validateInsightMarkdownImages(workflowErrors, workflowWarnings);
 
     const result = {

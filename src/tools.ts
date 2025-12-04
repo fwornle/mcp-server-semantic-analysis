@@ -7,6 +7,8 @@ import { InsightGenerationAgent } from "./agents/insight-generation-agent.js";
 import { DeduplicationAgent } from "./agents/deduplication.js";
 import { WebSearchAgent } from "./agents/web-search.js";
 import { PersistenceAgent } from "./agents/persistence-agent.js";
+import { ContentValidationAgent, type EntityRefreshResult } from "./agents/content-validation-agent.js";
+import { GraphDatabaseAdapter } from "./storage/graph-database-adapter.js";
 import fs from "fs/promises";
 import { mkdirSync, writeFileSync } from "fs";
 import path from "path";
@@ -300,6 +302,37 @@ export const TOOLS: Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "refresh_entity",
+    description: "Validate and refresh a stale knowledge entity. Use entity_name='*' with team to refresh all stale entities in that team, or entity_name='*' with team='*' to refresh all entities globally. Use dry_run=true to preview without making changes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entity_name: {
+          type: "string",
+          description: "Name of the entity to refresh (e.g., 'KnowledgePersistencePattern'), or '*' for all entities",
+        },
+        team: {
+          type: "string",
+          description: "Team/project name (e.g., 'coding'), or '*' for all teams",
+        },
+        dry_run: {
+          type: "boolean",
+          description: "Preview mode - show what would be refreshed without making changes (default: false)",
+        },
+        score_threshold: {
+          type: "number",
+          description: "Minimum score threshold below which entities are considered stale (default: 100, meaning any issue triggers refresh)",
+        },
+        max_entities: {
+          type: "number",
+          description: "Maximum number of entities to refresh in batch mode (default: 50)",
+        },
+      },
+      required: ["entity_name", "team"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // Tool call handler
@@ -343,6 +376,9 @@ export async function handleToolCall(name: string, args: any): Promise<any> {
 
       case "reset_analysis_checkpoint":
         return await handleResetAnalysisCheckpoint(args);
+
+      case "refresh_entity":
+        return await handleRefreshEntity(args);
 
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -1401,4 +1437,188 @@ async function handleResetAnalysisCheckpoint(args: any): Promise<any> {
   }
 }
 
+/**
+ * Handler for refresh_entity tool
+ * Validates and optionally refreshes stale knowledge entities using LLM
+ */
+async function handleRefreshEntity(args: any): Promise<any> {
+  const {
+    entity_name,
+    team,
+    dry_run = false,
+    score_threshold = 100,
+    max_entities = 50
+  } = args;
+
+  log(`Refreshing entity`, "info", { entity_name, team, dry_run, score_threshold });
+
+  try {
+    const repositoryPath = process.env.REPOSITORY_PATH || process.cwd();
+
+    // Initialize ContentValidationAgent with required dependencies
+    const contentValidationAgent = new ContentValidationAgent({
+      repositoryPath,
+      enableDeepValidation: true
+    });
+
+    // Initialize GraphDB adapter
+    const graphDBPath = path.join(repositoryPath, '.data', 'knowledge-graph');
+    const graphDB = new GraphDatabaseAdapter(graphDBPath, team === '*' ? 'coding' : team);
+    await graphDB.initialize();
+    contentValidationAgent.setGraphDB(graphDB);
+
+    // Initialize PersistenceAgent for updates
+    const persistenceAgent = new PersistenceAgent(repositoryPath, graphDB);
+    await persistenceAgent.initializeOntology();
+    contentValidationAgent.setPersistenceAgent(persistenceAgent);
+
+    // Single entity refresh vs batch refresh
+    if (entity_name === '*') {
+      // Batch refresh mode
+      const teamParam = team === '*' ? undefined : team;
+
+      log(`Starting batch refresh`, "info", { team: teamParam, dry_run, max_entities });
+
+      const batchResult = await contentValidationAgent.refreshAllStaleEntities({
+        team: teamParam,
+        scoreThreshold: score_threshold,
+        dryRun: dry_run,
+        maxEntities: max_entities
+      });
+
+      // Format response
+      let responseText = `# Entity Refresh ${dry_run ? '(Dry Run)' : 'Results'}\n\n`;
+      responseText += `**Summary:** ${batchResult.summary}\n\n`;
+
+      if (batchResult.confirmationRequired) {
+        responseText += `## Entities Needing Refresh\n\n`;
+        responseText += `| Entity | Score | Issues |\n|--------|-------|--------|\n`;
+        for (const entity of batchResult.confirmationRequired.entitiesAffected) {
+          responseText += `| ${entity.name} | ${entity.currentScore}/100 | ${entity.issues} |\n`;
+        }
+        responseText += `\n${batchResult.confirmationRequired.message}\n`;
+      }
+
+      if (!dry_run && batchResult.results.length > 0) {
+        responseText += `\n## Refresh Results\n\n`;
+        for (const result of batchResult.results) {
+          const status = result.success ? '✅' : '❌';
+          const scoreBefore = result.validationBefore.overallScore;
+          const scoreAfter = result.validationAfter?.overallScore ?? scoreBefore;
+          responseText += `- ${status} **${result.entityName}**: ${scoreBefore} → ${scoreAfter}`;
+          if (result.error) {
+            responseText += ` (Error: ${result.error})`;
+          }
+          responseText += '\n';
+        }
+      }
+
+      return {
+        content: [{ type: "text", text: responseText }],
+        metadata: {
+          dry_run: batchResult.dryRun,
+          entities_scanned: batchResult.entitiesScanned,
+          entities_needing_refresh: batchResult.entitiesNeedingRefresh,
+          entities_refreshed: batchResult.entitiesRefreshed,
+          entities_failed: batchResult.entitiesFailed
+        }
+      };
+
+    } else {
+      // Single entity refresh
+      log(`Refreshing single entity: ${entity_name}`, "info");
+
+      if (dry_run) {
+        // Dry run: just validate, don't refresh
+        const validationReport = await contentValidationAgent.validateEntityAccuracy(entity_name, team);
+
+        let responseText = `# Entity Validation (Dry Run)\n\n`;
+        responseText += `**Entity:** ${entity_name}\n`;
+        responseText += `**Team:** ${team}\n`;
+        responseText += `**Score:** ${validationReport.overallScore}/100\n`;
+        responseText += `**Valid:** ${validationReport.overallValid ? 'Yes' : 'No'}\n`;
+        responseText += `**Issues:** ${validationReport.totalIssues} (${validationReport.criticalIssues} critical)\n\n`;
+
+        if (validationReport.suggestedActions.removeObservations.length > 0) {
+          responseText += `## Stale Observations to Remove\n\n`;
+          for (const obs of validationReport.suggestedActions.removeObservations) {
+            responseText += `- ${obs.substring(0, 100)}...\n`;
+          }
+        }
+
+        if (validationReport.recommendations.length > 0) {
+          responseText += `\n## Recommendations\n\n`;
+          for (const rec of validationReport.recommendations) {
+            responseText += `- ${rec}\n`;
+          }
+        }
+
+        responseText += `\n---\n*Set dry_run=false to apply these changes.*`;
+
+        return {
+          content: [{ type: "text", text: responseText }],
+          metadata: {
+            dry_run: true,
+            entity_name,
+            team,
+            validation_score: validationReport.overallScore,
+            issues: validationReport.totalIssues
+          }
+        };
+
+      } else {
+        // Actually refresh the entity
+        const refreshResult = await contentValidationAgent.refreshStaleEntity({
+          entityName: entity_name,
+          team: team
+        });
+
+        let responseText = `# Entity Refresh Results\n\n`;
+        responseText += `**Entity:** ${entity_name}\n`;
+        responseText += `**Team:** ${team}\n`;
+        responseText += `**Success:** ${refreshResult.success ? 'Yes' : 'No'}\n\n`;
+
+        if (refreshResult.error) {
+          responseText += `**Error:** ${refreshResult.error}\n\n`;
+        } else {
+          responseText += `## Score Improvement\n\n`;
+          responseText += `- Before: ${refreshResult.validationBefore.overallScore}/100\n`;
+          responseText += `- After: ${refreshResult.validationAfter?.overallScore ?? 'N/A'}/100\n\n`;
+
+          if (refreshResult.observationChanges.removed.length > 0) {
+            responseText += `## Removed Observations (${refreshResult.observationChanges.removed.length})\n\n`;
+            for (const obs of refreshResult.observationChanges.removed) {
+              responseText += `- ~~${obs.substring(0, 80)}...~~\n`;
+            }
+          }
+
+          if (refreshResult.observationChanges.added.length > 0) {
+            responseText += `\n## Added Observations (${refreshResult.observationChanges.added.length})\n\n`;
+            for (const obs of refreshResult.observationChanges.added) {
+              responseText += `- ${obs.substring(0, 80)}...\n`;
+            }
+          }
+        }
+
+        return {
+          content: [{ type: "text", text: responseText }],
+          metadata: {
+            dry_run: false,
+            entity_name,
+            team,
+            success: refreshResult.success,
+            score_before: refreshResult.validationBefore.overallScore,
+            score_after: refreshResult.validationAfter?.overallScore,
+            observations_removed: refreshResult.observationChanges.removed.length,
+            observations_added: refreshResult.observationChanges.added.length
+          }
+        };
+      }
+    }
+
+  } catch (error) {
+    log(`Error refreshing entity`, "error", error);
+    throw error;
+  }
+}
 

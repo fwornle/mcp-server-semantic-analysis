@@ -2323,12 +2323,247 @@ ${entityData.insights}
    */
   private generateQuickReferenceFromContent(content: string, patternName: string): any {
     const sections = this.parseInsightSections(content);
-    
+
     return {
       trigger: sections.problem ? sections.problem.split('.')[0].trim() : `When ${patternName} pattern is needed`,
       action: sections.solution ? sections.solution.split('.')[0].trim() : `Apply ${patternName} pattern`,
       avoid: `Don't ignore ${patternName.toLowerCase()} best practices`,
       check: `Verify ${patternName.toLowerCase()} implementation is working correctly`
     };
+  }
+
+  // ==================== Entity Update Methods ====================
+
+  /**
+   * Update entity observations - remove stale ones and optionally add new ones
+   * Used by the entity refresh flow after content validation
+   */
+  async updateEntityObservations(params: {
+    entityName: string;
+    team: string;
+    removeObservations: string[];
+    newObservations?: (string | ObservationObject)[];
+  }): Promise<{
+    success: boolean;
+    updatedEntity: SharedMemoryEntity | null;
+    removedCount: number;
+    addedCount: number;
+    details: string;
+  }> {
+    const result = {
+      success: false,
+      updatedEntity: null as SharedMemoryEntity | null,
+      removedCount: 0,
+      addedCount: 0,
+      details: ''
+    };
+
+    try {
+      log(`Updating entity observations: ${params.entityName}`, 'info', {
+        team: params.team,
+        toRemove: params.removeObservations.length,
+        toAdd: params.newObservations?.length || 0
+      });
+
+      // Load entity from GraphDB or shared memory
+      let entity: SharedMemoryEntity | null = null;
+
+      if (this.graphDB) {
+        const entities = await this.graphDB.queryEntities({
+          namePattern: `^${params.entityName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
+        });
+        if (entities && entities.length > 0) {
+          entity = entities[0] as SharedMemoryEntity;
+        }
+      }
+
+      if (!entity) {
+        // Fallback to shared memory file
+        const sharedMemory = await this.loadSharedMemory();
+        entity = sharedMemory.entities.find(e => e.name === params.entityName) || null;
+      }
+
+      if (!entity) {
+        result.details = `Entity '${params.entityName}' not found in team '${params.team}'`;
+        return result;
+      }
+
+      const originalCount = entity.observations.length;
+
+      // Remove stale observations
+      if (params.removeObservations.length > 0) {
+        entity.observations = entity.observations.filter(obs => {
+          const obsContent = typeof obs === 'string' ? obs : obs.content;
+          // Check if this observation should be removed (partial match for flexibility)
+          const shouldRemove = params.removeObservations.some(toRemove => {
+            // Match if the observation content contains the removal string
+            // or if the removal string contains the observation content
+            return obsContent.includes(toRemove) || toRemove.includes(obsContent.substring(0, 50));
+          });
+          return !shouldRemove;
+        });
+        result.removedCount = originalCount - entity.observations.length;
+      }
+
+      // Add new observations
+      if (params.newObservations && params.newObservations.length > 0) {
+        const now = new Date().toISOString();
+        const formattedObservations = params.newObservations.map(obs => {
+          if (typeof obs === 'string') {
+            return obs;
+          }
+          return {
+            type: obs.type || 'insight',
+            content: obs.content,
+            date: obs.date || now,
+            metadata: {
+              ...obs.metadata,
+              refreshedAt: now,
+              source: 'entity-refresh'
+            }
+          };
+        });
+        entity.observations.push(...formattedObservations);
+        result.addedCount = formattedObservations.length;
+      }
+
+      // Update metadata
+      entity.metadata.last_updated = new Date().toISOString();
+
+      // Persist to GraphDB
+      if (this.graphDB) {
+        await this.storeEntityToGraph(entity);
+      }
+
+      // Also update the shared memory file for consistency
+      const sharedMemory = await this.loadSharedMemory();
+      const entityIndex = sharedMemory.entities.findIndex(e => e.name === params.entityName);
+      if (entityIndex >= 0) {
+        sharedMemory.entities[entityIndex] = entity;
+      } else {
+        sharedMemory.entities.push(entity);
+      }
+      await this.saveSharedMemory(sharedMemory);
+
+      result.success = true;
+      result.updatedEntity = entity;
+      result.details = `Updated entity '${params.entityName}': removed ${result.removedCount} observations, added ${result.addedCount} observations`;
+
+      log('Entity observations updated successfully', 'info', {
+        entityName: params.entityName,
+        removedCount: result.removedCount,
+        addedCount: result.addedCount,
+        newTotal: entity.observations.length
+      });
+
+      return result;
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      result.details = `Failed to update entity observations: ${errorMessage}`;
+      log('Entity observation update failed', 'error', error);
+      return result;
+    }
+  }
+
+  /**
+   * Delete an entity completely from the knowledge base
+   */
+  async deleteEntity(entityName: string, team: string): Promise<{
+    success: boolean;
+    details: string;
+  }> {
+    try {
+      log(`Deleting entity: ${entityName}`, 'info', { team });
+
+      // Delete from GraphDB
+      if (this.graphDB) {
+        try {
+          await this.graphDB.deleteEntity(entityName);
+        } catch (error) {
+          log('Entity not found in GraphDB or delete failed', 'warning', error);
+        }
+      }
+
+      // Also remove from shared memory file
+      const sharedMemory = await this.loadSharedMemory();
+      const initialCount = sharedMemory.entities.length;
+      sharedMemory.entities = sharedMemory.entities.filter(e => e.name !== entityName);
+
+      // Remove relations involving this entity
+      sharedMemory.relations = sharedMemory.relations.filter(
+        r => r.from !== entityName && r.to !== entityName
+      );
+
+      if (sharedMemory.entities.length < initialCount) {
+        await this.saveSharedMemory(sharedMemory);
+        log(`Entity deleted: ${entityName}`, 'info');
+        return {
+          success: true,
+          details: `Entity '${entityName}' deleted from team '${team}'`
+        };
+      } else {
+        return {
+          success: false,
+          details: `Entity '${entityName}' not found in team '${team}'`
+        };
+      }
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`Failed to delete entity: ${entityName}`, 'error', error);
+      return {
+        success: false,
+        details: `Failed to delete entity: ${errorMessage}`
+      };
+    }
+  }
+
+  /**
+   * Get entity by name from GraphDB or shared memory
+   */
+  async getEntity(entityName: string, team: string): Promise<SharedMemoryEntity | null> {
+    try {
+      // Try GraphDB first
+      if (this.graphDB) {
+        const entities = await this.graphDB.queryEntities({
+          namePattern: `^${entityName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
+        });
+        if (entities && entities.length > 0) {
+          return entities[0] as SharedMemoryEntity;
+        }
+      }
+
+      // Fallback to shared memory
+      const sharedMemory = await this.loadSharedMemory();
+      return sharedMemory.entities.find(e => e.name === entityName) || null;
+
+    } catch (error) {
+      log(`Failed to get entity: ${entityName}`, 'error', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get all entities for a team
+   */
+  async getAllEntities(team: string): Promise<SharedMemoryEntity[]> {
+    try {
+      // Try GraphDB first
+      if (this.graphDB) {
+        const entities = await this.graphDB.queryEntities({});
+        if (entities && entities.length > 0) {
+          return entities as SharedMemoryEntity[];
+        }
+      }
+
+      // Fallback to shared memory
+      const sharedMemory = await this.loadSharedMemory();
+      return sharedMemory.entities;
+
+    } catch (error) {
+      log(`Failed to get all entities for team: ${team}`, 'error', error);
+      return [];
+    }
   }
 }

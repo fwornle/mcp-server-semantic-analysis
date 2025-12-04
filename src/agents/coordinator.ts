@@ -28,6 +28,7 @@ export interface WorkflowStep {
   parameters: Record<string, any>;
   dependencies?: string[];
   timeout?: number;
+  condition?: string; // Optional condition for conditional execution (e.g., "{{params.autoRefresh}} === true")
 }
 
 export interface WorkflowExecution {
@@ -385,8 +386,8 @@ export class CoordinatorAgent {
       },
       {
         name: "entity-refresh",
-        description: "Validate a specific entity and generate a detailed accuracy report",
-        agents: ["content_validation"],
+        description: "Validate a specific entity and optionally auto-refresh if stale. Set autoRefresh=true to fix stale observations.",
+        agents: ["content_validation", "persistence"],
         steps: [
           {
             name: "validate_entity_content",
@@ -397,10 +398,23 @@ export class CoordinatorAgent {
               team: "{{params.team}}"
             },
             timeout: 120,
+          },
+          {
+            name: "refresh_if_stale",
+            agent: "content_validation",
+            action: "refreshStaleEntity",
+            parameters: {
+              entityName: "{{params.entityName}}",
+              team: "{{params.team}}",
+              validationReport: "{{validate_entity_content.result}}"
+            },
+            dependencies: ["validate_entity_content"],
+            condition: "{{params.autoRefresh}} === true && {{validate_entity_content.result.overallScore}} < 100",
+            timeout: 180,
           }
         ],
         config: {
-          timeout: 180, // 3 minutes
+          timeout: 360, // 6 minutes to allow for refresh
           quality_validation: false,
           requires_entity_param: true
         },
@@ -563,6 +577,7 @@ export class CoordinatorAgent {
         enableDeepValidation: true
       });
       contentValidationAgent.setGraphDB(this.graphDB);
+      contentValidationAgent.setPersistenceAgent(persistenceAgent);
       this.agents.set("content_validation", contentValidationAgent);
 
       // Register other agents with deduplication for access to knowledge graph
@@ -636,7 +651,20 @@ export class CoordinatorAgent {
             }
           }
         }
-        
+
+        // Check condition if present
+        if (step.condition) {
+          const conditionResult = this.evaluateCondition(step.condition, parameters, execution.results);
+          if (!conditionResult) {
+            log(`Step skipped due to condition: ${step.name}`, "info", {
+              condition: step.condition,
+              result: conditionResult
+            });
+            execution.results[step.name] = { skipped: true, reason: 'condition not met' };
+            continue;
+          }
+        }
+
         // Execute step with timing tracking
         const stepStartTime = new Date();
         try {
@@ -922,6 +950,67 @@ export class CoordinatorAgent {
       });
       throw error;
     }
+  }
+
+  /**
+   * Evaluate a condition string with template placeholders
+   * Supports simple expressions like "{{params.autoRefresh}} === true"
+   */
+  private evaluateCondition(
+    condition: string,
+    params: Record<string, any>,
+    results: Record<string, any>
+  ): boolean {
+    try {
+      // Replace template placeholders with actual values
+      let resolvedCondition = condition;
+
+      // Replace {{params.xxx}} with actual parameter values
+      resolvedCondition = resolvedCondition.replace(/\{\{params\.([^}]+)\}\}/g, (_, path) => {
+        const value = this.getNestedValue(params, path);
+        if (value === undefined) return 'undefined';
+        if (value === null) return 'null';
+        if (typeof value === 'string') return `"${value}"`;
+        return String(value);
+      });
+
+      // Replace {{step_name.result.xxx}} with step result values
+      resolvedCondition = resolvedCondition.replace(/\{\{([^.}]+)\.result\.([^}]+)\}\}/g, (_, stepName, path) => {
+        const stepResult = results[stepName];
+        if (!stepResult) return 'undefined';
+        const value = this.getNestedValue(stepResult, path);
+        if (value === undefined) return 'undefined';
+        if (value === null) return 'null';
+        if (typeof value === 'string') return `"${value}"`;
+        return String(value);
+      });
+
+      // Replace {{step_name.result}} with the result object (for simple checks)
+      resolvedCondition = resolvedCondition.replace(/\{\{([^.}]+)\.result\}\}/g, (_, stepName) => {
+        const stepResult = results[stepName];
+        return stepResult ? 'true' : 'false';
+      });
+
+      log(`Evaluating condition: ${condition} -> ${resolvedCondition}`, 'debug');
+
+      // Safely evaluate the condition using Function constructor
+      // Only allow simple comparisons, no arbitrary code execution
+      const safeEval = new Function(`return ${resolvedCondition}`);
+      return !!safeEval();
+
+    } catch (error) {
+      log(`Condition evaluation failed: ${condition}`, 'warning', error);
+      return false; // Default to not executing the step if condition fails
+    }
+  }
+
+  /**
+   * Get a nested value from an object using dot notation path
+   */
+  private getNestedValue(obj: any, path: string): any {
+    return path.split('.').reduce((current, key) => {
+      return current && current[key] !== undefined ? current[key] : undefined;
+    }, obj);
   }
 
   /**

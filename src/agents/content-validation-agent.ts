@@ -15,6 +15,8 @@ import * as fs from "fs";
 import * as fsPromises from "fs/promises";
 import * as path from "path";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
+import { SemanticAnalyzer } from "./semantic-analyzer.js";
+import type { PersistenceAgent } from "./persistence-agent.js";
 
 // Simple logger
 const log = (message: string, level: string = "info", data?: any) => {
@@ -115,12 +117,34 @@ export interface ContentValidationAgentConfig {
   stalenessThresholdDays?: number;
 }
 
+// Entity refresh result interfaces
+export interface ObservationRefreshResult {
+  removed: string[];
+  added: string[];
+  unchanged: number;
+}
+
+export interface EntityRefreshResult {
+  entityName: string;
+  team: string;
+  refreshedAt: string;
+  validationBefore: EntityValidationReport;
+  validationAfter?: EntityValidationReport;
+  observationChanges: ObservationRefreshResult;
+  diagramsRegenerated: string[];
+  insightRefreshed: boolean;
+  success: boolean;
+  error?: string;
+}
+
 export class ContentValidationAgent {
   private repositoryPath: string;
   private insightsDirectory: string;
   private enableDeepValidation: boolean;
   private stalenessThresholdDays: number;
   private graphDB: GraphDatabaseAdapter | null = null;
+  private semanticAnalyzer: SemanticAnalyzer;
+  private persistenceAgent: PersistenceAgent | null = null;
 
   // Known patterns for reference extraction
   private filePathPatterns = [
@@ -152,6 +176,7 @@ export class ContentValidationAgent {
       path.join(this.repositoryPath, ".ukb", "insights");
     this.enableDeepValidation = config?.enableDeepValidation ?? true;
     this.stalenessThresholdDays = config?.stalenessThresholdDays ?? 30;
+    this.semanticAnalyzer = new SemanticAnalyzer();
 
     log(`ContentValidationAgent initialized`, "info", {
       repositoryPath: this.repositoryPath,
@@ -166,6 +191,14 @@ export class ContentValidationAgent {
   setGraphDB(graphDB: GraphDatabaseAdapter): void {
     this.graphDB = graphDB;
     log('GraphDatabaseAdapter set for ContentValidationAgent', 'info');
+  }
+
+  /**
+   * Set the PersistenceAgent for updating entities
+   */
+  setPersistenceAgent(persistenceAgent: PersistenceAgent): void {
+    this.persistenceAgent = persistenceAgent;
+    log('PersistenceAgent set for ContentValidationAgent', 'info');
   }
 
   /**
@@ -1434,6 +1467,477 @@ export class ContentValidationAgent {
     }
 
     return recommendations;
+  }
+
+  /**
+   * Refresh a stale entity by regenerating observations using LLM
+   *
+   * This method:
+   * 1. Runs validation if not already provided
+   * 2. Uses LLM to generate replacement observations for stale ones
+   * 3. Calls PersistenceAgent.updateEntityObservations() to persist changes
+   * 4. Returns refresh result with before/after comparison
+   */
+  async refreshStaleEntity(params: {
+    entityName: string;
+    team: string;
+    validationReport?: EntityValidationReport;
+    regenerateDiagrams?: boolean;
+    regenerateInsight?: boolean;
+  }): Promise<EntityRefreshResult> {
+    const startTime = Date.now();
+    log(`Starting entity refresh for: ${params.entityName}`, 'info', {
+      team: params.team,
+      hasExistingReport: !!params.validationReport
+    });
+
+    const result: EntityRefreshResult = {
+      entityName: params.entityName,
+      team: params.team,
+      refreshedAt: new Date().toISOString(),
+      validationBefore: params.validationReport || {
+        entityName: params.entityName,
+        team: params.team,
+        validatedAt: '',
+        overallValid: true,
+        overallScore: 100,
+        totalIssues: 0,
+        criticalIssues: 0,
+        observationValidations: [],
+        recommendations: [],
+        suggestedActions: {
+          removeObservations: [],
+          updateObservations: [],
+          regenerateDiagrams: [],
+          refreshInsight: false
+        }
+      },
+      observationChanges: {
+        removed: [],
+        added: [],
+        unchanged: 0
+      },
+      diagramsRegenerated: [],
+      insightRefreshed: false,
+      success: false
+    };
+
+    try {
+      // Step 1: Run validation if not provided
+      if (!params.validationReport) {
+        log('Running validation for entity', 'info');
+        result.validationBefore = await this.validateEntityAccuracy(params.entityName, params.team);
+      }
+
+      // Check if entity needs refresh (per design decision: any score < 100)
+      if (result.validationBefore.overallScore >= 100) {
+        log('Entity is already up-to-date, no refresh needed', 'info');
+        result.success = true;
+        return result;
+      }
+
+      // Step 2: Check if PersistenceAgent is available
+      if (!this.persistenceAgent) {
+        result.error = 'PersistenceAgent not set. Call setPersistenceAgent() first.';
+        log(result.error, 'error');
+        return result;
+      }
+
+      // Step 3: Load entity to get current observations
+      const entity = await this.loadEntity(params.entityName, params.team);
+      if (!entity) {
+        result.error = `Entity '${params.entityName}' not found in team '${params.team}'`;
+        log(result.error, 'error');
+        return result;
+      }
+
+      // Step 4: Identify stale observations to remove
+      const observationsToRemove = result.validationBefore.suggestedActions.removeObservations;
+      const observationsToUpdate = result.validationBefore.suggestedActions.updateObservations;
+      const allStaleObservations = [...observationsToRemove, ...observationsToUpdate];
+
+      if (allStaleObservations.length === 0) {
+        log('No stale observations found to refresh', 'info');
+        result.success = true;
+        return result;
+      }
+
+      log(`Found ${allStaleObservations.length} stale observations to refresh`, 'info');
+
+      // Step 5: Use LLM to generate replacement observations
+      const newObservations = await this.generateReplacementObservations(
+        params.entityName,
+        entity,
+        allStaleObservations,
+        result.validationBefore
+      );
+
+      log(`Generated ${newObservations.length} replacement observations`, 'info');
+
+      // Step 6: Update entity through PersistenceAgent
+      const updateResult = await this.persistenceAgent.updateEntityObservations({
+        entityName: params.entityName,
+        team: params.team,
+        removeObservations: allStaleObservations,
+        newObservations: newObservations
+      });
+
+      if (!updateResult.success) {
+        result.error = `Failed to update entity: ${updateResult.details}`;
+        log(result.error, 'error');
+        return result;
+      }
+
+      result.observationChanges = {
+        removed: allStaleObservations,
+        added: newObservations.map(obs => typeof obs === 'string' ? obs : obs.content),
+        unchanged: entity.observations.length - allStaleObservations.length
+      };
+
+      // Step 7: Re-validate to confirm improvements
+      result.validationAfter = await this.validateEntityAccuracy(params.entityName, params.team);
+
+      result.success = true;
+      const duration = Date.now() - startTime;
+      log(`Entity refresh completed successfully`, 'info', {
+        entityName: params.entityName,
+        scoreBefore: result.validationBefore.overallScore,
+        scoreAfter: result.validationAfter.overallScore,
+        observationsRemoved: result.observationChanges.removed.length,
+        observationsAdded: result.observationChanges.added.length,
+        durationMs: duration
+      });
+
+      return result;
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      result.error = `Entity refresh failed: ${errorMessage}`;
+      log(result.error, 'error', error);
+      return result;
+    }
+  }
+
+  /**
+   * Generate replacement observations for stale ones using LLM
+   */
+  private async generateReplacementObservations(
+    entityName: string,
+    entity: any,
+    staleObservations: string[],
+    validationReport: EntityValidationReport
+  ): Promise<Array<{ type: string; content: string; date: string; metadata: Record<string, any> }>> {
+    const newObservations: Array<{ type: string; content: string; date: string; metadata: Record<string, any> }> = [];
+
+    // Build context from validation issues
+    const issuesSummary = validationReport.observationValidations
+      .filter(v => !v.isValid)
+      .map(v => {
+        const issues = v.issues.map(i => `- ${i.category}: ${i.message}`).join('\n');
+        return `Observation: "${v.observation.substring(0, 100)}..."\nIssues:\n${issues}`;
+      })
+      .join('\n\n');
+
+    // Get current architecture context from the codebase
+    const contextPrompt = `You are analyzing a knowledge entity named "${entityName}" that has stale observations.
+
+The entity type is: ${entity.entityType || 'Unknown'}
+Current entity tags: ${(entity.tags || []).join(', ')}
+
+The following observations were flagged as stale with these issues:
+${issuesSummary}
+
+Original stale observations:
+${staleObservations.map((obs, i) => `${i + 1}. ${obs}`).join('\n')}
+
+Based on modern software architecture patterns and the issues identified, generate replacement observations that:
+1. Remove references to deprecated commands (like 'ukb' - replace with 'mcp__semantic-analysis__execute_workflow')
+2. Remove references to non-existent files or paths
+3. Update component names to reflect current architecture
+4. Keep the semantic meaning and insights intact while correcting technical details
+
+Respond with a JSON array of observations in this format:
+[
+  {
+    "type": "insight|implementation|architecture|pattern|learning",
+    "content": "The updated observation content",
+    "confidence": 0.0-1.0
+  }
+]
+
+Generate exactly ${staleObservations.length} replacement observations.`;
+
+    try {
+      const result = await this.semanticAnalyzer.analyzeContent(contextPrompt, {
+        analysisType: 'general',
+        provider: 'auto'
+      });
+
+      // Parse LLM response
+      let parsedObservations: Array<{ type: string; content: string; confidence: number }> = [];
+      try {
+        // Try to extract JSON from the response
+        const jsonMatch = result.insights.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          parsedObservations = JSON.parse(jsonMatch[0]);
+        }
+      } catch (parseError) {
+        log('Failed to parse LLM response as JSON, using fallback', 'warning', parseError);
+      }
+
+      const now = new Date().toISOString();
+
+      if (parsedObservations.length > 0) {
+        for (const obs of parsedObservations) {
+          newObservations.push({
+            type: obs.type || 'insight',
+            content: obs.content,
+            date: now,
+            metadata: {
+              confidence: obs.confidence || 0.7,
+              refreshedAt: now,
+              source: 'llm-refresh',
+              originallyStale: true
+            }
+          });
+        }
+      } else {
+        // Fallback: Create minimal replacement observations
+        log('Using fallback observation generation', 'warning');
+        for (const staleObs of staleObservations) {
+          // Simple cleanup: remove known deprecated patterns
+          let cleaned = staleObs
+            .replace(/\bukb\b/gi, 'semantic-analysis workflow')
+            .replace(/\.ukb\//g, '.data/knowledge-')
+            .replace(/shared-memory\.json/g, 'knowledge-graph database');
+
+          newObservations.push({
+            type: 'insight',
+            content: cleaned,
+            date: now,
+            metadata: {
+              confidence: 0.5,
+              refreshedAt: now,
+              source: 'pattern-replacement',
+              originallyStale: true
+            }
+          });
+        }
+      }
+
+      return newObservations;
+
+    } catch (error) {
+      log('LLM observation generation failed, using pattern-based fallback', 'error', error);
+
+      // Fallback: Pattern-based replacement
+      const now = new Date().toISOString();
+      for (const staleObs of staleObservations) {
+        let cleaned = staleObs
+          .replace(/\bukb\b/gi, 'semantic-analysis workflow')
+          .replace(/\.ukb\//g, '.data/knowledge-')
+          .replace(/shared-memory\.json/g, 'knowledge-graph database');
+
+        newObservations.push({
+          type: 'insight',
+          content: cleaned,
+          date: now,
+          metadata: {
+            confidence: 0.4,
+            refreshedAt: now,
+            source: 'pattern-replacement-fallback',
+            originallyStale: true
+          }
+        });
+      }
+
+      return newObservations;
+    }
+  }
+
+  /**
+   * Refresh all stale entities in a team or globally
+   *
+   * This method:
+   * 1. Validates all entities in scope
+   * 2. Identifies entities with score < 100 (per design decision)
+   * 3. Optionally shows a preview (dryRun mode)
+   * 4. Refreshes each stale entity sequentially
+   */
+  async refreshAllStaleEntities(params: {
+    team?: string;           // Optional: specific team, or all teams if not provided
+    scoreThreshold?: number; // Default: 100 (any issue triggers refresh per design decision)
+    dryRun?: boolean;        // Preview mode - don't make changes
+    maxEntities?: number;    // Limit for safety (default: 50)
+  }): Promise<{
+    dryRun: boolean;
+    entitiesScanned: number;
+    entitiesNeedingRefresh: number;
+    entitiesRefreshed: number;
+    entitiesFailed: number;
+    results: EntityRefreshResult[];
+    summary: string;
+    confirmationRequired?: {
+      entitiesAffected: Array<{ name: string; currentScore: number; issues: number }>;
+      message: string;
+    };
+  }> {
+    const scoreThreshold = params.scoreThreshold ?? 100;
+    const maxEntities = params.maxEntities ?? 50;
+    const dryRun = params.dryRun ?? false;
+
+    log(`Starting batch entity refresh`, 'info', {
+      team: params.team || 'all',
+      scoreThreshold,
+      dryRun,
+      maxEntities
+    });
+
+    const batchResult = {
+      dryRun,
+      entitiesScanned: 0,
+      entitiesNeedingRefresh: 0,
+      entitiesRefreshed: 0,
+      entitiesFailed: 0,
+      results: [] as EntityRefreshResult[],
+      summary: '',
+      confirmationRequired: undefined as {
+        entitiesAffected: Array<{ name: string; currentScore: number; issues: number }>;
+        message: string;
+      } | undefined
+    };
+
+    try {
+      // Step 1: Get all entities from the graph database
+      if (!this.graphDB) {
+        batchResult.summary = 'GraphDB not set. Call setGraphDB() first.';
+        log(batchResult.summary, 'error');
+        return batchResult;
+      }
+
+      let entities: any[] = [];
+      try {
+        // Query all entities, optionally filtered by team
+        const queryParams = params.team
+          ? { namePattern: '.*', team: params.team }
+          : { namePattern: '.*' };
+
+        entities = await this.graphDB.queryEntities(queryParams);
+      } catch (error) {
+        // Fallback: try loading from shared memory export
+        log('GraphDB query failed, trying shared memory fallback', 'warning', error);
+        const entity = await this.loadEntity('*', params.team || 'coding');
+        if (entity) {
+          entities = [entity];
+        }
+      }
+
+      batchResult.entitiesScanned = entities.length;
+      log(`Found ${entities.length} entities to scan`, 'info');
+
+      // Step 2: Validate each entity and collect stale ones
+      const staleEntities: Array<{
+        entity: any;
+        validationReport: EntityValidationReport;
+      }> = [];
+
+      for (const entity of entities) {
+        const entityName = entity.name || entity.entityName;
+        const entityTeam = entity.team || params.team || 'coding';
+
+        try {
+          const report = await this.validateEntityAccuracy(entityName, entityTeam);
+
+          if (report.overallScore < scoreThreshold) {
+            staleEntities.push({ entity, validationReport: report });
+
+            if (staleEntities.length >= maxEntities) {
+              log(`Reached max entities limit (${maxEntities})`, 'warning');
+              break;
+            }
+          }
+        } catch (error) {
+          log(`Failed to validate entity ${entityName}`, 'warning', error);
+        }
+      }
+
+      batchResult.entitiesNeedingRefresh = staleEntities.length;
+      log(`Found ${staleEntities.length} stale entities`, 'info');
+
+      // Step 3: In dryRun mode, return confirmation required
+      if (dryRun || staleEntities.length > 0) {
+        batchResult.confirmationRequired = {
+          entitiesAffected: staleEntities.map(({ entity, validationReport }) => ({
+            name: entity.name || entity.entityName,
+            currentScore: validationReport.overallScore,
+            issues: validationReport.totalIssues
+          })),
+          message: `Found ${staleEntities.length} entities with validation score below ${scoreThreshold}. ${dryRun ? 'This is a dry run - no changes will be made.' : 'Proceed with refresh?'}`
+        };
+
+        if (dryRun) {
+          batchResult.summary = `Dry run complete. ${staleEntities.length} entities would be refreshed out of ${entities.length} scanned.`;
+          return batchResult;
+        }
+      }
+
+      // Step 4: Refresh each stale entity
+      for (const { entity, validationReport } of staleEntities) {
+        const entityName = entity.name || entity.entityName;
+        const entityTeam = entity.team || params.team || 'coding';
+
+        try {
+          const refreshResult = await this.refreshStaleEntity({
+            entityName,
+            team: entityTeam,
+            validationReport
+          });
+
+          batchResult.results.push(refreshResult);
+
+          if (refreshResult.success) {
+            batchResult.entitiesRefreshed++;
+          } else {
+            batchResult.entitiesFailed++;
+          }
+        } catch (error) {
+          log(`Failed to refresh entity ${entityName}`, 'error', error);
+          batchResult.entitiesFailed++;
+          batchResult.results.push({
+            entityName,
+            team: entityTeam,
+            refreshedAt: new Date().toISOString(),
+            validationBefore: validationReport,
+            observationChanges: { removed: [], added: [], unchanged: 0 },
+            diagramsRegenerated: [],
+            insightRefreshed: false,
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      // Step 5: Generate summary
+      const avgScoreBefore = staleEntities.length > 0
+        ? Math.round(staleEntities.reduce((sum, e) => sum + e.validationReport.overallScore, 0) / staleEntities.length)
+        : 100;
+
+      const successfulRefreshes = batchResult.results.filter(r => r.success && r.validationAfter);
+      const avgScoreAfter = successfulRefreshes.length > 0
+        ? Math.round(successfulRefreshes.reduce((sum, r) => sum + (r.validationAfter?.overallScore || 0), 0) / successfulRefreshes.length)
+        : avgScoreBefore;
+
+      batchResult.summary = `Batch refresh complete. Scanned: ${batchResult.entitiesScanned}, Needed refresh: ${batchResult.entitiesNeedingRefresh}, Refreshed: ${batchResult.entitiesRefreshed}, Failed: ${batchResult.entitiesFailed}. Average score: ${avgScoreBefore} → ${avgScoreAfter}`;
+
+      log(batchResult.summary, 'info');
+      return batchResult;
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      batchResult.summary = `Batch refresh failed: ${errorMessage}`;
+      log(batchResult.summary, 'error', error);
+      return batchResult;
+    }
   }
 }
 

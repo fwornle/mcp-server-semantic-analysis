@@ -12,6 +12,7 @@
  */
 
 import * as fs from "fs";
+import * as fsPromises from "fs/promises";
 import * as path from "path";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 
@@ -408,6 +409,191 @@ export class ContentValidationAgent {
     return lines.join('\n');
   }
 
+  // ==================== Batch Validation Methods ====================
+
+  /**
+   * Validate all entities for a specific project/team
+   * Returns validation reports for each entity with aggregated summary
+   */
+  async validateEntitiesByProject(team: string, options?: {
+    maxEntities?: number;
+    skipHealthyEntities?: boolean;
+    progressCallback?: (current: number, total: number, entityName: string) => void;
+  }): Promise<{
+    team: string;
+    validatedAt: string;
+    totalEntities: number;
+    validatedEntities: number;
+    invalidEntities: number;
+    reports: EntityValidationReport[];
+    summary: string;
+  }> {
+    const startTime = Date.now();
+    const maxEntities = options?.maxEntities ?? Infinity;
+    const skipHealthy = options?.skipHealthyEntities ?? false;
+
+    log(`Starting batch validation for project: ${team}`, "info");
+
+    const result = {
+      team,
+      validatedAt: new Date().toISOString(),
+      totalEntities: 0,
+      validatedEntities: 0,
+      invalidEntities: 0,
+      reports: [] as EntityValidationReport[],
+      summary: ""
+    };
+
+    try {
+      // Get all entities for this team
+      let entities: any[] = [];
+
+      if (this.graphDB && this.graphDB.initialized) {
+        entities = await this.graphDB.queryEntities({});
+      } else {
+        // Fallback to knowledge export file
+        const knowledgeExportPath = path.join(
+          this.repositoryPath,
+          '.data',
+          'knowledge-export',
+          `${team}.json`
+        );
+        try {
+          const content = JSON.parse(await fsPromises.readFile(knowledgeExportPath, "utf-8"));
+          entities = content.entities || [];
+        } catch {
+          log(`No knowledge export found for team: ${team}`, "warning");
+        }
+      }
+
+      result.totalEntities = entities.length;
+      const entitiesToValidate = entities.slice(0, maxEntities);
+
+      for (let i = 0; i < entitiesToValidate.length; i++) {
+        const entity = entitiesToValidate[i];
+        const entityName = entity.name || entity.entityName;
+
+        // Yield to event loop to prevent blocking
+        if (i > 0 && i % 5 === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+
+        if (options?.progressCallback) {
+          options.progressCallback(i + 1, entitiesToValidate.length, entityName);
+        }
+
+        try {
+          const report = await this.validateEntityAccuracy(entityName, team);
+          result.validatedEntities++;
+
+          if (!report.overallValid) {
+            result.invalidEntities++;
+            result.reports.push(report);
+          } else if (!skipHealthy) {
+            result.reports.push(report);
+          }
+        } catch (error) {
+          log(`Error validating entity ${entityName}`, "error", error);
+        }
+      }
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      result.summary = `Validated ${result.validatedEntities}/${result.totalEntities} entities for team ${team} in ${elapsed}s. Found ${result.invalidEntities} invalid entities.`;
+
+      log(result.summary, "info");
+
+    } catch (error) {
+      log(`Error during batch validation for team ${team}`, "error", error);
+      result.summary = `Batch validation error: ${error instanceof Error ? error.message : String(error)}`;
+    }
+
+    return result;
+  }
+
+  /**
+   * Validate all entities across all projects in the knowledge base
+   * Returns aggregated validation results for the entire knowledge base
+   */
+  async validateAllEntities(options?: {
+    maxEntitiesPerProject?: number;
+    skipHealthyEntities?: boolean;
+    progressCallback?: (team: string, current: number, total: number) => void;
+  }): Promise<{
+    validatedAt: string;
+    totalProjects: number;
+    totalEntities: number;
+    totalInvalidEntities: number;
+    projectResults: Map<string, {
+      validatedEntities: number;
+      invalidEntities: number;
+      reports: EntityValidationReport[];
+    }>;
+    summary: string;
+  }> {
+    const startTime = Date.now();
+
+    log("Starting full knowledge base validation", "info");
+
+    const result = {
+      validatedAt: new Date().toISOString(),
+      totalProjects: 0,
+      totalEntities: 0,
+      totalInvalidEntities: 0,
+      projectResults: new Map<string, {
+        validatedEntities: number;
+        invalidEntities: number;
+        reports: EntityValidationReport[];
+      }>(),
+      summary: ""
+    };
+
+    try {
+      // Find all project knowledge export files
+      const knowledgeExportDir = path.join(this.repositoryPath, '.data', 'knowledge-export');
+      const files = await this.findFilesInDirAsync(knowledgeExportDir, ['.json'], 1);
+
+      const projectTeams = files
+        .map(f => path.basename(f, '.json'))
+        .filter(name => !name.startsWith('.') && name !== 'metadata');
+
+      result.totalProjects = projectTeams.length;
+
+      for (const team of projectTeams) {
+        if (options?.progressCallback) {
+          options.progressCallback(team, 0, 0);
+        }
+
+        const projectResult = await this.validateEntitiesByProject(team, {
+          maxEntities: options?.maxEntitiesPerProject,
+          skipHealthyEntities: options?.skipHealthyEntities,
+          progressCallback: options?.progressCallback
+            ? (current, total, _entityName) => options.progressCallback!(team, current, total)
+            : undefined
+        });
+
+        result.totalEntities += projectResult.validatedEntities;
+        result.totalInvalidEntities += projectResult.invalidEntities;
+
+        result.projectResults.set(team, {
+          validatedEntities: projectResult.validatedEntities,
+          invalidEntities: projectResult.invalidEntities,
+          reports: projectResult.reports
+        });
+      }
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+      result.summary = `Full KB validation complete: ${result.totalProjects} projects, ${result.totalEntities} entities, ${result.totalInvalidEntities} invalid in ${elapsed}s`;
+
+      log(result.summary, "info");
+
+    } catch (error) {
+      log("Error during full knowledge base validation", "error", error);
+      result.summary = `Full KB validation error: ${error instanceof Error ? error.message : String(error)}`;
+    }
+
+    return result;
+  }
+
   /**
    * Main entry point: Validate all content for an entity
    */
@@ -463,7 +649,7 @@ export class ContentValidationAgent {
       }
 
       // Validate insight document if exists
-      const insightPath = this.findInsightDocument(entityName);
+      const insightPath = await this.findInsightDocument(entityName);
       if (insightPath) {
         report.insightValidation = await this.validateInsightDocument(insightPath);
 
@@ -599,7 +785,8 @@ export class ContentValidationAgent {
     };
 
     try {
-      if (!fs.existsSync(insightPath)) {
+      const insightExists = await this.fileExists(insightPath);
+      if (!insightExists) {
         validation.isValid = false;
         validation.issues.push({
           type: "error",
@@ -610,7 +797,7 @@ export class ContentValidationAgent {
         return validation;
       }
 
-      const content = fs.readFileSync(insightPath, "utf-8");
+      const content = await fsPromises.readFile(insightPath, "utf-8");
 
       // Check for outdated patterns in content
       const outdatedPatterns = this.detectOutdatedPatterns(content);
@@ -670,9 +857,12 @@ export class ContentValidationAgent {
     };
 
     try {
-      // Check if .puml file exists
+      // Check if .puml file exists (async)
       const pumlPath = diagramPath.replace(/\.png$/, ".puml");
-      if (!fs.existsSync(pumlPath) && !fs.existsSync(diagramPath)) {
+      const pumlExists = await this.fileExists(pumlPath);
+      const diagramExists = await this.fileExists(diagramPath);
+
+      if (!pumlExists && !diagramExists) {
         validation.isValid = false;
         validation.issues.push({
           type: "error",
@@ -684,8 +874,8 @@ export class ContentValidationAgent {
         return validation;
       }
 
-      const diagramContent = fs.existsSync(pumlPath)
-        ? fs.readFileSync(pumlPath, "utf-8")
+      const diagramContent = pumlExists
+        ? await fsPromises.readFile(pumlPath, "utf-8")
         : "";
 
       // Extract component names from PlantUML
@@ -830,8 +1020,22 @@ export class ContentValidationAgent {
   // ==================== Private Helper Methods ====================
 
   private async loadEntity(entityName: string, team: string): Promise<any> {
-    // In practice, this would query the graph database
-    // For now, we'll read from the knowledge export file
+    // First try to load from graph database if available
+    if (this.graphDB && this.graphDB.initialized) {
+      try {
+        // Use queryEntities with exact name pattern to find the entity
+        const entities = await this.graphDB.queryEntities({
+          namePattern: `^${entityName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
+        });
+        if (entities && entities.length > 0) {
+          return entities[0];
+        }
+      } catch (error) {
+        log(`Error loading entity from graph database, falling back to file`, "warning", error);
+      }
+    }
+
+    // Fallback: read from the knowledge export file (async)
     const knowledgeExportPath = path.join(
       this.repositoryPath,
       '.data',
@@ -840,11 +1044,11 @@ export class ContentValidationAgent {
     );
 
     try {
-      if (fs.existsSync(knowledgeExportPath)) {
-        const content = JSON.parse(fs.readFileSync(knowledgeExportPath, "utf-8"));
-        return content.entities?.find((e: any) => e.name === entityName);
-      }
+      await fsPromises.access(knowledgeExportPath, fs.constants.F_OK);
+      const content = JSON.parse(await fsPromises.readFile(knowledgeExportPath, "utf-8"));
+      return content.entities?.find((e: any) => e.name === entityName);
     } catch (error) {
+      // File doesn't exist or can't be read
       log(`Error loading entity from knowledge export`, "error", error);
     }
 
@@ -950,7 +1154,12 @@ export class ContentValidationAgent {
     const fullPath = path.isAbsolute(filePath)
       ? filePath
       : path.join(this.repositoryPath, filePath);
-    return fs.existsSync(fullPath);
+    try {
+      await fsPromises.access(fullPath, fs.constants.F_OK);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async validateCommandReference(command: string): Promise<boolean> {
@@ -971,7 +1180,17 @@ export class ContentValidationAgent {
     const binPath = path.join(this.repositoryPath, "bin", command);
     const scriptsPath = path.join(this.repositoryPath, "scripts", `${command}.js`);
 
-    return fs.existsSync(binPath) || fs.existsSync(scriptsPath);
+    try {
+      await fsPromises.access(binPath, fs.constants.F_OK);
+      return true;
+    } catch {
+      try {
+        await fsPromises.access(scriptsPath, fs.constants.F_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }
   }
 
   private async componentExists(componentName: string): Promise<boolean> {
@@ -982,21 +1201,35 @@ export class ContentValidationAgent {
 
       for (const dir of searchDirs) {
         const dirPath = path.join(this.repositoryPath, dir);
-        if (!fs.existsSync(dirPath)) continue;
+
+        // Check if directory exists (async)
+        try {
+          await fsPromises.access(dirPath, fs.constants.F_OK);
+        } catch {
+          continue;
+        }
 
         // Check if a file with the component name exists
         const componentFile = path.join(dirPath, `${componentName.toLowerCase()}.ts`);
         const componentFileJs = path.join(dirPath, `${componentName.toLowerCase()}.js`);
 
-        if (fs.existsSync(componentFile) || fs.existsSync(componentFileJs)) {
+        try {
+          await fsPromises.access(componentFile, fs.constants.F_OK);
           return true;
+        } catch {
+          try {
+            await fsPromises.access(componentFileJs, fs.constants.F_OK);
+            return true;
+          } catch {
+            // Continue searching
+          }
         }
 
         // Recursively search for class definition in immediate .ts/.js files
-        const files = this.findFilesInDir(dirPath, ['.ts', '.js'], 2);
+        const files = await this.findFilesInDirAsync(dirPath, ['.ts', '.js'], 2);
         for (const file of files.slice(0, 50)) { // Limit search
           try {
-            const content = fs.readFileSync(file, "utf-8");
+            const content = await fsPromises.readFile(file, "utf-8");
             if (content.includes(classPattern)) {
               return true;
             }
@@ -1013,14 +1246,14 @@ export class ContentValidationAgent {
   }
 
   /**
-   * Simple recursive file finder (limited depth)
+   * Async recursive file finder (limited depth) - non-blocking version
    */
-  private findFilesInDir(dir: string, extensions: string[], maxDepth: number, currentDepth: number = 0): string[] {
+  private async findFilesInDirAsync(dir: string, extensions: string[], maxDepth: number, currentDepth: number = 0): Promise<string[]> {
     if (currentDepth > maxDepth) return [];
 
     const files: string[] = [];
     try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const entries = await fsPromises.readdir(dir, { withFileTypes: true });
 
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
@@ -1028,13 +1261,19 @@ export class ContentValidationAgent {
         if (entry.isDirectory()) {
           // Skip node_modules, dist, .git
           if (['node_modules', 'dist', '.git', '.data'].includes(entry.name)) continue;
-          files.push(...this.findFilesInDir(fullPath, extensions, maxDepth, currentDepth + 1));
+          const subFiles = await this.findFilesInDirAsync(fullPath, extensions, maxDepth, currentDepth + 1);
+          files.push(...subFiles);
         } else if (entry.isFile()) {
           const ext = path.extname(entry.name);
           if (extensions.includes(ext)) {
             files.push(fullPath);
           }
         }
+      }
+
+      // Yield to event loop periodically to prevent blocking
+      if (files.length > 0 && files.length % 20 === 0) {
+        await new Promise(resolve => setImmediate(resolve));
       }
     } catch {
       // Skip unreadable directories
@@ -1106,7 +1345,7 @@ export class ContentValidationAgent {
     return issues;
   }
 
-  private findInsightDocument(entityName: string): string | null {
+  private async findInsightDocument(entityName: string): Promise<string | null> {
     // Convert entity name to filename format (kebab-case)
     const filename = entityName
       .replace(/([a-z])([A-Z])/g, "$1-$2")
@@ -1120,7 +1359,8 @@ export class ContentValidationAgent {
     ];
 
     for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
+      const exists = await this.fileExists(p);
+      if (exists) {
         return p;
       }
     }

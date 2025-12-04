@@ -223,9 +223,8 @@ export class CoordinatorAgent {
       {
         name: "incremental-analysis",
         description: "Incremental analysis since last checkpoint",
-        // NOTE: content_validation agent removed due to synchronous fs.existsSync blocking event loop
-        // See: validateAndRefreshStaleEntities uses blocking file checks causing Claude freezes
-        agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation", "observation_generation", "quality_assurance", "persistence", "deduplication"],
+        // content_validation agent re-enabled after async conversion (all sync fs ops converted to async)
+        agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation", "observation_generation", "quality_assurance", "persistence", "deduplication", "content_validation"],
         steps: [
           {
             name: "analyze_recent_changes",
@@ -329,11 +328,23 @@ export class CoordinatorAgent {
             },
             dependencies: ["persist_incremental"],
             timeout: 20,
+          },
+          {
+            name: "validate_content_incremental",
+            agent: "content_validation",
+            action: "validateAndRefreshStaleEntities",
+            parameters: {
+              team: "coding",
+              maxEntities: 20,  // Limit to 20 entities per incremental run for performance
+              staleDaysThreshold: 7
+            },
+            dependencies: ["deduplicate_incremental"],
+            timeout: 60,
           }
         ],
         config: {
           max_concurrent_steps: 2,
-          timeout: 360, // 6 minutes (added lightweight QA step)
+          timeout: 420, // 7 minutes (added content_validation step)
           quality_validation: true,
         },
       },
@@ -442,6 +453,71 @@ export class CoordinatorAgent {
           timeout: 600, // 10 minutes
           quality_validation: true,
           requires_entity_param: true
+        },
+      },
+      {
+        name: "full-kb-validation",
+        description: "Validate all entities in the knowledge base for accuracy and staleness",
+        agents: ["content_validation", "quality_assurance"],
+        steps: [
+          {
+            name: "validate_all_entities",
+            agent: "content_validation",
+            action: "validateAllEntities",
+            parameters: {
+              maxEntitiesPerProject: "{{params.maxEntitiesPerProject}}",
+              skipHealthyEntities: true  // Only report invalid entities
+            },
+            timeout: 300,  // 5 minutes
+          },
+          {
+            name: "qa_validation_report",
+            agent: "quality_assurance",
+            action: "validateFullKBReport",
+            parameters: {
+              validation_results: "{{validate_all_entities.result}}"
+            },
+            dependencies: ["validate_all_entities"],
+            timeout: 60,
+          }
+        ],
+        config: {
+          timeout: 420, // 7 minutes
+          quality_validation: true,
+        },
+      },
+      {
+        name: "project-kb-validation",
+        description: "Validate all entities for a specific project/team",
+        agents: ["content_validation", "quality_assurance"],
+        steps: [
+          {
+            name: "validate_project_entities",
+            agent: "content_validation",
+            action: "validateEntitiesByProject",
+            parameters: {
+              team: "{{params.team}}",
+              maxEntities: "{{params.maxEntities}}",
+              skipHealthyEntities: false  // Report all entities for project validation
+            },
+            timeout: 180,  // 3 minutes
+          },
+          {
+            name: "qa_project_report",
+            agent: "quality_assurance",
+            action: "validateProjectKBReport",
+            parameters: {
+              validation_results: "{{validate_project_entities.result}}",
+              team: "{{params.team}}"
+            },
+            dependencies: ["validate_project_entities"],
+            timeout: 60,
+          }
+        ],
+        config: {
+          timeout: 300, // 5 minutes
+          quality_validation: true,
+          requires_team_param: true
         },
       },
     ];

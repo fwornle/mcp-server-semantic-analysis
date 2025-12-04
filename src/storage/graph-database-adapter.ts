@@ -39,6 +39,7 @@ export interface GraphStorageOptions {
 
 export class GraphDatabaseAdapter {
   private graphDB: GraphDatabaseService | null = null;
+  private graphExporter: any = null; // GraphKnowledgeExporter for JSON sync
   private apiClient: any = null;
   private isInitialized = false;
   private useApi = false;
@@ -91,6 +92,26 @@ export class GraphDatabaseAdapter {
         });
 
         await this.graphDB.initialize();
+
+        // CRITICAL: Attach GraphKnowledgeExporter to maintain JSON sync
+        // Without this, events like entity:stored are emitted but no one listens,
+        // causing JSON export files to become stale/out-of-sync
+        try {
+          const repoRoot = this.dbPath.replace(/\/.data\/knowledge-graph$/, '');
+          const exporterPath = `${repoRoot}/src/knowledge-management/GraphKnowledgeExporter.js`;
+          const { GraphKnowledgeExporter } = await import(exporterPath);
+
+          const exportDir = this.dbPath.replace(/knowledge-graph$/, 'knowledge-export');
+          this.graphExporter = new GraphKnowledgeExporter(this.graphDB, {
+            exportDir,
+            debounceMs: 2000 // Debounce exports to avoid excessive writes
+          });
+
+          log('GraphKnowledgeExporter attached for JSON sync', 'info', { exportDir });
+        } catch (exporterError) {
+          // Log but don't fail - JSON export is important but not critical for operation
+          log('Failed to attach GraphKnowledgeExporter for JSON sync', 'warning', exporterError);
+        }
       }
 
       this.isInitialized = true;
@@ -318,6 +339,11 @@ export class GraphDatabaseAdapter {
     }
 
     try {
+      // Clean up exporter if it exists
+      if (this.graphExporter) {
+        this.graphExporter = null;
+      }
+
       await this.graphDB.close();
       this.isInitialized = false;
       this.graphDB = null;

@@ -2430,20 +2430,24 @@ ${entityData.insights}
       // Update metadata
       entity.metadata.last_updated = new Date().toISOString();
 
-      // Persist to GraphDB
+      // Persist to GraphDB (single source of truth)
+      // GraphKnowledgeExporter will handle JSON export via entity:stored event
       if (this.graphDB) {
         await this.storeEntityToGraph(entity);
-      }
-
-      // Also update the shared memory file for consistency
-      const sharedMemory = await this.loadSharedMemory();
-      const entityIndex = sharedMemory.entities.findIndex(e => e.name === params.entityName);
-      if (entityIndex >= 0) {
-        sharedMemory.entities[entityIndex] = entity;
+        // Note: No need to call saveSharedMemory when graphDB is available
+        // The GraphKnowledgeExporter listener handles JSON export automatically
       } else {
-        sharedMemory.entities.push(entity);
+        // Fallback: Only use saveSharedMemory if GraphDB is not available
+        log('GraphDB not available - falling back to JSON file persistence', 'warning');
+        const sharedMemory = await this.loadSharedMemory();
+        const entityIndex = sharedMemory.entities.findIndex(e => e.name === params.entityName);
+        if (entityIndex >= 0) {
+          sharedMemory.entities[entityIndex] = entity;
+        } else {
+          sharedMemory.entities.push(entity);
+        }
+        await this.saveSharedMemory(sharedMemory);
       }
-      await this.saveSharedMemory(sharedMemory);
 
       result.success = true;
       result.updatedEntity = entity;

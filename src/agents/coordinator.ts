@@ -385,8 +385,8 @@ export class CoordinatorAgent {
       },
       {
         name: "entity-refresh",
-        description: "Validate and refresh outdated entity content",
-        agents: ["content_validation", "semantic_analysis", "insight_generation", "quality_assurance", "persistence"],
+        description: "Validate a specific entity and generate a detailed accuracy report",
+        agents: ["content_validation"],
         steps: [
           {
             name: "validate_entity_content",
@@ -396,62 +396,12 @@ export class CoordinatorAgent {
               entityName: "{{params.entityName}}",
               team: "{{params.team}}"
             },
-            timeout: 60,
-          },
-          {
-            name: "analyze_current_state",
-            agent: "semantic_analysis",
-            action: "analyzeEntityContext",
-            parameters: {
-              validation_report: "{{validate_entity_content.result}}",
-              entityName: "{{params.entityName}}"
-            },
-            dependencies: ["validate_entity_content"],
             timeout: 120,
-          },
-          {
-            name: "generate_fresh_insights",
-            agent: "insight_generation",
-            action: "refreshEntityInsights",
-            parameters: {
-              validation_report: "{{validate_entity_content.result}}",
-              current_analysis: "{{analyze_current_state.result}}",
-              entityName: "{{params.entityName}}",
-              regenerate_diagrams: true
-            },
-            dependencies: ["analyze_current_state"],
-            timeout: 180,
-          },
-          {
-            name: "qa_verification",
-            agent: "quality_assurance",
-            action: "validateRefreshedEntity",
-            parameters: {
-              entityName: "{{params.entityName}}",
-              validation_report: "{{validate_entity_content.result}}",
-              fresh_insights: "{{generate_fresh_insights.result}}"
-            },
-            dependencies: ["generate_fresh_insights"],
-            timeout: 60,
-          },
-          {
-            name: "persist_refreshed_entity",
-            agent: "persistence",
-            action: "persistRefreshedEntity",
-            parameters: {
-              entityName: "{{params.entityName}}",
-              team: "{{params.team}}",
-              validation_report: "{{validate_entity_content.result}}",
-              fresh_insights: "{{generate_fresh_insights.result}}",
-              qa_result: "{{qa_verification.result}}"
-            },
-            dependencies: ["qa_verification"],
-            timeout: 60,
           }
         ],
         config: {
-          timeout: 600, // 10 minutes
-          quality_validation: true,
+          timeout: 180, // 3 minutes
+          quality_validation: false,
           requires_entity_param: true
         },
       },

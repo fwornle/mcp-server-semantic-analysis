@@ -693,13 +693,20 @@ export class ContentValidationAgent {
 
   /**
    * Validate individual observations for accuracy
+   * Observations can be strings or objects with {type, content} structure
    */
-  async validateObservations(observations: string[]): Promise<ObservationValidation[]> {
+  async validateObservations(observations: (string | { type?: string; content?: string })[]): Promise<ObservationValidation[]> {
     const validations: ObservationValidation[] = [];
 
-    for (const observation of observations) {
+    for (const obs of observations) {
+      // Extract the text content from the observation
+      // Handle both string observations and object observations with {type, content}
+      const observationText = typeof obs === 'string'
+        ? obs
+        : (obs.content || JSON.stringify(obs));
+
       const validation: ObservationValidation = {
-        observation,
+        observation: observationText,
         isValid: true,
         issues: [],
         extractedReferences: {
@@ -711,13 +718,13 @@ export class ContentValidationAgent {
       };
 
       // Extract file references
-      validation.extractedReferences.files = this.extractFileReferences(observation);
+      validation.extractedReferences.files = this.extractFileReferences(observationText);
 
       // Extract command references
-      validation.extractedReferences.commands = this.extractCommandReferences(observation);
+      validation.extractedReferences.commands = this.extractCommandReferences(observationText);
 
       // Extract component references
-      validation.extractedReferences.components = this.extractComponentReferences(observation);
+      validation.extractedReferences.components = this.extractComponentReferences(observationText);
 
       // Validate file references exist
       for (const file of validation.extractedReferences.files) {

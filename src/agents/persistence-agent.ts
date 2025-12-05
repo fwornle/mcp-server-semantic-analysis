@@ -75,6 +75,11 @@ export interface EntityMetadata {
   context?: string;
   tags?: string[];
   validated_file_path?: string; // Track validated insight file path
+  // Bi-temporal staleness tracking (inspired by Graphiti)
+  invalidating_commits?: string[];    // Git commits that may have made this entity stale
+  staleness_score?: number;           // 0-100 where 100 = fresh
+  staleness_check_at?: string;        // Timestamp of last staleness check
+  staleness_method?: string;          // Method used: 'git-based' | 'pattern-match' | 'manual'
 }
 
 export interface SharedMemoryStructure {
@@ -1013,7 +1018,12 @@ export class PersistenceAgent {
           criticalIssues: contentValidationReport.criticalIssues,
           validatedAt: contentValidationReport.validatedAt,
           mode: this.config.contentValidationMode
-        } : undefined
+        } : undefined,
+        // Bi-temporal staleness tracking (inspired by Graphiti)
+        invalidating_commits: contentValidationReport?.gitStaleness?.invalidatingCommits,
+        staleness_score: contentValidationReport?.gitStaleness?.stalenessScore ?? 100,
+        staleness_check_at: contentValidationReport?.validatedAt,
+        staleness_method: contentValidationReport?.gitStaleness ? 'git-based' : undefined
       };
 
       // Create automatic relationships for graph connectivity

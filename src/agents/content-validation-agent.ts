@@ -20,6 +20,7 @@ import type { PersistenceAgent } from "./persistence-agent.js";
 import type { InsightGenerationAgent } from "./insight-generation-agent.js";
 import { GitHistoryAgent } from "./git-history-agent.js";
 import { VibeHistoryAgent } from "./vibe-history-agent.js";
+import { GitStalenessDetector, CommitEntityCorrelation } from "./git-staleness-detector.js";
 
 // Simple logger
 const log = (message: string, level: string = "info", data?: any) => {
@@ -87,6 +88,13 @@ export interface EntityValidationReport {
     regenerateDiagrams: string[];
     refreshInsight: boolean;
   };
+  // Git-based staleness detection results
+  gitStaleness?: {
+    isStale: boolean;
+    invalidatingCommits: string[];
+    correlations: CommitEntityCorrelation[];
+    stalenessScore: number;
+  };
 }
 
 export interface StaleEntityInfo {
@@ -118,6 +126,7 @@ export interface ContentValidationAgentConfig {
   insightsDirectory: string;
   enableDeepValidation: boolean;
   stalenessThresholdDays?: number;
+  useGitBasedDetection?: boolean; // Use git commit history for staleness detection (default: true)
 }
 
 // Entity refresh result interfaces
@@ -151,6 +160,8 @@ export class ContentValidationAgent {
   private insightGenerationAgent: InsightGenerationAgent | null = null;
   private gitHistoryAgent: GitHistoryAgent | null = null;
   private vibeHistoryAgent: VibeHistoryAgent | null = null;
+  private gitStalenessDetector: GitStalenessDetector | null = null;
+  private useGitBasedDetection: boolean;
 
   // Known patterns for reference extraction
   private filePathPatterns = [
@@ -179,15 +190,22 @@ export class ContentValidationAgent {
   constructor(config?: Partial<ContentValidationAgentConfig>) {
     this.repositoryPath = config?.repositoryPath || process.cwd();
     this.insightsDirectory = config?.insightsDirectory ||
-      path.join(this.repositoryPath, ".ukb", "insights");
+      path.join(this.repositoryPath, "knowledge-management", "insights");
     this.enableDeepValidation = config?.enableDeepValidation ?? true;
     this.stalenessThresholdDays = config?.stalenessThresholdDays ?? 30;
+    this.useGitBasedDetection = config?.useGitBasedDetection ?? true;
     this.semanticAnalyzer = new SemanticAnalyzer();
+
+    // Initialize GitStalenessDetector for git-based staleness detection
+    if (this.useGitBasedDetection) {
+      this.gitStalenessDetector = new GitStalenessDetector();
+    }
 
     log(`ContentValidationAgent initialized`, "info", {
       repositoryPath: this.repositoryPath,
       insightsDirectory: this.insightsDirectory,
-      enableDeepValidation: this.enableDeepValidation
+      enableDeepValidation: this.enableDeepValidation,
+      useGitBasedDetection: this.useGitBasedDetection
     });
   }
 
@@ -230,6 +248,120 @@ export class ContentValidationAgent {
   }
 
   /**
+   * Detect entity staleness using git commit history
+   * Uses three-tier matching: file-path, topic/embedding, and LLM correlation
+   * @param entity - The entity to check for staleness
+   * @param team - The team/project namespace
+   * @returns Array of commit-entity correlations indicating staleness
+   */
+  async detectEntityGitStaleness(
+    entity: { name: string; entityType?: string; observations?: any[]; metadata?: any },
+    team: string
+  ): Promise<{
+    isStale: boolean;
+    correlations: CommitEntityCorrelation[];
+    stalenessScore: number; // 0-100, 100 = fresh
+    invalidatingCommits: string[];
+  }> {
+    // Default result - entity is fresh
+    const result = {
+      isStale: false,
+      correlations: [] as CommitEntityCorrelation[],
+      stalenessScore: 100,
+      invalidatingCommits: [] as string[],
+    };
+
+    if (!this.useGitBasedDetection || !this.gitStalenessDetector) {
+      log(`Git-based detection disabled, skipping`, 'debug', { entityName: entity.name });
+      return result;
+    }
+
+    // Initialize git history agent if not already done
+    if (!this.gitHistoryAgent) {
+      this.gitHistoryAgent = new GitHistoryAgent(this.repositoryPath);
+    }
+
+    try {
+      // Get entity's last_updated timestamp
+      const entityLastUpdated = entity.metadata?.last_updated
+        ? new Date(entity.metadata.last_updated)
+        : null;
+
+      if (!entityLastUpdated) {
+        log(`Entity has no last_updated timestamp, treating as potentially stale`, 'debug', {
+          entityName: entity.name
+        });
+        // If no timestamp, check recent commits (last 30 days by default)
+        const sinceDate = new Date();
+        sinceDate.setDate(sinceDate.getDate() - this.stalenessThresholdDays);
+      }
+
+      // Get commits since entity was last updated (or last 30 days if no timestamp)
+      const sinceDate = entityLastUpdated || new Date(Date.now() - this.stalenessThresholdDays * 24 * 60 * 60 * 1000);
+
+      // Use analyzeGitHistory to get commits - returns full analysis including commits array
+      const analysisResult = await this.gitHistoryAgent.analyzeGitHistory({
+        fromTimestamp: sinceDate.toISOString(),
+        checkpoint_enabled: false // Don't use checkpoints for staleness detection
+      });
+      const commits = analysisResult.commits;
+
+      if (commits.length === 0) {
+        log(`No commits since entity last updated`, 'debug', {
+          entityName: entity.name,
+          lastUpdated: entityLastUpdated?.toISOString()
+        });
+        return result;
+      }
+
+      log(`Checking ${commits.length} commits against entity`, 'debug', {
+        entityName: entity.name,
+        sinceDate: sinceDate.toISOString()
+      });
+
+      // Convert entity format for GitStalenessDetector
+      const graphEntity = {
+        name: entity.name,
+        entityType: entity.entityType,
+        observations: entity.observations,
+        metadata: entity.metadata
+      };
+
+      // Detect staleness using three-tier matching
+      const correlations = await this.gitStalenessDetector.detectStaleness(commits, [graphEntity]);
+
+      // Filter for correlations related to this entity that indicate staleness
+      const relevantCorrelations = correlations.filter(
+        c => c.entityName === entity.name && c.isStale
+      );
+
+      if (relevantCorrelations.length > 0) {
+        result.isStale = true;
+        result.correlations = relevantCorrelations;
+        result.invalidatingCommits = relevantCorrelations.map(c => c.commitHash);
+
+        // Calculate staleness score based on correlation relevance scores
+        // Higher relevance = lower freshness score
+        const avgRelevance = relevantCorrelations.reduce((sum, c) => sum + c.relevanceScore, 0) / relevantCorrelations.length;
+        result.stalenessScore = Math.round((1 - avgRelevance) * 100);
+
+        log(`Entity detected as stale via git analysis`, 'info', {
+          entityName: entity.name,
+          invalidatingCommits: result.invalidatingCommits.length,
+          stalenessScore: result.stalenessScore,
+          topMethod: relevantCorrelations[0]?.matchMethod
+        });
+      }
+
+      return result;
+    } catch (error) {
+      log(`Error during git-based staleness detection`, 'error', { entityName: entity.name, error });
+      // On error, return fresh status to avoid false positives
+      return result;
+    }
+  }
+
+  /**
    * Validate all entities in the graph database for staleness
    * Called during incremental-analysis workflow to detect outdated entities
    */
@@ -239,7 +371,7 @@ export class ContentValidationAgent {
     stalenessThresholdDays?: number;
     autoRefresh?: boolean;
   }): Promise<StaleEntitiesValidationResult> {
-    log('Starting stale entity validation', 'info', params);
+    log('Starting stale entity validation (git-based detection)', 'info', params);
 
     const result: StaleEntitiesValidationResult = {
       validatedAt: new Date().toISOString(),
@@ -274,22 +406,13 @@ export class ContentValidationAgent {
       if (allEntities.length > MAX_ENTITIES_TO_CHECK) {
         log(`Large knowledge base: ${allEntities.length} entities, checking first ${MAX_ENTITIES_TO_CHECK}`, 'warning');
       } else {
-        log(`Checking ${entities.length} entities for staleness`, 'info');
+        log(`Checking ${entities.length} entities for staleness via git-based detection`, 'info');
       }
-
-      // Known deprecated/outdated patterns to check for
-      const deprecatedPatterns = [
-        { pattern: /\bukb\b/gi, replacement: 'vkb or graph database operations', severity: 'critical' as const },
-        { pattern: /shared-memory-\w+\.json/gi, replacement: 'GraphDatabaseService', severity: 'critical' as const },
-        { pattern: /\.ukb\//gi, replacement: '.data/knowledge-graph/', severity: 'moderate' as const },
-        { pattern: /SynchronizationAgent/gi, replacement: 'GraphDatabaseAdapter (auto-persistence)', severity: 'moderate' as const },
-        { pattern: /PersistenceFile/gi, replacement: 'GraphDatabaseService', severity: 'moderate' as const },
-        { pattern: /shared-memory\.json/gi, replacement: 'LevelDB graph storage', severity: 'critical' as const },
-      ];
 
       // Process entities in batches with event loop yields to prevent blocking
       const BATCH_SIZE = 10;
       let processedCount = 0;
+      const team = 'coding';
 
       for (const entity of entities) {
         // Yield to event loop every BATCH_SIZE entities to prevent blocking
@@ -306,32 +429,35 @@ export class ContentValidationAgent {
         let staleness: 'critical' | 'moderate' | 'low' = 'low';
         let score = 100;
 
-        // Check observations for deprecated patterns
-        for (const observation of observations) {
-          const obsText = typeof observation === 'string' ? observation : observation.content || '';
+        // Use git-based staleness detection (primary mechanism)
+        if (this.useGitBasedDetection) {
+          const gitStaleness = await this.detectEntityGitStaleness(entity, team);
 
-          for (const { pattern, replacement, severity } of deprecatedPatterns) {
-            const matches = obsText.match(pattern);
-            if (matches) {
+          if (gitStaleness.isStale) {
+            // Determine staleness severity based on score
+            if (gitStaleness.stalenessScore < 40) {
+              staleness = 'critical';
+            } else if (gitStaleness.stalenessScore < 70) {
+              staleness = 'moderate';
+            }
+            score = gitStaleness.stalenessScore;
+
+            // Add issues from git-based detection
+            for (const correlation of gitStaleness.correlations) {
               issues.push({
-                type: severity === 'critical' ? 'error' : 'warning',
+                type: staleness === 'critical' ? 'error' : 'warning',
                 category: 'observation_staleness',
-                message: `Observation references deprecated concept: "${matches[0]}"`,
-                reference: obsText.substring(0, 100) + (obsText.length > 100 ? '...' : ''),
-                suggestion: `Update to use: ${replacement}`
+                message: `Entity may be outdated: commit ${correlation.commitHash.substring(0, 8)} (${correlation.matchMethod})`,
+                reference: correlation.commitMessage.substring(0, 100),
+                suggestion: `Review entity against recent changes: ${correlation.matchDetails?.substring(0, 80) || 'N/A'}`
               });
-
-              if (severity === 'critical') {
-                staleness = 'critical';
-                score -= 30;
-              } else if (severity === 'moderate' && staleness !== 'critical') {
-                staleness = 'moderate';
-                score -= 15;
-              }
             }
           }
+        }
 
-          // Also validate file references in observations
+        // Also validate file references in observations (still useful regardless of git-based detection)
+        for (const observation of observations) {
+          const obsText = typeof observation === 'string' ? observation : observation.content || '';
           const fileRefs = this.extractFileReferences(obsText);
           for (const fileRef of fileRefs) {
             if (!this.fileExists(fileRef)) {
@@ -345,21 +471,6 @@ export class ContentValidationAgent {
               score -= 10;
               if (staleness === 'low') staleness = 'moderate';
             }
-          }
-        }
-
-        // Check entity name itself for deprecated patterns
-        for (const { pattern, replacement, severity } of deprecatedPatterns) {
-          if (pattern.test(entityName)) {
-            issues.push({
-              type: 'error',
-              category: 'observation_staleness',
-              message: `Entity name contains deprecated concept`,
-              reference: entityName,
-              suggestion: `Consider renaming or updating to reflect: ${replacement}`
-            });
-            staleness = 'critical';
-            score -= 25;
           }
         }
 
@@ -382,31 +493,13 @@ export class ContentValidationAgent {
 
           result.staleEntities.push(staleEntity);
 
-          // Determine action
-          if (params.autoRefresh && staleness === 'critical') {
-            result.refreshActions.push({
-              entityName,
-              action: 'deleted',
-              reason: `Critical staleness detected: ${issues.length} issues found - entity deleted`
-            });
-
-            // Actually delete the stale entity
-            try {
-              const entityId = entity.id || entityName;
-              await this.graphDB.deleteEntity(entityId);
-              log(`Deleted stale entity: ${entityName}`, 'info', { entityId, issues: issues.length });
-            } catch (deleteError) {
-              log(`Failed to delete stale entity: ${entityName}`, 'error', deleteError);
-              // Update the action to reflect failure
-              result.refreshActions[result.refreshActions.length - 1].action = 'delete_failed';
-              result.refreshActions[result.refreshActions.length - 1].reason =
-                `Delete failed: ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`;
-            }
-          } else if (staleness === 'critical') {
+          // Determine action - NOTE: We now mark for review rather than auto-delete
+          // Git-based detection may have false positives, so manual review is preferred
+          if (staleness === 'critical') {
             result.refreshActions.push({
               entityName,
               action: 'manual_review_required',
-              reason: `Critical staleness requires manual review`
+              reason: `Git-based staleness detected: ${issues.length} relevant commits found. Review before making changes.`
             });
           }
         }
@@ -415,10 +508,11 @@ export class ContentValidationAgent {
       // Generate summary
       result.summary = this.generateStalenessSummary(result);
 
-      log('Stale entity validation complete', 'info', {
+      log('Stale entity validation complete (git-based)', 'info', {
         totalChecked: result.totalEntitiesChecked,
         staleFound: result.staleEntitiesFound,
-        critical: result.criticalStaleEntities
+        critical: result.criticalStaleEntities,
+        method: 'git-based-detection'
       });
 
     } catch (error) {
@@ -689,7 +783,27 @@ export class ContentValidationAgent {
         return report;
       }
 
-      // Validate observations
+      // Git-based staleness detection (primary mechanism)
+      if (this.useGitBasedDetection) {
+        const gitStaleness = await this.detectEntityGitStaleness(entity, team);
+        report.gitStaleness = gitStaleness;
+
+        if (gitStaleness.isStale) {
+          report.overallValid = false;
+          report.totalIssues += gitStaleness.invalidatingCommits.length;
+          report.criticalIssues += 1; // Git-based staleness is critical
+
+          // Add recommendation with specific commit info
+          const commitCount = gitStaleness.invalidatingCommits.length;
+          const topCorrelation = gitStaleness.correlations[0];
+          report.recommendations.push(
+            `Entity may be outdated: ${commitCount} commit(s) since last update may affect this entity. ` +
+            `Top match via ${topCorrelation?.matchMethod}: ${topCorrelation?.matchDetails?.substring(0, 100) || 'N/A'}`
+          );
+        }
+      }
+
+      // Validate observations (file/command/component references)
       if (entity.observations && entity.observations.length > 0) {
         report.observationValidations = await this.validateObservations(entity.observations);
 
@@ -728,6 +842,19 @@ export class ContentValidationAgent {
               report.suggestedActions.regenerateDiagrams.push(diagramValidation.diagramPath);
             }
           }
+        }
+      } else {
+        // Check if entity should have an insight document (non-trivial entities)
+        const requiresInsight = this.entityRequiresInsightDocument(entityName, entity);
+        if (requiresInsight) {
+          report.overallValid = false;
+          report.totalIssues += 1;
+          report.criticalIssues += 1;
+          report.suggestedActions.refreshInsight = true;
+          report.recommendations.push(
+            `Entity '${entityName}' is non-trivial but missing insight document. ` +
+            `Expected at: knowledge-management/insights/${entityName}.md`
+          );
         }
       }
 
@@ -833,6 +960,9 @@ export class ContentValidationAgent {
           }
         }
       }
+
+      // NOTE: Pattern-based staleness detection removed in favor of git-based detection
+      // Git-based detection is more accurate and self-maintaining (see detectEntityGitStaleness)
 
       validations.push(validation);
     }
@@ -1353,12 +1483,22 @@ export class ContentValidationAgent {
   private detectOutdatedPatterns(content: string): Array<{message: string, reference: string, suggestion: string}> {
     const issues: Array<{message: string, reference: string, suggestion: string}> = [];
 
-    // Known outdated patterns
+    // Known outdated patterns - comprehensive list
     const outdatedPatterns = [
       {
-        pattern: /\bukb\b.*command/gi,
-        message: "References 'ukb' as a command (deprecated)",
-        suggestion: "Use MCP workflow 'incremental-analysis' instead"
+        pattern: /\bu[kK][bB]\b/gi,
+        message: "References deprecated 'ukb' command",
+        suggestion: "Use MCP semantic-analysis execute_workflow with 'incremental-analysis'"
+      },
+      {
+        pattern: /`u[kK][bB]`/gi,
+        message: "References deprecated command in code block",
+        suggestion: "Use MCP semantic-analysis execute_workflow"
+      },
+      {
+        pattern: /shared-memory\.json/gi,
+        message: "References shared-memory.json (deprecated)",
+        suggestion: "Use GraphDB persistence via MCP tools"
       },
       {
         pattern: /shared-memory-\w+\.json/gi,
@@ -1368,12 +1508,17 @@ export class ContentValidationAgent {
       {
         pattern: /SynchronizationAgent/gi,
         message: "References SynchronizationAgent (removed)",
-        suggestion: "Use GraphDatabaseService for persistence"
+        suggestion: "Use GraphDatabaseAdapter for persistence"
       },
       {
         pattern: /json-based.*persistence/gi,
         message: "References JSON-based persistence (deprecated)",
         suggestion: "Update to reference graph database persistence"
+      },
+      {
+        pattern: /existing\s+shared-memory/gi,
+        message: "References existing shared-memory format (deprecated)",
+        suggestion: "Update to reference GraphDB + JSON export sync"
       },
     ];
 
@@ -1415,15 +1560,21 @@ export class ContentValidationAgent {
 
   private async findInsightDocument(entityName: string): Promise<string | null> {
     // Convert entity name to filename format (kebab-case)
-    const filename = entityName
+    const kebabFilename = entityName
       .replace(/([a-z])([A-Z])/g, "$1-$2")
       .toLowerCase()
       .replace(/\s+/g, "-");
 
+    // Check multiple naming conventions for insight documents
     const possiblePaths = [
-      path.join(this.insightsDirectory, `${filename}.md`),
-      path.join(this.insightsDirectory, `${filename}-insight.md`),
-      path.join(this.insightsDirectory, entityName, `${filename}.md`),
+      // PascalCase (common for patterns/entities)
+      path.join(this.insightsDirectory, `${entityName}.md`),
+      // kebab-case
+      path.join(this.insightsDirectory, `${kebabFilename}.md`),
+      path.join(this.insightsDirectory, `${kebabFilename}-insight.md`),
+      // Subdirectory variants
+      path.join(this.insightsDirectory, entityName, `${kebabFilename}.md`),
+      path.join(this.insightsDirectory, entityName, `${entityName}.md`),
     ];
 
     for (const p of possiblePaths) {
@@ -1436,9 +1587,64 @@ export class ContentValidationAgent {
     return null;
   }
 
+  /**
+   * Determine if an entity is non-trivial and should have an insight document.
+   *
+   * Non-trivial entities are those with:
+   * - EntityType containing "Pattern", "Workflow", "Architecture", "System"
+   * - Multiple observations (3+)
+   * - Observations with architectural/design content
+   */
+  private entityRequiresInsightDocument(entityName: string, entity: any): boolean {
+    // Entity types that typically require insight documents
+    const significantTypePatterns = [
+      /pattern/i,
+      /workflow/i,
+      /architecture/i,
+      /system/i,
+      /integration/i,
+    ];
+
+    const entityType = entity?.entityType || entity?.type || '';
+    const hasSignificantType = significantTypePatterns.some(p => p.test(entityType));
+
+    // Check entity name for significance indicators
+    const hasSignificantName = significantTypePatterns.some(p => p.test(entityName));
+
+    // Check observation count - entities with many observations are non-trivial
+    const observations = entity?.observations || [];
+    const hasMultipleObservations = observations.length >= 3;
+
+    // Check observation content for architectural keywords
+    const architecturalKeywords = [
+      'architecture', 'pattern', 'design', 'implementation',
+      'workflow', 'integration', 'system', 'component',
+      'layer', 'module', 'service', 'agent'
+    ];
+
+    const hasArchitecturalContent = observations.some((obs: any) => {
+      const text = typeof obs === 'string' ? obs : (obs.content || '');
+      return architecturalKeywords.some(keyword =>
+        text.toLowerCase().includes(keyword)
+      );
+    });
+
+    // Entity requires insight if it's significant type/name OR has substantial content
+    return (hasSignificantType || hasSignificantName) ||
+           (hasMultipleObservations && hasArchitecturalContent);
+  }
+
   private calculateValidationScore(report: EntityValidationReport): number {
     // Start with 100 and deduct based on issues
     let score = 100;
+
+    // Git-based staleness has significant weight (primary detection mechanism)
+    if (report.gitStaleness?.isStale) {
+      // Use the staleness score directly (0-100, lower = more stale)
+      // Weight it at 40% of total score
+      const gitPenalty = (100 - report.gitStaleness.stalenessScore) * 0.4;
+      score -= gitPenalty;
+    }
 
     // Deduct for critical issues
     score -= report.criticalIssues * 10;

@@ -578,6 +578,7 @@ export class CoordinatorAgent {
       });
       contentValidationAgent.setGraphDB(this.graphDB);
       contentValidationAgent.setPersistenceAgent(persistenceAgent);
+      contentValidationAgent.setInsightGenerationAgent(insightGenerationAgent);
       this.agents.set("content_validation", contentValidationAgent);
 
       // Register other agents with deduplication for access to knowledge graph

@@ -893,14 +893,11 @@ export class PersistenceAgent {
 
   /**
    * Store an entity to the graph database
-   * Falls back to JSON file if GraphDB is not available
+   * FAIL-FAST: GraphDB MUST be available. Health monitor handles restart if unavailable.
    */
-  private async storeEntityToGraph(entity: SharedMemoryEntity): Promise<string | null> {
+  private async storeEntityToGraph(entity: SharedMemoryEntity): Promise<string> {
     if (!this.graphDB) {
-      log('GraphDB not available - entity will be stored in JSON only', 'warning', {
-        entityName: entity.name
-      });
-      return null;
+      throw new Error('GraphDB not available. Health monitor should detect and restart services.');
     }
 
     try {
@@ -1081,9 +1078,9 @@ export class PersistenceAgent {
   }
 
   /**
-   * Save shared memory structure
-   * DEPRECATED: This method now uses GraphDB for persistence
-   * Falls back to JSON file only if GraphDB is not available
+   * Persists shared memory to GraphDB (single source of truth)
+   * FAIL-FAST: GraphDB MUST be available. Health monitor handles restart if unavailable.
+   * No fallback to JSON - GraphKnowledgeExporter handles JSON export via events.
    */
   private async saveSharedMemory(sharedMemory: SharedMemoryStructure): Promise<void> {
     try {
@@ -1092,57 +1089,43 @@ export class PersistenceAgent {
       sharedMemory.metadata.total_relations = sharedMemory.relations.length;
       sharedMemory.metadata.last_updated = new Date().toISOString();
 
-      if (this.graphDB) {
-        // Store each entity to the graph database
-        log('Storing entities to GraphDB (Graphology+LevelDB)', 'info', {
-          entitiesCount: sharedMemory.entities.length
-        });
+      // FAIL-FAST: GraphDB MUST be available
+      if (!this.graphDB) {
+        throw new Error('GraphDB not available. Health monitor should detect and restart services.');
+      }
 
-        for (const entity of sharedMemory.entities) {
-          await this.storeEntityToGraph(entity);
-        }
+      // Store each entity to the graph database
+      log('Storing entities to GraphDB (Graphology+LevelDB)', 'info', {
+        entitiesCount: sharedMemory.entities.length
+      });
 
-        // Store relationships (using adapter's object signature)
-        for (const relation of sharedMemory.relations) {
-          try {
-            await this.graphDB.storeRelationship(relation);
-          } catch (error: unknown) {
-            // Skip if entities don't exist (e.g., orphan relations)
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            if (errorMessage.includes('not found')) {
-              log('Skipping relation to non-existent entity', 'debug', {
-                from: relation.from,
-                to: relation.to,
-                relationType: relation.relationType
-              });
-            } else {
-              throw error;
-            }
+      for (const entity of sharedMemory.entities) {
+        await this.storeEntityToGraph(entity);
+      }
+
+      // Store relationships (using adapter's object signature)
+      for (const relation of sharedMemory.relations) {
+        try {
+          await this.graphDB.storeRelationship(relation);
+        } catch (error: unknown) {
+          // Skip if entities don't exist (e.g., orphan relations)
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (errorMessage.includes('not found')) {
+            log('Skipping relation to non-existent entity', 'debug', {
+              from: relation.from,
+              to: relation.to,
+              relationType: relation.relationType
+            });
+          } else {
+            throw error;
           }
         }
-
-        log('Shared memory persisted to GraphDB successfully', 'info', {
-          entitiesCount: sharedMemory.entities.length,
-          relationsCount: sharedMemory.relations.length
-        });
-      } else {
-        // Fallback to JSON file if GraphDB not available
-        log('GraphDB not available - falling back to JSON file persistence', 'warning');
-
-        // Strip volatile checkpoint fields before writing (they belong in workflow-checkpoints.json)
-        delete sharedMemory.metadata.lastVibeAnalysis;
-        delete sharedMemory.metadata.lastGitAnalysis;
-        delete sharedMemory.metadata.lastSemanticAnalysis;
-
-        const content = JSON.stringify(sharedMemory, null, 2);
-        await fs.promises.writeFile(this.sharedMemoryPath, content, 'utf8');
-
-        log('Shared memory saved to JSON file (fallback)', 'warning', {
-          entitiesCount: sharedMemory.entities.length,
-          relationsCount: sharedMemory.relations.length,
-          path: this.sharedMemoryPath
-        });
       }
+
+      log('Shared memory persisted to GraphDB successfully', 'info', {
+        entitiesCount: sharedMemory.entities.length,
+        relationsCount: sharedMemory.relations.length
+      });
     } catch (error) {
       log('Failed to save shared memory', 'error', error);
       throw error;
@@ -2432,22 +2415,11 @@ ${entityData.insights}
 
       // Persist to GraphDB (single source of truth)
       // GraphKnowledgeExporter will handle JSON export via entity:stored event
-      if (this.graphDB) {
-        await this.storeEntityToGraph(entity);
-        // Note: No need to call saveSharedMemory when graphDB is available
-        // The GraphKnowledgeExporter listener handles JSON export automatically
-      } else {
-        // Fallback: Only use saveSharedMemory if GraphDB is not available
-        log('GraphDB not available - falling back to JSON file persistence', 'warning');
-        const sharedMemory = await this.loadSharedMemory();
-        const entityIndex = sharedMemory.entities.findIndex(e => e.name === params.entityName);
-        if (entityIndex >= 0) {
-          sharedMemory.entities[entityIndex] = entity;
-        } else {
-          sharedMemory.entities.push(entity);
-        }
-        await this.saveSharedMemory(sharedMemory);
+      // FAIL-FAST: GraphDB MUST be available. Health monitor handles restart if unavailable.
+      if (!this.graphDB) {
+        throw new Error('GraphDB not available. Health monitor should detect and restart services.');
       }
+      await this.storeEntityToGraph(entity);
 
       result.success = true;
       result.updatedEntity = entity;

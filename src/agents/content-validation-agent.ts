@@ -2159,7 +2159,26 @@ Respond with a JSON array:
       }
 
       if (parsedObservations.length > 0) {
-        for (const obs of parsedObservations) {
+        // Filter out LLM-generated observations that reference insight documents
+        // The system adds its own insight-document observation with the correct path
+        const insightDocPatterns = [
+          /detailed\s+insight/i,
+          /insight\s+document/i,
+          /knowledge-management\/insights\//i,
+          /insights\/.*\.md/i
+        ];
+
+        const filteredObservations = parsedObservations.filter(obs => {
+          const content = obs.content || '';
+          const matchesInsightPattern = insightDocPatterns.some(pattern => pattern.test(content));
+          if (matchesInsightPattern) {
+            log(`Filtering out LLM-generated insight document reference: ${content.substring(0, 80)}...`, 'debug');
+            return false;
+          }
+          return true;
+        });
+
+        for (const obs of filteredObservations) {
           newObservations.push({
             type: obs.type || 'insight',
             content: obs.content,
@@ -2174,7 +2193,7 @@ Respond with a JSON array:
             }
           });
         }
-        log(`Generated ${newObservations.length} observations from full codebase analysis`, 'info');
+        log(`Generated ${newObservations.length} observations from full codebase analysis (filtered ${parsedObservations.length - filteredObservations.length} insight doc refs)`, 'info');
       } else {
         // Fallback: Generate observations directly from codebase scan
         log('LLM parsing failed, generating from codebase scan directly', 'warning');

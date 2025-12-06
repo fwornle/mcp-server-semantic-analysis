@@ -1042,12 +1042,16 @@ export class PersistenceAgent {
       }
 
       // Add project relationship if team metadata exists
+      // Use capitalized team name (e.g., "coding" -> "Coding") as Project entity name
       if (entity.metadata?.team) {
-        const projectName = `${entity.metadata.team}Project`;
+        const teamName = entity.metadata.team;
+        const projectName = teamName.charAt(0).toUpperCase() + teamName.slice(1);
         const hasProjectRel = autoRelationships.some(r =>
           r.from === projectName && r.to === entity.name
         );
         if (!hasProjectRel) {
+          // Only add the relationship if the project entity exists
+          // The relationship will be validated during storeEntity; skip if source doesn't exist
           autoRelationships.push({
             from: projectName,
             to: entity.name,
@@ -2362,11 +2366,30 @@ ${entityData.insights}
       let entity: SharedMemoryEntity | null = null;
 
       if (this.graphDB) {
+        // Use searchTerm for exact name match (namePattern not supported by VKB API)
         const entities = await this.graphDB.queryEntities({
-          namePattern: `^${params.entityName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
+          searchTerm: params.entityName
         });
-        if (entities && entities.length > 0) {
-          entity = entities[0] as SharedMemoryEntity;
+        // Find exact match (searchTerm may return partial matches)
+        const exactMatch = entities?.find((e: any) =>
+          (e.name || e.entity_name) === params.entityName
+        );
+        if (exactMatch) {
+          // Normalize field names (API returns entity_name/entity_type, internal uses name/entityType)
+          entity = {
+            name: exactMatch.name || exactMatch.entity_name,
+            entityType: exactMatch.entityType || exactMatch.entity_type,
+            observations: exactMatch.observations || [],
+            significance: exactMatch.significance,
+            relationships: exactMatch.relationships || [],
+            metadata: {
+              ...exactMatch.metadata,
+              source: exactMatch.source,
+              team: exactMatch.team,
+              created_at: exactMatch.created_at || exactMatch.extracted_at,
+              last_updated: exactMatch.last_modified || exactMatch.last_updated
+            }
+          } as SharedMemoryEntity;
         }
       }
 

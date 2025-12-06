@@ -235,6 +235,8 @@ export class GraphDatabaseAdapter {
     entityType?: string;
     namePattern?: string;
     minConfidence?: number;
+    searchTerm?: string;
+    team?: string;
   }): Promise<any[]> {
     if (!this.isInitialized) {
       throw new Error('GraphDatabaseAdapter not initialized. Call initialize() first.');

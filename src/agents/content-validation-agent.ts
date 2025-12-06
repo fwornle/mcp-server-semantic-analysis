@@ -1221,12 +1221,30 @@ export class ContentValidationAgent {
     // First try to load from graph database if available
     if (this.graphDB && this.graphDB.initialized) {
       try {
-        // Use queryEntities with exact name pattern to find the entity
+        // Use searchTerm for name matching (namePattern not supported by VKB API)
         const entities = await this.graphDB.queryEntities({
-          namePattern: `^${entityName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
+          searchTerm: entityName
         });
-        if (entities && entities.length > 0) {
-          return entities[0];
+        // Find exact match and normalize field names
+        const exactMatch = entities?.find((e: any) =>
+          (e.name || e.entity_name) === entityName
+        );
+        if (exactMatch) {
+          // Normalize API field names (entity_name/entity_type -> name/entityType)
+          return {
+            name: exactMatch.name || exactMatch.entity_name,
+            entityType: exactMatch.entityType || exactMatch.entity_type,
+            observations: exactMatch.observations || [],
+            significance: exactMatch.significance,
+            relationships: exactMatch.relationships || [],
+            metadata: {
+              ...exactMatch.metadata,
+              source: exactMatch.source,
+              team: exactMatch.team || team,
+              created_at: exactMatch.created_at || exactMatch.extracted_at,
+              last_updated: exactMatch.last_modified || exactMatch.last_updated
+            }
+          };
         }
       } catch (error) {
         log(`Error loading entity from graph database, falling back to file`, "warning", error);
@@ -1718,11 +1736,13 @@ export class ContentValidationAgent {
     validationReport?: EntityValidationReport;
     regenerateDiagrams?: boolean;
     regenerateInsight?: boolean;
+    forceFullRefresh?: boolean;
   }): Promise<EntityRefreshResult> {
     const startTime = Date.now();
     log(`Starting entity refresh for: ${params.entityName}`, 'info', {
       team: params.team,
-      hasExistingReport: !!params.validationReport
+      hasExistingReport: !!params.validationReport,
+      forceFullRefresh: params.forceFullRefresh
     });
 
     const result: EntityRefreshResult = {
@@ -1757,14 +1777,15 @@ export class ContentValidationAgent {
     };
 
     try {
-      // Step 1: Run validation if not provided
-      if (!params.validationReport) {
+      // Step 1: Run validation if not provided (skip for force full refresh)
+      if (!params.validationReport && !params.forceFullRefresh) {
         log('Running validation for entity', 'info');
         result.validationBefore = await this.validateEntityAccuracy(params.entityName, params.team);
       }
 
       // Check if entity needs refresh (per design decision: any score < 100)
-      if (result.validationBefore.overallScore >= 100) {
+      // Skip this check entirely when forceFullRefresh is true
+      if (!params.forceFullRefresh && result.validationBefore.overallScore >= 100) {
         log('Entity is already up-to-date, no refresh needed', 'info');
         result.success = true;
         return result;
@@ -1786,9 +1807,43 @@ export class ContentValidationAgent {
       }
 
       // Step 4: Identify stale observations to remove
-      const observationsToRemove = result.validationBefore.suggestedActions.removeObservations;
-      const observationsToUpdate = result.validationBefore.suggestedActions.updateObservations;
-      const allStaleObservations = [...observationsToRemove, ...observationsToUpdate];
+      let allStaleObservations: string[] = [];
+
+      // FORCE FULL REFRESH: Treat ALL observations as stale, regenerate from scratch
+      if (params.forceFullRefresh) {
+        log('Force full refresh - treating ALL observations as stale for complete regeneration', 'info', {
+          entityName: params.entityName,
+          observationCount: entity.observations?.length || 0
+        });
+
+        // Mark artificial score to indicate full refresh
+        result.validationBefore.overallScore = 0;
+        result.validationBefore.overallValid = false;
+
+        // Extract all current observations as stale
+        allStaleObservations = (entity.observations || []).map((obs: string | { type?: string; content?: string }) =>
+          typeof obs === 'string' ? obs : (obs.content || JSON.stringify(obs))
+        );
+      } else {
+        // Normal mode: Check explicit stale observations from validation
+        const observationsToRemove = result.validationBefore.suggestedActions.removeObservations;
+        const observationsToUpdate = result.validationBefore.suggestedActions.updateObservations;
+        allStaleObservations = [...observationsToRemove, ...observationsToUpdate];
+
+        // If git-based staleness is detected but no specific observations flagged,
+        // treat ALL observations as stale since the entity's context has changed
+        if (allStaleObservations.length === 0 && result.validationBefore.gitStaleness?.isStale) {
+          log('Git staleness detected - treating all observations as stale for regeneration', 'info', {
+            stalenessScore: result.validationBefore.gitStaleness.stalenessScore,
+            invalidatingCommits: result.validationBefore.gitStaleness.invalidatingCommits.length
+          });
+
+          // Extract all current observations as stale
+          allStaleObservations = (entity.observations || []).map((obs: string | { type?: string; content?: string }) =>
+            typeof obs === 'string' ? obs : (obs.content || JSON.stringify(obs))
+          );
+        }
+      }
 
       if (allStaleObservations.length === 0) {
         log('No stale observations found to refresh', 'info');

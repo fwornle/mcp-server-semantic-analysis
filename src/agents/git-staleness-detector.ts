@@ -440,12 +440,37 @@ export class GitStalenessDetector {
       ...commitTopics.filePaths.map(f => path.basename(f).replace(/\.[^.]+$/, "").toLowerCase()),
     ]);
 
-    // Jaccard similarity
+    // Calculate intersection
     const intersection = [...entityTerms].filter(t => commitTerms.has(t));
-    const union = new Set([...entityTerms, ...commitTerms]);
 
-    if (union.size === 0) return 0;
-    return intersection.length / union.size;
+    if (entityTerms.size === 0 || commitTerms.size === 0) return 0;
+
+    // Use a more lenient scoring approach:
+    // - Primary: What fraction of commit's meaningful terms match the entity?
+    //   (If commit is about "persistence" and entity mentions "persistence", that's highly relevant)
+    // - Secondary: Boost score if multiple key terms match (indicates strong correlation)
+    //
+    // Rationale: Jaccard is too strict when entity has many terms (denominator grows).
+    // We want to detect "does this commit relate to this entity?" which is better
+    // measured by commit-term recall against entity terms.
+
+    const commitRecall = intersection.length / commitTerms.size;  // How much of commit relates to entity
+    const entityCoverage = intersection.length / entityTerms.size; // How much of entity is touched
+
+    // Weighted combination: prioritize commit recall (70%) with entity coverage boost (30%)
+    // This means: if a commit's terms mostly match an entity's domain, it's relevant
+    const baseScore = commitRecall * 0.7 + entityCoverage * 0.3;
+
+    // Bonus for having multiple matching terms (reduces false positives from single-word matches)
+    const multiMatchBonus = intersection.length >= 3 ? 0.15 : (intersection.length >= 2 ? 0.08 : 0);
+
+    const finalScore = Math.min(1.0, baseScore + multiMatchBonus);
+
+    log(`Keyword overlap: ${intersection.length} matches (${intersection.slice(0, 5).join(', ')}), ` +
+        `commitRecall=${commitRecall.toFixed(2)}, entityCoverage=${entityCoverage.toFixed(2)}, ` +
+        `score=${finalScore.toFixed(2)}`, 'debug');
+
+    return finalScore;
   }
 
   private async calculateEmbeddingSimilarity(entity: GraphEntity, commit: GitCommit): Promise<number> {

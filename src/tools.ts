@@ -328,6 +328,10 @@ export const TOOLS: Tool[] = [
           type: "number",
           description: "Maximum number of entities to refresh in batch mode (default: 50)",
         },
+        force_full_refresh: {
+          type: "boolean",
+          description: "Force full regeneration of entity content, ignoring last_updated timestamp. Use when entity content is known to be stale despite recent update attempts (default: false)",
+        },
       },
       required: ["entity_name", "team"],
       additionalProperties: false,
@@ -1447,10 +1451,11 @@ async function handleRefreshEntity(args: any): Promise<any> {
     team,
     dry_run = false,
     score_threshold = 100,
-    max_entities = 50
+    max_entities = 50,
+    force_full_refresh = false
   } = args;
 
-  log(`Refreshing entity`, "info", { entity_name, team, dry_run, score_threshold });
+  log(`Refreshing entity`, "info", { entity_name, team, dry_run, score_threshold, force_full_refresh });
 
   try {
     const repositoryPath = process.env.REPOSITORY_PATH || process.cwd();
@@ -1570,7 +1575,8 @@ async function handleRefreshEntity(args: any): Promise<any> {
         // Actually refresh the entity
         const refreshResult = await contentValidationAgent.refreshStaleEntity({
           entityName: entity_name,
-          team: team
+          team: team,
+          forceFullRefresh: force_full_refresh
         });
 
         let responseText = `# Entity Refresh Results\n\n`;

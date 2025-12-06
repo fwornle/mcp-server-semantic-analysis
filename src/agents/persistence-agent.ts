@@ -208,6 +208,24 @@ export class PersistenceAgent {
   }
 
   /**
+   * Calculate Jaccard similarity between two strings (word-based).
+   * Used to detect semantically similar observations and prevent duplicates.
+   * @returns similarity score between 0 (no overlap) and 1 (identical)
+   */
+  private calculateJaccardSimilarity(str1: string, str2: string): number {
+    const words1 = new Set(str1.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+    const words2 = new Set(str2.toLowerCase().split(/\s+/).filter(w => w.length > 2));
+
+    if (words1.size === 0 && words2.size === 0) return 1; // Both empty = identical
+    if (words1.size === 0 || words2.size === 0) return 0; // One empty = no similarity
+
+    const intersection = new Set([...words1].filter(word => words2.has(word)));
+    const union = new Set([...words1, ...words2]);
+
+    return union.size > 0 ? intersection.size / union.size : 0;
+  }
+
+  /**
    * Initialize the ontology system asynchronously
    * Must be called after construction before using classification
    */
@@ -2421,9 +2439,16 @@ ${entityData.insights}
         result.removedCount = originalCount - entity.observations.length;
       }
 
-      // Add new observations
+      // Add new observations with deduplication
       if (params.newObservations && params.newObservations.length > 0) {
         const now = new Date().toISOString();
+        const SIMILARITY_THRESHOLD = 0.7; // 70% word overlap = too similar
+
+        // Get existing observation contents for comparison
+        const existingContents = entity.observations.map(obs =>
+          typeof obs === 'string' ? obs : (obs.content || '')
+        );
+
         const formattedObservations = params.newObservations.map(obs => {
           if (typeof obs === 'string') {
             return obs;
@@ -2439,8 +2464,50 @@ ${entityData.insights}
             }
           };
         });
-        entity.observations.push(...formattedObservations);
-        result.addedCount = formattedObservations.length;
+
+        // Filter out observations that are too similar to existing ones
+        const uniqueObservations = formattedObservations.filter(newObs => {
+          const newContent = typeof newObs === 'string' ? newObs : newObs.content;
+
+          // Check against existing observations
+          const isTooSimilarToExisting = existingContents.some(existingContent =>
+            this.calculateJaccardSimilarity(newContent, existingContent) >= SIMILARITY_THRESHOLD
+          );
+
+          if (isTooSimilarToExisting) {
+            log('Skipping duplicate observation (too similar to existing)', 'debug', {
+              content: newContent.substring(0, 80) + '...'
+            });
+            return false;
+          }
+          return true;
+        });
+
+        // Also deduplicate within the new observations themselves
+        const seenContents = new Set<string>();
+        const dedupedObservations = uniqueObservations.filter(obs => {
+          const content = typeof obs === 'string' ? obs : obs.content;
+          // Check if we've already added a similar observation in this batch
+          const isDuplicate = [...seenContents].some(seen =>
+            this.calculateJaccardSimilarity(content, seen) >= SIMILARITY_THRESHOLD
+          );
+          if (!isDuplicate) {
+            seenContents.add(content);
+            return true;
+          }
+          return false;
+        });
+
+        entity.observations.push(...dedupedObservations);
+        result.addedCount = dedupedObservations.length;
+
+        if (formattedObservations.length !== dedupedObservations.length) {
+          log('Deduplication filtered observations', 'info', {
+            original: formattedObservations.length,
+            afterDedup: dedupedObservations.length,
+            filtered: formattedObservations.length - dedupedObservations.length
+          });
+        }
       }
 
       // Update metadata

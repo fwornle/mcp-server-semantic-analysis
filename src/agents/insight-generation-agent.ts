@@ -686,14 +686,18 @@ export class InsightGenerationAgent {
     relations?: Array<{ from: string; to: string; relationType: string }>
   ): Promise<InsightDocument> {
     // Use entity name if provided, otherwise generate from analysis
-    let name: string;
+    // CONVENTION: .md files use PascalCase (entity name), diagrams use kebab-case
+    let name: string;           // PascalCase for .md file
+    let diagramBaseName: string; // kebab-case for diagram files
     let title: string;
 
     if (entityInfo?.name) {
-      // Use entity name directly (convert to kebab-case for filename)
-      name = toKebabCase(entityInfo.name);
+      // .md files use PascalCase (entity name as-is)
+      name = entityInfo.name;
+      // Diagram files use kebab-case
+      diagramBaseName = toKebabCase(entityInfo.name);
       title = entityInfo.name;
-      log(`Using entity name for document: ${name}`, 'info');
+      log(`Using entity name for document: ${name} (diagrams: ${diagramBaseName})`, 'info');
     } else {
       // Generate meaningful name based on analysis content
       const generated = this.generateMeaningfulNameAndTitle(
@@ -703,6 +707,7 @@ export class InsightGenerationAgent {
         patternCatalog
       );
       name = generated.name;
+      diagramBaseName = toKebabCase(generated.name);
       title = generated.title;
     }
 
@@ -736,24 +741,27 @@ export class InsightGenerationAgent {
     }
 
     // Content validated successfully - now generate ONE diagram (simplified)
+    // Diagrams use kebab-case naming
     FilenameTracer.trace('DIAGRAM_INPUT', 'generateInsightDocument',
-      name, 'Using pattern name directly for diagrams'
+      diagramBaseName, 'Using kebab-case for diagram files'
     );
 
     try {
       // SIMPLIFIED: Only generate architecture diagram for entity refreshes
       if (entityInfo) {
-        const archDiagram = await this.generatePlantUMLDiagram('architecture', name, {
+        // FIX: Pass entityInfo to diagram generation for observation-based diagrams
+        const archDiagram = await this.generatePlantUMLDiagram('architecture', diagramBaseName, {
           gitAnalysis,
           vibeAnalysis,
           semanticAnalysis,
-          patternCatalog
+          patternCatalog,
+          entityInfo  // NEW: Include entity observations for better diagram generation
         });
         if (archDiagram && archDiagram.success) {
           diagrams = [archDiagram];
         }
       } else {
-        diagrams = await this.generateAllDiagrams(name, {
+        diagrams = await this.generateAllDiagrams(diagramBaseName, {
           gitAnalysis,
           vibeAnalysis,
           semanticAnalysis,
@@ -798,14 +806,14 @@ export class InsightGenerationAgent {
       { name, outputDir: this.outputDir }, filePath
     );
 
-    // Clean up old PascalCase file if it exists and differs from new kebab-case path
-    // This prevents duplicate files when migrating from PascalCase to kebab-case naming
-    if (entityInfo?.name && name !== entityInfo.name) {
-      const oldFilePath = path.join(this.outputDir, `${entityInfo.name}.md`);
+    // Clean up old kebab-case file if it exists (from previous incorrect naming)
+    // CONVENTION: .md files should be PascalCase, not kebab-case
+    if (entityInfo?.name && diagramBaseName !== entityInfo.name) {
+      const oldKebabFilePath = path.join(this.outputDir, `${diagramBaseName}.md`);
       try {
-        await fs.promises.access(oldFilePath);
-        log(`Removing old PascalCase file: ${oldFilePath}`, 'info');
-        await fs.promises.unlink(oldFilePath);
+        await fs.promises.access(oldKebabFilePath);
+        log(`Removing old kebab-case file: ${oldKebabFilePath}`, 'info');
+        await fs.promises.unlink(oldKebabFilePath);
       } catch {
         // Old file doesn't exist, that's fine
       }
@@ -946,14 +954,27 @@ export class InsightGenerationAgent {
     // Try LLM-enhanced diagram generation first
     if (this.semanticAnalyzer) {
       // Extract only relevant data to prevent LLM timeouts from 2MB+ payload
-      const cleanData = {
+      // FIX: Include entityInfo if present for observation-based diagram generation
+      const cleanData: any = {
         patternCatalog: data.patternCatalog || data.semanticAnalysis || data,
         content: `${name} architectural analysis`,
         name: name
       };
-      
+
+      // NEW: Include entityInfo for entity-specific diagrams
+      if (data.entityInfo) {
+        cleanData.entityInfo = data.entityInfo;
+        log(`Including entityInfo with ${data.entityInfo.observations?.length || 0} observations for diagram generation`, 'info');
+        // Log first few observations to verify they're being passed
+        if (data.entityInfo.observations?.length > 0) {
+          log(`First observation: ${data.entityInfo.observations[0]?.substring(0, 100)}...`, 'info');
+        }
+      } else {
+        log(`No entityInfo found in data. Keys: ${Object.keys(data).join(', ')}`, 'warning');
+      }
+
       log(`🔍 DEBUG: Cleaned data for LLM (original size: ${JSON.stringify(data).length}, cleaned size: ${JSON.stringify(cleanData).length})`, 'debug');
-      
+
       diagramContent = await this.generateLLMEnhancedDiagram(type, cleanData);
     }
     
@@ -971,25 +992,67 @@ export class InsightGenerationAgent {
       throw new Error(`LLM-enhanced diagram generation failed completely. Debug info: ${JSON.stringify(debugInfo, null, 2)}`);
     }
 
+    // Validate and fix PlantUML content before writing
+    const validatedContent = this.validateAndFixPlantUML(diagramContent);
+    if (!validatedContent) {
+      log(`PlantUML validation failed for ${type} diagram - content has unfixable errors`, 'error');
+      return {
+        type,
+        name: `${toKebabCase(name)}-${type}`,
+        content: diagramContent,
+        pumlFile: '',
+        success: false
+      };
+    }
+
     // Write PlantUML file
     const pumlDir = path.join(this.outputDir, 'puml');
     const pumlFile = path.join(pumlDir, `${toKebabCase(name)}-${type}.puml`);
-    
-    try {
-      await fs.promises.writeFile(pumlFile, diagramContent, 'utf8');
 
-      // Generate PNG if PlantUML is available
+    try {
+      await fs.promises.writeFile(pumlFile, validatedContent, 'utf8');
+
+      // Validate with plantuml -checkonly before attempting PNG generation
+      const { spawn } = await import('child_process');
+
+      // Run syntax check first
+      const checkResult = await new Promise<{ valid: boolean; error?: string }>((resolve) => {
+        const check = spawn('plantuml', ['-checkonly', pumlFile]);
+        let stderr = '';
+        check.stderr?.on('data', (data) => { stderr += data.toString(); });
+        check.on('close', (code) => {
+          if (code === 0) {
+            resolve({ valid: true });
+          } else {
+            resolve({ valid: false, error: stderr || `Exit code ${code}` });
+          }
+        });
+        check.on('error', (err) => resolve({ valid: false, error: err.message }));
+      });
+
+      if (!checkResult.valid) {
+        log(`PlantUML syntax check failed for ${pumlFile}: ${checkResult.error}`, 'warning');
+        // File is written but PNG won't be generated
+        return {
+          type,
+          name: `${toKebabCase(name)}-${type}`,
+          content: validatedContent,
+          pumlFile,
+          success: false  // Mark as failed due to syntax error
+        };
+      }
+
+      // Generate PNG if PlantUML is available and syntax is valid
       let pngFile: string | undefined;
       try {
         const imagesDir = path.join(this.outputDir, 'images');
         pngFile = path.join(imagesDir, `${toKebabCase(name)}-${type}.png`);
-        
-        const { spawn } = await import('child_process');
+
         // Use -tpng to specify PNG output and direct output to correct images directory
         // Use relative path to avoid nested directory creation
         const relativePath = path.relative(path.dirname(pumlFile), imagesDir);
         const plantuml = spawn('plantuml', ['-tpng', pumlFile, '-o', relativePath]);
-        
+
         await new Promise<void>((resolve, reject) => {
           plantuml.on('close', (code) => {
             if (code === 0) resolve();
@@ -1011,7 +1074,7 @@ export class InsightGenerationAgent {
       return {
         type,
         name: `${toKebabCase(name)}-${type}`,
-        content: diagramContent,
+        content: validatedContent,
         pumlFile,
         pngFile,
         success: true
@@ -1022,7 +1085,7 @@ export class InsightGenerationAgent {
       return {
         type,
         name: `${toKebabCase(name)}-${type}`,
-        content: diagramContent,
+        content: validatedContent,
         pumlFile: '',
         success: false
       };
@@ -1080,11 +1143,17 @@ export class InsightGenerationAgent {
         // Extract PlantUML content from LLM response
         const pumlMatch = analysisResult.insights.match(/@startuml[\s\S]*?@enduml/);
         if (pumlMatch) {
-          log(`✅ LLM-enhanced ${type} diagram generated successfully`, 'info', {
-            provider: analysisResult.provider,
-            contentLength: pumlMatch[0].length
-          });
-          return pumlMatch[0];
+          // Validate and fix common LLM syntax errors before using
+          const validatedPuml = this.validateAndFixPlantUML(pumlMatch[0]);
+          if (validatedPuml) {
+            log(`✅ LLM-enhanced ${type} diagram generated and validated`, 'info', {
+              provider: analysisResult.provider,
+              contentLength: validatedPuml.length
+            });
+            return validatedPuml;
+          } else {
+            log(`❌ LLM diagram had unfixable syntax errors`, 'warning');
+          }
         } else {
           log(`🚨 DEBUG: Found @startuml but no valid match in response`, 'debug');
         }
@@ -1098,14 +1167,96 @@ export class InsightGenerationAgent {
     }
   }
 
+  /**
+   * Validate and fix common PlantUML syntax errors from LLM generation.
+   * Returns null if the diagram has unfixable errors.
+   */
+  private validateAndFixPlantUML(puml: string): string | null {
+    let fixed = puml;
+
+    // Fix 1: Remove newlines from alias strings (as "X\nY" is invalid syntax)
+    // Pattern: as "something\nsomething" -> as "something something"
+    fixed = fixed.replace(/as\s+"([^"]*?)\\n([^"]*?)"/g, 'as "$1 $2"');
+
+    // Fix 2: Remove empty node/rectangle bodies like "node X {}"
+    // These cause syntax errors - replace with simple node declarations
+    fixed = fixed.replace(/\b(node|rectangle|package|frame|folder|database|cloud)\s+"([^"]+)"\s+as\s+"([^"]+)"\s*\{\s*\}/g, '$1 "$2" as $3');
+    fixed = fixed.replace(/\b(node|rectangle|package|frame|folder|database|cloud)\s+"([^"]+)"\s*\{\s*\}/g, '$1 "$2"');
+
+    // Fix 3: Remove problematic multi-line string syntax in component aliases
+    fixed = fixed.replace(/\s+as\s+"[^"]*\\n[^"]*"/g, (match) => {
+      // Just use a simple cleaned-up version without newlines
+      return match.replace(/\\n/g, ' ');
+    });
+
+    // Fix 4: Missing space after keywords (LLM sometimes generates "participantFoo" instead of "participant Foo")
+    // Handle: participant, actor, component, interface, database, entity, boundary, control, collections
+    const keywords = ['participant', 'actor', 'component', 'interface', 'database', 'entity', 'boundary', 'control', 'collections', 'queue', 'node', 'rectangle', 'package'];
+    for (const keyword of keywords) {
+      // Match keyword immediately followed by uppercase letter (no space) - common LLM error
+      const regex = new RegExp(`\\b(${keyword})([A-Z][a-zA-Z0-9_]*)\\b`, 'g');
+      fixed = fixed.replace(regex, '$1 $2');
+    }
+
+    // Fix 5: Inline notes with \n escape sequences - convert to multi-line note blocks
+    // Match: note "text with \n in it" -> note as N1 \n text \n end note
+    let noteCounter = 1;
+    fixed = fixed.replace(/\bnote\s+"([^"]*\\n[^"]*)"/g, (match, content) => {
+      const cleanContent = content.replace(/\\n/g, '\n  ');
+      const noteId = `AutoNote${noteCounter++}`;
+      return `note as ${noteId}\n  ${cleanContent}\nend note`;
+    });
+
+    // Fix 6: Floating notes with \n at end of file - also needs multi-line format
+    fixed = fixed.replace(/\bnote\s+"([^"]*)\\n([^"]*)"/g, (match, part1, part2) => {
+      const noteId = `AutoNote${noteCounter++}`;
+      return `note as ${noteId}\n  ${part1}\n  ${part2}\nend note`;
+    });
+
+    // Validate: Must have both start and end tags
+    if (!fixed.includes('@startuml') || !fixed.includes('@enduml')) {
+      log('PlantUML validation failed: missing @startuml/@enduml tags', 'warning');
+      return null;
+    }
+
+    // Validate: Check for common unbalanced structures
+    const openBraces = (fixed.match(/\{/g) || []).length;
+    const closeBraces = (fixed.match(/\}/g) || []).length;
+    if (openBraces !== closeBraces) {
+      log(`PlantUML validation failed: unbalanced braces (${openBraces} open, ${closeBraces} close)`, 'warning');
+      return null;
+    }
+
+    return fixed;
+  }
+
   private buildDiagramPrompt(type: PlantUMLDiagram['type'], data: any): string {
     const patternCount = data.patternCatalog?.patterns?.length || 0;
-    const patterns = data.patternCatalog?.patterns || [];
 
-    let prompt = `Generate a professional PlantUML ${type} diagram based on the following semantic analysis data:
+    // NEW: Check if we have entity observations to use instead of generic pattern data
+    const entityInfo = data.entityInfo;
+    const hasEntityObservations = entityInfo?.observations && entityInfo.observations.length > 0;
 
-**Analysis Data:**
-${JSON.stringify(data, null, 2)}
+    log(`buildDiagramPrompt: hasEntityObservations=${hasEntityObservations}, observationCount=${entityInfo?.observations?.length || 0}`, 'info');
+
+    // Build context based on available data - prefer entity observations
+    let analysisContext: string;
+    if (hasEntityObservations) {
+      // Entity-specific diagram: use observations to understand the actual architecture
+      analysisContext = `**Entity:** ${entityInfo.name}
+**Type:** ${entityInfo.type || 'Pattern'}
+
+**Observations (use these to understand the architecture):**
+${entityInfo.observations.map((obs: string, i: number) => `${i + 1}. ${obs}`).join('\n')}`;
+    } else {
+      // Fallback to generic analysis data
+      analysisContext = `**Analysis Data:**
+${JSON.stringify(data, null, 2)}`;
+    }
+
+    let prompt = `Generate a professional PlantUML ${type} diagram based on the following:
+
+${analysisContext}
 
 **CRITICAL REQUIREMENTS (MUST FOLLOW EXACTLY):**
 1. Start with @startuml on the first line
@@ -1128,7 +1279,21 @@ ${JSON.stringify(data, null, 2)}
 \`\`\``;
 
     if (type === 'architecture') {
-      prompt += `
+      if (hasEntityObservations) {
+        // Entity-specific architecture diagram instructions
+        prompt += `
+
+**Architecture Diagram Specifics for "${entityInfo.name}":**
+- Extract ACTUAL components mentioned in the observations (e.g., GraphDatabase, LevelDB, MCP tools, agents, etc.)
+- Show these real components as PlantUML components with appropriate stereotypes
+- Use stereotypes like <<storage>> for databases, <<api>> for interfaces, <<core>> for main logic, <<agent>> for agents
+- Show relationships between components based on what the observations describe
+- Group related components into meaningful packages
+- Include a brief summary note about the entity's purpose
+- PREFER vertical layout (top-to-bottom) over horizontal to avoid excessive width
+- DO NOT use generic placeholder names - use the actual names from the observations`;
+      } else {
+        prompt += `
 
 **Architecture Diagram Specifics:**
 - Show ${patternCount} identified patterns as components
@@ -1138,6 +1303,7 @@ ${JSON.stringify(data, null, 2)}
 - Include a summary note with key metrics
 - Use component diagram syntax with packages, components, and interfaces
 - PREFER vertical layout (top-to-bottom) over horizontal to avoid excessive width`;
+      }
 
     } else if (type === 'class') {
       prompt += `

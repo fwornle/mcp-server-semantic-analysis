@@ -1604,6 +1604,20 @@ async function handleRefreshEntity(args: any): Promise<any> {
               responseText += `- ${obs.substring(0, 80)}...\n`;
             }
           }
+
+          // Report on insight document generation
+          if (refreshResult.insightRefreshed) {
+            responseText += `\n## Insight Document\n\n`;
+            responseText += `- Insight document generated/refreshed\n`;
+          }
+
+          // Report on diagram regeneration
+          if (refreshResult.diagramsRegenerated && refreshResult.diagramsRegenerated.length > 0) {
+            responseText += `\n## Diagrams Regenerated (${refreshResult.diagramsRegenerated.length})\n\n`;
+            for (const diagram of refreshResult.diagramsRegenerated) {
+              responseText += `- ${diagram}\n`;
+            }
+          }
         }
 
         return {
@@ -1616,7 +1630,9 @@ async function handleRefreshEntity(args: any): Promise<any> {
             score_before: refreshResult.validationBefore.overallScore,
             score_after: refreshResult.validationAfter?.overallScore,
             observations_removed: refreshResult.observationChanges.removed.length,
-            observations_added: refreshResult.observationChanges.added.length
+            observations_added: refreshResult.observationChanges.added.length,
+            insight_refreshed: refreshResult.insightRefreshed,
+            diagrams_regenerated: refreshResult.diagramsRegenerated?.length || 0
           }
         };
       }

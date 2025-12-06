@@ -1820,6 +1820,9 @@ export class ContentValidationAgent {
         result.validationBefore.overallScore = 0;
         result.validationBefore.overallValid = false;
 
+        // Force insight refresh when doing full refresh
+        result.validationBefore.suggestedActions.refreshInsight = true;
+
         // Extract all current observations as stale
         allStaleObservations = (entity.observations || []).map((obs: string | { type?: string; content?: string }) =>
           typeof obs === 'string' ? obs : (obs.content || JSON.stringify(obs))
@@ -1882,6 +1885,93 @@ export class ContentValidationAgent {
         added: newObservations.map(obs => typeof obs === 'string' ? obs : obs.content),
         unchanged: entity.observations.length - allStaleObservations.length
       };
+
+      // Step 6.5: Generate/refresh insight document and diagrams if needed
+      const shouldRefreshInsight = params.forceFullRefresh ||
+        params.regenerateInsight ||
+        result.validationBefore.suggestedActions.refreshInsight;
+
+      const shouldRegenerateDiagrams = params.forceFullRefresh ||
+        params.regenerateDiagrams ||
+        (result.validationBefore.suggestedActions.regenerateDiagrams?.length || 0) > 0;
+
+      // Check if entity requires insight document (non-trivial entities)
+      const requiresInsight = this.entityRequiresInsightDocument(params.entityName, entity);
+
+      if ((shouldRefreshInsight || shouldRegenerateDiagrams) && requiresInsight) {
+        log('Processing insight document and diagrams', 'info', {
+          shouldRefreshInsight,
+          shouldRegenerateDiagrams,
+          requiresInsight
+        });
+
+        try {
+          // Initialize InsightGenerationAgent if not already set
+          if (!this.insightGenerationAgent) {
+            const { InsightGenerationAgent } = await import('./insight-generation-agent.js');
+            this.insightGenerationAgent = new InsightGenerationAgent(this.repositoryPath);
+          }
+
+          // Build current analysis context for insight generation
+          const currentAnalysis = await this.buildInsightAnalysisContext(params.entityName, entity, newObservations);
+
+          // Call refreshEntityInsights with proper parameters
+          const insightResult = await this.insightGenerationAgent.refreshEntityInsights({
+            validation_report: result.validationBefore,
+            current_analysis: currentAnalysis,
+            entityName: params.entityName,
+            regenerate_diagrams: shouldRegenerateDiagrams
+          });
+
+          if (insightResult.success) {
+            result.diagramsRegenerated = insightResult.regeneratedDiagrams;
+            result.insightRefreshed = !!insightResult.refreshedInsightPath;
+
+            // Add insight path as observation if it was generated
+            if (insightResult.refreshedInsightPath) {
+              // Convert absolute path to relative path for frontend compatibility
+              // The VKB server serves /knowledge-management/* routes from the coding root
+              const relativePath = insightResult.refreshedInsightPath.startsWith(this.repositoryPath)
+                ? insightResult.refreshedInsightPath.slice(this.repositoryPath.length + 1) // +1 for trailing slash
+                : insightResult.refreshedInsightPath;
+
+              const insightObservation = {
+                type: 'insight-document',
+                content: `Detailed insight document available at: ${relativePath}`,
+                date: new Date().toISOString(),
+                metadata: {
+                  insightPath: relativePath,
+                  absolutePath: insightResult.refreshedInsightPath, // Keep absolute for debugging
+                  diagramsGenerated: insightResult.regeneratedDiagrams.length,
+                  generatedBy: 'entity-refresh'
+                }
+              };
+
+              // Add the insight observation to the entity
+              await this.persistenceAgent.updateEntityObservations({
+                entityName: params.entityName,
+                team: params.team,
+                removeObservations: [],
+                newObservations: [insightObservation]
+              });
+
+              result.observationChanges.added.push(insightObservation.content);
+            }
+
+            log('Insight document and diagrams processed', 'info', {
+              insightPath: insightResult.refreshedInsightPath,
+              diagramsRegenerated: insightResult.regeneratedDiagrams.length
+            });
+          } else {
+            log('Insight refresh completed with issues', 'warning', {
+              summary: insightResult.summary
+            });
+          }
+        } catch (insightError) {
+          // Don't fail the entire refresh if insight generation fails
+          log('Insight/diagram generation failed (non-fatal)', 'warning', insightError);
+        }
+      }
 
       // Step 7: Re-validate to confirm improvements
       result.validationAfter = await this.validateEntityAccuracy(params.entityName, params.team);
@@ -2268,6 +2358,82 @@ Respond with a JSON array:
       .join('\n\n');
 
     return { codebaseFacts, gitContext, vibeContext, issuesSummary };
+  }
+
+  /**
+   * Build analysis context specifically for insight document generation.
+   * This provides the data structure expected by InsightGenerationAgent.
+   */
+  private async buildInsightAnalysisContext(
+    entityName: string,
+    entity: any,
+    newObservations: Array<{ type: string; content: string; date: string; metadata: Record<string, any> }>
+  ): Promise<{
+    git_analysis: any;
+    vibe_analysis: any;
+    patterns: any[];
+    entity_info: any;
+  }> {
+    const context: {
+      git_analysis: any;
+      vibe_analysis: any;
+      patterns: any[];
+      entity_info: any;
+    } = {
+      git_analysis: null,
+      vibe_analysis: null,
+      patterns: [],
+      entity_info: {
+        name: entityName,
+        type: entity.entityType || entity.type || 'Pattern',
+        observations: newObservations.map(o => o.content)
+      }
+    };
+
+    try {
+      // Get git history for context if available
+      if (this.gitHistoryAgent) {
+        const gitResult = await this.gitHistoryAgent.analyzeGitHistory({
+          sinceDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+          incremental: false
+        });
+        context.git_analysis = gitResult;
+      }
+
+      // Get vibe/session history if available
+      if (this.vibeHistoryAgent) {
+        const vibeResult = await this.vibeHistoryAgent.analyzeVibeHistory({
+          sinceDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
+          incremental: false
+        });
+        context.vibe_analysis = vibeResult;
+      }
+
+      // Extract patterns from entity observations
+      context.patterns = newObservations
+        .filter(o => o.type === 'pattern' || o.content.toLowerCase().includes('pattern'))
+        .map(o => ({
+          name: entityName,
+          description: o.content,
+          type: o.type,
+          significance: 7
+        }));
+
+      // If no patterns found, create a general pattern from entity info
+      if (context.patterns.length === 0) {
+        context.patterns.push({
+          name: entityName,
+          description: `${entity.entityType || 'Pattern'} for ${entityName}: ${newObservations.slice(0, 3).map(o => o.content).join('. ')}`,
+          type: entity.entityType || 'general',
+          significance: 6
+        });
+      }
+
+    } catch (error) {
+      log('Error building insight analysis context', 'warning', error);
+    }
+
+    return context;
   }
 
   /**

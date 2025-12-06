@@ -626,7 +626,8 @@ export class ContentValidationAgent {
 
       for (let i = 0; i < entitiesToValidate.length; i++) {
         const entity = entitiesToValidate[i];
-        const entityName = entity.name || entity.entityName;
+        // Handle different field names from GraphDatabaseService (entity_name) vs normalized (name)
+        const entityName = entity.name || entity.entityName || entity.entity_name;
 
         // Yield to event loop to prevent blocking
         if (i > 0 && i % 5 === 0) {
@@ -2629,8 +2630,14 @@ Respond with a JSON array:
       }> = [];
 
       for (const entity of entities) {
-        const entityName = entity.name || entity.entityName;
+        // Handle different field names from GraphDatabaseService (entity_name) vs normalized (name)
+        const entityName = entity.name || entity.entityName || entity.entity_name;
         const entityTeam = entity.team || params.team || 'coding';
+
+        if (!entityName) {
+          log(`Entity missing name field, skipping`, 'warning', { entity: JSON.stringify(entity).substring(0, 200) });
+          continue;
+        }
 
         try {
           const report = await this.validateEntityAccuracy(entityName, entityTeam);
@@ -2655,7 +2662,7 @@ Respond with a JSON array:
       if (dryRun || staleEntities.length > 0) {
         batchResult.confirmationRequired = {
           entitiesAffected: staleEntities.map(({ entity, validationReport }) => ({
-            name: entity.name || entity.entityName,
+            name: entity.name || entity.entityName || entity.entity_name,
             currentScore: validationReport.overallScore,
             issues: validationReport.totalIssues
           })),
@@ -2670,7 +2677,7 @@ Respond with a JSON array:
 
       // Step 4: Refresh each stale entity
       for (const { entity, validationReport } of staleEntities) {
-        const entityName = entity.name || entity.entityName;
+        const entityName = entity.name || entity.entityName || entity.entity_name;
         const entityTeam = entity.team || params.team || 'coding';
 
         try {

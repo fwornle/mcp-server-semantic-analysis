@@ -1913,7 +1913,24 @@ export class ContentValidationAgent {
           }
 
           // Build current analysis context for insight generation
-          const currentAnalysis = await this.buildInsightAnalysisContext(params.entityName, entity, newObservations);
+          // Include BOTH unchanged observations AND new observations for complete insight
+          const unchangedObservations = (entity.observations || [])
+            .filter((obs: string | { content?: string }) => {
+              const obsContent = typeof obs === 'string' ? obs : (obs.content || '');
+              return !allStaleObservations.includes(obsContent);
+            })
+            .map((obs: string | { content?: string; type?: string }) => ({
+              type: typeof obs === 'object' && obs.type ? obs.type : 'retained',
+              content: typeof obs === 'string' ? obs : (obs.content || ''),
+              date: new Date().toISOString(),
+              metadata: { source: 'retained-observation' }
+            }));
+
+          // Combine unchanged + new observations for full context
+          const allObservationsForInsight = [...unchangedObservations, ...newObservations];
+          log(`Building insight with ${unchangedObservations.length} unchanged + ${newObservations.length} new observations`, 'info');
+
+          const currentAnalysis = await this.buildInsightAnalysisContext(params.entityName, entity, allObservationsForInsight);
 
           // Call refreshEntityInsights with proper parameters
           const insightResult = await this.insightGenerationAgent.refreshEntityInsights({
@@ -2363,6 +2380,8 @@ Respond with a JSON array:
   /**
    * Build analysis context specifically for insight document generation.
    * This provides the data structure expected by InsightGenerationAgent.
+   *
+   * IMPORTANT: entity_info.observations is the PRIMARY source of content for insight documents.
    */
   private async buildInsightAnalysisContext(
     entityName: string,
@@ -2373,12 +2392,14 @@ Respond with a JSON array:
     vibe_analysis: any;
     patterns: any[];
     entity_info: any;
+    relations: Array<{ from: string; to: string; relationType: string }>;
   }> {
     const context: {
       git_analysis: any;
       vibe_analysis: any;
       patterns: any[];
       entity_info: any;
+      relations: Array<{ from: string; to: string; relationType: string }>;
     } = {
       git_analysis: null,
       vibe_analysis: null,
@@ -2387,11 +2408,14 @@ Respond with a JSON array:
         name: entityName,
         type: entity.entityType || entity.type || 'Pattern',
         observations: newObservations.map(o => o.content)
-      }
+      },
+      relations: [] // Will be populated if graph database provides them
     };
 
+    log(`Building insight context for ${entityName} with ${newObservations.length} observations`, 'info');
+
     try {
-      // Get git history for context if available
+      // Get git history for context if available (used as fallback)
       if (this.gitHistoryAgent) {
         const gitResult = await this.gitHistoryAgent.analyzeGitHistory({
           sinceDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
@@ -2400,7 +2424,7 @@ Respond with a JSON array:
         context.git_analysis = gitResult;
       }
 
-      // Get vibe/session history if available
+      // Get vibe/session history if available (used as fallback)
       if (this.vibeHistoryAgent) {
         const vibeResult = await this.vibeHistoryAgent.analyzeVibeHistory({
           sinceDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),

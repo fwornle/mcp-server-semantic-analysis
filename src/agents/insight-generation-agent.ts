@@ -5,6 +5,12 @@ import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { FilenameTracer } from '../utils/filename-tracer.js';
 import { ContentAgnosticAnalyzer } from '../utils/content-agnostic-analyzer.js';
 import { RepositoryContextManager } from '../utils/repository-context.js';
+import {
+  SerenaCodeAnalyzer,
+  extractCodeReferences,
+  createSerenaAnalyzer,
+  type SerenaAnalysisResult
+} from '../utils/serena-code-analyzer.js';
 
 export interface InsightDocument {
   name: string;
@@ -99,15 +105,210 @@ export class InsightGenerationAgent {
   private semanticAnalyzer: SemanticAnalyzer;
   private contentAnalyzer: ContentAgnosticAnalyzer;
   private contextManager: RepositoryContextManager;
+  private serenaAnalyzer: SerenaCodeAnalyzer;
+  private repositoryPath: string;
 
   constructor(repositoryPath: string = '.') {
+    this.repositoryPath = repositoryPath;
     this.outputDir = path.join(repositoryPath, 'knowledge-management', 'insights');
     this.standardStylePath = path.join(repositoryPath, 'docs', 'puml', '_standard-style.puml');
     this.semanticAnalyzer = new SemanticAnalyzer();
     this.contentAnalyzer = new ContentAgnosticAnalyzer(repositoryPath);
     this.contextManager = new RepositoryContextManager(repositoryPath);
+    this.serenaAnalyzer = createSerenaAnalyzer(repositoryPath);
     this.initializeDirectories();
     this.checkPlantUMLAvailability();
+  }
+
+  /**
+   * Generate technical documentation content from entity observations.
+   * This is the PRIMARY method for creating insight documents - it uses observations
+   * as the source of truth rather than generic git/vibe analysis.
+   */
+  private async generateTechnicalDocumentation(params: {
+    entityName: string;
+    entityType: string;
+    observations: string[];
+    relations?: Array<{ from: string; to: string; relationType: string }>;
+    diagram?: { name: string; type: string };
+  }): Promise<string> {
+    const { entityName, entityType, observations, relations = [], diagram } = params;
+
+    log(`Generating technical documentation for ${entityName} from ${observations.length} observations`, 'info');
+
+    // Extract code references from all observations
+    const allCodeRefs = observations.flatMap(obs => extractCodeReferences(obs));
+    log(`Found ${allCodeRefs.length} code references in observations`, 'info');
+
+    // Analyze code references with Serena (if available)
+    let serenaAnalysis: SerenaAnalysisResult | null = null;
+    if (allCodeRefs.length > 0) {
+      try {
+        serenaAnalysis = await this.serenaAnalyzer.analyzeCodeReferences(allCodeRefs);
+        log(`Serena analysis found ${serenaAnalysis.symbols.length} symbols, ${serenaAnalysis.fileStructures.length} file structures`, 'info');
+      } catch (error) {
+        log(`Serena analysis failed (continuing without it): ${error}`, 'warning');
+      }
+    }
+
+    // Synthesize overview from observations (first 2-3 most descriptive)
+    const overview = this.synthesizeOverview(entityName, observations);
+
+    // Categorize observations by type
+    const categorized = this.categorizeObservations(observations);
+
+    // Build the document sections
+    const sections: string[] = [];
+
+    // Header
+    sections.push(`# ${entityName}\n`);
+    sections.push(`**Type:** ${entityType}\n`);
+    sections.push(`${overview}\n`);
+
+    // What It Is
+    if (categorized.descriptions.length > 0 || categorized.implementations.length > 0) {
+      sections.push(`## What It Is\n`);
+      const whatItIs = [...categorized.descriptions, ...categorized.implementations.slice(0, 2)];
+      for (const item of whatItIs.slice(0, 4)) {
+        sections.push(`- ${item}\n`);
+      }
+      sections.push('');
+    }
+
+    // How It Works
+    if (categorized.workflows.length > 0 || categorized.implementations.length > 0) {
+      sections.push(`## How It Works\n`);
+      const howItWorks = [...categorized.workflows, ...categorized.implementations];
+      for (const item of howItWorks.slice(0, 5)) {
+        sections.push(`- ${item}\n`);
+      }
+      sections.push('');
+    }
+
+    // Code Structure (from Serena analysis)
+    if (serenaAnalysis && (serenaAnalysis.symbols.length > 0 || serenaAnalysis.fileStructures.length > 0)) {
+      sections.push(`## Code Structure\n`);
+      sections.push(this.serenaAnalyzer.formatCodeStructureSummary(serenaAnalysis));
+      sections.push('');
+    }
+
+    // Usage / Rules
+    if (categorized.rules.length > 0) {
+      sections.push(`## Usage Guidelines\n`);
+      for (const rule of categorized.rules) {
+        sections.push(`- ${rule}\n`);
+      }
+      sections.push('');
+    }
+
+    // Related Entities
+    if (relations.length > 0) {
+      sections.push(`## Related Entities\n`);
+      const outgoing = relations.filter(r => r.from === entityName);
+      const incoming = relations.filter(r => r.to === entityName);
+
+      if (outgoing.length > 0) {
+        sections.push(`### Dependencies\n`);
+        for (const rel of outgoing.slice(0, 10)) {
+          sections.push(`- **${rel.to}** (${rel.relationType})\n`);
+        }
+      }
+
+      if (incoming.length > 0) {
+        sections.push(`### Used By\n`);
+        for (const rel of incoming.slice(0, 10)) {
+          sections.push(`- **${rel.from}** (${rel.relationType})\n`);
+        }
+      }
+      sections.push('');
+    }
+
+    // Architecture Diagram (if provided)
+    if (diagram) {
+      sections.push(`## Architecture\n`);
+      sections.push(`![${entityName} Architecture](images/${diagram.name}.png)\n`);
+      sections.push('');
+    }
+
+    // Footer
+    sections.push(`---\n`);
+    sections.push(`*Generated from ${observations.length} observations*\n`);
+
+    return sections.join('\n');
+  }
+
+  /**
+   * Synthesize a concise overview from observations
+   */
+  private synthesizeOverview(entityName: string, observations: string[]): string {
+    // Find the most descriptive observation (longest that's not a rule/command)
+    const descriptive = observations
+      .filter(obs => !obs.toLowerCase().startsWith('use ') && !obs.toLowerCase().startsWith('never '))
+      .sort((a, b) => b.length - a.length)
+      .slice(0, 2);
+
+    if (descriptive.length > 0) {
+      // Take first 200 chars of the most descriptive observation
+      const main = descriptive[0];
+      if (main.length > 200) {
+        return main.substring(0, 200) + '...';
+      }
+      return main;
+    }
+
+    return `Technical documentation for ${entityName}.`;
+  }
+
+  /**
+   * Categorize observations by their type/intent
+   */
+  private categorizeObservations(observations: string[]): {
+    descriptions: string[];
+    implementations: string[];
+    workflows: string[];
+    rules: string[];
+    other: string[];
+  } {
+    const result = {
+      descriptions: [] as string[],
+      implementations: [] as string[],
+      workflows: [] as string[],
+      rules: [] as string[],
+      other: [] as string[]
+    };
+
+    for (const obs of observations) {
+      const lower = obs.toLowerCase();
+
+      // Rules/guidelines
+      if (lower.startsWith('use ') || lower.startsWith('never ') ||
+          lower.startsWith('always ') || lower.includes('should ') ||
+          lower.includes('must ') || lower.includes('not ')) {
+        result.rules.push(obs);
+      }
+      // Implementation details
+      else if (lower.includes('uses ') || lower.includes('implements ') ||
+               lower.includes('class ') || lower.includes('function ') ||
+               lower.includes('method ') || lower.includes('service')) {
+        result.implementations.push(obs);
+      }
+      // Workflow/process
+      else if (lower.includes('when ') || lower.includes('then ') ||
+               lower.includes('after ') || lower.includes('before ') ||
+               lower.includes('flow') || lower.includes('process') ||
+               lower.includes('step')) {
+        result.workflows.push(obs);
+      }
+      // General descriptions (longer observations)
+      else if (obs.length > 50) {
+        result.descriptions.push(obs);
+      }
+      else {
+        result.other.push(obs);
+      }
+    }
+
+    return result;
   }
 
   async generateComprehensiveInsights(params: any): Promise<InsightGenerationResult> {
@@ -480,27 +681,41 @@ export class InsightGenerationAgent {
     vibeAnalysis: any,
     semanticAnalysis: any,
     patternCatalog: PatternCatalog,
-    webResults?: any
+    webResults?: any,
+    entityInfo?: { name: string; type: string; observations: string[] },
+    relations?: Array<{ from: string; to: string; relationType: string }>
   ): Promise<InsightDocument> {
-    // Generate meaningful name based on analysis content
-    const { name, title } = this.generateMeaningfulNameAndTitle(
-      gitAnalysis,
-      vibeAnalysis,
-      semanticAnalysis,
-      patternCatalog
-    );
+    // Use entity name if provided, otherwise generate from analysis
+    let name: string;
+    let title: string;
+
+    if (entityInfo?.name) {
+      // Use entity name directly (convert to kebab-case for filename)
+      name = toKebabCase(entityInfo.name);
+      title = entityInfo.name;
+      log(`Using entity name for document: ${name}`, 'info');
+    } else {
+      // Generate meaningful name based on analysis content
+      const generated = this.generateMeaningfulNameAndTitle(
+        gitAnalysis,
+        vibeAnalysis,
+        semanticAnalysis,
+        patternCatalog
+      );
+      name = generated.name;
+      title = generated.title;
+    }
 
     const timestamp = new Date().toISOString();
 
     // FIX: Validate content generation BEFORE creating diagrams to prevent orphan PNGs
     // This ensures we don't create diagram files if content generation will fail
-    console.log('📝 Pre-validating content generation before diagrams...');
+    log('Pre-validating content generation before diagrams...', 'info');
     let content: string;
     let diagrams: PlantUMLDiagram[] = [];
 
     try {
       // First, generate content WITHOUT diagrams to validate it will succeed
-      // We pass empty diagrams array - the template will use fallback names
       content = await this.generateInsightContent({
         title,
         timestamp,
@@ -509,36 +724,49 @@ export class InsightGenerationAgent {
         semanticAnalysis,
         patternCatalog,
         webResults,
-        diagrams: [] // Empty initially for validation
+        diagrams: [], // Empty initially for validation
+        entityInfo,  // NEW: Pass entity info for observation-based generation
+        relations    // NEW: Pass relations for entity connections
       });
-      console.log('✅ Content validation passed, content length:', content.length);
+      log(`Content validation passed, content length: ${content.length}`, 'info');
     } catch (contentError: any) {
       // Content generation failed - don't create any diagrams
-      console.error('❌ Content validation failed - skipping diagram generation to prevent orphan files');
-      console.error('   Error:', contentError.message);
+      log(`Content validation failed - skipping diagram generation: ${contentError.message}`, 'error');
       throw contentError;
     }
 
-    // Content validated successfully - now generate diagrams
+    // Content validated successfully - now generate ONE diagram (simplified)
     FilenameTracer.trace('DIAGRAM_INPUT', 'generateInsightDocument',
       name, 'Using pattern name directly for diagrams'
     );
 
     try {
-      diagrams = await this.generateAllDiagrams(name, {
-        gitAnalysis,
-        vibeAnalysis,
-        semanticAnalysis,
-        patternCatalog
-      });
+      // SIMPLIFIED: Only generate architecture diagram for entity refreshes
+      if (entityInfo) {
+        const archDiagram = await this.generatePlantUMLDiagram('architecture', name, {
+          gitAnalysis,
+          vibeAnalysis,
+          semanticAnalysis,
+          patternCatalog
+        });
+        if (archDiagram && archDiagram.success) {
+          diagrams = [archDiagram];
+        }
+      } else {
+        diagrams = await this.generateAllDiagrams(name, {
+          gitAnalysis,
+          vibeAnalysis,
+          semanticAnalysis,
+          patternCatalog
+        });
+      }
     } catch (diagramError: any) {
-      console.error('⚠️ Diagram generation failed, continuing with empty diagrams:', diagramError.message);
-      // Continue without diagrams - content is more important
+      log(`Diagram generation failed, continuing without diagrams: ${diagramError.message}`, 'warning');
       diagrams = [];
     }
 
     // Re-generate content with actual diagram references
-    console.log('📝 Regenerating content with diagram references...');
+    log('Regenerating content with diagram references...', 'info');
     content = await this.generateInsightContent({
       title,
       timestamp,
@@ -547,7 +775,9 @@ export class InsightGenerationAgent {
       semanticAnalysis,
       patternCatalog,
       webResults,
-      diagrams
+      diagrams,
+      entityInfo,  // NEW: Pass entity info
+      relations    // NEW: Pass relations
     });
 
     console.log('✅ generateInsightContent completed, content length:', content.length);
@@ -567,6 +797,19 @@ export class InsightGenerationAgent {
     FilenameTracer.trace('FILE_PATH_FINAL', 'generateInsightDocument',
       { name, outputDir: this.outputDir }, filePath
     );
+
+    // Clean up old PascalCase file if it exists and differs from new kebab-case path
+    // This prevents duplicate files when migrating from PascalCase to kebab-case naming
+    if (entityInfo?.name && name !== entityInfo.name) {
+      const oldFilePath = path.join(this.outputDir, `${entityInfo.name}.md`);
+      try {
+        await fs.promises.access(oldFilePath);
+        log(`Removing old PascalCase file: ${oldFilePath}`, 'info');
+        await fs.promises.unlink(oldFilePath);
+      } catch {
+        // Old file doesn't exist, that's fine
+      }
+    }
 
     try {
       await fs.promises.writeFile(filePath, content, 'utf8');
@@ -1285,28 +1528,40 @@ SemanticAnalysisAgent --> InsightGenerationAgent
       semanticAnalysis,
       patternCatalog,
       webResults,
-      diagrams
+      diagrams,
+      // NEW: Entity-specific data for observation-based generation
+      entityInfo,
+      relations
     } = data;
 
-    // Use content-agnostic analyzer to generate real insights
-    log('Starting content-agnostic insight generation', 'info');
+    // CHECK: If we have entity observations, use the new technical documentation approach
+    // This prioritizes actual entity data over generic git/vibe analysis
+    if (entityInfo?.observations && entityInfo.observations.length > 0) {
+      log(`Using observation-based documentation for ${entityInfo.name} (${entityInfo.observations.length} observations)`, 'info');
+
+      // Find a suitable diagram for the entity
+      const architectureDiagram = diagrams?.find((d: PlantUMLDiagram) => d.type === 'architecture' && d.success);
+
+      return await this.generateTechnicalDocumentation({
+        entityName: entityInfo.name,
+        entityType: entityInfo.type || 'Pattern',
+        observations: entityInfo.observations,
+        relations: relations || [],
+        diagram: architectureDiagram ? { name: architectureDiagram.name, type: 'architecture' } : undefined
+      });
+    }
+
+    // FALLBACK: Legacy content-agnostic analysis (for backward compatibility)
+    log('No entity observations found, falling back to content-agnostic analysis', 'info');
+
     let contentInsight;
     try {
-      console.log('🔍 DEBUG: About to call contentAnalyzer.analyzeWithContext');
-      console.log('🔍 DEBUG: gitAnalysis type:', typeof gitAnalysis, 'has files:', gitAnalysis?.files);
-      console.log('🔍 DEBUG: vibeAnalysis type:', typeof vibeAnalysis);
-      console.log('🔍 DEBUG: semanticAnalysis type:', typeof semanticAnalysis);
-      
       contentInsight = await this.contentAnalyzer.analyzeWithContext(
         gitAnalysis, vibeAnalysis, semanticAnalysis
       );
-      console.log('🔍 DEBUG: contentAnalyzer completed successfully');
-      console.log('🔍 DEBUG: contentInsight.problem.description:', contentInsight.problem.description);
-      console.log('🔍 DEBUG: contentInsight.solution.approach:', contentInsight.solution.approach);
     } catch (error: any) {
-      console.error('❌ ERROR in contentAnalyzer.analyzeWithContext:', error);
-      console.error('❌ ERROR stack:', error.stack);
-      throw error; // Re-throw to see full context
+      log(`Content analysis failed: ${error.message}`, 'error');
+      throw error;
     }
 
     // Get repository context for specific details
@@ -1315,156 +1570,32 @@ SemanticAnalysisAgent --> InsightGenerationAgent
     // Determine main pattern for title
     const mainPattern = patternCatalog?.patterns?.sort((a: any, b: any) => b.significance - a.significance)[0];
     const patternName = mainPattern?.name || this.generateContextualPatternName(contentInsight, repositoryContext);
-    
+
     const patternType = this.determinePatternType(contentInsight, repositoryContext);
     const significance = contentInsight.significance;
 
-    // DEBUG: Log exactly what we're about to write
-    console.log('🎯 DEBUG: About to write insight with:');
-    console.log('  - Problem description:', contentInsight.problem.description);
-    console.log('  - Solution approach:', contentInsight.solution.approach);
-    console.log('  - Pattern name:', patternName);
-
+    // SIMPLIFIED FALLBACK TEMPLATE (less verbose than before)
     return `# ${patternName}
 
-**Pattern Type:** ${patternType}  
-**Significance:** ${significance}/10 - ${this.getSignificanceDescription(significance)}  
-**Created:** ${timestamp.split('T')[0]}  
-**Updated:** ${timestamp.split('T')[0]}
-**Confidence:** ${Math.round(contentInsight.confidence * 100)}% - ${this.getConfidenceDescription(contentInsight.confidence)}
+**Type:** ${patternType}
 
-## Table of Contents
+${contentInsight.problem.description}
 
-- [Overview](#overview)
-- [Problem & Solution](#problem--solution)
-- [Repository Context](#repository-context)
-- [Evolution Analysis](#evolution-analysis)
-- [Implementation Details](#implementation-details)
-- [Technical Analysis](#technical-analysis)
-- [Measured Outcomes](#measured-outcomes)
-- [Usage Guidelines](#usage-guidelines)
-- [Related Patterns](#related-patterns)
-- [References](#references)
+## Implementation
 
-## Overview
+${contentInsight.solution.approach}
 
-**Problem:** ${contentInsight.problem.description}
+${contentInsight.solution.implementation.map((impl: string) => `- ${impl}`).join('\n')}
 
-**Solution:** ${contentInsight.solution.approach}
+## Technologies
 
-**Impact:** ${contentInsight.outcome.improvements.join(', ')}
+${contentInsight.solution.technologies.map((tech: string) => `- ${tech}`).join('\n')}
 
-## Problem & Solution
-
-### 🎯 **Problem Statement**
-
-**Context:** ${contentInsight.problem.context}
-
-**Description:** ${contentInsight.problem.description}
-
-**Symptoms:**
-${contentInsight.problem.symptoms.map(symptom => `- ${symptom}`).join('\n')}
-
-**Impact:** ${contentInsight.problem.impact}
-
-### ✅ **Solution Approach**
-
-**Approach:** ${contentInsight.solution.approach}
-
-**Implementation:**
-${contentInsight.solution.implementation.map(impl => `- ${impl}`).join('\n')}
-
-**Technologies Used:**
-${contentInsight.solution.technologies.map(tech => `- ${tech}`).join('\n')}
-
-**Tradeoffs:**
-${contentInsight.solution.tradeoffs.map(tradeoff => `- ${tradeoff}`).join('\n')}
-
-## Repository Context
-
-**Project Type:** ${repositoryContext.projectType}  
-**Domain:** ${repositoryContext.domain}  
-**Primary Languages:** ${repositoryContext.primaryLanguages.join(', ')}  
-**Frameworks:** ${repositoryContext.frameworks.join(', ')}  
-**Architecture:** ${repositoryContext.architecturalStyle}  
-**Build Tools:** ${repositoryContext.buildTools.join(', ')}
-
-## Evolution Analysis
-
-${this.generateEvolutionAnalysis(gitAnalysis, vibeAnalysis, contentInsight)}
-
-## Implementation Details
-
-### Core Changes
-
-![System Architecture](images/${diagrams.find((d: PlantUMLDiagram) => d.type === 'architecture' && d.success)?.name || 'architecture'}.png)
-
-${this.generateContextualImplementation(contentInsight, gitAnalysis, semanticAnalysis)}
-
-### Code Examples
-
-\`\`\`${this.detectMainLanguage(gitAnalysis, semanticAnalysis)}
-${this.generateRealCodeExample(contentInsight, semanticAnalysis, repositoryContext)}
-\`\`\`
-
-## Technical Analysis
-
-![Technical Structure](images/${diagrams.find((d: PlantUMLDiagram) => d.type === 'class' && d.success)?.name || 'class'}.png)
-
-${this.generateTechnicalFindings(gitAnalysis, vibeAnalysis, semanticAnalysis)}
-
-## Measured Outcomes
-
-### Quantitative Metrics
-${contentInsight.outcome.metrics.map(metric => `- ${metric}`).join('\n')}
-
-### Qualitative Improvements
-${contentInsight.outcome.improvements.map(improvement => `- ${improvement}`).join('\n')}
-
-### Emerging Challenges
-${contentInsight.outcome.newChallenges.map(challenge => `- ${challenge}`).join('\n')}
-
-## Usage Guidelines
-
-### ✅ Apply This Pattern When:
-${this.generateContextualUsageGuidelines(contentInsight, repositoryContext, true)}
-
-### ❌ Avoid This Pattern When:
-${this.generateContextualUsageGuidelines(contentInsight, repositoryContext, false)}
-
-## Related Patterns
-
-${this.generateRelatedPatterns(patternCatalog)}
-
-## Process Flow
-
-![Process Sequence](images/${diagrams.find((d: PlantUMLDiagram) => d.type === 'sequence' && d.success)?.name || 'sequence'}.png)
-
-${this.generateRealProcessDescription(contentInsight, vibeAnalysis, gitAnalysis)}
-
-## References
-
-${this.generateReferences(webResults, gitAnalysis)}
+${diagrams?.find((d: PlantUMLDiagram) => d.type === 'architecture' && d.success) ?
+  `## Architecture\n\n![Architecture](images/${diagrams.find((d: PlantUMLDiagram) => d.type === 'architecture' && d.success)?.name}.png)\n` : ''}
 
 ---
-
-## Supporting Diagrams
-
-### Use Cases
-![Use Cases](images/${diagrams.find((d: PlantUMLDiagram) => d.type === 'use-cases' && d.success)?.name || 'use-cases'}.png)
-
-### All Diagrams
-${this.formatDiagramReferences(diagrams)}
-
----
-*Generated by Content-Agnostic Semantic Analysis System*
-
-**Analysis Confidence:** ${Math.round(contentInsight.confidence * 100)}%  
-**Repository Context Hash:** ${repositoryContext.contextHash.substring(0, 8)}
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>`;
+*Generated via fallback analysis*`;
   }
 
 
@@ -3488,13 +3619,28 @@ class SolutionPattern {
         }
       };
 
-      // Call generateInsightDocument with correct arguments
+      // Extract entity info from current analysis (this is the key fix!)
+      const entityInfo = currentAnalysis?.entity_info ? {
+        name: currentAnalysis.entity_info.name || entityName,
+        type: currentAnalysis.entity_info.type || 'Pattern',
+        observations: currentAnalysis.entity_info.observations || []
+      } : {
+        name: entityName,
+        type: 'Pattern',
+        observations: []
+      };
+
+      log(`Refreshing insight document for ${entityInfo.name} with ${entityInfo.observations.length} observations`, 'info');
+
+      // Call generateInsightDocument with entity info
       const insightDocument = await this.generateInsightDocument(
         currentAnalysis?.git_analysis || null,
         currentAnalysis?.vibe_analysis || null,
         currentAnalysis,
         patternCatalog,
-        currentAnalysis?.web_results || null
+        currentAnalysis?.web_results || null,
+        entityInfo,  // NEW: Pass entity info for observation-based content
+        currentAnalysis?.relations || []  // NEW: Pass relations
       );
 
       if (insightDocument) {

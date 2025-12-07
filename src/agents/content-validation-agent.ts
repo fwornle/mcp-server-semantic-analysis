@@ -127,6 +127,7 @@ export interface ContentValidationAgentConfig {
   enableDeepValidation: boolean;
   stalenessThresholdDays?: number;
   useGitBasedDetection?: boolean; // Use git commit history for staleness detection (default: true)
+  parallelWorkers?: number; // Number of parallel workers for batch refresh (default: 1, max: 20)
 }
 
 // Entity refresh result interfaces
@@ -166,6 +167,7 @@ export class ContentValidationAgent {
   private vibeHistoryAgent: VibeHistoryAgent | null = null;
   private gitStalenessDetector: GitStalenessDetector | null = null;
   private useGitBasedDetection: boolean;
+  private parallelWorkers: number;
 
   // Known patterns for reference extraction
   private filePathPatterns = [
@@ -198,6 +200,8 @@ export class ContentValidationAgent {
     this.enableDeepValidation = config?.enableDeepValidation ?? true;
     this.stalenessThresholdDays = config?.stalenessThresholdDays ?? 30;
     this.useGitBasedDetection = config?.useGitBasedDetection ?? true;
+    // Parallel workers: default 1 (sequential), max 20 for batch entity refresh
+    this.parallelWorkers = Math.min(Math.max(config?.parallelWorkers ?? 1, 1), 20);
     this.semanticAnalyzer = new SemanticAnalyzer();
 
     // Initialize GitStalenessDetector for git-based staleness detection
@@ -209,7 +213,8 @@ export class ContentValidationAgent {
       repositoryPath: this.repositoryPath,
       insightsDirectory: this.insightsDirectory,
       enableDeepValidation: this.enableDeepValidation,
-      useGitBasedDetection: this.useGitBasedDetection
+      useGitBasedDetection: this.useGitBasedDetection,
+      parallelWorkers: this.parallelWorkers
     });
   }
 
@@ -2794,9 +2799,9 @@ Respond with a JSON array:
    *
    * This method:
    * 1. Validates all entities in scope
-   * 2. Identifies entities with score < 100 (per design decision)
+   * 2. Identifies entities with score < 100 (per design decision), or ALL entities if forceFullRefresh
    * 3. Optionally shows a preview (dryRun mode)
-   * 4. Refreshes each stale entity sequentially
+   * 4. Refreshes entities using parallel worker pool (configurable concurrency)
    */
   async refreshAllStaleEntities(params: {
     team?: string;           // Optional: specific team, or all teams if not provided
@@ -2804,6 +2809,7 @@ Respond with a JSON array:
     dryRun?: boolean;        // Preview mode - don't make changes
     maxEntities?: number;    // Limit for safety (default: 50)
     forceFullRefresh?: boolean; // Force regeneration of all diagrams and insights
+    parallelWorkers?: number; // Override parallel workers for this batch (default: uses config value)
   }): Promise<{
     dryRun: boolean;
     entitiesScanned: number;
@@ -2821,13 +2827,16 @@ Respond with a JSON array:
     const maxEntities = params.maxEntities ?? 50;
     const dryRun = params.dryRun ?? false;
     const forceFullRefresh = params.forceFullRefresh ?? false;
+    // Use param override or fall back to instance config
+    const workerCount = Math.min(Math.max(params.parallelWorkers ?? this.parallelWorkers, 1), 20);
 
     log(`Starting batch entity refresh`, 'info', {
       team: params.team || 'all',
       scoreThreshold,
       dryRun,
       maxEntities,
-      forceFullRefresh
+      forceFullRefresh,
+      parallelWorkers: workerCount
     });
 
     const batchResult = {
@@ -2891,7 +2900,9 @@ Respond with a JSON array:
         try {
           const report = await this.validateEntityAccuracy(entityName, entityTeam);
 
-          if (report.overallScore < scoreThreshold) {
+          // When forceFullRefresh is true, include ALL entities regardless of score
+          // Otherwise, only include entities below the score threshold
+          if (forceFullRefresh || report.overallScore < scoreThreshold) {
             staleEntities.push({ entity, validationReport: report });
 
             if (staleEntities.length >= maxEntities) {
@@ -2924,8 +2935,13 @@ Respond with a JSON array:
         }
       }
 
-      // Step 4: Refresh each stale entity
-      for (const { entity, validationReport } of staleEntities) {
+      // Step 4: Refresh entities using parallel worker pool
+      // Each entity refresh is independent, so we can process them concurrently
+      log(`Refreshing ${staleEntities.length} entities with ${workerCount} parallel workers`, 'info');
+
+      // Helper function to process a single entity
+      const processEntity = async (item: { entity: any; validationReport: EntityValidationReport }): Promise<EntityRefreshResult> => {
+        const { entity, validationReport } = item;
         const entityName = entity.name || entity.entityName || entity.entity_name;
         const entityTeam = entity.team || params.team || 'coding';
 
@@ -2936,18 +2952,10 @@ Respond with a JSON array:
             validationReport,
             forceFullRefresh
           });
-
-          batchResult.results.push(refreshResult);
-
-          if (refreshResult.success) {
-            batchResult.entitiesRefreshed++;
-          } else {
-            batchResult.entitiesFailed++;
-          }
+          return refreshResult;
         } catch (error) {
           log(`Failed to refresh entity ${entityName}`, 'error', error);
-          batchResult.entitiesFailed++;
-          batchResult.results.push({
+          return {
             entityName,
             team: entityTeam,
             refreshedAt: new Date().toISOString(),
@@ -2957,7 +2965,40 @@ Respond with a JSON array:
             insightRefreshed: false,
             success: false,
             error: error instanceof Error ? error.message : String(error)
-          });
+          };
+        }
+      };
+
+      // Process entities in batches using a worker pool pattern
+      const results: EntityRefreshResult[] = [];
+
+      if (workerCount === 1) {
+        // Sequential processing (original behavior)
+        for (const item of staleEntities) {
+          results.push(await processEntity(item));
+        }
+      } else {
+        // Parallel processing with limited concurrency
+        // Process in chunks of workerCount size
+        for (let i = 0; i < staleEntities.length; i += workerCount) {
+          const chunk = staleEntities.slice(i, i + workerCount);
+          const chunkNumber = Math.floor(i / workerCount) + 1;
+          const totalChunks = Math.ceil(staleEntities.length / workerCount);
+
+          log(`Processing batch ${chunkNumber}/${totalChunks} (${chunk.length} entities in parallel)`, 'info');
+
+          const chunkResults = await Promise.all(chunk.map(processEntity));
+          results.push(...chunkResults);
+        }
+      }
+
+      // Aggregate results
+      batchResult.results = results;
+      for (const result of results) {
+        if (result.success) {
+          batchResult.entitiesRefreshed++;
+        } else {
+          batchResult.entitiesFailed++;
         }
       }
 

@@ -340,6 +340,10 @@ export const TOOLS: Tool[] = [
           type: "boolean",
           description: "Remove orphaned insight/diagram files after refresh (default: false)",
         },
+        parallel_workers: {
+          type: "number",
+          description: "Number of parallel workers for batch refresh (1-20). Higher values speed up batch operations but use more resources. Default: 1 (sequential)",
+        },
       },
       required: ["entity_name", "team"],
       additionalProperties: false,
@@ -1462,7 +1466,8 @@ async function handleRefreshEntity(args: any): Promise<any> {
     max_entities = 50,
     force_full_refresh = false,
     check_entity_name,  // Default handled below based on force_full_refresh
-    cleanup_stale_files = false
+    cleanup_stale_files = false,
+    parallel_workers = 1  // Default to sequential, can be 1-20
   } = args;
 
   // Default check_entity_name to true when force_full_refresh is true
@@ -1470,7 +1475,7 @@ async function handleRefreshEntity(args: any): Promise<any> {
 
   log(`Refreshing entity`, "info", {
     entity_name, team, dry_run, score_threshold, force_full_refresh,
-    check_entity_name: shouldCheckName, cleanup_stale_files
+    check_entity_name: shouldCheckName, cleanup_stale_files, parallel_workers
   });
 
   try {
@@ -1505,7 +1510,8 @@ async function handleRefreshEntity(args: any): Promise<any> {
         scoreThreshold: score_threshold,
         dryRun: dry_run,
         maxEntities: max_entities,
-        forceFullRefresh: force_full_refresh
+        forceFullRefresh: force_full_refresh,
+        parallelWorkers: parallel_workers
       });
 
       // Format response

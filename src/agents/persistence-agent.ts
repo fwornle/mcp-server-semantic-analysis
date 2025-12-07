@@ -933,11 +933,42 @@ export class PersistenceAgent {
         .join('\n');
       const entityContent = `${observationsText}`;
 
-      // Classify the entity using the ontology system
-      const classification = await this.classifyEntity(entity.name, entityContent);
+      // PROTECTED INFRASTRUCTURE ENTITIES: These should NEVER be re-classified
+      // They have fixed types that determine visualization colors and semantic meaning
+      const PROTECTED_ENTITY_TYPES: Record<string, string> = {
+        'Coding': 'Project',
+        'CollectiveKnowledge': 'System',
+        // Add other infrastructure entities as needed
+      };
 
-      // Use classified entity type (or fallback to original if not classified)
-      const entityType = classification.entityType || entity.entityType || 'TransferablePattern';
+      let entityType: string;
+      let classification: { entityType: string; confidence: number; method: string; ontologyMetadata?: any } = {
+        entityType: 'TransferablePattern',
+        confidence: 0,
+        method: 'fallback'
+      };
+
+      // Check if this is a protected entity
+      if (PROTECTED_ENTITY_TYPES[entity.name]) {
+        entityType = PROTECTED_ENTITY_TYPES[entity.name];
+        classification = {
+          entityType,
+          confidence: 1.0,
+          method: 'protected-infrastructure',
+          ontologyMetadata: { protected: true, reason: 'Infrastructure entity with fixed type' }
+        };
+        log('Using protected entity type (not re-classifying)', 'info', {
+          entityName: entity.name,
+          protectedType: entityType,
+          originalType: entity.entityType
+        });
+      } else {
+        // Classify the entity using the ontology system
+        classification = await this.classifyEntity(entity.name, entityContent);
+
+        // Use classified entity type (or fallback to original if not classified)
+        entityType = classification.entityType || entity.entityType || 'TransferablePattern';
+      }
 
       // CONTENT VALIDATION: Check if existing entity content is accurate
       let contentValidationReport: EntityValidationReport | null = null;
@@ -2396,10 +2427,18 @@ ${entityData.insights}
           (e.name || e.entity_name) === params.entityName
         );
         if (exactMatch) {
+          // PROTECTED INFRASTRUCTURE ENTITIES: Enforce correct types
+          const PROTECTED_ENTITY_TYPES: Record<string, string> = {
+            'Coding': 'Project',
+            'CollectiveKnowledge': 'System',
+          };
+          const entityName = exactMatch.name || exactMatch.entity_name;
+          const protectedType = PROTECTED_ENTITY_TYPES[entityName];
+
           // Normalize field names (API returns entity_name/entity_type, internal uses name/entityType)
           entity = {
-            name: exactMatch.name || exactMatch.entity_name,
-            entityType: exactMatch.entityType || exactMatch.entity_type,
+            name: entityName,
+            entityType: protectedType || exactMatch.entityType || exactMatch.entity_type,
             observations: exactMatch.observations || [],
             significance: exactMatch.significance,
             relationships: exactMatch.relationships || [],
@@ -2411,6 +2450,14 @@ ${entityData.insights}
               last_updated: exactMatch.last_modified || exactMatch.last_updated
             }
           } as SharedMemoryEntity;
+
+          if (protectedType) {
+            log('Enforcing protected entity type on load', 'info', {
+              entityName,
+              protectedType,
+              originalType: exactMatch.entityType || exactMatch.entity_type
+            });
+          }
         }
       }
 

@@ -2558,6 +2558,16 @@ Respond with a JSON array:
     entity_info: any;
     relations: Array<{ from: string; to: string; relationType: string }>;
   }> {
+    // PROTECTED INFRASTRUCTURE ENTITIES: Enforce correct types for insight documents
+    // These entities have fixed types that determine visualization colors and semantic meaning
+    const PROTECTED_ENTITY_TYPES: Record<string, string> = {
+      'Coding': 'Project',
+      'CollectiveKnowledge': 'System',
+    };
+
+    // Use protected type if available, otherwise fall back to entity's type
+    const entityType = PROTECTED_ENTITY_TYPES[entityName] || entity.entityType || entity.type || 'Pattern';
+
     const context: {
       git_analysis: any;
       vibe_analysis: any;
@@ -2570,7 +2580,7 @@ Respond with a JSON array:
       patterns: [],
       entity_info: {
         name: entityName,
-        type: entity.entityType || entity.type || 'Pattern',
+        type: entityType,
         observations: newObservations.map(o => o.content)
       },
       relations: [] // Will be populated if graph database provides them

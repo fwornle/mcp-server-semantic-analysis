@@ -111,6 +111,48 @@ Generates PlantUML diagrams for analysis results.
 
 **Returns**: Generated diagram files
 
+### refresh_entity
+Validates and refreshes a knowledge entity with **LLM-powered deep insight generation**.
+
+**Parameters**:
+- `entity_name`: Name of the entity to refresh (string), or `*` for batch refresh
+- `team`: Team/project name (string), or `*` for all teams
+- `force_full_refresh`: Force full regeneration including diagrams (boolean, default: false)
+- `dry_run`: Preview mode without making changes (boolean, default: false)
+- `score_threshold`: Staleness threshold (number, default: 100)
+- `max_entities`: Max entities for batch mode (number, default: 50)
+- `parallel_workers`: Number of parallel workers for batch mode (1-20, default: 1)
+- `check_entity_name`: Normalize entity names per guidelines (boolean)
+- `cleanup_stale_files`: Remove orphaned files after refresh (boolean, default: false)
+
+**Returns**: Refresh results with score improvement, observations added/removed, diagrams regenerated
+
+**Deep Insight Generation**:
+When refreshing an entity, the system now uses LLM-powered analysis to generate meaningful insights rather than simply reformatting observations. The `InsightGenerationAgent.generateDeepInsight()` method:
+
+1. Collects all entity observations and code references
+2. Analyzes code structure using Serena
+3. Sends a comprehensive prompt to the LLM (via `SemanticAnalyzer`)
+4. Instructs the LLM to **synthesize understanding** - not just restate observations
+5. Generates structured sections covering:
+   - Core purpose and problem solved
+   - Architecture & design decisions
+   - Implementation details
+   - Integration points
+   - Best practices & guidelines
+
+**Protected Entity Types**:
+The system enforces correct entity types for infrastructure entities:
+- `Coding` → `Project` (blue visualization)
+- `CollectiveKnowledge` → `System` (green visualization)
+
+**Diagram Generation**:
+All 4 diagram types are regenerated when `force_full_refresh` is true:
+- Architecture diagram
+- Sequence diagram
+- Class diagram
+- Use cases diagram
+
 ## Tool Development
 
 ### Creating Custom Tools
@@ -162,6 +204,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 ### Knowledge Tools
 - `create_ukb_entity_with_insight`
+- `refresh_entity` - Validates, refreshes, and generates deep insights for entities
 
 ### Workflow Tools
 - `execute_workflow`
@@ -170,6 +213,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 - `generate_documentation`
 - `create_insight_report`
 - `generate_plantuml_diagrams`
+
+## Architecture Diagram
+
+The deep insight generation flow is visualized below:
+
+![Deep Insight Generation Flow](../../../docs/images/deep-insight-generation.png)
+
+*See also: [Presentation version](../../../docs/presentation/images/deep-insight-generation.png)*
 
 ## See Also
 

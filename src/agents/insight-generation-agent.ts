@@ -151,6 +151,24 @@ export class InsightGenerationAgent {
       }
     }
 
+    // DEEP INSIGHT GENERATION: Use LLM to synthesize meaningful insights from observations
+    // This generates a coherent narrative rather than just listing observations
+    let deepInsightContent: string | null = null;
+    if (this.semanticAnalyzer && observations.length > 0) {
+      try {
+        deepInsightContent = await this.generateDeepInsight({
+          entityName,
+          entityType,
+          observations,
+          relations,
+          serenaAnalysis
+        });
+        log(`Generated deep insight content (${deepInsightContent?.length || 0} chars)`, 'info');
+      } catch (error) {
+        log(`Deep insight generation failed (falling back to basic formatting): ${error}`, 'warning');
+      }
+    }
+
     // Synthesize overview from observations (first 2-3 most descriptive)
     const overview = this.synthesizeOverview(entityName, observations);
 
@@ -165,73 +183,82 @@ export class InsightGenerationAgent {
     sections.push(`**Type:** ${entityType}\n`);
     sections.push(`${overview}\n`);
 
-    // What It Is - descriptions and implementations (avoid duplication with How It Works)
-    const whatItIsItems = [...categorized.descriptions, ...categorized.implementations];
-    if (whatItIsItems.length > 0) {
-      sections.push(`## What It Is\n`);
-      for (const item of whatItIsItems.slice(0, 4)) {
-        sections.push(`- ${item}\n`);
-      }
+    // USE DEEP INSIGHT CONTENT if available (LLM-generated analysis)
+    // Otherwise fall back to simple bullet point formatting
+    if (deepInsightContent) {
+      // Deep insight already contains structured sections
+      sections.push(deepInsightContent);
       sections.push('');
-    }
-
-    // How It Works - workflows only (not implementations, to avoid duplication)
-    if (categorized.workflows.length > 0) {
-      sections.push(`## How It Works\n`);
-      for (const item of categorized.workflows.slice(0, 5)) {
-        sections.push(`- ${item}\n`);
-      }
-      sections.push('');
-    }
-
-    // Other details (remaining uncategorized observations)
-    if (categorized.other.length > 0) {
-      sections.push(`## Additional Details\n`);
-      for (const item of categorized.other.slice(0, 3)) {
-        sections.push(`- ${item}\n`);
-      }
-      sections.push('');
-    }
-
-    // Code Structure (from Serena analysis)
-    if (serenaAnalysis && (serenaAnalysis.symbols.length > 0 || serenaAnalysis.fileStructures.length > 0)) {
-      sections.push(`## Code Structure\n`);
-      sections.push(this.serenaAnalyzer.formatCodeStructureSummary(serenaAnalysis));
-      sections.push('');
-    }
-
-    // Usage / Rules
-    if (categorized.rules.length > 0) {
-      sections.push(`## Usage Guidelines\n`);
-      for (const rule of categorized.rules) {
-        sections.push(`- ${rule}\n`);
-      }
-      sections.push('');
-    }
-
-    // Related Entities
-    if (relations.length > 0) {
-      sections.push(`## Related Entities\n`);
-      const outgoing = relations.filter(r => r.from === entityName);
-      const incoming = relations.filter(r => r.to === entityName);
-
-      if (outgoing.length > 0) {
-        sections.push(`### Dependencies\n`);
-        for (const rel of outgoing.slice(0, 10)) {
-          sections.push(`- **${rel.to}** (${rel.relationType})\n`);
+    } else {
+      // FALLBACK: Simple bullet point formatting
+      // What It Is - descriptions and implementations (avoid duplication with How It Works)
+      const whatItIsItems = [...categorized.descriptions, ...categorized.implementations];
+      if (whatItIsItems.length > 0) {
+        sections.push(`## What It Is\n`);
+        for (const item of whatItIsItems.slice(0, 4)) {
+          sections.push(`- ${item}\n`);
         }
+        sections.push('');
       }
 
-      if (incoming.length > 0) {
-        sections.push(`### Used By\n`);
-        for (const rel of incoming.slice(0, 10)) {
-          sections.push(`- **${rel.from}** (${rel.relationType})\n`);
+      // How It Works - workflows only (not implementations, to avoid duplication)
+      if (categorized.workflows.length > 0) {
+        sections.push(`## How It Works\n`);
+        for (const item of categorized.workflows.slice(0, 5)) {
+          sections.push(`- ${item}\n`);
         }
+        sections.push('');
       }
-      sections.push('');
+
+      // Other details (remaining uncategorized observations)
+      if (categorized.other.length > 0) {
+        sections.push(`## Additional Details\n`);
+        for (const item of categorized.other.slice(0, 3)) {
+          sections.push(`- ${item}\n`);
+        }
+        sections.push('');
+      }
+
+      // Code Structure (from Serena analysis)
+      if (serenaAnalysis && (serenaAnalysis.symbols.length > 0 || serenaAnalysis.fileStructures.length > 0)) {
+        sections.push(`## Code Structure\n`);
+        sections.push(this.serenaAnalyzer.formatCodeStructureSummary(serenaAnalysis));
+        sections.push('');
+      }
+
+      // Usage / Rules
+      if (categorized.rules.length > 0) {
+        sections.push(`## Usage Guidelines\n`);
+        for (const rule of categorized.rules) {
+          sections.push(`- ${rule}\n`);
+        }
+        sections.push('');
+      }
+
+      // Related Entities
+      if (relations.length > 0) {
+        sections.push(`## Related Entities\n`);
+        const outgoing = relations.filter(r => r.from === entityName);
+        const incoming = relations.filter(r => r.to === entityName);
+
+        if (outgoing.length > 0) {
+          sections.push(`### Dependencies\n`);
+          for (const rel of outgoing.slice(0, 10)) {
+            sections.push(`- **${rel.to}** (${rel.relationType})\n`);
+          }
+        }
+
+        if (incoming.length > 0) {
+          sections.push(`### Used By\n`);
+          for (const rel of incoming.slice(0, 10)) {
+            sections.push(`- **${rel.from}** (${rel.relationType})\n`);
+          }
+        }
+        sections.push('');
+      }
     }
 
-    // Diagrams section - display all successful diagrams
+    // Diagrams section - display all successful diagrams (always shown)
     const successfulDiagrams = diagrams.filter(d => d.success);
     if (successfulDiagrams.length > 0) {
       sections.push(`## Diagrams\n`);
@@ -277,6 +304,89 @@ export class InsightGenerationAgent {
     }
 
     return `Technical documentation for ${entityName}.`;
+  }
+
+  /**
+   * Generate deep, meaningful insights from observations using LLM analysis.
+   * This produces genuine analysis and understanding rather than just reformatting observations.
+   */
+  private async generateDeepInsight(params: {
+    entityName: string;
+    entityType: string;
+    observations: string[];
+    relations: Array<{ from: string; to: string; relationType: string }>;
+    serenaAnalysis: SerenaAnalysisResult | null;
+  }): Promise<string> {
+    const { entityName, entityType, observations, relations, serenaAnalysis } = params;
+
+    log(`Generating deep insight for ${entityName} with ${observations.length} observations`, 'info');
+
+    // Build a comprehensive prompt for the LLM to analyze
+    const observationsText = observations.map((obs, i) => `${i + 1}. ${obs}`).join('\n');
+
+    const relationsText = relations.length > 0
+      ? `\n\n**Related Entities:**\n${relations.map(r => `- ${r.from} ${r.relationType} ${r.to}`).join('\n')}`
+      : '';
+
+    const codeContextText = serenaAnalysis
+      ? `\n\n**Code Structure:**\n- ${serenaAnalysis.symbols.length} code symbols found\n- Key files: ${serenaAnalysis.fileStructures.map(f => f.path).slice(0, 5).join(', ')}`
+      : '';
+
+    const prompt = `You are analyzing a knowledge entity called "${entityName}" (type: ${entityType}) to generate a deep, insightful technical document.
+
+**Observations gathered about this entity:**
+${observationsText}
+${relationsText}
+${codeContextText}
+
+**Your task:**
+Generate a comprehensive technical insight document that goes BEYOND just restating the observations. Instead:
+
+1. **Synthesize Understanding**: What is this entity really about? What problem does it solve? What is its core purpose?
+
+2. **Architecture & Design**: What architectural decisions are evident? What patterns are being used? What are the trade-offs?
+
+3. **Implementation Details**: How is this implemented? What technologies and approaches are used? What are the key components?
+
+4. **Integration Points**: How does this integrate with other parts of the system? What are the dependencies and interfaces?
+
+5. **Best Practices & Guidelines**: What are the important rules or conventions for using this correctly?
+
+**Format your response as markdown sections (## headers) with meaningful prose paragraphs, not just bullet point lists.
+Write in a technical documentation style - clear, precise, and informative.
+DO NOT just repeat the observations - ANALYZE and SYNTHESIZE them into coherent understanding.
+Each section should provide genuine insight, not just reformatted input.**`;
+
+    try {
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: 'architecture',
+        context: `Deep insight generation for ${entityName}`,
+        provider: 'auto'
+      });
+
+      if (result && result.insights) {
+        // Clean up the response - remove any markdown code blocks if LLM wrapped it
+        let content = result.insights;
+        if (content.startsWith('```markdown')) {
+          content = content.slice(11);
+        }
+        if (content.startsWith('```')) {
+          content = content.slice(3);
+        }
+        if (content.endsWith('```')) {
+          content = content.slice(0, -3);
+        }
+
+        log(`Deep insight generated successfully (${content.length} chars, provider: ${result.provider})`, 'info');
+        return content.trim();
+      }
+
+      log('LLM returned empty insights', 'warning');
+      return '';
+    } catch (error) {
+      log(`Deep insight generation failed: ${error}`, 'error');
+      throw error;
+    }
   }
 
   /**

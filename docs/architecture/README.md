@@ -57,28 +57,39 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 - **`generate_plantuml_diagrams`**: Architecture diagram generation
 - **`generate_lessons_learned`**: Lessons learned document creation
 
-### 3. Agent Layer (11 Specialized Agents)
-**Purpose**: Implements the core business logic and intelligence (10 worker agents + 1 orchestrator)
+### 3. Agent Layer (13 Specialized Agents)
+**Purpose**: Implements the core business logic and intelligence organized into orchestration, analysis, quality, infrastructure, and support layers.
 
 ![Agent Coordination Flow](../images/agent-coordination-flow.png)
 
-#### Orchestration Agent
+For detailed documentation of all 13 agents, see **[Agent Architecture](agents.md)**.
+
+| Category | Count | Agents |
+|----------|-------|--------|
+| Orchestration | 1 | CoordinatorAgent |
+| Core Analysis | 5 | GitHistoryAgent, VibeHistoryAgent, SemanticAnalysisAgent, WebSearchAgent, InsightGenerationAgent |
+| Quality & Validation | 3 | QualityAssuranceAgent, ContentValidationAgent, ObservationGenerationAgent |
+| Infrastructure | 3 | PersistenceAgent, DeduplicationAgent, GitStalenessDetector |
+| Support | 1 | SemanticAnalyzer (LLM integration layer) |
+
+#### Orchestration Layer
 
 ##### CoordinatorAgent
 **Responsibilities**:
 - Workflow orchestration and task scheduling
-- Inter-agent communication coordination
+- Inter-agent communication coordination (hub-and-spoke pattern)
 - Error recovery and rollback management
 - Performance monitoring and metrics
-- GraphDB initialization and lifecycle management
+- GraphDB adapter initialization and lifecycle management
+- Checkpoint management for incremental analysis
 
 **Key Features**:
-- Multi-step workflow execution
+- Multi-step workflow execution with dependency management
 - Agent lifecycle management
 - Quality assurance coordination
 - Rollback capabilities
 
-#### Core Analysis Agents (8 Agents)
+#### Core Analysis Layer (5 Agents)
 
 ##### GitHistoryAgent
 **Responsibilities**:
@@ -131,64 +142,32 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 ##### InsightGenerationAgent
 **Responsibilities**:
 - Comprehensive insight generation
-- PlantUML diagram creation
+- PlantUML diagram creation (all 4 types: architecture, sequence, class, use-cases)
 - Pattern documentation
+- **LLM-based PlantUML repair** for syntax error correction
 
 **Key Features**:
-- Multi-provider LLM support
-- Diagram generation pipeline
+- Multi-provider LLM support (5-tier chain: Groq → Gemini → Custom → Anthropic → OpenAI)
+- Diagram generation pipeline with validation
+- Automatic PlantUML repair via `repairPlantUMLWithLLM()` with retry loop
+- Regex-based fixes for common syntax issues
 - Insight quality validation
 - Template-based generation
 
-##### ObservationGenerationAgent
-**Responsibilities**:
-- Structured observation creation
-- UKB-compatible formatting
-- Knowledge base integration
-
-**Key Features**:
-- Observation structuring
-- Metadata generation
-- Quality validation
-- Cross-referencing
+#### Quality & Validation Layer (3 Agents)
 
 ##### QualityAssuranceAgent
 **Responsibilities**:
-- Output validation and correction
+- Output validation and correction with LLM semantic validation
 - Quality metrics assessment
 - Error detection and recovery
 
 **Key Features**:
-- Multi-level validation
+- Multi-level validation (high/medium/low quality scores)
+- Detects conversation fragments and incomplete thoughts
 - Auto-correction capabilities
-- Quality scoring
-- Retry logic management
-
-##### PersistenceAgent
-**Responsibilities**:
-- Knowledge base persistence
-- Checkpoint creation and management
-- Storage coordination
-
-**Key Features**:
-- Multi-target persistence
-- Checkpoint optimization
-- Storage validation
-- Recovery management
-
-#### Infrastructure Agents (2 Agents)
-
-##### DeduplicationAgent
-**Responsibilities**:
-- Semantic duplicate detection
-- Entity merging strategies
-- Similarity analysis
-
-**Key Features**:
-- Embedding-based similarity
-- Configurable merge strategies
-- Batch processing optimization
-- Performance metrics
+- PlantUML file validation
+- Uses 5-tier LLM provider chain
 
 ##### ContentValidationAgent
 **Responsibilities**:
@@ -202,6 +181,72 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 - Detects deprecated patterns (ukb, shared-memory.json, etc.)
 - Integrates with incremental-analysis workflow
 - Generates actionable refresh reports
+- Triggers InsightGenerationAgent for entity refresh
+
+##### ObservationGenerationAgent
+**Responsibilities**:
+- Structured observation creation with LLM-powered insight extraction
+- UKB-compatible formatting
+- Knowledge base integration
+
+**Key Features**:
+- Observation structuring with domain classification
+- Metadata generation
+- Quality validation
+- Cross-referencing
+- Uses 5-tier LLM provider chain
+
+#### Infrastructure Layer (3 Agents)
+
+##### PersistenceAgent
+**Responsibilities**:
+- Knowledge base persistence to GraphDB (Graphology + LevelDB)
+- Checkpoint creation and management
+- Storage coordination
+
+**Key Features**:
+- GraphDB entity storage
+- Entity relationship management
+- Automatic JSON export triggering
+- Observation metadata handling
+
+##### DeduplicationAgent
+**Responsibilities**:
+- Semantic duplicate detection using OpenAI embeddings
+- Entity merging strategies
+- Similarity analysis
+
+**Key Features**:
+- OpenAI text-embedding-3-small for vector-based similarity
+- Cosine similarity calculation
+- Graceful degradation to Jaccard text similarity (fallback)
+- Batch processing optimization
+
+##### GitStalenessDetector
+**Responsibilities**:
+- Detect entity staleness based on git commit activity
+- Correlate entities with recent code changes
+- Provide staleness scores
+
+**Key Features**:
+- Correlates entities with git commit topics
+- Analyzes commit activity since entity creation
+- Identifies entities affected by recent changes
+- Integrates with ContentValidationAgent
+
+#### Support Layer (1 Agent)
+
+##### SemanticAnalyzer
+**Responsibilities**:
+- Unified LLM integration layer for all agents
+- Multi-provider failover management
+- Content and code analysis
+
+**Key Features**:
+- 5-tier provider chain: Groq → Gemini → Custom → Anthropic → OpenAI
+- Automatic failover between providers
+- Configurable analysis options
+- Used by 6 agents for LLM operations
 
 ## Data Flow Architecture
 
@@ -249,19 +294,20 @@ src/
 ├── server.ts                       # Core MCP server implementation
 ├── tools.ts                        # Tool definitions and handlers
 ├── logging.ts                      # Logging utilities
-└── agents/                         # Agent implementations (11 agents)
-    ├── coordinator.ts              # Orchestration agent
-    ├── git-history-agent.ts        # Core analysis agents
+└── agents/                         # Agent implementations (13 agents)
+    ├── coordinator.ts              # Orchestration layer (1)
+    ├── git-history-agent.ts        # Core analysis layer (5)
     ├── vibe-history-agent.ts
     ├── semantic-analysis-agent.ts
     ├── web-search.ts
     ├── insight-generation-agent.ts
-    ├── observation-generation-agent.ts
-    ├── quality-assurance-agent.ts
-    ├── persistence-agent.ts
-    ├── deduplication.ts            # Infrastructure agents
+    ├── quality-assurance-agent.ts  # Quality & validation layer (3)
     ├── content-validation-agent.ts
-    └── semantic-analyzer.ts        # Utility class (not an agent)
+    ├── observation-generation-agent.ts
+    ├── persistence-agent.ts        # Infrastructure layer (3)
+    ├── deduplication.ts
+    ├── git-staleness-detector.ts
+    └── semantic-analyzer.ts        # Support layer (1) - LLM integration
 ```
 
 ### Key Design Patterns

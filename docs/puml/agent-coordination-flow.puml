@@ -1,22 +1,23 @@
 @startuml agent-coordination-flow
-!include _standard-style.puml
+!include /Users/q284340/Agentic/coding/docs/puml/_standard-style.puml
 
-title 11-Agent Coordination Flow - Workflow Execution
+title 13-Agent Coordination Flow
 
 participant "Claude Code" as CLAUDE
 participant "MCP Handler" as MCP
 participant "Coordinator Agent" as COORD #FFE6CC
 participant "Git History Agent" as GIT #E6F3FF
 participant "Vibe History Agent" as VIBE #E6F3FF
-participant "Semantic Analysis Agent" as SEMANTIC #FFE6E6
+participant "Semantic Analysis Agent" as SEMANTIC #E6F3FF
 participant "Web Search Agent" as WEB #E6F3FF
-participant "Insight Generation Agent" as INSIGHT #FFE6E6
-participant "Observation Generation Agent" as OBS #E6F3FF
-participant "Content Validation Agent" as CONTENT #E6F3FF
+participant "Insight Generation Agent" as INSIGHT #E6F3FF
+participant "Observation Generation Agent" as OBS #FFE6E6
 participant "Quality Assurance Agent" as QA #FFE6E6
-participant "Persistence Agent" as PERSIST #E6F3FF
-participant "Deduplication Agent" as DEDUP #E6F3FF
-database "GraphDB\n(Graphology+LevelDB)" as GRAPHDB #D4EDDA
+participant "Content Validation Agent" as CONTENT #FFE6E6
+participant "Git Staleness Detector" as STALE #E6FFE6
+participant "Persistence Agent" as PERSIST #E6FFE6
+participant "Deduplication Agent" as DEDUP #E6FFE6
+database "GraphDB" as GRAPHDB #D4EDDA
 
 CLAUDE ->> MCP : tool_call(execute_workflow)
 activate MCP
@@ -25,127 +26,105 @@ MCP ->> COORD : execute_workflow(complete-analysis)
 activate COORD
 
 note over COORD
-  Orchestrate 10-worker-agent workflow:
+  Orchestrate 12-worker-agent workflow
   Initialize GraphDB adapter
-  Initialize execution context
   Manage task dependencies
-  Monitor agent performance
 end note
+
+== Data Collection Phase ==
 
 COORD ->> GIT : analyze_git_history()
 activate GIT
-GIT ->> GIT : scan_commits_since_checkpoint()
-GIT ->> GIT : extract_architectural_changes()
 GIT -->> COORD : git_analysis_results
 deactivate GIT
 
 COORD ->> VIBE : analyze_vibe_history()
 activate VIBE
-VIBE ->> VIBE : parse_specstory_files()
-VIBE ->> VIBE : extract_conversation_context()
+note right of VIBE: Uses LLM
 VIBE -->> COORD : vibe_analysis_results
 deactivate VIBE
 
-COORD ->> SEMANTIC : analyze_semantics(git_results, vibe_results)
+== Analysis Phase ==
+
+COORD ->> SEMANTIC : analyze_semantics(git, vibe)
 activate SEMANTIC
-note right of SEMANTIC: **Uses LLM**\n3-tier chain
-SEMANTIC ->> SEMANTIC : correlate_code_and_conversation()
-SEMANTIC ->> SEMANTIC : identify_patterns()
-SEMANTIC -->> COORD : semantic_analysis_results
+note right of SEMANTIC: Uses LLM
+SEMANTIC -->> COORD : semantic_analysis
 deactivate SEMANTIC
 
-COORD ->> WEB : search_similar_patterns(semantic_results)
+COORD ->> WEB : search_patterns(semantic)
 activate WEB
-WEB ->> WEB : search_external_references()
-WEB ->> WEB : validate_documentation()
-WEB -->> COORD : web_search_results
+note right of WEB: Uses LLM
+WEB -->> COORD : web_results
 deactivate WEB
 
-COORD ->> INSIGHT : generate_comprehensive_insights(all_results)
+== Generation Phase ==
+
+COORD ->> INSIGHT : generate_insights(all_results)
 activate INSIGHT
-note right of INSIGHT: **Uses LLM**\n3-tier chain
-INSIGHT ->> INSIGHT : synthesize_findings()
+note right of INSIGHT
+  Uses LLM for:
+  - Document generation
+  - Diagram creation
+  - PlantUML repair
+end note
 INSIGHT ->> INSIGHT : create_plantuml_diagrams()
+INSIGHT ->> INSIGHT : repairPlantUMLWithLLM()
 INSIGHT -->> COORD : insights_and_diagrams
 deactivate INSIGHT
 
-COORD ->> OBS : generate_structured_observations(insights)
+COORD ->> OBS : generate_observations(insights)
 activate OBS
-OBS ->> OBS : create_ukb_compatible_format()
-OBS ->> OBS : add_metadata_and_references()
+note right of OBS: Uses LLM
 OBS -->> COORD : structured_observations
 deactivate OBS
 
+== Validation Phase ==
+
 COORD ->> QA : validate_outputs(observations)
 activate QA
-note right of QA: **Uses LLM**\nfor auto-correction
-QA ->> QA : quality_assessment()
-QA ->> QA : auto_correction_if_needed()
+note right of QA: Uses LLM
 QA -->> COORD : validated_results
 deactivate QA
 
-COORD ->> CONTENT : validate_stale_entities()
+COORD ->> STALE : detect_stale_entities()
+activate STALE
+STALE -->> COORD : staleness_report
+deactivate STALE
+
+COORD ->> CONTENT : validate_entities()
 activate CONTENT
-CONTENT ->> CONTENT : check_deprecated_patterns()
-CONTENT ->> CONTENT : validate_file_references()
 CONTENT -->> COORD : validation_results
 deactivate CONTENT
 
-COORD ->> PERSIST : store_knowledge(validated_results)
+== Persistence Phase ==
+
+COORD ->> PERSIST : store_knowledge(validated)
 activate PERSIST
-PERSIST ->> PERSIST : create_checkpoint()
 PERSIST ->> GRAPHDB : storeEntity()
-activate GRAPHDB
 GRAPHDB -->> PERSIST : stored
-deactivate GRAPHDB
-PERSIST ->> GRAPHDB : storeRelationship()
-activate GRAPHDB
-GRAPHDB -->> PERSIST : stored
-deactivate GRAPHDB
 PERSIST -->> COORD : persistence_complete
 deactivate PERSIST
 
-COORD ->> DEDUP : detect_and_merge_duplicates()
+COORD ->> DEDUP : detect_duplicates()
 activate DEDUP
-DEDUP ->> GRAPHDB : queryEntities()
-activate GRAPHDB
-GRAPHDB -->> DEDUP : entities
-deactivate GRAPHDB
-DEDUP ->> DEDUP : semantic_similarity_analysis()
-DEDUP ->> DEDUP : merge_duplicate_entities()
-DEDUP -->> COORD : deduplication_complete
+note right of DEDUP: Uses Embeddings
+DEDUP ->> GRAPHDB : query_similar()
+DEDUP -->> COORD : dedup_complete
 deactivate DEDUP
 
-note over COORD
-  Final coordination:
-  Compile comprehensive results
-  Generate execution summary
-  Update workflow metrics
-end note
-
-COORD -->> MCP : complete_workflow_results
+COORD -->> MCP : workflow_results
 deactivate COORD
 
-MCP -->> CLAUDE : formatted_analysis_response
+MCP -->> CLAUDE : analysis_response
 deactivate MCP
 
-note right of CLAUDE
-  Complete 11-agent analysis:
-  - Git & conversation correlation
-  - External pattern validation
-  - Comprehensive insights (3 LLM agents)
-  - Quality-assured outputs
-  - Stale entity detection & validation
-  - GraphDB persistence (Graphology+LevelDB)
-  - Auto-export to knowledge-export/<team>.json
-  - No MCP Memory server
-end note
-
 legend right
-  |= Color |= Agent Type |
-  | <back:#FFE6E6>   </back> | Uses LLMs (3 agents) |
-  | <back:#E6F3FF>   </back> | No LLM (7 agents) |
-  | <back:#FFE6CC>   </back> | Orchestrator (1) |
+  |= Color |= Layer |
+  | <back:#FFE6CC>   </back> | Orchestration |
+  | <back:#E6F3FF>   </back> | Core Analysis |
+  | <back:#FFE6E6>   </back> | Quality & Validation |
+  | <back:#E6FFE6>   </back> | Infrastructure |
   | <back:#D4EDDA>   </back> | Storage |
 endlegend
 

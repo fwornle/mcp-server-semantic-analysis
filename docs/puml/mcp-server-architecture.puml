@@ -1,9 +1,8 @@
 @startuml mcp-server-architecture
-!include _standard-style.puml
+!include /Users/q284340/Agentic/coding/docs/puml/_standard-style.puml
 
-title MCP Semantic Analysis Server - 11-Agent Architecture Overview
+title MCP Semantic Analysis Server - 13-Agent Architecture
 
-' Define the main system layers
 package "Claude Code Client" {
   component [Claude Interface] as CLAUDE <<external>>
 }
@@ -11,60 +10,59 @@ package "Claude Code Client" {
 package "MCP Server Core" <<infra>> {
   component [MCP Protocol Handler] as MCP_HANDLER <<infra>>
   component [Tool Registry] as TOOL_REG <<api>>
+}
+
+package "Orchestration Layer" <<agent>> #FFE6CC {
   component [Coordinator Agent] as COORDINATOR <<agent>>
 }
 
-package "Tool Layer (12 Tools)" <<api>> {
-  component [Connection Tools] as CONN_TOOLS <<api>>
-  component [Analysis Tools] as ANALYSIS_TOOLS <<api>>
-  component [Knowledge Tools] as KNOWLEDGE_TOOLS <<api>>
-  component [Documentation Tools] as DOC_TOOLS <<api>>
+package "Core Analysis Layer" <<agent>> #E6F3FF {
+  component [Git History Agent] as GIT <<agent>>
+  component [Vibe History Agent] as VIBE <<agent>>
+  component [Semantic Analysis Agent] as SEMANTIC <<agent>>
+  component [Web Search Agent] as WEBSEARCH <<agent>>
+  component [Insight Generation Agent] as INSIGHT <<agent>>
 }
 
-package "Agent Layer (11 Agents)" <<agent>> {
-  package "Core Analysis Agents (8)" {
-    component [Git History Agent] as GIT <<agent>>
-    component [Vibe History Agent] as VIBE <<agent>>
-    component [Semantic Analysis Agent] as SEMANTIC <<agent>>
-    component [Web Search Agent] as WEBSEARCH <<agent>>
-    component [Insight Generation Agent] as INSIGHT <<agent>>
-    component [Observation Generation Agent] as OBS <<agent>>
-    component [Quality Assurance Agent] as QA <<agent>>
-    component [Persistence Agent] as PERSIST <<agent>>
-  }
-  package "Infrastructure Agents (2)" {
-    component [Deduplication Agent] as DEDUP <<agent>>
-    component [Content Validation Agent] as CONTENT <<agent>>
-  }
-  component [Coordinator Agent] as COORD_MAIN <<agent>> #FFE6CC
+package "Quality & Validation Layer" <<agent>> #FFE6E6 {
+  component [Quality Assurance Agent] as QA <<agent>>
+  component [Content Validation Agent] as CONTENT <<agent>>
+  component [Observation Generation Agent] as OBS <<agent>>
+}
+
+package "Infrastructure Layer" <<agent>> #E6FFE6 {
+  component [Persistence Agent] as PERSIST <<agent>>
+  component [Deduplication Agent] as DEDUP <<agent>>
+  component [Git Staleness Detector] as STALE <<agent>>
+}
+
+package "Support Layer" <<infra>> #F0F0F0 {
+  component [Semantic Analyzer] as ANALYZER <<infra>>
+  note right of ANALYZER
+    LLM Integration Layer
+    5-tier provider chain:
+    Groq -> Gemini -> Custom
+    -> Anthropic -> OpenAI
+  end note
 }
 
 package "Storage Layer" <<storage>> {
-  database "GraphDB\nGraphology+LevelDB\n.data/knowledge-graph/" as GRAPHDB <<storage>> #D4EDDA
+  database "GraphDB\nGraphology+LevelDB" as GRAPHDB <<storage>> #D4EDDA
   component [GraphKnowledgeExporter] as EXPORTER <<infra>>
   file "knowledge-export/\n<team>.json" as SHARED_JSON <<storage>>
 }
 
 package "External Services" <<external>> {
-  cloud [Groq LLM] as GROQ_LLM <<external>> #FFE6E6
-  cloud [Gemini] as GEMINI <<external>> #FFE6E6
-  cloud [Custom LLM] as CUSTOM_LLM <<external>> #FFE6E6
-  cloud [Anthropic Claude] as ANTHROPIC <<external>> #FFE6E6
-  cloud [OpenAI GPT] as OPENAI <<external>> #FFE6E6
+  cloud [LLM Providers] as LLM_CLOUD <<external>> #FFE6E6
   cloud [Web Search APIs] as WEB_API <<external>>
   database [Git Repository] as GIT_REPO <<storage>>
   database [.specstory/history] as VIBE_FILES <<storage>>
 }
 
-' Define connections
+' Client to MCP
 CLAUDE --> MCP_HANDLER : "MCP Protocol"
 MCP_HANDLER --> TOOL_REG : "Tool Dispatch"
 TOOL_REG --> COORDINATOR : "Orchestration"
-
-COORDINATOR --> CONN_TOOLS
-COORDINATOR --> ANALYSIS_TOOLS
-COORDINATOR --> KNOWLEDGE_TOOLS
-COORDINATOR --> DOC_TOOLS
 
 ' Coordinator orchestrates all agents
 COORDINATOR --> GIT
@@ -74,97 +72,45 @@ COORDINATOR --> WEBSEARCH
 COORDINATOR --> INSIGHT
 COORDINATOR --> OBS
 COORDINATOR --> QA
+COORDINATOR --> CONTENT
 COORDINATOR --> PERSIST
 COORDINATOR --> DEDUP
-COORDINATOR --> CONTENT
-COORDINATOR ..> GRAPHDB : "Initializes &\nProvides"
+COORDINATOR --> STALE
+COORDINATOR ..> GRAPHDB : "Initializes"
 
-' Agent connections to external services
-GIT --> GIT_REPO : "Reads commits"
-VIBE --> VIBE_FILES : "Reads sessions"
+' LLM-enhanced agents use SemanticAnalyzer
+VIBE ..> ANALYZER
+SEMANTIC ..> ANALYZER
+WEBSEARCH ..> ANALYZER
+INSIGHT ..> ANALYZER
+OBS ..> ANALYZER
+QA ..> ANALYZER
+ANALYZER ..> LLM_CLOUD
 
-' LLM usage (4-tier provider chain via SemanticAnalyzer)
-SEMANTIC ..> GROQ_LLM : "1st: Groq"
-SEMANTIC ..> GEMINI : "2nd: Gemini"
-SEMANTIC ..> CUSTOM_LLM : "3rd: Custom"
-SEMANTIC ..> ANTHROPIC : "4th: Anthropic"
-SEMANTIC .> OPENAI : "Fallback: OpenAI"
+' External data sources
+GIT --> GIT_REPO
+VIBE --> VIBE_FILES
+WEBSEARCH --> WEB_API
 
-INSIGHT ..> GROQ_LLM : "1st: Groq"
-INSIGHT ..> GEMINI : "2nd: Gemini"
-INSIGHT ..> CUSTOM_LLM : "3rd: Custom"
-INSIGHT ..> ANTHROPIC : "4th: Anthropic"
-INSIGHT .> OPENAI : "Fallback: OpenAI"
+' Embeddings for deduplication
+DEDUP ..> LLM_CLOUD : "Embeddings"
 
-QA ..> GROQ_LLM : "1st: Groq"
-QA ..> GEMINI : "2nd: Gemini"
-QA ..> CUSTOM_LLM : "3rd: Custom"
-QA ..> ANTHROPIC : "4th: Anthropic"
-QA .> OPENAI : "Fallback: OpenAI"
+' Storage connections
+PERSIST --> GRAPHDB
+DEDUP --> GRAPHDB
+CONTENT --> GRAPHDB
+STALE --> GIT_REPO
+GRAPHDB --> EXPORTER
+EXPORTER --> SHARED_JSON
 
-OBS ..> GROQ_LLM : "1st: Groq"
-OBS ..> GEMINI : "2nd: Gemini"
-OBS ..> CUSTOM_LLM : "3rd: Custom"
-OBS ..> ANTHROPIC : "4th: Anthropic"
-OBS .> OPENAI : "Fallback: OpenAI"
-
-VIBE ..> GROQ_LLM : "1st: Groq"
-VIBE ..> GEMINI : "2nd: Gemini"
-VIBE ..> CUSTOM_LLM : "3rd: Custom"
-VIBE ..> ANTHROPIC : "4th: Anthropic"
-VIBE .> OPENAI : "Fallback: OpenAI"
-
-WEBSEARCH ..> GROQ_LLM : "Semantic\nrelevance"
-WEBSEARCH ..> WEB_API : "Searches"
-
-DEDUP ..> OPENAI : "Embeddings\ntext-embedding-3-small"
-
-' Storage layer connections
-PERSIST --> GRAPHDB : "Stores entities\n& relations"
-DEDUP --> GRAPHDB : "Queries for\nduplicates"
-CONTENT --> GRAPHDB : "Validates\nentities"
-GRAPHDB --> EXPORTER : "Auto-persist\n30s intervals"
-EXPORTER --> SHARED_JSON : "Exports to JSON"
-
-note right of COORDINATOR
-  Orchestrates all 10 worker agents
-  Manages workflow execution via step definitions
-  Initializes GraphDB adapter
-  Provides QA coordination
-  Handles error recovery & rollback
-end note
-
-note right of SEMANTIC
-  4-tier LLM provider chain:
-  Groq → Gemini → Custom → Anthropic → OpenAI
-  Correlates code changes with conversations
-  Deep semantic code analysis
-  All LLM agents use SemanticAnalyzer
-end note
-
-note right of GRAPHDB
-  Graphology (in-memory multi-graph)
-  LevelDB (persistent storage)
-  Auto-persist every 30 seconds
-  No MCP Memory server used
-  GraphKnowledgeExporter handles JSON export
-end note
-
-note bottom of GIT
-  **Workflow orchestration via CoordinatorAgent:**
-  1. GitHistoryAgent → reads commits
-  2. VibeHistoryAgent → LLM session summaries
-  3. SemanticAnalysisAgent → LLM correlation
-  4. WebSearchAgent → LLM semantic relevance
-  5. InsightGenerationAgent → LLM insights
-  6. ObservationGenerationAgent → LLM extraction
-  7. QualityAssuranceAgent → LLM validation
-  8. ContentValidationAgent → stale entity detection
-  9. PersistenceAgent → stores to GraphDB
-  10. DeduplicationAgent → embedding similarity
-
-  **LLM-Enhanced Agents: 5 analysis + embeddings**
-  **Data flows through coordinator, not agent-to-agent**
-end note
+legend right
+  |= Color |= Layer |
+  | <back:#FFE6CC>   </back> | Orchestration (1 agent) |
+  | <back:#E6F3FF>   </back> | Core Analysis (5 agents) |
+  | <back:#FFE6E6>   </back> | Quality & Validation (3 agents) |
+  | <back:#E6FFE6>   </back> | Infrastructure (3 agents) |
+  | <back:#F0F0F0>   </back> | Support Layer |
+  | <back:#D4EDDA>   </back> | Storage |
+endlegend
 
 @enduml

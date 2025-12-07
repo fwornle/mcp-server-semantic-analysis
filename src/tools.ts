@@ -332,6 +332,14 @@ export const TOOLS: Tool[] = [
           type: "boolean",
           description: "Force full regeneration of entity content, ignoring last_updated timestamp. Use when entity content is known to be stale despite recent update attempts (default: false)",
         },
+        check_entity_name: {
+          type: "boolean",
+          description: "Normalize entity names by removing version numbers per CLAUDE.md guidelines (default: true when force_full_refresh=true)",
+        },
+        cleanup_stale_files: {
+          type: "boolean",
+          description: "Remove orphaned insight/diagram files after refresh (default: false)",
+        },
       },
       required: ["entity_name", "team"],
       additionalProperties: false,
@@ -1452,10 +1460,18 @@ async function handleRefreshEntity(args: any): Promise<any> {
     dry_run = false,
     score_threshold = 100,
     max_entities = 50,
-    force_full_refresh = false
+    force_full_refresh = false,
+    check_entity_name,  // Default handled below based on force_full_refresh
+    cleanup_stale_files = false
   } = args;
 
-  log(`Refreshing entity`, "info", { entity_name, team, dry_run, score_threshold, force_full_refresh });
+  // Default check_entity_name to true when force_full_refresh is true
+  const shouldCheckName = check_entity_name ?? force_full_refresh;
+
+  log(`Refreshing entity`, "info", {
+    entity_name, team, dry_run, score_threshold, force_full_refresh,
+    check_entity_name: shouldCheckName, cleanup_stale_files
+  });
 
   try {
     const repositoryPath = process.env.REPOSITORY_PATH || process.cwd();
@@ -1488,7 +1504,8 @@ async function handleRefreshEntity(args: any): Promise<any> {
         team: teamParam,
         scoreThreshold: score_threshold,
         dryRun: dry_run,
-        maxEntities: max_entities
+        maxEntities: max_entities,
+        forceFullRefresh: force_full_refresh
       });
 
       // Format response
@@ -1576,17 +1593,38 @@ async function handleRefreshEntity(args: any): Promise<any> {
         const refreshResult = await contentValidationAgent.refreshStaleEntity({
           entityName: entity_name,
           team: team,
-          forceFullRefresh: force_full_refresh
+          forceFullRefresh: force_full_refresh,
+          checkEntityName: shouldCheckName
         });
 
+        // Optional: Clean up orphaned files after refresh
+        let cleanupResult: { deletedFiles: string[]; errors: string[] } | undefined;
+        if (cleanup_stale_files && persistenceAgent) {
+          cleanupResult = await persistenceAgent.cleanupEntityFiles({
+            entityName: entity_name === '*' ? undefined : entity_name,
+            team: team,
+            cleanOrphans: entity_name === '*'
+          });
+        }
+
         let responseText = `# Entity Refresh Results\n\n`;
-        responseText += `**Entity:** ${entity_name}\n`;
+        // Use the potentially renamed entity name from the result
+        const displayEntityName = refreshResult.renamedTo || entity_name;
+        responseText += `**Entity:** ${displayEntityName}\n`;
         responseText += `**Team:** ${team}\n`;
         responseText += `**Success:** ${refreshResult.success ? 'Yes' : 'No'}\n\n`;
 
         if (refreshResult.error) {
           responseText += `**Error:** ${refreshResult.error}\n\n`;
         } else {
+          // Report entity rename if it happened
+          if (refreshResult.renamedFrom && refreshResult.renamedTo) {
+            responseText += `## Entity Renamed\n\n`;
+            responseText += `- From: \`${refreshResult.renamedFrom}\`\n`;
+            responseText += `- To: \`${refreshResult.renamedTo}\`\n`;
+            responseText += `- Reason: Numbers removed per CLAUDE.md guidelines\n\n`;
+          }
+
           responseText += `## Score Improvement\n\n`;
           responseText += `- Before: ${refreshResult.validationBefore.overallScore}/100\n`;
           responseText += `- After: ${refreshResult.validationAfter?.overallScore ?? 'N/A'}/100\n\n`;
@@ -1618,13 +1656,22 @@ async function handleRefreshEntity(args: any): Promise<any> {
               responseText += `- ${diagram}\n`;
             }
           }
+
+          // Report on file cleanup if performed
+          if (cleanupResult && cleanupResult.deletedFiles.length > 0) {
+            responseText += `\n## Files Cleaned Up (${cleanupResult.deletedFiles.length})\n\n`;
+            for (const file of cleanupResult.deletedFiles) {
+              responseText += `- ${file}\n`;
+            }
+          }
         }
 
         return {
           content: [{ type: "text", text: responseText }],
           metadata: {
             dry_run: false,
-            entity_name,
+            entity_name: displayEntityName,
+            original_entity_name: refreshResult.renamedFrom || entity_name,
             team,
             success: refreshResult.success,
             score_before: refreshResult.validationBefore.overallScore,
@@ -1632,7 +1679,10 @@ async function handleRefreshEntity(args: any): Promise<any> {
             observations_removed: refreshResult.observationChanges.removed.length,
             observations_added: refreshResult.observationChanges.added.length,
             insight_refreshed: refreshResult.insightRefreshed,
-            diagrams_regenerated: refreshResult.diagramsRegenerated?.length || 0
+            diagrams_regenerated: refreshResult.diagramsRegenerated?.length || 0,
+            renamed_from: refreshResult.renamedFrom,
+            renamed_to: refreshResult.renamedTo,
+            files_cleaned_up: cleanupResult?.deletedFiles?.length || 0
           }
         };
       }

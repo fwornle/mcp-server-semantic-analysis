@@ -80,6 +80,9 @@ export interface EntityMetadata {
   staleness_score?: number;           // 0-100 where 100 = fresh
   staleness_check_at?: string;        // Timestamp of last staleness check
   staleness_method?: string;          // Method used: 'git-based' | 'pattern-match' | 'manual'
+  // Entity rename tracking
+  renamedFrom?: string;               // Previous entity name if renamed
+  renamedAt?: string;                 // Timestamp when entity was renamed
 }
 
 export interface SharedMemoryStructure {
@@ -2593,6 +2596,299 @@ ${entityData.insights}
         details: `Failed to delete entity: ${errorMessage}`
       };
     }
+  }
+
+  /**
+   * Convert entity name to kebab-case for file naming
+   */
+  private toKebabCase(str: string): string {
+    return str
+      .replace(/([a-z])([A-Z])/g, '$1-$2')
+      .replace(/\s+/g, '-')
+      .toLowerCase();
+  }
+
+  /**
+   * Rename an entity with optional file migration
+   * This handles:
+   * 1. Creating new entity with new name
+   * 2. Updating all relations referencing old name
+   * 3. Migrating insight and diagram files
+   * 4. Deleting old entity
+   */
+  async renameEntity(params: {
+    oldName: string;
+    newName: string;
+    team: string;
+    migrateFiles?: boolean;
+  }): Promise<{
+    success: boolean;
+    migratedFiles: string[];
+    deletedFiles: string[];
+    details: string;
+  }> {
+    const migrateFiles = params.migrateFiles ?? true;
+    const result = {
+      success: false,
+      migratedFiles: [] as string[],
+      deletedFiles: [] as string[],
+      details: ''
+    };
+
+    try {
+      log(`Renaming entity: ${params.oldName} -> ${params.newName}`, 'info', { team: params.team });
+
+      // Step 1: Load existing entity
+      const existingEntity = await this.getEntity(params.oldName, params.team);
+      if (!existingEntity) {
+        result.details = `Entity '${params.oldName}' not found`;
+        return result;
+      }
+
+      // Step 2: Create new entity data with new name
+      const newEntity: SharedMemoryEntity = {
+        ...existingEntity,
+        name: params.newName,
+        metadata: {
+          ...existingEntity.metadata,
+          renamedFrom: params.oldName,
+          renamedAt: new Date().toISOString()
+        }
+      };
+
+      // Step 3: Migrate files if requested
+      if (migrateFiles) {
+        const fileResults = await this.migrateEntityFiles(params.oldName, params.newName);
+        result.migratedFiles = fileResults.migrated;
+        result.deletedFiles = fileResults.deleted;
+      }
+
+      // Step 4: Update shared memory - change relations and entities
+      const sharedMemory = await this.loadSharedMemory();
+
+      // Update relations - change all references from oldName to newName
+      sharedMemory.relations = sharedMemory.relations.map(r => ({
+        ...r,
+        from: r.from === params.oldName ? params.newName : r.from,
+        to: r.to === params.oldName ? params.newName : r.to
+      }));
+
+      // Remove old entity and add new
+      sharedMemory.entities = sharedMemory.entities.filter(e => e.name !== params.oldName);
+      sharedMemory.entities.push(newEntity);
+      await this.saveSharedMemory(sharedMemory);
+
+      // Step 5: Update GraphDB
+      if (this.graphDB) {
+        try {
+          await this.graphDB.deleteEntity(params.oldName);
+          // Re-add with new name through normal persistence flow
+        } catch (error) {
+          log('GraphDB delete during rename failed', 'warning', error);
+        }
+      }
+
+      result.success = true;
+      result.details = `Successfully renamed '${params.oldName}' to '${params.newName}'`;
+      log(result.details, 'info', {
+        migratedFiles: result.migratedFiles.length,
+        deletedFiles: result.deletedFiles.length
+      });
+
+    } catch (error) {
+      result.details = `Rename failed: ${error instanceof Error ? error.message : String(error)}`;
+      log(result.details, 'error');
+    }
+
+    return result;
+  }
+
+  /**
+   * Helper to migrate insight and diagram files during entity rename
+   */
+  private async migrateEntityFiles(oldName: string, newName: string): Promise<{
+    migrated: string[];
+    deleted: string[];
+  }> {
+    const result = { migrated: [] as string[], deleted: [] as string[] };
+    const pumlDir = path.join(this.insightsDir, 'puml');
+    const imagesDir = path.join(this.insightsDir, 'images');
+
+    const oldKebab = this.toKebabCase(oldName);
+    const newKebab = this.toKebabCase(newName);
+
+    try {
+      // Migrate insight markdown file
+      const oldInsightPath = path.join(this.insightsDir, `${oldName}.md`);
+      const newInsightPath = path.join(this.insightsDir, `${newName}.md`);
+      if (fs.existsSync(oldInsightPath)) {
+        fs.renameSync(oldInsightPath, newInsightPath);
+        result.migrated.push(newInsightPath);
+        result.deleted.push(oldInsightPath);
+        log(`Migrated insight: ${oldName}.md -> ${newName}.md`, 'info');
+      }
+
+      // Migrate PUML files
+      if (fs.existsSync(pumlDir)) {
+        const pumlFiles = fs.readdirSync(pumlDir).filter(f => f.startsWith(`${oldKebab}-`) && f.endsWith('.puml'));
+        for (const file of pumlFiles) {
+          const newFileName = file.replace(oldKebab, newKebab);
+          const oldPath = path.join(pumlDir, file);
+          const newPath = path.join(pumlDir, newFileName);
+          fs.renameSync(oldPath, newPath);
+          result.migrated.push(newPath);
+          result.deleted.push(oldPath);
+          log(`Migrated PUML: ${file} -> ${newFileName}`, 'info');
+        }
+      }
+
+      // Migrate PNG files
+      if (fs.existsSync(imagesDir)) {
+        const pngFiles = fs.readdirSync(imagesDir).filter(f => f.startsWith(`${oldKebab}-`) && f.endsWith('.png'));
+        for (const file of pngFiles) {
+          const newFileName = file.replace(oldKebab, newKebab);
+          const oldPath = path.join(imagesDir, file);
+          const newPath = path.join(imagesDir, newFileName);
+          fs.renameSync(oldPath, newPath);
+          result.migrated.push(newPath);
+          result.deleted.push(oldPath);
+          log(`Migrated PNG: ${file} -> ${newFileName}`, 'info');
+        }
+      }
+    } catch (error) {
+      log(`File migration error: ${error}`, 'warning');
+    }
+
+    return result;
+  }
+
+  /**
+   * Clean up orphaned files for an entity or find orphans globally
+   */
+  async cleanupEntityFiles(params: {
+    entityName?: string;
+    team: string;
+    cleanOrphans?: boolean;
+  }): Promise<{
+    deletedFiles: string[];
+    errors: string[];
+  }> {
+    const result = { deletedFiles: [] as string[], errors: [] as string[] };
+    const pumlDir = path.join(this.insightsDir, 'puml');
+    const imagesDir = path.join(this.insightsDir, 'images');
+
+    try {
+      if (params.entityName) {
+        // Clean specific entity files
+        const kebabName = this.toKebabCase(params.entityName);
+
+        const filesToCheck = [
+          path.join(this.insightsDir, `${params.entityName}.md`)
+        ];
+
+        // Add PUML files
+        if (fs.existsSync(pumlDir)) {
+          const pumlFiles = fs.readdirSync(pumlDir)
+            .filter(f => f.startsWith(`${kebabName}-`))
+            .map(f => path.join(pumlDir, f));
+          filesToCheck.push(...pumlFiles);
+        }
+
+        // Add PNG files
+        if (fs.existsSync(imagesDir)) {
+          const pngFiles = fs.readdirSync(imagesDir)
+            .filter(f => f.startsWith(`${kebabName}-`))
+            .map(f => path.join(imagesDir, f));
+          filesToCheck.push(...pngFiles);
+        }
+
+        for (const file of filesToCheck) {
+          if (fs.existsSync(file)) {
+            fs.unlinkSync(file);
+            result.deletedFiles.push(file);
+            log(`Deleted: ${file}`, 'info');
+          }
+        }
+      }
+
+      if (params.cleanOrphans) {
+        // Find all entities in knowledge base
+        const allEntities = await this.getAllEntities(params.team);
+        const entityNames = new Set(allEntities.map(e => e.name));
+        const entityKebabNames = new Set(allEntities.map(e => this.toKebabCase(e.name)));
+
+        // Check insight files
+        const insightFiles = fs.readdirSync(this.insightsDir).filter(f => f.endsWith('.md'));
+        for (const file of insightFiles) {
+          const entityName = file.replace('.md', '');
+          // Skip README and other non-entity files
+          if (!entityNames.has(entityName) && entityName !== 'README' && !file.startsWith('_')) {
+            const filePath = path.join(this.insightsDir, file);
+            fs.unlinkSync(filePath);
+            result.deletedFiles.push(filePath);
+            log(`Deleted orphan insight: ${file}`, 'info');
+          }
+        }
+
+        // Check PUML files
+        if (fs.existsSync(pumlDir)) {
+          const pumlFiles = fs.readdirSync(pumlDir).filter(f => f.endsWith('.puml'));
+          for (const file of pumlFiles) {
+            // Skip style files
+            if (file.startsWith('_')) continue;
+
+            // Extract entity name prefix (everything before the diagram type)
+            const parts = file.replace('.puml', '').split('-');
+            // Try progressively longer prefixes to match entity
+            let matched = false;
+            for (let i = parts.length - 1; i > 0; i--) {
+              const prefix = parts.slice(0, i).join('-');
+              if (entityKebabNames.has(prefix)) {
+                matched = true;
+                break;
+              }
+            }
+
+            if (!matched) {
+              const filePath = path.join(pumlDir, file);
+              fs.unlinkSync(filePath);
+              result.deletedFiles.push(filePath);
+              log(`Deleted orphan PUML: ${file}`, 'info');
+            }
+          }
+        }
+
+        // Check PNG files
+        if (fs.existsSync(imagesDir)) {
+          const pngFiles = fs.readdirSync(imagesDir).filter(f => f.endsWith('.png'));
+          for (const file of pngFiles) {
+            const parts = file.replace('.png', '').split('-');
+            let matched = false;
+            for (let i = parts.length - 1; i > 0; i--) {
+              const prefix = parts.slice(0, i).join('-');
+              if (entityKebabNames.has(prefix)) {
+                matched = true;
+                break;
+              }
+            }
+
+            if (!matched) {
+              const filePath = path.join(imagesDir, file);
+              fs.unlinkSync(filePath);
+              result.deletedFiles.push(filePath);
+              log(`Deleted orphan PNG: ${file}`, 'info');
+            }
+          }
+        }
+      }
+
+      log(`Cleanup complete: ${result.deletedFiles.length} files removed`, 'info');
+    } catch (error) {
+      result.errors.push(error instanceof Error ? error.message : String(error));
+      log('Cleanup failed', 'error', error);
+    }
+
+    return result;
   }
 
   /**

@@ -130,9 +130,9 @@ export class InsightGenerationAgent {
     entityType: string;
     observations: string[];
     relations?: Array<{ from: string; to: string; relationType: string }>;
-    diagram?: { name: string; type: string };
+    diagrams?: Array<{ name: string; type: string; success: boolean }>;
   }): Promise<string> {
-    const { entityName, entityType, observations, relations = [], diagram } = params;
+    const { entityName, entityType, observations, relations = [], diagrams = [] } = params;
 
     log(`Generating technical documentation for ${entityName} from ${observations.length} observations`, 'info');
 
@@ -165,21 +165,29 @@ export class InsightGenerationAgent {
     sections.push(`**Type:** ${entityType}\n`);
     sections.push(`${overview}\n`);
 
-    // What It Is
-    if (categorized.descriptions.length > 0 || categorized.implementations.length > 0) {
+    // What It Is - descriptions and implementations (avoid duplication with How It Works)
+    const whatItIsItems = [...categorized.descriptions, ...categorized.implementations];
+    if (whatItIsItems.length > 0) {
       sections.push(`## What It Is\n`);
-      const whatItIs = [...categorized.descriptions, ...categorized.implementations.slice(0, 2)];
-      for (const item of whatItIs.slice(0, 4)) {
+      for (const item of whatItIsItems.slice(0, 4)) {
         sections.push(`- ${item}\n`);
       }
       sections.push('');
     }
 
-    // How It Works
-    if (categorized.workflows.length > 0 || categorized.implementations.length > 0) {
+    // How It Works - workflows only (not implementations, to avoid duplication)
+    if (categorized.workflows.length > 0) {
       sections.push(`## How It Works\n`);
-      const howItWorks = [...categorized.workflows, ...categorized.implementations];
-      for (const item of howItWorks.slice(0, 5)) {
+      for (const item of categorized.workflows.slice(0, 5)) {
+        sections.push(`- ${item}\n`);
+      }
+      sections.push('');
+    }
+
+    // Other details (remaining uncategorized observations)
+    if (categorized.other.length > 0) {
+      sections.push(`## Additional Details\n`);
+      for (const item of categorized.other.slice(0, 3)) {
         sections.push(`- ${item}\n`);
       }
       sections.push('');
@@ -223,11 +231,23 @@ export class InsightGenerationAgent {
       sections.push('');
     }
 
-    // Architecture Diagram (if provided)
-    if (diagram) {
-      sections.push(`## Architecture\n`);
-      sections.push(`![${entityName} Architecture](images/${diagram.name}.png)\n`);
-      sections.push('');
+    // Diagrams section - display all successful diagrams
+    const successfulDiagrams = diagrams.filter(d => d.success);
+    if (successfulDiagrams.length > 0) {
+      sections.push(`## Diagrams\n`);
+
+      // Order: architecture first, then sequence, class, use-cases
+      const diagramOrder = ['architecture', 'sequence', 'class', 'use-cases'];
+      const orderedDiagrams = successfulDiagrams.sort((a, b) =>
+        diagramOrder.indexOf(a.type) - diagramOrder.indexOf(b.type)
+      );
+
+      for (const diagram of orderedDiagrams) {
+        const diagramTitle = diagram.type.charAt(0).toUpperCase() + diagram.type.slice(1).replace('-', ' ');
+        sections.push(`### ${diagramTitle}\n`);
+        sections.push(`![${entityName} ${diagramTitle}](images/${diagram.name}.png)\n`);
+        sections.push('');
+      }
     }
 
     // Footer
@@ -747,27 +767,15 @@ export class InsightGenerationAgent {
     );
 
     try {
-      // SIMPLIFIED: Only generate architecture diagram for entity refreshes
-      if (entityInfo) {
-        // FIX: Pass entityInfo to diagram generation for observation-based diagrams
-        const archDiagram = await this.generatePlantUMLDiagram('architecture', diagramBaseName, {
-          gitAnalysis,
-          vibeAnalysis,
-          semanticAnalysis,
-          patternCatalog,
-          entityInfo  // NEW: Include entity observations for better diagram generation
-        });
-        if (archDiagram && archDiagram.success) {
-          diagrams = [archDiagram];
-        }
-      } else {
-        diagrams = await this.generateAllDiagrams(diagramBaseName, {
-          gitAnalysis,
-          vibeAnalysis,
-          semanticAnalysis,
-          patternCatalog
-        });
-      }
+      // Generate ALL 4 diagram types for entity refreshes (architecture, sequence, class, use-cases)
+      // This ensures comprehensive documentation with multiple perspectives
+      diagrams = await this.generateAllDiagrams(diagramBaseName, {
+        gitAnalysis,
+        vibeAnalysis,
+        semanticAnalysis,
+        patternCatalog,
+        entityInfo  // Pass entity observations for better diagram generation
+      });
     } catch (diagramError: any) {
       log(`Diagram generation failed, continuing without diagrams: ${diagramError.message}`, 'warning');
       diagrams = [];
@@ -993,7 +1001,7 @@ export class InsightGenerationAgent {
     }
 
     // Validate and fix PlantUML content before writing
-    const validatedContent = this.validateAndFixPlantUML(diagramContent);
+    let validatedContent = this.validateAndFixPlantUML(diagramContent);
     if (!validatedContent) {
       log(`PlantUML validation failed for ${type} diagram - content has unfixable errors`, 'error');
       return {
@@ -1032,14 +1040,60 @@ export class InsightGenerationAgent {
 
       if (!checkResult.valid) {
         log(`PlantUML syntax check failed for ${pumlFile}: ${checkResult.error}`, 'warning');
-        // File is written but PNG won't be generated
-        return {
-          type,
-          name: `${toKebabCase(name)}-${type}`,
-          content: validatedContent,
-          pumlFile,
-          success: false  // Mark as failed due to syntax error
-        };
+
+        // Attempt LLM-based repair (up to 2 retries)
+        let repairedContent = validatedContent;
+        let repairAttempt = 0;
+        const maxRepairAttempts = 2;
+
+        while (!checkResult.valid && repairAttempt < maxRepairAttempts) {
+          repairAttempt++;
+          log(`Attempting LLM-based PlantUML repair (attempt ${repairAttempt}/${maxRepairAttempts})`, 'info');
+
+          const repairResult = await this.repairPlantUMLWithLLM(repairedContent, checkResult.error || 'Unknown syntax error', type);
+
+          if (repairResult) {
+            repairedContent = repairResult;
+            await fs.promises.writeFile(pumlFile, repairedContent, 'utf8');
+
+            // Re-validate
+            const recheck = await new Promise<{ valid: boolean; error?: string }>((resolve) => {
+              const check = spawn('plantuml', ['-checkonly', pumlFile]);
+              let stderr = '';
+              check.stderr?.on('data', (d) => { stderr += d.toString(); });
+              check.on('close', (code) => {
+                resolve(code === 0 ? { valid: true } : { valid: false, error: stderr || `Exit code ${code}` });
+              });
+              check.on('error', (err) => resolve({ valid: false, error: err.message }));
+            });
+
+            if (recheck.valid) {
+              log(`✅ PlantUML repair successful on attempt ${repairAttempt}`, 'info');
+              checkResult.valid = true;
+              checkResult.error = undefined;
+            } else {
+              log(`PlantUML repair attempt ${repairAttempt} still has errors: ${recheck.error}`, 'warning');
+              checkResult.error = recheck.error;
+            }
+          } else {
+            log(`LLM repair attempt ${repairAttempt} returned no result`, 'warning');
+            break;
+          }
+        }
+
+        if (!checkResult.valid) {
+          log(`PlantUML repair failed after ${repairAttempt} attempts`, 'warning');
+          return {
+            type,
+            name: `${toKebabCase(name)}-${type}`,
+            content: repairedContent,
+            pumlFile,
+            success: false  // Mark as failed due to unfixable syntax error
+          };
+        }
+
+        // Update validatedContent with the repaired version for PNG generation
+        validatedContent = repairedContent;
       }
 
       // Generate PNG if PlantUML is available and syntax is valid
@@ -1201,17 +1255,77 @@ export class InsightGenerationAgent {
     // Fix 5: Inline notes with \n escape sequences - convert to multi-line note blocks
     // Match: note "text with \n in it" -> note as N1 \n text \n end note
     let noteCounter = 1;
-    fixed = fixed.replace(/\bnote\s+"([^"]*\\n[^"]*)"/g, (match, content) => {
-      const cleanContent = content.replace(/\\n/g, '\n  ');
+    fixed = fixed.replace(/\bnote\s+"([^"]*\\n[^"]*)"/g, (_match, content) => {
+      // Expand \n to newlines, then trim and clean up
+      const expanded = content.replace(/\\n/g, '\n');
+      // Remove leading/trailing whitespace and blank lines
+      const lines = expanded.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
+      const cleanContent = lines.map((l: string) => `  ${l}`).join('\n');
       const noteId = `AutoNote${noteCounter++}`;
-      return `note as ${noteId}\n  ${cleanContent}\nend note`;
+      return `note as ${noteId}\n${cleanContent}\nend note`;
     });
 
     // Fix 6: Floating notes with \n at end of file - also needs multi-line format
-    fixed = fixed.replace(/\bnote\s+"([^"]*)\\n([^"]*)"/g, (match, part1, part2) => {
+    fixed = fixed.replace(/\bnote\s+"([^"]*)\\n([^"]*)"/g, (_match, part1, part2) => {
       const noteId = `AutoNote${noteCounter++}`;
-      return `note as ${noteId}\n  ${part1}\n  ${part2}\nend note`;
+      const trimmedPart1 = part1.trim();
+      const trimmedPart2 = part2.trim();
+      // Only include non-empty parts
+      const parts = [trimmedPart1, trimmedPart2].filter(p => p.length > 0);
+      const cleanContent = parts.map(p => `  ${p}`).join('\n');
+      return `note as ${noteId}\n${cleanContent}\nend note`;
     });
+
+    // Fix 7: Standalone notes without position - LLM generates 'note "text"' which is invalid
+    // Must be either 'note right of X "text"' or 'note as N1 ... end note'
+    // Convert to floating note block format
+    fixed = fixed.replace(/^(\s*)note\s+"([^"]+)"(\s*)$/gm, (_match, leadingWs, content, trailingWs) => {
+      const noteId = `AutoNote${noteCounter++}`;
+      const trimmedContent = content.trim();
+      if (trimmedContent.length === 0) return ''; // Skip empty notes entirely
+      return `${leadingWs}note as ${noteId}\n${leadingWs}  ${trimmedContent}\n${leadingWs}end note${trailingWs}`;
+    });
+
+    // Fix 8: Invalid 'end note as X' syntax - should just be 'end note'
+    // LLM sometimes generates 'end note as noteId' which is invalid
+    fixed = fixed.replace(/\bend\s+note\s+as\s+\w+/g, 'end note');
+
+    // Fix 9: Component blocks with class-style member lists (+ method, - field)
+    // PlantUML components don't support member definitions - only classes do
+    // Remove lines inside component blocks that start with +, -, #, ~
+    fixed = fixed.replace(/(\bcomponent\s+[^\{]+\{)([^}]*?)(\})/g, (_match, open, body, close) => {
+      // Remove member definition lines (lines starting with +, -, #, ~ after whitespace)
+      const cleanedBody = body.replace(/^\s*[+\-#~]\s+[^\n]+$/gm, '');
+      // Also remove resulting empty lines
+      const trimmedBody = cleanedBody.replace(/\n\s*\n/g, '\n');
+      return open + trimmedBody + close;
+    });
+
+    // Fix 10: Clean up blank lines inside existing note blocks (note as X ... end note)
+    // Non-sequence diagrams can use floating notes with `note as X ... end note`
+    fixed = fixed.replace(/(\bnote\s+as\s+\w+)\n([\s\S]*?)\n(\s*end\s+note)/g, (_match, noteStart, noteBody, noteEnd) => {
+      // Split body into lines, trim each, filter empty, rejoin with proper indentation
+      const lines = noteBody.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
+      const cleanedBody = lines.map((l: string) => `  ${l}`).join('\n');
+      return `${noteStart}\n${cleanedBody}\n${noteEnd}`;
+    });
+
+    // Fix 11: Sequence diagram floating notes - convert `note as X ... end note` to `note over`
+    // Sequence diagrams do NOT support `note as X` syntax - must be attached to participant
+    // Detect sequence diagrams by presence of participant/actor declarations and ->> or -> arrows
+    const isSequenceDiagram = /\b(participant|actor)\b/.test(fixed) && /->/.test(fixed);
+    if (isSequenceDiagram) {
+      // Find the first participant declared to attach notes to
+      const participantMatch = fixed.match(/\b(?:participant|actor)\s+(\w+)/);
+      const firstParticipant = participantMatch ? participantMatch[1] : 'Unknown';
+
+      // Convert floating note blocks to note over syntax
+      fixed = fixed.replace(/\bnote\s+as\s+\w+\n([\s\S]*?)\nend\s+note/g, (_match, noteBody) => {
+        const lines = noteBody.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
+        const noteText = lines.join(' ');
+        return `note over ${firstParticipant}: ${noteText}`;
+      });
+    }
 
     // Validate: Must have both start and end tags
     if (!fixed.includes('@startuml') || !fixed.includes('@enduml')) {
@@ -1228,6 +1342,87 @@ export class InsightGenerationAgent {
     }
 
     return fixed;
+  }
+
+  /**
+   * Attempt to repair a PlantUML diagram using LLM when regex-based fixes fail.
+   * The LLM receives the broken PUML content plus the specific error message from PlantUML,
+   * enabling it to make targeted fixes based on the actual syntax error.
+   */
+  private async repairPlantUMLWithLLM(
+    brokenPuml: string,
+    errorMessage: string,
+    diagramType: PlantUMLDiagram['type']
+  ): Promise<string | null> {
+    try {
+      const repairPrompt = `You are a PlantUML syntax expert. A PlantUML ${diagramType} diagram has a syntax error.
+
+**ERROR FROM PLANTUML:**
+${errorMessage}
+
+**BROKEN PLANTUML CONTENT:**
+\`\`\`plantuml
+${brokenPuml}
+\`\`\`
+
+**YOUR TASK:**
+Fix the syntax error and return ONLY the corrected PlantUML code. No explanations.
+
+**COMMON FIXES FOR ${diagramType.toUpperCase()} DIAGRAMS:**
+${diagramType === 'sequence' ? `
+- Sequence diagrams do NOT support 'note as X ... end note' floating notes
+- Use 'note over Participant: text' or 'note right of Participant: text' instead
+- Ensure all participants are declared before use
+- Arrow syntax: -> for solid, --> for dashed, ->> for async` : ''}
+${diagramType === 'architecture' ? `
+- Use proper component/package nesting
+- Notes inside packages use 'note as X ... end note' format
+- Ensure braces { } are balanced` : ''}
+${diagramType === 'class' ? `
+- Class members use +public, -private, #protected prefixes
+- Relationships: --|> extends, ..|> implements, --> association` : ''}
+${diagramType === 'use-cases' ? `
+- Actors are defined with 'actor Name'
+- Use cases are defined with 'usecase "Name" as UC1' or '(Name)'
+- Relationships: --> for association` : ''}
+
+**CRITICAL RULES:**
+1. Keep the same @startuml and @enduml tags
+2. Keep the !include line for the style sheet unchanged
+3. Do NOT add skinparam - styles come from the include
+4. Return ONLY valid PlantUML code starting with @startuml
+
+Return the fixed PlantUML code now:`;
+
+      const repairResult = await this.semanticAnalyzer.analyzeContent(repairPrompt, {
+        analysisType: 'code',  // Use 'code' for syntax-focused task
+        context: `PlantUML ${diagramType} diagram repair`,
+        provider: 'auto'
+      });
+
+      if (repairResult?.insights) {
+        // Extract the PUML from the response
+        const pumlMatch = repairResult.insights.match(/@startuml[\s\S]*?@enduml/);
+        if (pumlMatch) {
+          // Apply regex fixes to the LLM output as well (belt and suspenders)
+          const repairedAndValidated = this.validateAndFixPlantUML(pumlMatch[0]);
+          if (repairedAndValidated) {
+            log(`LLM repair produced valid PlantUML`, 'info', {
+              originalLength: brokenPuml.length,
+              repairedLength: repairedAndValidated.length,
+              provider: repairResult.provider
+            });
+            return repairedAndValidated;
+          }
+        }
+        log(`LLM repair response did not contain valid PlantUML block`, 'warning');
+      }
+
+      return null;
+    } catch (error) {
+      log(`LLM PlantUML repair failed`, 'warning', error);
+      return null;
+    }
   }
 
   private buildDiagramPrompt(type: PlantUMLDiagram['type'], data: any): string {
@@ -1315,7 +1510,25 @@ ${analysisContext}
 - Group related classes into packages
 - Use proper UML class diagram syntax
 - Show dependencies and associations between classes
-- PREFER vertical layout to avoid excessive width`;
+- PREFER vertical layout to avoid excessive width
+
+**VALID class diagram elements ONLY:**
+- class ClassName { ... } - for classes
+- interface InterfaceName { ... } - for interfaces
+- enum EnumName { ... } - for enumerations
+- abstract class AbstractName { ... } - for abstract classes
+- package "Name" { ... } - for grouping
+- <<stereotype>> - for stereotypes like <<service>>, <<file>>, <<interface>>
+- Relationships: --|>, ..|>, --*, --o, -->, ..>
+
+**DO NOT USE these elements (they are for OTHER diagram types):**
+- folder, artifact, node, component, database, cloud, queue, storage
+- rectangle (use package instead for grouping)
+- These are deployment/component elements and will cause syntax errors
+
+**Syntax rules:**
+- Property/field names must NOT contain spaces (use camelCase)
+- Example: -databaseAdapter: Type (correct), NOT: -database Adapter: Type (wrong)`;
 
     } else if (type === 'sequence') {
       prompt += `
@@ -1705,15 +1918,16 @@ SemanticAnalysisAgent --> InsightGenerationAgent
     if (entityInfo?.observations && entityInfo.observations.length > 0) {
       log(`Using observation-based documentation for ${entityInfo.name} (${entityInfo.observations.length} observations)`, 'info');
 
-      // Find a suitable diagram for the entity
-      const architectureDiagram = diagrams?.find((d: PlantUMLDiagram) => d.type === 'architecture' && d.success);
+      // Pass all successful diagrams to the documentation generator
+      const successfulDiagrams = diagrams?.filter((d: PlantUMLDiagram) => d.success)
+        .map((d: PlantUMLDiagram) => ({ name: d.name, type: d.type, success: d.success })) || [];
 
       return await this.generateTechnicalDocumentation({
         entityName: entityInfo.name,
         entityType: entityInfo.type || 'Pattern',
         observations: entityInfo.observations,
         relations: relations || [],
-        diagram: architectureDiagram ? { name: architectureDiagram.name, type: 'architecture' } : undefined
+        diagrams: successfulDiagrams
       });
     }
 
@@ -3604,6 +3818,7 @@ class SolutionPattern {
     current_analysis: any;
     entityName: string;
     regenerate_diagrams?: boolean;
+    regenerate_all_diagrams?: boolean;  // Generate all 4 diagram types (architecture, sequence, class, use-cases)
   }): Promise<{
     success: boolean;
     refreshedInsightPath?: string;
@@ -3612,9 +3827,18 @@ class SolutionPattern {
     updatedObservations: string[];
     summary: string;
   }> {
-    const { validation_report, current_analysis, entityName, regenerate_diagrams = true } = params;
+    const {
+      validation_report,
+      current_analysis,
+      entityName,
+      regenerate_diagrams = true,
+      regenerate_all_diagrams = false
+    } = params;
 
-    log(`Refreshing insights for entity: ${entityName}`, 'info');
+    log(`Refreshing insights for entity: ${entityName}`, 'info', {
+      regenerate_diagrams,
+      regenerate_all_diagrams
+    });
 
     const result = {
       success: false,
@@ -3626,27 +3850,76 @@ class SolutionPattern {
     };
 
     try {
-      // If validation report indicates diagram staleness, regenerate diagrams
-      if (regenerate_diagrams && validation_report?.suggestedActions?.regenerateDiagrams?.length > 0) {
-        for (const diagramPath of validation_report.suggestedActions.regenerateDiagrams) {
-          try {
-            // Extract diagram type from path
-            const diagramName = path.basename(diagramPath, path.extname(diagramPath));
-            const diagramType = this.inferDiagramType(diagramName);
+      // Regenerate diagrams if requested
+      if (regenerate_diagrams || regenerate_all_diagrams) {
+        // COMPLETE REFRESH: Generate ALL 4 diagram types
+        if (regenerate_all_diagrams) {
+          log(`Generating ALL diagram types for ${entityName}`, 'info');
+          const allDiagramTypes: Array<'architecture' | 'sequence' | 'class' | 'use-cases'> = [
+            'architecture',
+            'sequence',
+            'class',
+            'use-cases'
+          ];
 
-            // Generate fresh diagram based on current analysis
-            const freshDiagram = await this.generateDiagramFromCurrentState(
-              entityName,
-              diagramType,
-              current_analysis
-            );
+          for (const diagramType of allDiagramTypes) {
+            try {
+              const freshDiagram = await this.generateDiagramFromCurrentState(
+                entityName,
+                diagramType,
+                current_analysis
+              );
 
-            if (freshDiagram) {
-              result.regeneratedDiagrams.push(freshDiagram);
-              log(`Regenerated diagram: ${freshDiagram}`, 'info');
+              if (freshDiagram) {
+                result.regeneratedDiagrams.push(freshDiagram);
+                log(`Generated ${diagramType} diagram: ${freshDiagram}`, 'info');
+              }
+            } catch (error) {
+              log(`Failed to generate ${diagramType} diagram: ${error}`, 'warning');
             }
-          } catch (error) {
-            log(`Failed to regenerate diagram ${diagramPath}: ${error}`, 'warning');
+          }
+        } else {
+          // If validation report specifies specific diagrams to regenerate, use those
+          const diagramsToRegenerate = validation_report?.suggestedActions?.regenerateDiagrams || [];
+
+          if (diagramsToRegenerate.length > 0) {
+            // Regenerate specific diagrams flagged by validation
+            for (const diagramPath of diagramsToRegenerate) {
+              try {
+                const diagramName = path.basename(diagramPath, path.extname(diagramPath));
+                const diagramType = this.inferDiagramType(diagramName);
+
+                const freshDiagram = await this.generateDiagramFromCurrentState(
+                  entityName,
+                  diagramType,
+                  current_analysis
+                );
+
+                if (freshDiagram) {
+                  result.regeneratedDiagrams.push(freshDiagram);
+                  log(`Regenerated diagram: ${freshDiagram}`, 'info');
+                }
+              } catch (error) {
+                log(`Failed to regenerate diagram ${diagramPath}: ${error}`, 'warning');
+              }
+            }
+          } else {
+            // Default: generate architecture diagram at minimum
+            log(`Generating architecture diagram for ${entityName}`, 'info');
+            try {
+              const freshDiagram = await this.generateDiagramFromCurrentState(
+                entityName,
+                'architecture',
+                current_analysis
+              );
+
+              if (freshDiagram) {
+                result.regeneratedDiagrams.push(freshDiagram);
+                log(`Generated architecture diagram: ${freshDiagram}`, 'info');
+              }
+            } catch (error) {
+              log(`Failed to generate architecture diagram: ${error}`, 'warning');
+            }
           }
         }
       }
@@ -3705,57 +3978,50 @@ class SolutionPattern {
 
   /**
    * Generate a diagram based on current codebase state
+   * Uses generatePlantUMLDiagram to properly save PUML files and generate PNGs
    */
   private async generateDiagramFromCurrentState(
     entityName: string,
     diagramType: 'architecture' | 'sequence' | 'class' | 'use-cases',
     currentAnalysis: any
   ): Promise<string | null> {
-    const diagramBaseName = `${entityName.toLowerCase().replace(/\s+/g, '-')}-${diagramType}`;
-
     try {
       // Build context from current analysis for diagram generation
-      const diagramContext = {
-        entityName,
+      const diagramData = {
+        patternCatalog: {
+          patterns: currentAnalysis?.patterns || [],
+          summary: {
+            totalPatterns: currentAnalysis?.patterns?.length || 0,
+            byCategory: {},
+            avgSignificance: 7,
+            topPatterns: []
+          }
+        },
         components: currentAnalysis?.components || [],
-        patterns: currentAnalysis?.patterns || [],
         relationships: currentAnalysis?.relationships || [],
-        files: currentAnalysis?.files || []
+        files: currentAnalysis?.files || [],
+        entityInfo: currentAnalysis?.entity_info || {
+          name: entityName,
+          type: 'Pattern',
+          observations: currentAnalysis?.observations || []
+        },
+        name: entityName
       };
 
-      // Use existing diagram generation methods based on type
-      let diagram: any;
-      switch (diagramType) {
-        case 'architecture':
-          diagram = await this.generateArchitectureDiagram({
-            patterns: diagramContext.patterns,
-            components: diagramContext.components,
-            name: entityName
-          });
-          break;
-        case 'sequence':
-          diagram = await this.generateSequenceDiagram({
-            patterns: diagramContext.patterns,
-            name: entityName
-          });
-          break;
-        case 'class':
-          diagram = await this.generateClassDiagram({
-            patterns: diagramContext.patterns,
-            components: diagramContext.components,
-            name: entityName
-          });
-          break;
-        case 'use-cases':
-          diagram = await this.generateUseCasesDiagram({
-            patterns: diagramContext.patterns,
-            name: entityName
-          });
-          break;
-      }
+      // Use generatePlantUMLDiagram which properly saves PUML and generates PNG
+      const diagram = await this.generatePlantUMLDiagram(
+        diagramType,
+        entityName,
+        diagramData
+      );
 
-      if (diagram) {
-        return diagram.filePath || diagram.path || diagramBaseName;
+      if (diagram && diagram.success) {
+        log(`Successfully generated ${diagramType} diagram: ${diagram.pumlFile}`, 'info', {
+          pngGenerated: !!diagram.pngFile
+        });
+        return diagram.pngFile || diagram.pumlFile || diagram.name;
+      } else {
+        log(`Diagram generation returned but was not successful for ${entityName}`, 'warning');
       }
     } catch (error) {
       log(`Error generating ${diagramType} diagram: ${error}`, 'warning');
@@ -3773,19 +4039,7 @@ class SolutionPattern {
     regeneratedDiagrams: string[]
   ): Promise<{ path: string; content: string } | null> {
     try {
-      // Build pattern catalog from current analysis
-      const patterns = currentAnalysis?.patterns || [];
-      const patternCatalog: PatternCatalog = {
-        patterns,
-        summary: {
-          totalPatterns: patterns.length,
-          byCategory: {},
-          avgSignificance: 7,
-          topPatterns: patterns.slice(0, 5).map((p: any) => p.name || 'Unknown')
-        }
-      };
-
-      // Extract entity info from current analysis (this is the key fix!)
+      // Extract entity info from current analysis
       const entityInfo = currentAnalysis?.entity_info ? {
         name: currentAnalysis.entity_info.name || entityName,
         type: currentAnalysis.entity_info.type || 'Pattern',
@@ -3796,25 +4050,44 @@ class SolutionPattern {
         observations: []
       };
 
-      log(`Refreshing insight document for ${entityInfo.name} with ${entityInfo.observations.length} observations`, 'info');
+      log(`Refreshing insight document for ${entityInfo.name} with ${entityInfo.observations.length} observations and ${regeneratedDiagrams.length} pre-generated diagrams`, 'info');
 
-      // Call generateInsightDocument with entity info
-      const insightDocument = await this.generateInsightDocument(
-        currentAnalysis?.git_analysis || null,
-        currentAnalysis?.vibe_analysis || null,
-        currentAnalysis,
-        patternCatalog,
-        currentAnalysis?.web_results || null,
-        entityInfo,  // NEW: Pass entity info for observation-based content
-        currentAnalysis?.relations || []  // NEW: Pass relations
-      );
-
-      if (insightDocument) {
-        return {
-          path: insightDocument.filePath,
-          content: insightDocument.content
-        };
+      // Convert regeneratedDiagrams paths to the format expected by generateTechnicalDocumentation
+      // Diagram paths are like: /path/to/images/entity-name-type.png
+      const diagrams: Array<{ name: string; type: string; success: boolean }> = [];
+      for (const diagramPath of regeneratedDiagrams) {
+        const basename = path.basename(diagramPath, path.extname(diagramPath));
+        // Infer type from filename suffix (e.g., entity-name-architecture -> architecture)
+        const diagramType = this.inferDiagramType(basename);
+        diagrams.push({
+          name: basename,
+          type: diagramType,
+          success: true // Already generated successfully
+        });
+        log(`Including pre-generated diagram: ${basename} (${diagramType})`, 'debug');
       }
+
+      // Generate content directly with the pre-generated diagrams
+      // This avoids duplicate diagram generation
+      const content = await this.generateTechnicalDocumentation({
+        entityName: entityInfo.name,
+        entityType: entityInfo.type || 'Pattern',
+        observations: entityInfo.observations,
+        relations: currentAnalysis?.relations || [],
+        diagrams
+      });
+
+      // Save the document
+      // CONVENTION: .md files use PascalCase (entity name)
+      const filePath = path.join(this.outputDir, `${entityInfo.name}.md`);
+
+      await fs.promises.writeFile(filePath, content, 'utf8');
+      log(`Insight document saved to ${filePath}`, 'info');
+
+      return {
+        path: filePath,
+        content
+      };
     } catch (error) {
       log(`Error generating refreshed insight document: ${error}`, 'warning');
     }

@@ -2023,8 +2023,10 @@ async function handleListOntologyClasses(args: {
       const upperContent = await fs.readFile(upperPath, 'utf-8');
       const upperOntology = JSON.parse(upperContent);
 
-      if (upperOntology.entityDefinitions) {
-        for (const [name, def] of Object.entries(upperOntology.entityDefinitions)) {
+      // Support both 'entities' (current format) and 'entityDefinitions' (legacy format)
+      const upperEntities = upperOntology.entities || upperOntology.entityDefinitions;
+      if (upperEntities) {
+        for (const [name, def] of Object.entries(upperEntities)) {
           const entityDef = def as any;
           if (!args.filter_parent || entityDef.extendsEntity === args.filter_parent) {
             classes.push({
@@ -2051,8 +2053,10 @@ async function handleListOntologyClasses(args: {
       const lowerContent = await fs.readFile(lowerPath, 'utf-8');
       const lowerOntology = JSON.parse(lowerContent);
 
-      if (lowerOntology.entityDefinitions) {
-        for (const [name, def] of Object.entries(lowerOntology.entityDefinitions)) {
+      // Support both 'entities' (current format) and 'entityDefinitions' (legacy format)
+      const lowerEntities = lowerOntology.entities || lowerOntology.entityDefinitions;
+      if (lowerEntities) {
+        for (const [name, def] of Object.entries(lowerEntities)) {
           const entityDef = def as any;
           if (!args.filter_parent || entityDef.extendsEntity === args.filter_parent) {
             classes.push({

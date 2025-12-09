@@ -10,6 +10,7 @@ import { QualityAssuranceAgent } from "./quality-assurance-agent.js";
 import { PersistenceAgent } from "./persistence-agent.js";
 import { DeduplicationAgent } from "./deduplication.js";
 import { ContentValidationAgent } from "./content-validation-agent.js";
+import { OntologyClassificationAgent } from "./ontology-classification-agent.js";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 import { WorkflowReportAgent, type StepReport } from "./workflow-report-agent.js";
 
@@ -70,14 +71,16 @@ export class CoordinatorAgent {
   private agents: Map<string, any> = new Map();
   private running: boolean = true;
   private repositoryPath: string;
+  private team: string;
   private graphDB: GraphDatabaseAdapter;
   private initializationPromise: Promise<void> | null = null;
   private isInitializing: boolean = false;
   private monitorIntervalId: ReturnType<typeof setInterval> | null = null;
   private reportAgent: WorkflowReportAgent;
 
-  constructor(repositoryPath: string = '.') {
+  constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
+    this.team = team;
     this.graphDB = new GraphDatabaseAdapter();
     this.reportAgent = new WorkflowReportAgent(repositoryPath);
     this.initializeWorkflows();
@@ -225,7 +228,8 @@ export class CoordinatorAgent {
         name: "incremental-analysis",
         description: "Incremental analysis since last checkpoint",
         // content_validation agent re-enabled after async conversion (all sync fs ops converted to async)
-        agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation", "observation_generation", "quality_assurance", "persistence", "deduplication", "content_validation"],
+        // ontology_classification added for classifying observations against ontology
+        agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation", "observation_generation", "ontology_classification", "quality_assurance", "persistence", "deduplication", "content_validation"],
         steps: [
           {
             name: "analyze_recent_changes",
@@ -287,6 +291,18 @@ export class CoordinatorAgent {
             timeout: 60,
           },
           {
+            name: "classify_with_ontology",
+            agent: "ontology_classification",
+            action: "classifyObservations",
+            parameters: {
+              observations: "{{generate_observations.result.observations}}",
+              autoExtend: true,
+              minConfidence: 0.6
+            },
+            dependencies: ["generate_observations"],
+            timeout: 30,
+          },
+          {
             name: "validate_incremental_qa",
             agent: "quality_assurance",
             action: "performLightweightQA",
@@ -296,11 +312,12 @@ export class CoordinatorAgent {
                 vibe_history: "{{analyze_recent_vibes.result}}",
                 semantic_analysis: "{{analyze_semantics.result}}",
                 insights: "{{generate_insights.result}}",
-                observations: "{{generate_observations.result}}"
+                observations: "{{generate_observations.result}}",
+                ontology_classification: "{{classify_with_ontology.result}}"
               },
               lightweight: true // Skip heavy validation for incremental runs
             },
-            dependencies: ["generate_observations"],
+            dependencies: ["classify_with_ontology"],
             timeout: 30,
           },
           {
@@ -314,6 +331,7 @@ export class CoordinatorAgent {
                 semantic_analysis: "{{analyze_semantics.result}}",
                 insights: "{{generate_insights.result}}",
                 observations: "{{generate_observations.result}}",
+                ontology_classification: "{{classify_with_ontology.result}}",
                 quality_assurance: "{{validate_incremental_qa.result}}"
               }
             },
@@ -556,6 +574,10 @@ export class CoordinatorAgent {
 
       const observationGenerationAgent = new ObservationGenerationAgent();
       this.agents.set("observation_generation", observationGenerationAgent);
+
+      // Ontology Classification Agent for classifying observations against ontology
+      const ontologyClassificationAgent = new OntologyClassificationAgent(this.team);
+      this.agents.set("ontology_classification", ontologyClassificationAgent);
 
       const qualityAssuranceAgent = new QualityAssuranceAgent();
       this.agents.set("quality_assurance", qualityAssuranceAgent);

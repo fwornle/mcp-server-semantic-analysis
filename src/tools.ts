@@ -9,6 +9,12 @@ import { WebSearchAgent } from "./agents/web-search.js";
 import { PersistenceAgent } from "./agents/persistence-agent.js";
 import { ContentValidationAgent, type EntityRefreshResult } from "./agents/content-validation-agent.js";
 import { GraphDatabaseAdapter } from "./storage/graph-database-adapter.js";
+import {
+  OntologyConfigManager,
+  ExtendedOntologyConfig,
+} from "./ontology/OntologyConfigManager.js";
+import { OntologyManager } from "./ontology/OntologyManager.js";
+import { OntologyValidator } from "./ontology/OntologyValidator.js";
 import fs from "fs/promises";
 import { mkdirSync, writeFileSync } from "fs";
 import path from "path";
@@ -349,6 +355,105 @@ export const TOOLS: Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "inject_ontology",
+    description: "Inject/swap ontology configuration at runtime. Load a different upper or lower ontology without server restart.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        upper_ontology_path: {
+          type: "string",
+          description: "Path to new upper ontology file (relative to project root)",
+        },
+        lower_ontology_path: {
+          type: "string",
+          description: "Path to new lower ontology file (relative to project root)",
+        },
+        team: {
+          type: "string",
+          description: "Team name for the lower ontology",
+        },
+        validation_mode: {
+          type: "string",
+          description: "Validation mode for the new ontology",
+          enum: ["strict", "lenient", "auto-extend"],
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_ontology_status",
+    description: "Get current ontology configuration, status, and statistics",
+    inputSchema: {
+      type: "object",
+      properties: {
+        include_stats: {
+          type: "boolean",
+          description: "Include detailed statistics (default: true)",
+        },
+        team: {
+          type: "string",
+          description: "Get status for specific team (optional)",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "list_ontology_classes",
+    description: "List available entity classes from the ontology with their properties and inheritance",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ontology_type: {
+          type: "string",
+          description: "Which ontology to list classes from",
+          enum: ["upper", "lower", "merged"],
+        },
+        team: {
+          type: "string",
+          description: "Team for lower ontology (required if ontology_type is 'lower' or 'merged')",
+        },
+        include_properties: {
+          type: "boolean",
+          description: "Include property definitions (default: false)",
+        },
+        include_relationships: {
+          type: "boolean",
+          description: "Include relationship definitions (default: false)",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "suggest_ontology_extension",
+    description: "Analyze unclassified entities and suggest new ontology classes",
+    inputSchema: {
+      type: "object",
+      properties: {
+        team: {
+          type: "string",
+          description: "Team to analyze unclassified entities for",
+        },
+        min_entities: {
+          type: "number",
+          description: "Minimum number of similar entities to suggest a class (default: 3)",
+        },
+        similarity_threshold: {
+          type: "number",
+          description: "Similarity threshold for grouping (0-1, default: 0.85)",
+        },
+        dry_run: {
+          type: "boolean",
+          description: "Preview suggestions without saving (default: true)",
+        },
+      },
+      required: ["team"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // Tool call handler
@@ -395,6 +500,18 @@ export async function handleToolCall(name: string, args: any): Promise<any> {
 
       case "refresh_entity":
         return await handleRefreshEntity(args);
+
+      case "inject_ontology":
+        return await handleInjectOntology(args);
+
+      case "get_ontology_status":
+        return await handleGetOntologyStatus(args);
+
+      case "list_ontology_classes":
+        return await handleListOntologyClasses(args);
+
+      case "suggest_ontology_extension":
+        return await handleSuggestOntologyExtension(args);
 
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -1698,5 +1815,535 @@ async function handleRefreshEntity(args: any): Promise<any> {
     log(`Error refreshing entity`, "error", error);
     throw error;
   }
+}
+
+// ============================================================================
+// Ontology Management Tool Handlers
+// ============================================================================
+
+/**
+ * Singleton reference to OntologyConfigManager
+ */
+let ontologyConfigManager: OntologyConfigManager | null = null;
+
+/**
+ * Get or create the ontology config manager instance
+ */
+async function getOntologyConfigManager(): Promise<OntologyConfigManager> {
+  if (!ontologyConfigManager) {
+    const basePath = process.env.KNOWLEDGE_BASE_PATH || process.cwd();
+    const defaultConfig: ExtendedOntologyConfig = {
+      enabled: true,
+      upperOntologyPath: path.join(basePath, '.data/ontologies/upper/development-knowledge-ontology.json'),
+      lowerOntologyPath: path.join(basePath, '.data/ontologies/lower/coding-ontology.json'),
+      team: 'coding',
+      validation: {
+        mode: 'lenient',
+        failOnError: false,
+        allowUnknownProperties: true,
+      },
+      classification: {
+        useUpper: true,
+        useLower: true,
+        minConfidence: 0.7,
+        enableLLM: false,
+        enableHeuristics: true,
+        llmBudgetPerClassification: 500,
+      },
+      caching: {
+        enabled: true,
+        maxEntries: 100,
+        ttl: 300000,
+      },
+      hotReload: true,
+      watchInterval: 5000,
+    };
+
+    ontologyConfigManager = OntologyConfigManager.getInstance(defaultConfig);
+    await ontologyConfigManager.initialize();
+  }
+  return ontologyConfigManager;
+}
+
+/**
+ * Handle inject_ontology tool - Load/swap ontology at runtime
+ */
+async function handleInjectOntology(args: {
+  upper_ontology_path?: string;
+  lower_ontology_path?: string;
+  team?: string;
+  validation_mode?: 'strict' | 'lenient' | 'auto-extend';
+}): Promise<any> {
+  log("Injecting ontology", "info", args);
+
+  const configManager = await getOntologyConfigManager();
+
+  try {
+    await configManager.injectOntology({
+      upperOntologyPath: args.upper_ontology_path,
+      lowerOntologyPath: args.lower_ontology_path,
+      team: args.team,
+      validationMode: args.validation_mode,
+    });
+
+    const status = configManager.getStatus();
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `# Ontology Injected Successfully
+
+## Current Configuration
+- **Upper Ontology**: ${status.upperOntologyPath}
+- **Lower Ontology**: ${status.lowerOntologyPath || 'None'}
+- **Team**: ${status.team || 'Default'}
+- **Hot Reload**: ${status.hotReload ? 'Enabled' : 'Disabled'}
+- **Watched Files**: ${status.watchedFiles.length}
+
+The ontology system is now using the specified configuration. All new entity classifications will use this ontology.`,
+        },
+      ],
+      metadata: {
+        success: true,
+        ...status,
+      },
+    };
+  } catch (error) {
+    throw new Error(`Failed to inject ontology: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * Handle get_ontology_status tool - Get current ontology configuration and stats
+ */
+async function handleGetOntologyStatus(args: {
+  include_classes?: boolean;
+  include_team_configs?: boolean;
+}): Promise<any> {
+  log("Getting ontology status", "info", args);
+
+  const configManager = await getOntologyConfigManager();
+  const status = configManager.getStatus();
+  const config = configManager.getConfig();
+
+  let responseText = `# Ontology System Status
+
+## Configuration
+- **Enabled**: ${status.enabled}
+- **Initialized**: ${status.initialized}
+- **Hot Reload**: ${status.hotReload}
+
+## Ontology Paths
+- **Upper Ontology**: ${status.upperOntologyPath}
+- **Lower Ontology**: ${status.lowerOntologyPath || 'Not configured'}
+- **Team**: ${status.team || 'None'}
+
+## Auto-Extend Settings
+- **Enabled**: ${status.autoExtend.enabled}
+- **Suggestion Threshold**: ${status.autoExtend.suggestionThreshold}
+- **Require Approval**: ${status.autoExtend.requireApproval}
+- **Similarity Threshold**: ${status.autoExtend.similarityThreshold}
+- **Suggestions Path**: ${status.autoExtend.suggestionsPath}
+
+## Classification Settings
+- **Use Upper**: ${config.classification?.useUpper}
+- **Use Lower**: ${config.classification?.useLower}
+- **Min Confidence**: ${config.classification?.minConfidence}
+- **LLM Enabled**: ${config.classification?.enableLLM}
+- **Heuristics Enabled**: ${config.classification?.enableHeuristics}
+
+## Validation Settings
+- **Mode**: ${config.validation?.mode}
+- **Fail on Error**: ${config.validation?.failOnError}
+- **Allow Unknown Properties**: ${config.validation?.allowUnknownProperties}
+
+## Watched Files (${status.watchedFiles.length})
+${status.watchedFiles.map((f: string) => `- ${f}`).join('\n') || 'None'}
+
+## Registered Teams (${status.registeredTeams.length})
+${status.registeredTeams.map((t: string) => `- ${t}`).join('\n') || 'None'}
+`;
+
+  // Optionally include team configs
+  if (args.include_team_configs) {
+    const teamConfigs = configManager.getAllTeamConfigs();
+    if (teamConfigs.size > 0) {
+      responseText += `\n## Team Configuration Details\n`;
+      for (const [team, teamConfig] of teamConfigs) {
+        responseText += `\n### ${team}
+- **Lower Ontology**: ${teamConfig.lowerOntologyPath}
+- **Validation Mode**: ${teamConfig.validation?.mode || 'default'}
+- **Min Confidence**: ${teamConfig.classification?.minConfidence || 'default'}
+`;
+      }
+    }
+  }
+
+  return {
+    content: [{ type: "text", text: responseText }],
+    metadata: {
+      ...status,
+      config: config,
+    },
+  };
+}
+
+/**
+ * Handle list_ontology_classes tool - List available entity classes
+ */
+async function handleListOntologyClasses(args: {
+  ontology_type?: 'upper' | 'lower' | 'merged';
+  include_properties?: boolean;
+  filter_parent?: string;
+}): Promise<any> {
+  log("Listing ontology classes", "info", args);
+
+  const configManager = await getOntologyConfigManager();
+  const status = configManager.getStatus();
+  const config = configManager.getConfig();
+
+  // Load and parse ontology files
+  const basePath = process.env.KNOWLEDGE_BASE_PATH || process.cwd();
+
+  let classes: Array<{
+    name: string;
+    description: string;
+    parent?: string;
+    source: 'upper' | 'lower';
+    properties?: any[];
+  }> = [];
+
+  // Load upper ontology
+  if (args.ontology_type !== 'lower') {
+    try {
+      const upperPath = path.isAbsolute(status.upperOntologyPath)
+        ? status.upperOntologyPath
+        : path.join(basePath, status.upperOntologyPath);
+      const upperContent = await fs.readFile(upperPath, 'utf-8');
+      const upperOntology = JSON.parse(upperContent);
+
+      if (upperOntology.entityDefinitions) {
+        for (const [name, def] of Object.entries(upperOntology.entityDefinitions)) {
+          const entityDef = def as any;
+          if (!args.filter_parent || entityDef.extendsEntity === args.filter_parent) {
+            classes.push({
+              name,
+              description: entityDef.description || '',
+              parent: entityDef.extendsEntity,
+              source: 'upper',
+              properties: args.include_properties ? entityDef.properties : undefined,
+            });
+          }
+        }
+      }
+    } catch (error) {
+      log("Failed to load upper ontology", "warning", error);
+    }
+  }
+
+  // Load lower ontology
+  if (args.ontology_type !== 'upper' && status.lowerOntologyPath) {
+    try {
+      const lowerPath = path.isAbsolute(status.lowerOntologyPath)
+        ? status.lowerOntologyPath
+        : path.join(basePath, status.lowerOntologyPath);
+      const lowerContent = await fs.readFile(lowerPath, 'utf-8');
+      const lowerOntology = JSON.parse(lowerContent);
+
+      if (lowerOntology.entityDefinitions) {
+        for (const [name, def] of Object.entries(lowerOntology.entityDefinitions)) {
+          const entityDef = def as any;
+          if (!args.filter_parent || entityDef.extendsEntity === args.filter_parent) {
+            classes.push({
+              name,
+              description: entityDef.description || '',
+              parent: entityDef.extendsEntity,
+              source: 'lower',
+              properties: args.include_properties ? entityDef.properties : undefined,
+            });
+          }
+        }
+      }
+    } catch (error) {
+      log("Failed to load lower ontology", "warning", error);
+    }
+  }
+
+  // Sort classes by source then name
+  classes.sort((a, b) => {
+    if (a.source !== b.source) return a.source === 'upper' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  // Format response
+  let responseText = `# Ontology Entity Classes
+
+**Ontology Type**: ${args.ontology_type || 'merged'}
+**Total Classes**: ${classes.length}
+${args.filter_parent ? `**Filtered by Parent**: ${args.filter_parent}` : ''}
+
+`;
+
+  // Group by source
+  const upperClasses = classes.filter(c => c.source === 'upper');
+  const lowerClasses = classes.filter(c => c.source === 'lower');
+
+  if (args.ontology_type !== 'lower' && upperClasses.length > 0) {
+    responseText += `## Upper Ontology Classes (${upperClasses.length})\n\n`;
+    for (const cls of upperClasses) {
+      responseText += `### ${cls.name}\n`;
+      responseText += `- **Description**: ${cls.description || 'No description'}\n`;
+      if (cls.parent) responseText += `- **Extends**: ${cls.parent}\n`;
+      if (args.include_properties && cls.properties) {
+        responseText += `- **Properties**:\n`;
+        for (const prop of cls.properties) {
+          responseText += `  - \`${prop.name}\` (${prop.type}): ${prop.description || ''}\n`;
+        }
+      }
+      responseText += '\n';
+    }
+  }
+
+  if (args.ontology_type !== 'upper' && lowerClasses.length > 0) {
+    responseText += `## Lower Ontology Classes (${lowerClasses.length})\n\n`;
+    for (const cls of lowerClasses) {
+      responseText += `### ${cls.name}\n`;
+      responseText += `- **Description**: ${cls.description || 'No description'}\n`;
+      if (cls.parent) responseText += `- **Extends**: ${cls.parent}\n`;
+      if (args.include_properties && cls.properties) {
+        responseText += `- **Properties**:\n`;
+        for (const prop of cls.properties) {
+          responseText += `  - \`${prop.name}\` (${prop.type}): ${prop.description || ''}\n`;
+        }
+      }
+      responseText += '\n';
+    }
+  }
+
+  return {
+    content: [{ type: "text", text: responseText }],
+    metadata: {
+      ontology_type: args.ontology_type || 'merged',
+      total_classes: classes.length,
+      upper_classes: upperClasses.length,
+      lower_classes: lowerClasses.length,
+      classes: classes,
+    },
+  };
+}
+
+/**
+ * Handle suggest_ontology_extension tool - Analyze and suggest new entity classes
+ */
+async function handleSuggestOntologyExtension(args: {
+  entities_to_analyze?: string[];
+  similarity_threshold?: number;
+  max_suggestions?: number;
+}): Promise<any> {
+  log("Suggesting ontology extensions", "info", args);
+
+  const configManager = await getOntologyConfigManager();
+  const config = configManager.getConfig();
+  const basePath = process.env.KNOWLEDGE_BASE_PATH || process.cwd();
+
+  // Load pending suggestions
+  const suggestionsPath = path.join(
+    basePath,
+    config.autoExtend?.suggestionsPath || '.data/ontologies/suggestions',
+    'pending-classes.json'
+  );
+
+  let existingSuggestions: any = { pending: [], metadata: { version: '1.0.0', lastUpdated: null } };
+  try {
+    const content = await fs.readFile(suggestionsPath, 'utf-8');
+    existingSuggestions = JSON.parse(content);
+  } catch (error) {
+    // File might not exist yet
+  }
+
+  // Load current entities for analysis if not provided
+  let entitiesToAnalyze = args.entities_to_analyze || [];
+
+  if (entitiesToAnalyze.length === 0) {
+    // Load entities from knowledge graph export
+    try {
+      const exportPath = path.join(basePath, '.data/knowledge-export/coding.json');
+      const exportContent = await fs.readFile(exportPath, 'utf-8');
+      const exportData = JSON.parse(exportContent);
+
+      if (exportData.entities) {
+        // Get unique entity types that might need classes
+        const entityTypes = new Set<string>();
+        for (const entity of exportData.entities) {
+          if (entity.type) {
+            entityTypes.add(entity.type);
+          }
+        }
+        entitiesToAnalyze = Array.from(entityTypes);
+      }
+    } catch (error) {
+      log("Failed to load entities for analysis", "warning", error);
+    }
+  }
+
+  // Load current ontology classes for comparison
+  const upperPath = path.isAbsolute(config.upperOntologyPath!)
+    ? config.upperOntologyPath!
+    : path.join(basePath, config.upperOntologyPath!);
+  const lowerPath = config.lowerOntologyPath
+    ? (path.isAbsolute(config.lowerOntologyPath)
+        ? config.lowerOntologyPath
+        : path.join(basePath, config.lowerOntologyPath))
+    : null;
+
+  const knownClasses = new Set<string>();
+
+  try {
+    const upperContent = await fs.readFile(upperPath, 'utf-8');
+    const upperOntology = JSON.parse(upperContent);
+    if (upperOntology.entityDefinitions) {
+      Object.keys(upperOntology.entityDefinitions).forEach(c => knownClasses.add(c.toLowerCase()));
+    }
+  } catch (error) {
+    // Ignore
+  }
+
+  if (lowerPath) {
+    try {
+      const lowerContent = await fs.readFile(lowerPath, 'utf-8');
+      const lowerOntology = JSON.parse(lowerContent);
+      if (lowerOntology.entityDefinitions) {
+        Object.keys(lowerOntology.entityDefinitions).forEach(c => knownClasses.add(c.toLowerCase()));
+      }
+    } catch (error) {
+      // Ignore
+    }
+  }
+
+  // Find entity types without matching classes
+  const unmatchedTypes: string[] = [];
+  for (const entityType of entitiesToAnalyze) {
+    const normalizedType = entityType.toLowerCase().replace(/[^a-z]/g, '');
+    const hasMatch = Array.from(knownClasses).some(cls => {
+      const normalizedCls = cls.toLowerCase().replace(/[^a-z]/g, '');
+      return normalizedCls === normalizedType ||
+             normalizedCls.includes(normalizedType) ||
+             normalizedType.includes(normalizedCls);
+    });
+
+    if (!hasMatch) {
+      unmatchedTypes.push(entityType);
+    }
+  }
+
+  // Generate suggestions for unmatched types
+  const maxSuggestions = args.max_suggestions || 10;
+  const newSuggestions: any[] = [];
+
+  for (const entityType of unmatchedTypes.slice(0, maxSuggestions)) {
+    // Determine likely parent class based on naming patterns
+    let suggestedParent = 'Entity';
+    const typeLower = entityType.toLowerCase();
+
+    if (typeLower.includes('pattern') || typeLower.includes('practice')) {
+      suggestedParent = 'Pattern';
+    } else if (typeLower.includes('insight') || typeLower.includes('observation')) {
+      suggestedParent = 'Insight';
+    } else if (typeLower.includes('decision') || typeLower.includes('choice')) {
+      suggestedParent = 'Decision';
+    } else if (typeLower.includes('workflow') || typeLower.includes('process')) {
+      suggestedParent = 'Workflow';
+    } else if (typeLower.includes('component') || typeLower.includes('module')) {
+      suggestedParent = 'SystemComponent';
+    } else if (typeLower.includes('config') || typeLower.includes('setting')) {
+      suggestedParent = 'ConfigurationData';
+    } else if (typeLower.includes('metric') || typeLower.includes('measure')) {
+      suggestedParent = 'QualityMetric';
+    }
+
+    const suggestion = {
+      id: `suggestion-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      suggestedClassName: entityType.replace(/[^a-zA-Z0-9]/g, ''),
+      description: `Suggested entity class for "${entityType}" instances`,
+      extendsClass: suggestedParent,
+      properties: [],
+      exampleEntities: [],
+      confidence: 0.7,
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+    };
+
+    newSuggestions.push(suggestion);
+  }
+
+  // Add new suggestions to existing
+  existingSuggestions.pending.push(...newSuggestions);
+  existingSuggestions.metadata.lastUpdated = new Date().toISOString();
+
+  // Save updated suggestions
+  try {
+    const suggestionsDir = path.dirname(suggestionsPath);
+    await fs.mkdir(suggestionsDir, { recursive: true });
+    await fs.writeFile(suggestionsPath, JSON.stringify(existingSuggestions, null, 2));
+  } catch (error) {
+    log("Failed to save suggestions", "warning", error);
+  }
+
+  // Format response
+  let responseText = `# Ontology Extension Suggestions
+
+## Analysis Summary
+- **Entity Types Analyzed**: ${entitiesToAnalyze.length}
+- **Known Ontology Classes**: ${knownClasses.size}
+- **Unmatched Types Found**: ${unmatchedTypes.length}
+- **New Suggestions Generated**: ${newSuggestions.length}
+- **Total Pending Suggestions**: ${existingSuggestions.pending.length}
+
+`;
+
+  if (newSuggestions.length > 0) {
+    responseText += `## New Suggestions\n\n`;
+    for (const suggestion of newSuggestions) {
+      responseText += `### ${suggestion.suggestedClassName}
+- **ID**: ${suggestion.id}
+- **Description**: ${suggestion.description}
+- **Extends**: ${suggestion.extendsClass}
+- **Confidence**: ${(suggestion.confidence * 100).toFixed(0)}%
+- **Status**: ${suggestion.status}
+
+`;
+    }
+  }
+
+  if (unmatchedTypes.length === 0) {
+    responseText += `\n✅ All entity types have matching ontology classes.\n`;
+  } else {
+    responseText += `\n⚠️ ${unmatchedTypes.length} entity types need ontology classes:\n`;
+    for (const type of unmatchedTypes.slice(0, 20)) {
+      responseText += `- ${type}\n`;
+    }
+    if (unmatchedTypes.length > 20) {
+      responseText += `... and ${unmatchedTypes.length - 20} more\n`;
+    }
+  }
+
+  responseText += `\n## Next Steps
+1. Review pending suggestions in VKB viewer
+2. Approve or reject each suggestion
+3. Approved classes will be added to the lower ontology
+`;
+
+  return {
+    content: [{ type: "text", text: responseText }],
+    metadata: {
+      entities_analyzed: entitiesToAnalyze.length,
+      known_classes: knownClasses.size,
+      unmatched_types: unmatchedTypes.length,
+      new_suggestions: newSuggestions.length,
+      total_pending: existingSuggestions.pending.length,
+      suggestions: newSuggestions,
+    },
+  };
 }
 

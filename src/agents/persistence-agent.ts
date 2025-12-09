@@ -83,6 +83,16 @@ export interface EntityMetadata {
   // Entity rename tracking
   renamedFrom?: string;               // Previous entity name if renamed
   renamedAt?: string;                 // Timestamp when entity was renamed
+  // Ontology classification metadata
+  ontology?: {
+    ontologyClass: string;              // Matched ontology class name
+    ontologyVersion: string;            // Version of ontology used
+    classificationConfidence: number;   // 0-1 confidence score
+    classificationMethod: string;       // 'heuristic' | 'llm' | 'hybrid' | 'auto-assigned' | 'unclassified'
+    ontologySource: 'upper' | 'lower';  // Which ontology provided the class
+    properties?: Record<string, any>;   // Properties per ontology schema
+    classifiedAt: string;               // ISO timestamp
+  };
 }
 
 export interface SharedMemoryStructure {
@@ -432,19 +442,20 @@ export class PersistenceAgent {
     parameters: any
   ): Promise<PersistenceResult> {
     // Handle both direct parameters and coordinator parameter object
-    let gitAnalysis, vibeAnalysis, semanticAnalysis, observations, insightGeneration;
-    
+    let gitAnalysis, vibeAnalysis, semanticAnalysis, observations, insightGeneration, ontologyClassification: any;
+
     if (arguments.length === 1 && typeof parameters === 'object' && parameters._context) {
       // Called by coordinator with parameter object
       const context = parameters._context;
       const results = context.previousResults || {};
-      
+
       // Support both complete-analysis and incremental-analysis step names
       gitAnalysis = results.analyze_git_history || results.analyze_recent_changes;
       vibeAnalysis = results.analyze_vibe_history || results.analyze_recent_vibes;
       semanticAnalysis = results.semantic_analysis || results.analyze_semantics;
       observations = results.generate_observations?.observations || results.generate_observations || [];
       insightGeneration = results.generate_insights;
+      ontologyClassification = results.classify_with_ontology;
     } else if (arguments.length > 1) {
       // Called directly with separate parameters (backward compatibility)
       gitAnalysis = arguments[0];
@@ -452,6 +463,7 @@ export class PersistenceAgent {
       semanticAnalysis = arguments[2];
       observations = arguments[3] || [];
       insightGeneration = arguments[4];
+      ontologyClassification = arguments[5];
     } else if (parameters.workflow_results) {
       // Called by coordinator with workflow_results wrapper
       const results = parameters.workflow_results;
@@ -473,6 +485,8 @@ export class PersistenceAgent {
       semanticAnalysis = results.semantic_analysis;
       observations = results.observations?.observations || results.observations || [];
       insightGeneration = results.insights;
+      // Extract ontology classification results
+      ontologyClassification = results.ontology_classification;
     } else {
       // Single parameter call without context
       gitAnalysis = parameters.gitAnalysis;
@@ -480,6 +494,7 @@ export class PersistenceAgent {
       semanticAnalysis = parameters.semanticAnalysis;
       observations = parameters.observations?.observations || parameters.observations || [];
       insightGeneration = parameters.insightGeneration;
+      ontologyClassification = parameters.ontologyClassification;
     }
 
     // Ensure observations is always an array
@@ -492,7 +507,9 @@ export class PersistenceAgent {
       hasVibeAnalysis: !!vibeAnalysis,
       hasSemanticAnalysis: !!semanticAnalysis,
       observationsCount: observations.length,
-      hasInsightGeneration: !!insightGeneration
+      hasInsightGeneration: !!insightGeneration,
+      hasOntologyClassification: !!ontologyClassification,
+      classifiedCount: ontologyClassification?.classified?.length || 0
     });
 
     const result: PersistenceResult = {
@@ -518,9 +535,10 @@ export class PersistenceAgent {
       // Also create entities from analysis results even if no observations provided
       const analysisEntities = await this.createEntitiesFromAnalysisResults({
         gitAnalysis,
-        vibeAnalysis, 
+        vibeAnalysis,
         semanticAnalysis,
-        insightGeneration
+        insightGeneration,
+        ontologyClassification
       }, sharedMemory);
       
       const totalCreated = createdEntities.length + analysisEntities.length;
@@ -1358,11 +1376,26 @@ export class PersistenceAgent {
       vibeAnalysis?: any;
       semanticAnalysis?: any;
       insightGeneration?: any;
+      ontologyClassification?: any;
     },
     sharedMemory: SharedMemoryStructure
   ): Promise<SharedMemoryEntity[]> {
     const entities: SharedMemoryEntity[] = [];
     const now = new Date().toISOString();
+
+    // Build a map of entity names to their ontology classification
+    const ontologyMap = new Map<string, any>();
+    if (analysisData.ontologyClassification?.classified) {
+      for (const classified of analysisData.ontologyClassification.classified) {
+        if (classified.original?.name) {
+          ontologyMap.set(classified.original.name, classified.ontologyMetadata);
+        }
+      }
+      log('Built ontology classification map', 'debug', {
+        mappedEntities: ontologyMap.size,
+        totalClassified: analysisData.ontologyClassification.classified.length
+      });
+    }
 
     try {
       // Create entity from insight generation if available
@@ -1384,10 +1417,13 @@ export class PersistenceAgent {
         // Extract actionable insights from the content in VkbCli format (simple strings)
         const detailedObservations = this.extractSimpleObservations(insight, cleanName, now);
 
+        // Look up ontology classification for this entity
+        const ontologyMeta = ontologyMap.get(cleanName);
+
         const entity: SharedMemoryEntity = {
           id: `analysis_${Date.now()}`,
           name: cleanName,
-          entityType: 'TransferablePattern',
+          entityType: ontologyMeta?.ontologyClass || 'TransferablePattern',
           significance: insight.metadata?.significance || 7,
           observations: detailedObservations,
           relationships: [],
@@ -1396,7 +1432,17 @@ export class PersistenceAgent {
             last_updated: now,
             source: 'semantic-analysis-workflow',
             context: `comprehensive-analysis-${insight.metadata?.analysisTypes?.join('-') || 'semantic'}`,
-            tags: insight.metadata?.analysisTypes
+            tags: insight.metadata?.analysisTypes,
+            // Add ontology classification metadata
+            ontology: ontologyMeta ? {
+              ontologyClass: ontologyMeta.ontologyClass,
+              ontologyVersion: ontologyMeta.ontologyVersion,
+              classificationConfidence: ontologyMeta.classificationConfidence,
+              classificationMethod: ontologyMeta.classificationMethod,
+              ontologySource: ontologyMeta.ontologySource,
+              properties: ontologyMeta.properties,
+              classifiedAt: ontologyMeta.classifiedAt
+            } : undefined
           },
           quick_reference: this.generateQuickReference(insight, cleanName)
         };

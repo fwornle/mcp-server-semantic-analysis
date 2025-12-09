@@ -1994,7 +1994,9 @@ ${status.registeredTeams.map((t: string) => `- ${t}`).join('\n') || 'None'}
  */
 async function handleListOntologyClasses(args: {
   ontology_type?: 'upper' | 'lower' | 'merged';
+  team?: string;
   include_properties?: boolean;
+  include_relationships?: boolean;
   filter_parent?: string;
 }): Promise<any> {
   log("Listing ontology classes", "info", args);
@@ -2011,7 +2013,17 @@ async function handleListOntologyClasses(args: {
     description: string;
     parent?: string;
     source: 'upper' | 'lower';
-    properties?: any[];
+    properties?: any;
+  }> = [];
+
+  let relationships: Array<{
+    name: string;
+    description: string;
+    source: 'upper' | 'lower';
+    sourceEntityClass?: string;
+    targetEntityClass?: string;
+    cardinality?: string;
+    properties?: any;
   }> = [];
 
   // Load upper ontology
@@ -2037,6 +2049,22 @@ async function handleListOntologyClasses(args: {
               properties: args.include_properties ? entityDef.properties : undefined,
             });
           }
+        }
+      }
+
+      // Load relationships if requested
+      if (args.include_relationships && upperOntology.relationships) {
+        for (const [name, def] of Object.entries(upperOntology.relationships)) {
+          const relDef = def as any;
+          relationships.push({
+            name,
+            description: relDef.description || '',
+            source: 'upper',
+            sourceEntityClass: relDef.sourceEntityClass,
+            targetEntityClass: relDef.targetEntityClass,
+            cardinality: relDef.cardinality,
+            properties: relDef.properties,
+          });
         }
       }
     } catch (error) {
@@ -2069,6 +2097,22 @@ async function handleListOntologyClasses(args: {
           }
         }
       }
+
+      // Load relationships if requested
+      if (args.include_relationships && lowerOntology.relationships) {
+        for (const [name, def] of Object.entries(lowerOntology.relationships)) {
+          const relDef = def as any;
+          relationships.push({
+            name,
+            description: relDef.description || '',
+            source: 'lower',
+            sourceEntityClass: relDef.sourceEntityClass,
+            targetEntityClass: relDef.targetEntityClass,
+            cardinality: relDef.cardinality,
+            properties: relDef.properties,
+          });
+        }
+      }
     } catch (error) {
       log("Failed to load lower ontology", "warning", error);
     }
@@ -2099,10 +2143,12 @@ ${args.filter_parent ? `**Filtered by Parent**: ${args.filter_parent}` : ''}
       responseText += `### ${cls.name}\n`;
       responseText += `- **Description**: ${cls.description || 'No description'}\n`;
       if (cls.parent) responseText += `- **Extends**: ${cls.parent}\n`;
-      if (args.include_properties && cls.properties) {
+      if (args.include_properties && cls.properties && typeof cls.properties === 'object') {
         responseText += `- **Properties**:\n`;
-        for (const prop of cls.properties) {
-          responseText += `  - \`${prop.name}\` (${prop.type}): ${prop.description || ''}\n`;
+        // Handle properties as object (dictionary) with name as key
+        for (const [propName, propDef] of Object.entries(cls.properties)) {
+          const prop = propDef as any;
+          responseText += `  - \`${propName}\` (${prop.type || 'unknown'}): ${prop.description || ''}\n`;
         }
       }
       responseText += '\n';
@@ -2115,13 +2161,53 @@ ${args.filter_parent ? `**Filtered by Parent**: ${args.filter_parent}` : ''}
       responseText += `### ${cls.name}\n`;
       responseText += `- **Description**: ${cls.description || 'No description'}\n`;
       if (cls.parent) responseText += `- **Extends**: ${cls.parent}\n`;
-      if (args.include_properties && cls.properties) {
+      if (args.include_properties && cls.properties && typeof cls.properties === 'object') {
         responseText += `- **Properties**:\n`;
-        for (const prop of cls.properties) {
-          responseText += `  - \`${prop.name}\` (${prop.type}): ${prop.description || ''}\n`;
+        // Handle properties as object (dictionary) with name as key
+        for (const [propName, propDef] of Object.entries(cls.properties)) {
+          const prop = propDef as any;
+          responseText += `  - \`${propName}\` (${prop.type || 'unknown'}): ${prop.description || ''}\n`;
         }
       }
       responseText += '\n';
+    }
+  }
+
+  // Add relationships section if requested
+  if (args.include_relationships && relationships.length > 0) {
+    const upperRels = relationships.filter(r => r.source === 'upper');
+    const lowerRels = relationships.filter(r => r.source === 'lower');
+
+    responseText += `## Relationships\n\n`;
+
+    if (upperRels.length > 0) {
+      responseText += `### Upper Ontology Relationships (${upperRels.length})\n\n`;
+      for (const rel of upperRels) {
+        responseText += `#### ${rel.name}\n`;
+        responseText += `- **Description**: ${rel.description || 'No description'}\n`;
+        if (rel.sourceEntityClass) responseText += `- **Source**: ${rel.sourceEntityClass}\n`;
+        if (rel.targetEntityClass) responseText += `- **Target**: ${rel.targetEntityClass}\n`;
+        if (rel.cardinality) responseText += `- **Cardinality**: ${rel.cardinality}\n`;
+        if (rel.properties && typeof rel.properties === 'object') {
+          responseText += `- **Properties**: ${Object.keys(rel.properties).join(', ')}\n`;
+        }
+        responseText += '\n';
+      }
+    }
+
+    if (lowerRels.length > 0) {
+      responseText += `### Lower Ontology Relationships (${lowerRels.length})\n\n`;
+      for (const rel of lowerRels) {
+        responseText += `#### ${rel.name}\n`;
+        responseText += `- **Description**: ${rel.description || 'No description'}\n`;
+        if (rel.sourceEntityClass) responseText += `- **Source**: ${rel.sourceEntityClass}\n`;
+        if (rel.targetEntityClass) responseText += `- **Target**: ${rel.targetEntityClass}\n`;
+        if (rel.cardinality) responseText += `- **Cardinality**: ${rel.cardinality}\n`;
+        if (rel.properties && typeof rel.properties === 'object') {
+          responseText += `- **Properties**: ${Object.keys(rel.properties).join(', ')}\n`;
+        }
+        responseText += '\n';
+      }
     }
   }
 
@@ -2133,6 +2219,7 @@ ${args.filter_parent ? `**Filtered by Parent**: ${args.filter_parent}` : ''}
       upper_classes: upperClasses.length,
       lower_classes: lowerClasses.length,
       classes: classes,
+      relationships: args.include_relationships ? relationships : undefined,
     },
   };
 }

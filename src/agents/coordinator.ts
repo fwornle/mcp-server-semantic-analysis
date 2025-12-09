@@ -11,6 +11,8 @@ import { PersistenceAgent } from "./persistence-agent.js";
 import { DeduplicationAgent } from "./deduplication.js";
 import { ContentValidationAgent } from "./content-validation-agent.js";
 import { OntologyClassificationAgent } from "./ontology-classification-agent.js";
+import { CodeGraphAgent } from "./code-graph-agent.js";
+import { DocumentationLinkerAgent } from "./documentation-linker-agent.js";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 import { WorkflowReportAgent, type StepReport } from "./workflow-report-agent.js";
 
@@ -502,6 +504,81 @@ export class CoordinatorAgent {
           requires_team_param: true
         },
       },
+      // Code Graph Analysis Workflow - AST-based code indexing with documentation linking
+      {
+        name: "code-graph-analysis",
+        description: "AST-based code graph analysis with documentation linking",
+        agents: ["code_graph", "documentation_linker", "persistence"],
+        steps: [
+          {
+            name: "index_codebase",
+            agent: "code_graph",
+            action: "indexRepository",
+            parameters: {
+              target_path: "{{params.repositoryPath}}"
+            },
+            timeout: 300, // 5 minutes for large codebases
+          },
+          {
+            name: "link_documentation",
+            agent: "documentation_linker",
+            action: "analyzeDocumentation",
+            parameters: {
+              markdown_paths: ["**/*.md"],
+              plantuml_paths: ["**/*.puml", "**/*.plantuml"],
+              exclude_patterns: ["**/node_modules/**", "**/dist/**"]
+            },
+            timeout: 120,
+          },
+          {
+            name: "transform_code_entities",
+            agent: "code_graph",
+            action: "transformToKnowledgeEntities",
+            parameters: {
+              code_analysis: "{{index_codebase.result}}"
+            },
+            dependencies: ["index_codebase"],
+            timeout: 60,
+          },
+          {
+            name: "transform_doc_links",
+            agent: "documentation_linker",
+            action: "transformToKnowledgeEntities",
+            parameters: {
+              doc_analysis: "{{link_documentation.result}}"
+            },
+            dependencies: ["link_documentation"],
+            timeout: 60,
+          },
+          {
+            name: "persist_code_entities",
+            agent: "persistence",
+            action: "persistEntities",
+            parameters: {
+              entities: "{{transform_code_entities.result}}",
+              team: "{{params.team}}"
+            },
+            dependencies: ["transform_code_entities"],
+            timeout: 120,
+          },
+          {
+            name: "persist_doc_links",
+            agent: "persistence",
+            action: "persistEntities",
+            parameters: {
+              entities: "{{transform_doc_links.result}}",
+              team: "{{params.team}}"
+            },
+            dependencies: ["transform_doc_links"],
+            timeout: 120,
+          }
+        ],
+        config: {
+          timeout: 600, // 10 minutes total
+          requires_memgraph: true,
+          description: "Requires Memgraph database running (docker-compose up -d in integrations/code-graph-rag)"
+        },
+      },
     ];
 
     workflows.forEach(workflow => {
@@ -606,6 +683,14 @@ export class CoordinatorAgent {
       // Register other agents with deduplication for access to knowledge graph
       dedupAgent.registerAgent("knowledge_graph", persistenceAgent);
       dedupAgent.registerAgent("persistence", persistenceAgent);
+
+      // Code Graph Agent for AST-based code analysis (integrates with code-graph-rag)
+      const codeGraphAgent = new CodeGraphAgent(this.repositoryPath);
+      this.agents.set("code_graph", codeGraphAgent);
+
+      // Documentation Linker Agent for linking docs to code entities
+      const documentationLinkerAgent = new DocumentationLinkerAgent(this.repositoryPath);
+      this.agents.set("documentation_linker", documentationLinkerAgent);
 
       log(`Initialized ${this.agents.size} agents`, "info", {
         agents: Array.from(this.agents.keys())

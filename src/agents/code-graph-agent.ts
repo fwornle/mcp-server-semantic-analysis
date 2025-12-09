@@ -1,0 +1,328 @@
+/**
+ * CodeGraphAgent - AST-based code knowledge graph construction
+ *
+ * Integrates with code-graph-rag MCP server to:
+ * - Index repositories using Tree-sitter AST parsing
+ * - Query the Memgraph knowledge graph for code entities
+ * - Provide semantic code search capabilities
+ */
+
+import { spawn } from 'child_process';
+import * as path from 'path';
+import { log } from '../logging.js';
+
+export interface CodeEntity {
+  id: string;
+  name: string;
+  type: 'function' | 'class' | 'module' | 'method' | 'variable' | 'import';
+  filePath: string;
+  lineNumber: number;
+  language: string;
+  signature?: string;
+  docstring?: string;
+  complexity?: number;
+  relationships: CodeRelationship[];
+}
+
+export interface CodeRelationship {
+  type: 'calls' | 'imports' | 'extends' | 'implements' | 'uses' | 'defines';
+  source: string;
+  target: string;
+  weight?: number;
+}
+
+export interface CodeGraphAnalysisResult {
+  entities: CodeEntity[];
+  relationships: CodeRelationship[];
+  statistics: {
+    totalEntities: number;
+    totalRelationships: number;
+    languageDistribution: Record<string, number>;
+    entityTypeDistribution: Record<string, number>;
+  };
+  indexedAt: string;
+  repositoryPath: string;
+}
+
+export interface CodeGraphQueryResult {
+  matches: CodeEntity[];
+  relevanceScores: Map<string, number>;
+  queryTime: number;
+}
+
+export class CodeGraphAgent {
+  private codeGraphRagDir: string;
+  private repositoryPath: string;
+  private memgraphHost: string;
+  private memgraphPort: number;
+
+  constructor(
+    repositoryPath: string = '.',
+    options: {
+      codeGraphRagDir?: string;
+      memgraphHost?: string;
+      memgraphPort?: number;
+    } = {}
+  ) {
+    this.repositoryPath = path.resolve(repositoryPath);
+    this.codeGraphRagDir = options.codeGraphRagDir ||
+      path.join(process.env.CODING_TOOLS_PATH || '.', 'integrations/code-graph-rag');
+    this.memgraphHost = options.memgraphHost || process.env.MEMGRAPH_HOST || 'localhost';
+    this.memgraphPort = options.memgraphPort || parseInt(process.env.MEMGRAPH_PORT || '7687');
+
+    log(`[CodeGraphAgent] Initialized with repo: ${this.repositoryPath}`, 'info');
+  }
+
+  /**
+   * Index a repository using code-graph-rag CLI
+   */
+  async indexRepository(targetPath?: string): Promise<CodeGraphAnalysisResult> {
+    const repoPath = targetPath || this.repositoryPath;
+    log(`[CodeGraphAgent] Indexing repository: ${repoPath}`, 'info');
+
+    try {
+      // Call code-graph-rag CLI to index the repository
+      const result = await this.runCodeGraphCommand('index', [repoPath]);
+
+      // Parse the result from code-graph-rag
+      const analysisResult: CodeGraphAnalysisResult = {
+        entities: result.entities || [],
+        relationships: result.relationships || [],
+        statistics: {
+          totalEntities: result.entities?.length || 0,
+          totalRelationships: result.relationships?.length || 0,
+          languageDistribution: this.calculateLanguageDistribution(result.entities || []),
+          entityTypeDistribution: this.calculateEntityTypeDistribution(result.entities || []),
+        },
+        indexedAt: new Date().toISOString(),
+        repositoryPath: repoPath,
+      };
+
+      log(`[CodeGraphAgent] Indexed ${analysisResult.statistics.totalEntities} entities`, 'info');
+      return analysisResult;
+    } catch (error) {
+      log(`[CodeGraphAgent] Failed to index repository: ${error}`, 'error');
+      throw error;
+    }
+  }
+
+  /**
+   * Query the code graph for entities matching a pattern
+   */
+  async queryCodeGraph(query: string, options: {
+    entityTypes?: string[];
+    languages?: string[];
+    limit?: number;
+  } = {}): Promise<CodeGraphQueryResult> {
+    log(`[CodeGraphAgent] Querying code graph: ${query}`, 'info');
+
+    try {
+      const result = await this.runCodeGraphCommand('query', [
+        '--query', query,
+        ...(options.entityTypes ? ['--types', options.entityTypes.join(',')] : []),
+        ...(options.languages ? ['--languages', options.languages.join(',')] : []),
+        ...(options.limit ? ['--limit', options.limit.toString()] : []),
+      ]);
+
+      return {
+        matches: result.matches || [],
+        relevanceScores: new Map(Object.entries(result.scores || {})),
+        queryTime: result.queryTime || 0,
+      };
+    } catch (error) {
+      log(`[CodeGraphAgent] Query failed: ${error}`, 'error');
+      throw error;
+    }
+  }
+
+  /**
+   * Find code entities by semantic similarity
+   */
+  async findSimilarCode(codeSnippet: string, topK: number = 10): Promise<CodeEntity[]> {
+    log(`[CodeGraphAgent] Finding similar code (topK: ${topK})`, 'info');
+
+    try {
+      const result = await this.runCodeGraphCommand('similar', [
+        '--code', codeSnippet,
+        '--top-k', topK.toString(),
+      ]);
+
+      return result.similar || [];
+    } catch (error) {
+      log(`[CodeGraphAgent] Similarity search failed: ${error}`, 'error');
+      return [];
+    }
+  }
+
+  /**
+   * Get call graph for a specific function/method
+   */
+  async getCallGraph(entityName: string, depth: number = 3): Promise<{
+    root: CodeEntity | null;
+    calls: CodeRelationship[];
+    calledBy: CodeRelationship[];
+  }> {
+    log(`[CodeGraphAgent] Getting call graph for: ${entityName}`, 'info');
+
+    try {
+      const result = await this.runCodeGraphCommand('call-graph', [
+        '--entity', entityName,
+        '--depth', depth.toString(),
+      ]);
+
+      return {
+        root: result.root || null,
+        calls: result.calls || [],
+        calledBy: result.calledBy || [],
+      };
+    } catch (error) {
+      log(`[CodeGraphAgent] Call graph retrieval failed: ${error}`, 'error');
+      return { root: null, calls: [], calledBy: [] };
+    }
+  }
+
+  /**
+   * Run a code-graph-rag CLI command
+   */
+  private async runCodeGraphCommand(command: string, args: string[]): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const uvProcess = spawn('uv', [
+        'run',
+        '--directory', this.codeGraphRagDir,
+        'graph-code', command,
+        ...args,
+        '--output-format', 'json',
+      ], {
+        env: {
+          ...process.env,
+          MEMGRAPH_HOST: this.memgraphHost,
+          MEMGRAPH_PORT: this.memgraphPort.toString(),
+        },
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      uvProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      uvProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      uvProcess.on('close', (code) => {
+        if (code === 0) {
+          try {
+            const result = JSON.parse(stdout);
+            resolve(result);
+          } catch (e) {
+            // If not JSON, return as raw output
+            resolve({ raw: stdout });
+          }
+        } else {
+          log(`[CodeGraphAgent] Command failed with code ${code}: ${stderr}`, 'error');
+          reject(new Error(`code-graph-rag command failed: ${stderr}`));
+        }
+      });
+
+      uvProcess.on('error', (error) => {
+        reject(error);
+      });
+    });
+  }
+
+  /**
+   * Calculate language distribution from entities
+   */
+  private calculateLanguageDistribution(entities: CodeEntity[]): Record<string, number> {
+    const distribution: Record<string, number> = {};
+    for (const entity of entities) {
+      const lang = entity.language || 'unknown';
+      distribution[lang] = (distribution[lang] || 0) + 1;
+    }
+    return distribution;
+  }
+
+  /**
+   * Calculate entity type distribution
+   */
+  private calculateEntityTypeDistribution(entities: CodeEntity[]): Record<string, number> {
+    const distribution: Record<string, number> = {};
+    for (const entity of entities) {
+      distribution[entity.type] = (distribution[entity.type] || 0) + 1;
+    }
+    return distribution;
+  }
+
+  /**
+   * Transform code entities to knowledge graph entities for persistence
+   */
+  async transformToKnowledgeEntities(codeAnalysis: CodeGraphAnalysisResult): Promise<Array<{
+    name: string;
+    entityType: string;
+    observations: string[];
+    significance: number;
+  }>> {
+    const knowledgeEntities: Array<{
+      name: string;
+      entityType: string;
+      observations: string[];
+      significance: number;
+    }> = [];
+
+    // Group entities by module/file for better organization
+    const moduleGroups = new Map<string, CodeEntity[]>();
+    for (const entity of codeAnalysis.entities) {
+      const modulePath = path.dirname(entity.filePath);
+      if (!moduleGroups.has(modulePath)) {
+        moduleGroups.set(modulePath, []);
+      }
+      moduleGroups.get(modulePath)!.push(entity);
+    }
+
+    // Create knowledge entities for significant code structures
+    for (const [modulePath, entities] of moduleGroups) {
+      const classes = entities.filter(e => e.type === 'class');
+      const functions = entities.filter(e => e.type === 'function');
+
+      // Create entity for each class
+      for (const cls of classes) {
+        const methods = entities.filter(e => e.type === 'method' && e.filePath === cls.filePath);
+        const observations = [
+          `Class ${cls.name} defined in ${cls.filePath}:${cls.lineNumber}`,
+          cls.docstring ? `Documentation: ${cls.docstring}` : null,
+          methods.length > 0 ? `Contains ${methods.length} methods: ${methods.map(m => m.name).join(', ')}` : null,
+          cls.complexity ? `Complexity score: ${cls.complexity}` : null,
+        ].filter(Boolean) as string[];
+
+        knowledgeEntities.push({
+          name: cls.name,
+          entityType: 'CodeClass',
+          observations,
+          significance: Math.min(10, 5 + Math.floor(methods.length / 2)),
+        });
+      }
+
+      // Create entities for standalone functions with significant complexity
+      for (const fn of functions.filter(f => (f.complexity || 0) > 5)) {
+        const observations = [
+          `Function ${fn.name} defined in ${fn.filePath}:${fn.lineNumber}`,
+          fn.signature ? `Signature: ${fn.signature}` : null,
+          fn.docstring ? `Documentation: ${fn.docstring}` : null,
+          fn.complexity ? `Complexity score: ${fn.complexity}` : null,
+        ].filter(Boolean) as string[];
+
+        knowledgeEntities.push({
+          name: fn.name,
+          entityType: 'CodeFunction',
+          observations,
+          significance: Math.min(8, 3 + Math.floor((fn.complexity || 0) / 3)),
+        });
+      }
+    }
+
+    log(`[CodeGraphAgent] Transformed ${knowledgeEntities.length} code entities to knowledge entities`, 'info');
+    return knowledgeEntities;
+  }
+}

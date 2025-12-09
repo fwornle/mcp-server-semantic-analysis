@@ -8,6 +8,7 @@ import { DeduplicationAgent } from "./agents/deduplication.js";
 import { WebSearchAgent } from "./agents/web-search.js";
 import { PersistenceAgent } from "./agents/persistence-agent.js";
 import { ContentValidationAgent, type EntityRefreshResult } from "./agents/content-validation-agent.js";
+import { CodeGraphAgent } from "./agents/code-graph-agent.js";
 import { GraphDatabaseAdapter } from "./storage/graph-database-adapter.js";
 import {
   OntologyConfigManager,
@@ -454,6 +455,56 @@ export const TOOLS: Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "analyze_code_graph",
+    description: "Index and query code using AST-based analysis via code-graph-rag. Requires Memgraph database running.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          description: "Action to perform: index (index a repository), query (search code entities), similar (find similar code), call_graph (get function call graph)",
+          enum: ["index", "query", "similar", "call_graph"],
+        },
+        repository_path: {
+          type: "string",
+          description: "Path to the repository to index (for 'index' action)",
+        },
+        query: {
+          type: "string",
+          description: "Search query for code entities (for 'query' action)",
+        },
+        code_snippet: {
+          type: "string",
+          description: "Code snippet to find similar code for (for 'similar' action)",
+        },
+        entity_name: {
+          type: "string",
+          description: "Name of function/method to get call graph for (for 'call_graph' action)",
+        },
+        entity_types: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by entity types: function, class, module, method",
+        },
+        languages: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by programming languages",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of results to return",
+        },
+        depth: {
+          type: "number",
+          description: "Depth for call graph traversal (default: 3)",
+        },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // Tool call handler
@@ -512,6 +563,9 @@ export async function handleToolCall(name: string, args: any): Promise<any> {
 
       case "suggest_ontology_extension":
         return await handleSuggestOntologyExtension(args);
+
+      case "analyze_code_graph":
+        return await handleAnalyzeCodeGraph(args);
 
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -2438,3 +2492,187 @@ async function handleSuggestOntologyExtension(args: {
   };
 }
 
+
+/**
+ * Handle analyze_code_graph tool - AST-based code analysis via code-graph-rag
+ */
+async function handleAnalyzeCodeGraph(args: {
+  action: 'index' | 'query' | 'similar' | 'call_graph';
+  repository_path?: string;
+  query?: string;
+  code_snippet?: string;
+  entity_name?: string;
+  entity_types?: string[];
+  languages?: string[];
+  limit?: number;
+  depth?: number;
+}): Promise<any> {
+  log("Analyzing code graph", "info", args);
+
+  const repoPath = args.repository_path || process.env.CODING_TOOLS_PATH || process.cwd();
+  const codeGraphAgent = new CodeGraphAgent(repoPath);
+
+  try {
+    switch (args.action) {
+      case 'index': {
+        const result = await codeGraphAgent.indexRepository(args.repository_path);
+        return {
+          content: [{
+            type: "text",
+            text: `# Code Graph Index Complete
+
+## Summary
+- **Repository**: ${result.repositoryPath}
+- **Total Entities**: ${result.statistics.totalEntities}
+- **Total Relationships**: ${result.statistics.totalRelationships}
+- **Indexed At**: ${result.indexedAt}
+
+## Language Distribution
+${Object.entries(result.statistics.languageDistribution)
+  .map(([lang, count]) => `- ${lang}: ${count}`)
+  .join('\n')}
+
+## Entity Type Distribution
+${Object.entries(result.statistics.entityTypeDistribution)
+  .map(([type, count]) => `- ${type}: ${count}`)
+  .join('\n')}
+
+⚠️ Note: Requires Memgraph database running (docker-compose up -d in integrations/code-graph-rag)`
+          }],
+          metadata: {
+            repository_path: result.repositoryPath,
+            total_entities: result.statistics.totalEntities,
+            total_relationships: result.statistics.totalRelationships,
+            indexed_at: result.indexedAt
+          }
+        };
+      }
+
+      case 'query': {
+        if (!args.query) {
+          throw new Error("Query parameter required for 'query' action");
+        }
+        const result = await codeGraphAgent.queryCodeGraph(args.query, {
+          entityTypes: args.entity_types,
+          languages: args.languages,
+          limit: args.limit || 20
+        });
+        return {
+          content: [{
+            type: "text",
+            text: `# Code Graph Query Results
+
+## Query: "${args.query}"
+- **Matches Found**: ${result.matches.length}
+- **Query Time**: ${result.queryTime}ms
+
+## Results
+${result.matches.slice(0, 20).map((entity, i) => 
+  `### ${i + 1}. ${entity.name}
+- **Type**: ${entity.type}
+- **File**: ${entity.filePath}:${entity.lineNumber}
+- **Language**: ${entity.language}
+${entity.signature ? `- **Signature**: \`${entity.signature}\`` : ''}
+`).join('\n')}`
+          }],
+          metadata: {
+            query: args.query,
+            matches: result.matches.length,
+            query_time: result.queryTime
+          }
+        };
+      }
+
+      case 'similar': {
+        if (!args.code_snippet) {
+          throw new Error("Code snippet parameter required for 'similar' action");
+        }
+        const result = await codeGraphAgent.findSimilarCode(args.code_snippet, args.limit || 10);
+        return {
+          content: [{
+            type: "text",
+            text: `# Similar Code Results
+
+## Input Snippet
+\`\`\`
+${args.code_snippet.slice(0, 200)}${args.code_snippet.length > 200 ? '...' : ''}
+\`\`\`
+
+## Similar Code Found: ${result.length}
+
+${result.slice(0, 10).map((entity, i) => 
+  `### ${i + 1}. ${entity.name}
+- **File**: ${entity.filePath}:${entity.lineNumber}
+- **Type**: ${entity.type}
+`).join('\n')}`
+          }],
+          metadata: {
+            similar_count: result.length
+          }
+        };
+      }
+
+      case 'call_graph': {
+        if (!args.entity_name) {
+          throw new Error("Entity name parameter required for 'call_graph' action");
+        }
+        const result = await codeGraphAgent.getCallGraph(args.entity_name, args.depth || 3);
+        return {
+          content: [{
+            type: "text",
+            text: `# Call Graph: ${args.entity_name}
+
+## Root Entity
+${result.root ? `
+- **Name**: ${result.root.name}
+- **Type**: ${result.root.type}
+- **File**: ${result.root.filePath}:${result.root.lineNumber}
+` : 'Not found'}
+
+## Outgoing Calls (${result.calls.length})
+${result.calls.slice(0, 20).map(r => `- ${r.source} → ${r.target}`).join('\n')}
+
+## Called By (${result.calledBy.length})
+${result.calledBy.slice(0, 20).map(r => `- ${r.source} → ${r.target}`).join('\n')}`
+          }],
+          metadata: {
+            entity: args.entity_name,
+            calls: result.calls.length,
+            called_by: result.calledBy.length
+          }
+        };
+      }
+
+      default:
+        throw new Error(`Unknown action: ${args.action}`);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // Check if it's a Memgraph connection error
+    if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('Memgraph')) {
+      return {
+        content: [{
+          type: "text",
+          text: `# Code Graph Analysis Failed
+
+⚠️ **Memgraph database not running**
+
+To use code graph analysis, start the Memgraph database:
+
+\`\`\`bash
+cd integrations/code-graph-rag
+docker-compose up -d
+\`\`\`
+
+Then access Memgraph Lab at http://localhost:3100
+
+**Error**: ${errorMessage}`
+        }],
+        isError: true
+      };
+    }
+    
+    throw error;
+  }
+}

@@ -61,15 +61,28 @@ export interface IdentifiedPattern {
 }
 
 export interface InsightGenerationResult {
-  insightDocument: InsightDocument;
+  insightDocument?: InsightDocument;  // Optional when skipped
   insightDocuments?: InsightDocument[]; // Array of all generated documents
-  patternCatalog: PatternCatalog;
-  generationMetrics: {
+  patternCatalog?: PatternCatalog;  // Optional when skipped
+  generationMetrics?: {
     processingTime: number;
     documentsGenerated: number;
     diagramsGenerated: number;
     patternsIdentified: number;
     qualityScore: number;
+  };
+  // Skip result fields
+  skipped?: boolean;
+  skip_reason?: string;
+  insights_generated?: number;
+  documents?: InsightDocument[];
+  patterns_analyzed?: number;
+  significant_patterns?: number;
+  processing_time?: number;
+  diagnostics?: {
+    totalPatternsFound: number;
+    patternsWithSignificance: Array<{ name: string; significance: number }>;
+    recommendation: string;
   };
 }
 
@@ -574,12 +587,28 @@ Each section should provide genuine insight, not just reformatted input.**`;
         .filter(p => p.significance >= 5) // Include standard significance patterns (was >=7)
         .sort((a, b) => b.significance - a.significance);
 
-      // If no significant patterns found, skip insight generation
+      // If no significant patterns found, return a minimal result instead of failing
+      // This allows the workflow to continue with other steps (code-graph, ontology, etc.)
       if (significantPatterns.length === 0) {
-        log('No significant patterns found - skipping insight generation', 'info');
-        log(`DIAGNOSIS: All ${patternCatalog.patterns.length} patterns had significance < 5`, 'error');
-        log(`This suggests the significance calculation needs adjustment for this repository type`, 'error');
-        throw new Error('SKIP_INSIGHT_GENERATION: No patterns with sufficient significance (≥5) found');
+        log('No significant patterns found - returning minimal insight result', 'info');
+        log(`NOTE: All ${patternCatalog.patterns.length} patterns had significance < 5`, 'warning');
+        log(`Workflow will continue - other agents (code-graph, ontology) may still produce valuable results`, 'info');
+
+        const processingTime = Date.now() - startTime;
+        return {
+          insights_generated: 0,
+          documents: [],
+          patterns_analyzed: patternCatalog.patterns.length,
+          significant_patterns: 0,
+          processing_time: processingTime,
+          skipped: true,
+          skip_reason: 'No patterns with sufficient significance (≥5) found',
+          diagnostics: {
+            totalPatternsFound: patternCatalog.patterns.length,
+            patternsWithSignificance: patternCatalog.patterns.map(p => ({ name: p.name, significance: p.significance || 0 })),
+            recommendation: 'The significance calculation may need adjustment for this repository type'
+          }
+        };
       }
 
       const insightDocuments: InsightDocument[] = [];
@@ -637,10 +666,10 @@ Each section should provide genuine insight, not just reformatted input.**`;
 
       log('Comprehensive insight generation completed', 'info', {
         processingTime,
-        documentsGenerated: result.generationMetrics.documentsGenerated,
-        diagramsGenerated: result.generationMetrics.diagramsGenerated,
-        patternsIdentified: result.generationMetrics.patternsIdentified,
-        qualityScore: result.generationMetrics.qualityScore
+        documentsGenerated: result.generationMetrics?.documentsGenerated ?? 0,
+        diagramsGenerated: result.generationMetrics?.diagramsGenerated ?? 0,
+        patternsIdentified: result.generationMetrics?.patternsIdentified ?? 0,
+        qualityScore: result.generationMetrics?.qualityScore ?? 0
       });
 
       return result;

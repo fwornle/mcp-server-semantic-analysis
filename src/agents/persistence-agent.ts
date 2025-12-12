@@ -157,7 +157,7 @@ export class PersistenceAgent {
     this.config = {
       enableOntology: config?.enableOntology ?? true,
       ontologyTeam: config?.ontologyTeam || 'coding',
-      ontologyUpperPath: config?.ontologyUpperPath || path.join(repositoryPath, '.data', 'ontologies', 'upper', 'cluster-reprocessing-ontology.json'),
+      ontologyUpperPath: config?.ontologyUpperPath || path.join(repositoryPath, '.data', 'ontologies', 'upper', 'development-knowledge-ontology.json'),
       ontologyLowerPath: config?.ontologyLowerPath || path.join(repositoryPath, '.data', 'ontologies', 'lower', 'coding-ontology.json'),
       ontologyMinConfidence: config?.ontologyMinConfidence || 0.7,
       enableValidation: config?.enableValidation ?? false,

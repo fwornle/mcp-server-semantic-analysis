@@ -95,9 +95,11 @@ export class CoordinatorAgent {
     const workflows: WorkflowDefinition[] = [
       {
         name: "complete-analysis",
-        description: "Complete 10-agent semantic analysis workflow",
-        agents: ["git_history", "vibe_history", "semantic_analysis", "web_search", 
-                 "insight_generation", "observation_generation", "quality_assurance", "persistence", "deduplication"],
+        description: "Complete 13-agent semantic analysis workflow with code graph and ontology classification",
+        agents: ["git_history", "vibe_history", "semantic_analysis", "web_search",
+                 "insight_generation", "observation_generation", "ontology_classification",
+                 "quality_assurance", "persistence", "deduplication", "content_validation",
+                 "code_graph", "documentation_linker"],
         steps: [
           {
             name: "analyze_git_history",
@@ -158,7 +160,7 @@ export class CoordinatorAgent {
           {
             name: "generate_observations",
             agent: "observation_generation",
-            action: "generateStructuredObservations", 
+            action: "generateStructuredObservations",
             parameters: {
               insights_results: "{{generate_insights.result}}",
               semantic_analysis_results: "{{semantic_analysis.result}}",
@@ -166,6 +168,48 @@ export class CoordinatorAgent {
             },
             dependencies: ["generate_insights"],
             timeout: 90,
+          },
+          {
+            name: "classify_with_ontology",
+            agent: "ontology_classification",
+            action: "classifyObservations",
+            parameters: {
+              observations: "{{generate_observations.result.observations}}",
+              autoExtend: true,
+              minConfidence: 0.6
+            },
+            dependencies: ["generate_observations"],
+            timeout: 60,
+          },
+          {
+            name: "index_codebase",
+            agent: "code_graph",
+            action: "indexRepository",
+            parameters: {
+              target_path: "{{params.repositoryPath}}"
+            },
+            timeout: 300, // 5 minutes for large codebases
+          },
+          {
+            name: "link_documentation",
+            agent: "documentation_linker",
+            action: "analyzeDocumentation",
+            parameters: {
+              markdown_paths: ["**/*.md"],
+              plantuml_paths: ["**/*.puml", "**/*.plantuml"],
+              exclude_patterns: ["**/node_modules/**", "**/dist/**"]
+            },
+            timeout: 120,
+          },
+          {
+            name: "transform_code_entities",
+            agent: "code_graph",
+            action: "transformToKnowledgeEntities",
+            parameters: {
+              code_analysis: "{{index_codebase.result}}"
+            },
+            dependencies: ["index_codebase"],
+            timeout: 60,
           },
           {
             name: "quality_assurance",
@@ -178,10 +222,12 @@ export class CoordinatorAgent {
                 semantic_analysis: "{{semantic_analysis.result}}",
                 web_search: "{{web_search.result}}",
                 insights: "{{generate_insights.result}}",
-                observations: "{{generate_observations.result}}"
+                observations: "{{generate_observations.result}}",
+                ontology_classification: "{{classify_with_ontology.result}}",
+                code_graph: "{{transform_code_entities.result}}"
               }
             },
-            dependencies: ["generate_observations"],
+            dependencies: ["classify_with_ontology", "transform_code_entities"],
             timeout: 90, // Increased timeout for comprehensive analysis
           },
           {
@@ -196,18 +242,31 @@ export class CoordinatorAgent {
                 web_search: "{{web_search.result}}",
                 insights: "{{generate_insights.result}}",
                 observations: "{{generate_observations.result}}",
+                ontology_classification: "{{classify_with_ontology.result}}",
+                code_graph: "{{transform_code_entities.result}}",
                 quality_assurance: "{{quality_assurance.result}}"
               }
             },
             dependencies: ["quality_assurance"],
-            timeout: 60,
+            timeout: 90,
+          },
+          {
+            name: "persist_code_entities",
+            agent: "persistence",
+            action: "persistEntities",
+            parameters: {
+              entities: "{{transform_code_entities.result}}",
+              team: "{{params.team}}"
+            },
+            dependencies: ["persist_results"],
+            timeout: 120,
           },
           {
             name: "deduplicate_insights",
             agent: "deduplication",
             action: "handleResolveDuplicates",
             parameters: {
-              entity_types: ["Pattern", "WorkflowPattern", "Insight", "DesignPattern"],
+              entity_types: ["Pattern", "WorkflowPattern", "Insight", "DesignPattern", "CodeClass", "CodeFunction"],
               similarity_threshold: 0.85,
               auto_merge: true,
               preserve_history: true,
@@ -216,22 +275,34 @@ export class CoordinatorAgent {
               insight_threshold: 0.9,
               merge_strategy: "combine"
             },
-            dependencies: ["persist_results"],
-            timeout: 45,
+            dependencies: ["persist_code_entities"],
+            timeout: 60,
+          },
+          {
+            name: "validate_content",
+            agent: "content_validation",
+            action: "validateAndRefreshStaleEntities",
+            parameters: {
+              team: "{{params.team}}",
+              maxEntities: 50,
+              staleDaysThreshold: 7
+            },
+            dependencies: ["deduplicate_insights"],
+            timeout: 120,
           }
         ],
         config: {
-          max_concurrent_steps: 2,
-          timeout: 900, // 15 minutes total
+          max_concurrent_steps: 3,
+          timeout: 1200, // 20 minutes total for comprehensive analysis
           quality_validation: true,
         },
       },
       {
         name: "incremental-analysis",
-        description: "Incremental analysis since last checkpoint",
-        // content_validation agent re-enabled after async conversion (all sync fs ops converted to async)
-        // ontology_classification added for classifying observations against ontology
-        agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation", "observation_generation", "ontology_classification", "quality_assurance", "persistence", "deduplication", "content_validation"],
+        description: "Incremental 13-agent analysis since last checkpoint with code graph and ontology",
+        agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation",
+                 "observation_generation", "ontology_classification", "quality_assurance",
+                 "persistence", "deduplication", "content_validation", "code_graph", "documentation_linker"],
         steps: [
           {
             name: "analyze_recent_changes",
@@ -305,6 +376,25 @@ export class CoordinatorAgent {
             timeout: 30,
           },
           {
+            name: "index_recent_code",
+            agent: "code_graph",
+            action: "indexRepository",
+            parameters: {
+              target_path: "{{params.repositoryPath}}"
+            },
+            timeout: 180, // 3 minutes for incremental
+          },
+          {
+            name: "transform_code_entities_incremental",
+            agent: "code_graph",
+            action: "transformToKnowledgeEntities",
+            parameters: {
+              code_analysis: "{{index_recent_code.result}}"
+            },
+            dependencies: ["index_recent_code"],
+            timeout: 60,
+          },
+          {
             name: "validate_incremental_qa",
             agent: "quality_assurance",
             action: "performLightweightQA",
@@ -315,11 +405,12 @@ export class CoordinatorAgent {
                 semantic_analysis: "{{analyze_semantics.result}}",
                 insights: "{{generate_insights.result}}",
                 observations: "{{generate_observations.result}}",
-                ontology_classification: "{{classify_with_ontology.result}}"
+                ontology_classification: "{{classify_with_ontology.result}}",
+                code_graph: "{{transform_code_entities_incremental.result}}"
               },
               lightweight: true // Skip heavy validation for incremental runs
             },
-            dependencies: ["classify_with_ontology"],
+            dependencies: ["classify_with_ontology", "transform_code_entities_incremental"],
             timeout: 30,
           },
           {
@@ -334,11 +425,12 @@ export class CoordinatorAgent {
                 insights: "{{generate_insights.result}}",
                 observations: "{{generate_observations.result}}",
                 ontology_classification: "{{classify_with_ontology.result}}",
+                code_graph: "{{transform_code_entities_incremental.result}}",
                 quality_assurance: "{{validate_incremental_qa.result}}"
               }
             },
             dependencies: ["validate_incremental_qa"],
-            timeout: 30,
+            timeout: 60,
           },
           {
             name: "deduplicate_incremental",
@@ -348,14 +440,14 @@ export class CoordinatorAgent {
               similarity_threshold: 0.9
             },
             dependencies: ["persist_incremental"],
-            timeout: 20,
+            timeout: 30,
           },
           {
             name: "validate_content_incremental",
             agent: "content_validation",
             action: "validateAndRefreshStaleEntities",
             parameters: {
-              team: "coding",
+              team: "{{params.team}}",
               maxEntities: 20,  // Limit to 20 entities per incremental run for performance
               staleDaysThreshold: 7
             },
@@ -364,8 +456,8 @@ export class CoordinatorAgent {
           }
         ],
         config: {
-          max_concurrent_steps: 2,
-          timeout: 420, // 7 minutes (added content_validation step)
+          max_concurrent_steps: 3,
+          timeout: 600, // 10 minutes for incremental with code graph
           quality_validation: true,
         },
       },
@@ -634,10 +726,10 @@ export class CoordinatorAgent {
       log("GraphDB initialized successfully", "info");
 
       // Core workflow agents
-      const gitHistoryAgent = new GitHistoryAgent();
+      const gitHistoryAgent = new GitHistoryAgent(this.repositoryPath);
       this.agents.set("git_history", gitHistoryAgent);
 
-      const vibeHistoryAgent = new VibeHistoryAgent();
+      const vibeHistoryAgent = new VibeHistoryAgent(this.repositoryPath, this.team);
       this.agents.set("vibe_history", vibeHistoryAgent);
 
       const semanticAnalysisAgent = new SemanticAnalysisAgent();
@@ -653,7 +745,7 @@ export class CoordinatorAgent {
       this.agents.set("observation_generation", observationGenerationAgent);
 
       // Ontology Classification Agent for classifying observations against ontology
-      const ontologyClassificationAgent = new OntologyClassificationAgent(this.team);
+      const ontologyClassificationAgent = new OntologyClassificationAgent(this.team, this.repositoryPath);
       this.agents.set("ontology_classification", ontologyClassificationAgent);
 
       const qualityAssuranceAgent = new QualityAssuranceAgent();
@@ -754,7 +846,12 @@ export class CoordinatorAgent {
         // Check dependencies
         if (step.dependencies) {
           for (const dep of step.dependencies) {
-            if (!execution.results[dep] || execution.results[dep].error) {
+            const depResult = execution.results[dep];
+            // Check if dependency exists and wasn't a failure
+            // Distinguish between: { error: "..." } (step failure) vs { ..., error: "info" } (success with warning)
+            // A failure has ONLY an error field (and possibly _timing), success has other data fields
+            const isFailure = !depResult || (depResult.error && Object.keys(depResult).filter(k => !k.startsWith('_')).length === 1);
+            if (isFailure) {
               throw new Error(`Step dependency not satisfied: ${dep}`);
             }
           }

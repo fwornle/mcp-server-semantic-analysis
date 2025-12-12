@@ -9,7 +9,6 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { glob } from 'glob';
 import { log } from '../logging.js';
 import type { CodeEntity } from './code-graph-agent.js';
 
@@ -56,6 +55,44 @@ export class DocumentationLinkerAgent {
   }
 
   /**
+   * Recursively find files matching a pattern
+   */
+  private async findFiles(
+    dir: string,
+    extensions: string[],
+    excludePatterns: string[] = ['node_modules', 'dist', '.git']
+  ): Promise<string[]> {
+    const files: string[] = [];
+
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+
+        // Skip excluded directories
+        if (excludePatterns.some(p => entry.name === p || entry.name.startsWith('.'))) {
+          continue;
+        }
+
+        if (entry.isDirectory()) {
+          const subFiles = await this.findFiles(fullPath, extensions, excludePatterns);
+          files.push(...subFiles);
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (extensions.includes(ext)) {
+            files.push(fullPath);
+          }
+        }
+      }
+    } catch (error) {
+      log(`[DocumentationLinkerAgent] Error reading directory ${dir}: ${error}`, 'warning');
+    }
+
+    return files;
+  }
+
+  /**
    * Register known code entities for reference resolution
    */
   registerCodeEntities(entities: CodeEntity[]): void {
@@ -81,47 +118,31 @@ export class DocumentationLinkerAgent {
     const unresolvedReferences: string[] = [];
 
     // Find all markdown files
-    const mdPatterns = options.markdownPaths || ['**/*.md'];
-    const mdExclude = options.excludePatterns || ['**/node_modules/**', '**/dist/**', '**/.git/**'];
+    const excludeDirs = ['node_modules', 'dist', '.git', '.specstory', '.data'];
+    const mdFiles = await this.findFiles(this.repositoryPath, ['.md'], excludeDirs);
 
-    for (const pattern of mdPatterns) {
-      const mdFiles = await glob(pattern, {
-        cwd: this.repositoryPath,
-        ignore: mdExclude,
-        absolute: true,
-      });
-
-      for (const mdFile of mdFiles) {
-        try {
-          const result = await this.analyzeMarkdownFile(mdFile);
-          documents.push(result.metadata);
-          links.push(...result.links);
-          unresolvedReferences.push(...result.unresolvedReferences);
-        } catch (error) {
-          log(`[DocumentationLinkerAgent] Failed to analyze ${mdFile}: ${error}`, 'warning');
-        }
+    for (const mdFile of mdFiles) {
+      try {
+        const result = await this.analyzeMarkdownFile(mdFile);
+        documents.push(result.metadata);
+        links.push(...result.links);
+        unresolvedReferences.push(...result.unresolvedReferences);
+      } catch (error) {
+        log(`[DocumentationLinkerAgent] Failed to analyze ${mdFile}: ${error}`, 'warning');
       }
     }
 
     // Find all PlantUML files
-    const pumlPatterns = options.plantumlPaths || ['**/*.puml', '**/*.plantuml'];
+    const pumlFiles = await this.findFiles(this.repositoryPath, ['.puml', '.plantuml'], excludeDirs);
 
-    for (const pattern of pumlPatterns) {
-      const pumlFiles = await glob(pattern, {
-        cwd: this.repositoryPath,
-        ignore: mdExclude,
-        absolute: true,
-      });
-
-      for (const pumlFile of pumlFiles) {
-        try {
-          const result = await this.analyzePlantUMLFile(pumlFile);
-          documents.push(result.metadata);
-          links.push(...result.links);
-          unresolvedReferences.push(...result.unresolvedReferences);
-        } catch (error) {
-          log(`[DocumentationLinkerAgent] Failed to analyze ${pumlFile}: ${error}`, 'warning');
-        }
+    for (const pumlFile of pumlFiles) {
+      try {
+        const result = await this.analyzePlantUMLFile(pumlFile);
+        documents.push(result.metadata);
+        links.push(...result.links);
+        unresolvedReferences.push(...result.unresolvedReferences);
+      } catch (error) {
+        log(`[DocumentationLinkerAgent] Failed to analyze ${pumlFile}: ${error}`, 'warning');
       }
     }
 

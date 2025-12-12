@@ -104,9 +104,9 @@ export class OntologyClassificationAgent {
   private basePath: string;
   private initialized: boolean = false;
 
-  constructor(team: string = 'coding') {
+  constructor(team: string = 'coding', repositoryPath?: string) {
     this.team = team;
-    this.basePath = process.env.KNOWLEDGE_BASE_PATH || process.cwd();
+    this.basePath = repositoryPath || process.env.KNOWLEDGE_BASE_PATH || process.cwd();
   }
 
   /**
@@ -218,13 +218,34 @@ export class OntologyClassificationAgent {
   }): Promise<ClassificationProcessResult> {
     await this.initialize();
 
-    const { observations, autoExtend = true, minConfidence = 0.6 } = params;
+    const { observations = [], autoExtend = true, minConfidence = 0.6 } = params || {};
+
+    // Handle case where observations is undefined or not an array
+    const observationsList = Array.isArray(observations) ? observations : [];
 
     log('Classifying observations', 'info', {
-      count: observations.length,
+      count: observationsList.length,
       autoExtend,
       minConfidence,
     });
+
+    // If no observations, return empty result
+    if (observationsList.length === 0) {
+      log('No observations to classify - returning empty result', 'info');
+      return {
+        classified: [],
+        unclassified: [],
+        summary: {
+          total: 0,
+          classifiedCount: 0,
+          unclassifiedCount: 0,
+          averageConfidence: 0,
+          byMethod: {},
+          byClass: {},
+        },
+        extensionSuggestions: [],
+      };
+    }
 
     const classified: ClassifiedObservation[] = [];
     const unclassified: Array<{
@@ -237,7 +258,7 @@ export class OntologyClassificationAgent {
     const byClass: Record<string, number> = {};
     let totalConfidence = 0;
 
-    for (const observation of observations) {
+    for (const observation of observationsList) {
       try {
         const result = await this.classifySingleObservation(observation, minConfidence);
 
@@ -276,7 +297,7 @@ export class OntologyClassificationAgent {
       classified,
       unclassified,
       summary: {
-        total: observations.length,
+        total: observationsList.length,
         classifiedCount: classified.length,
         unclassifiedCount: unclassified.length,
         averageConfidence: classified.length > 0 ? totalConfidence / classified.length : 0,

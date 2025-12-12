@@ -90,6 +90,42 @@ export class CoordinatorAgent {
     // This avoids constructor side effects and race conditions
   }
 
+  /**
+   * Write workflow progress to a file for external monitoring
+   * File location: .data/workflow-progress.json
+   */
+  private writeProgressFile(execution: WorkflowExecution, workflow: WorkflowDefinition, currentStep?: string): void {
+    try {
+      const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
+      const completedSteps = Object.entries(execution.results)
+        .filter(([_, result]) => result && !result.error)
+        .map(([name]) => name);
+      const failedSteps = Object.entries(execution.results)
+        .filter(([_, result]) => result?.error)
+        .map(([name]) => name);
+
+      const progress = {
+        workflowName: workflow.name,
+        executionId: execution.id,
+        status: execution.status,
+        startTime: execution.startTime.toISOString(),
+        currentStep: currentStep || null,
+        totalSteps: workflow.steps.length,
+        completedSteps: completedSteps.length,
+        failedSteps: failedSteps.length,
+        stepsCompleted: completedSteps,
+        stepsFailed: failedSteps,
+        lastUpdate: new Date().toISOString(),
+        elapsedSeconds: Math.round((Date.now() - execution.startTime.getTime()) / 1000),
+      };
+
+      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
+    } catch (error) {
+      // Silently ignore progress file errors - this is non-critical
+      log(`Failed to write progress file: ${error}`, 'debug');
+    }
+  }
+
   private initializeWorkflows(): void {
     // Define standard workflows
     const workflows: WorkflowDefinition[] = [
@@ -842,7 +878,10 @@ export class CoordinatorAgent {
       for (let i = 0; i < workflow.steps.length; i++) {
         execution.currentStep = i;
         const step = workflow.steps[i];
-        
+
+        // Write progress before starting step
+        this.writeProgressFile(execution, workflow, step.name);
+
         // Check dependencies
         if (step.dependencies) {
           for (const dep of step.dependencies) {
@@ -896,6 +935,9 @@ export class CoordinatorAgent {
             timeoutUtilization: `${((stepDuration / 1000) / (step.timeout || 60) * 100).toFixed(1)}%`
           });
 
+          // Update progress file after step completion
+          this.writeProgressFile(execution, workflow);
+
           // Record step in workflow report
           this.reportAgent.recordStep({
             stepName: step.name,
@@ -948,6 +990,9 @@ export class CoordinatorAgent {
 
           execution.results[step.name] = { error: errorMessage };
           execution.errors.push(`Step ${step.name} failed: ${errorMessage}`);
+
+          // Update progress file after step failure
+          this.writeProgressFile(execution, workflow);
 
           // Record failed step in workflow report
           this.reportAgent.recordStep({

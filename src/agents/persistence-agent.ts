@@ -3031,4 +3031,118 @@ ${entityData.insights}
       return [];
     }
   }
+
+  /**
+   * Persist an array of transformed entities (from code-graph or documentation-linker)
+   * This creates UKB entities from the transformed results of transformToKnowledgeEntities
+   */
+  async persistEntities(params: {
+    entities: Array<{
+      name: string;
+      entityType: string;
+      observations: string[];
+      significance: number;
+    }> | null | undefined;
+    team: string;
+  }): Promise<{
+    success: boolean;
+    created: number;
+    updated: number;
+    failed: number;
+    details: string;
+  }> {
+    const result = {
+      success: false,
+      created: 0,
+      updated: 0,
+      failed: 0,
+      details: ''
+    };
+
+    try {
+      const { entities, team } = params;
+
+      // Handle empty/null/undefined input gracefully
+      if (!entities || !Array.isArray(entities) || entities.length === 0) {
+        result.success = true;
+        result.details = 'No entities to persist (empty or null input)';
+        log(result.details, 'info');
+        return result;
+      }
+
+      log(`Persisting ${entities.length} entities for team: ${team}`, 'info');
+
+      for (const entity of entities) {
+        try {
+          // Skip entities with empty or invalid names
+          if (!entity.name || entity.name.trim() === '') {
+            log('Skipping entity with empty name', 'warning');
+            result.failed++;
+            continue;
+          }
+
+          // Check if entity already exists
+          const existingEntity = await this.getEntity(entity.name, team);
+
+          if (existingEntity) {
+            // Update existing entity - add new observations
+            const newObservations = entity.observations.filter(
+              obs => !existingEntity.observations.some(
+                existing => (typeof existing === 'string' ? existing : existing.content) === obs
+              )
+            );
+
+            if (newObservations.length > 0) {
+              const updateResult = await this.updateEntityObservations({
+                entityName: entity.name,
+                team,
+                removeObservations: [],
+                newObservations
+              });
+
+              if (updateResult.success) {
+                result.updated++;
+                log(`Updated entity: ${entity.name} with ${newObservations.length} new observations`, 'info');
+              } else {
+                result.failed++;
+                log(`Failed to update entity: ${entity.name}`, 'warning');
+              }
+            } else {
+              // Entity exists but no new observations - count as updated (no-op)
+              result.updated++;
+            }
+          } else {
+            // Create new entity using createUkbEntity
+            const createResult = await this.createUkbEntity({
+              name: entity.name,
+              type: entity.entityType,
+              insights: entity.observations.join('\n\n'),
+              significance: entity.significance
+            });
+
+            if (createResult.success) {
+              result.created++;
+              log(`Created entity: ${entity.name}`, 'info');
+            } else {
+              result.failed++;
+              log(`Failed to create entity: ${entity.name} - ${createResult.details}`, 'warning');
+            }
+          }
+        } catch (entityError) {
+          result.failed++;
+          log(`Error processing entity ${entity.name}`, 'error', entityError);
+        }
+      }
+
+      result.success = result.failed === 0 || (result.created + result.updated) > 0;
+      result.details = `Persisted entities: ${result.created} created, ${result.updated} updated, ${result.failed} failed`;
+      log(result.details, 'info');
+
+    } catch (error) {
+      result.details = `Failed to persist entities: ${error instanceof Error ? error.message : String(error)}`;
+      log(result.details, 'error');
+    }
+
+    return result;
+  }
 }

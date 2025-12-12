@@ -280,13 +280,19 @@ export class CodeGraphAgent {
 
   /**
    * Transform code entities to knowledge graph entities for persistence
+   * @param params - Either a CodeGraphAnalysisResult directly or a parameters object with code_analysis property
    */
-  async transformToKnowledgeEntities(codeAnalysis: CodeGraphAnalysisResult): Promise<Array<{
+  async transformToKnowledgeEntities(params: CodeGraphAnalysisResult | { code_analysis?: CodeGraphAnalysisResult; [key: string]: any }): Promise<Array<{
     name: string;
     entityType: string;
     observations: string[];
     significance: number;
   }>> {
+    // Handle both direct CodeGraphAnalysisResult and wrapped parameters
+    const codeAnalysis: CodeGraphAnalysisResult = 'code_analysis' in params && params.code_analysis
+      ? params.code_analysis
+      : params as CodeGraphAnalysisResult;
+
     const knowledgeEntities: Array<{
       name: string;
       entityType: string;
@@ -294,9 +300,16 @@ export class CodeGraphAgent {
       significance: number;
     }> = [];
 
+    // Ensure entities is an array, handle undefined/null gracefully
+    const entities = codeAnalysis?.entities;
+    if (!entities || !Array.isArray(entities)) {
+      log(`[CodeGraphAgent] No entities to transform (entities is ${typeof entities})`, 'warning');
+      return knowledgeEntities;
+    }
+
     // Group entities by module/file for better organization
     const moduleGroups = new Map<string, CodeEntity[]>();
-    for (const entity of codeAnalysis.entities) {
+    for (const entity of entities) {
       const modulePath = path.dirname(entity.filePath);
       if (!moduleGroups.has(modulePath)) {
         moduleGroups.set(modulePath, []);

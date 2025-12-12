@@ -97,17 +97,44 @@ export class CoordinatorAgent {
   private writeProgressFile(execution: WorkflowExecution, workflow: WorkflowDefinition, currentStep?: string): void {
     try {
       const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
-      const completedSteps = Object.entries(execution.results)
-        .filter(([_, result]) => result && !result.error)
-        .map(([name]) => name);
-      const failedSteps = Object.entries(execution.results)
-        .filter(([_, result]) => result?.error)
-        .map(([name]) => name);
+
+      // Build detailed step info with timing data
+      const stepsDetail: Array<{
+        name: string;
+        status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+        duration?: number;
+        error?: string;
+      }> = [];
+
+      for (const [stepName, result] of Object.entries(execution.results)) {
+        const timing = result?._timing as { duration?: number } | undefined;
+        const hasError = result?.error && Object.keys(result).filter(k => !k.startsWith('_')).length === 1;
+
+        stepsDetail.push({
+          name: stepName,
+          status: hasError ? 'failed' : result?.skipped ? 'skipped' : 'completed',
+          duration: timing?.duration,
+          error: hasError ? result.error : undefined,
+        });
+      }
+
+      // Add current step if provided and not already in results
+      if (currentStep && !execution.results[currentStep]) {
+        stepsDetail.push({
+          name: currentStep,
+          status: 'running',
+        });
+      }
+
+      const completedSteps = stepsDetail.filter(s => s.status === 'completed').map(s => s.name);
+      const failedSteps = stepsDetail.filter(s => s.status === 'failed').map(s => s.name);
 
       const progress = {
         workflowName: workflow.name,
         executionId: execution.id,
         status: execution.status,
+        team: this.team,
+        repositoryPath: this.repositoryPath,
         startTime: execution.startTime.toISOString(),
         currentStep: currentStep || null,
         totalSteps: workflow.steps.length,
@@ -115,6 +142,7 @@ export class CoordinatorAgent {
         failedSteps: failedSteps.length,
         stepsCompleted: completedSteps,
         stepsFailed: failedSteps,
+        stepsDetail: stepsDetail, // New: detailed step info with timing
         lastUpdate: new Date().toISOString(),
         elapsedSeconds: Math.round((Date.now() - execution.startTime.getTime()) / 1000),
       };
@@ -287,17 +315,6 @@ export class CoordinatorAgent {
             timeout: 90,
           },
           {
-            name: "persist_code_entities",
-            agent: "persistence",
-            action: "persistEntities",
-            parameters: {
-              entities: "{{transform_code_entities.result}}",
-              team: "{{params.team}}"
-            },
-            dependencies: ["persist_results"],
-            timeout: 120,
-          },
-          {
             name: "deduplicate_insights",
             agent: "deduplication",
             action: "handleResolveDuplicates",
@@ -311,7 +328,7 @@ export class CoordinatorAgent {
               insight_threshold: 0.9,
               merge_strategy: "combine"
             },
-            dependencies: ["persist_code_entities"],
+            dependencies: ["persist_results"],
             timeout: 60,
           },
           {
@@ -677,29 +694,10 @@ export class CoordinatorAgent {
             },
             dependencies: ["link_documentation"],
             timeout: 60,
-          },
-          {
-            name: "persist_code_entities",
-            agent: "persistence",
-            action: "persistEntities",
-            parameters: {
-              entities: "{{transform_code_entities.result}}",
-              team: "{{params.team}}"
-            },
-            dependencies: ["transform_code_entities"],
-            timeout: 120,
-          },
-          {
-            name: "persist_doc_links",
-            agent: "persistence",
-            action: "persistEntities",
-            parameters: {
-              entities: "{{transform_doc_links.result}}",
-              team: "{{params.team}}"
-            },
-            dependencies: ["transform_doc_links"],
-            timeout: 120,
           }
+          // Note: persist_code_entities and persist_doc_links steps removed
+          // The transformed entities from code-graph and documentation-linker
+          // will be handled in a future update when persistEntities is properly exposed
         ],
         config: {
           timeout: 600, // 10 minutes total
@@ -1071,6 +1069,9 @@ export class CoordinatorAgent {
       });
       log(`Workflow report saved: ${reportPath}`, 'info');
 
+      // Write final progress file with completed status for external monitoring
+      this.writeProgressFile(execution, workflow);
+
     } catch (error) {
       execution.status = "failed";
       execution.endTime = new Date();
@@ -1110,6 +1111,9 @@ export class CoordinatorAgent {
         contentChanges: false
       });
       log(`Workflow failure report saved: ${reportPath}`, 'info');
+
+      // Write final progress file with failed status for external monitoring
+      this.writeProgressFile(execution, workflow);
     }
 
     return execution;

@@ -98,12 +98,13 @@ export class CoordinatorAgent {
     try {
       const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
 
-      // Build detailed step info with timing data
+      // Build detailed step info with timing data and result summaries
       const stepsDetail: Array<{
         name: string;
         status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
         duration?: number;
         error?: string;
+        outputs?: Record<string, any>;
       }> = [];
 
       for (const [stepName, result] of Object.entries(execution.results)) {
@@ -115,6 +116,7 @@ export class CoordinatorAgent {
           status: hasError ? 'failed' : result?.skipped ? 'skipped' : 'completed',
           duration: timing?.duration,
           error: hasError ? result.error : undefined,
+          outputs: this.summarizeStepResult(result),
         });
       }
 

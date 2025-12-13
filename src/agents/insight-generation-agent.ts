@@ -568,9 +568,9 @@ Each section should provide genuine insight, not just reformatted input.**`;
         });
 
         // Log patterns that would be filtered out
-        const filteredOut = patternCatalog.patterns.filter(p => (p.significance || 0) < 5);
+        const filteredOut = patternCatalog.patterns.filter(p => (p.significance || 0) < 3);
         if (filteredOut.length > 0) {
-          log(`\n⚠️  ${filteredOut.length} patterns will be FILTERED OUT (significance < 5):`, 'info');
+          log(`\n⚠️  ${filteredOut.length} patterns will be FILTERED OUT (significance < 3):`, 'info');
           filteredOut.slice(0, 5).forEach(p => {
             log(`     [${p.significance || 0}] ${p.name}`, 'info');
           });
@@ -582,16 +582,16 @@ Each section should provide genuine insight, not just reformatted input.**`;
       log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`, 'info');
 
       // Solution 1: Skip insight generation when no real patterns found
-      // LOWERED THRESHOLD: Changed from ≥7 to ≥5 to include standard infrastructure patterns
+      // LOWERED THRESHOLD: Changed from ≥5 to ≥3 to capture more patterns from semantic analysis
       const significantPatterns = patternCatalog.patterns
-        .filter(p => p.significance >= 5) // Include standard significance patterns (was >=7)
+        .filter(p => p.significance >= 3) // Include patterns with moderate significance (was >=5)
         .sort((a, b) => b.significance - a.significance);
 
       // If no significant patterns found, return a minimal result instead of failing
       // This allows the workflow to continue with other steps (code-graph, ontology, etc.)
       if (significantPatterns.length === 0) {
         log('No significant patterns found - returning minimal insight result', 'info');
-        log(`NOTE: All ${patternCatalog.patterns.length} patterns had significance < 5`, 'warning');
+        log(`NOTE: All ${patternCatalog.patterns.length} patterns had significance < 3`, 'warning');
         log(`Workflow will continue - other agents (code-graph, ontology) may still produce valuable results`, 'info');
 
         const processingTime = Date.now() - startTime;
@@ -602,7 +602,7 @@ Each section should provide genuine insight, not just reformatted input.**`;
           significant_patterns: 0,
           processing_time: processingTime,
           skipped: true,
-          skip_reason: 'No patterns with sufficient significance (≥5) found',
+          skip_reason: 'No patterns with sufficient significance (≥3) found',
           diagnostics: {
             totalPatternsFound: patternCatalog.patterns.length,
             patternsWithSignificance: patternCatalog.patterns.map(p => ({ name: p.name, significance: p.significance || 0 })),
@@ -615,7 +615,7 @@ Each section should provide genuine insight, not just reformatted input.**`;
 
       if (significantPatterns.length >= 1 && significantPatterns.length <= 5) {
         // PERFORMANCE OPTIMIZATION: Generate insights in parallel instead of sequentially
-        log(`Generating separate insights for ${significantPatterns.length} significant patterns (≥5 significance) IN PARALLEL`, 'info');
+        log(`Generating separate insights for ${significantPatterns.length} significant patterns (≥3 significance) IN PARALLEL`, 'info');
         
         // Create insight generation tasks for parallel execution
         const insightTasks = significantPatterns.map(pattern => {
@@ -2716,36 +2716,46 @@ skinparam sequence {
   private async extractArchitecturalPatternsFromCommits(commits: any[]): Promise<IdentifiedPattern[]> {
     const patterns: IdentifiedPattern[] = [];
 
-    // Limit processing to prevent performance issues
-    const limitedCommits = commits.slice(0, 50);
+    // Analyze more commits for comprehensive pattern extraction
+    const limitedCommits = commits.slice(0, 100);
 
-    // Solution 4: Only analyze commits with architectural significance
-    // Filter out infrastructure/config/bug fix commits
+    // IMPROVED: Less aggressive filtering - include more commits for semantic analysis
+    // The LLM will determine actual architectural significance
     const significantCommits = limitedCommits.filter(commit => {
       const msg = commit.message.toLowerCase();
 
-      // Reject infrastructure/config commits
-      if (msg.match(/^(fix|chore|docs|style|refactor|test):/)) {
+      // Only reject pure documentation/style commits
+      if (msg.match(/^(docs|style):/)) {
         return false;
       }
 
-      // Reject small changes (likely bug fixes)
-      if (commit.additions + commit.deletions < 50) {
-        return false;
-      }
-
-      // Accept feature commits with significant changes
-      if (msg.match(/^feat:/) && commit.additions + commit.deletions > 100) {
+      // Accept commits with any meaningful code changes (lowered from 50)
+      if (commit.additions + commit.deletions >= 15) {
         return true;
       }
 
-      // Accept commits with architectural keywords
-      return this.isArchitecturalCommit(commit.message);
+      // Accept commits with architectural keywords regardless of size
+      if (this.isArchitecturalCommit(commit.message)) {
+        return true;
+      }
+
+      // Accept feature and refactor commits - these often contain architectural decisions
+      if (msg.match(/^(feat|refactor|perf):/)) {
+        return true;
+      }
+
+      return false;
     });
 
     if (significantCommits.length === 0) {
-      log('No architecturally significant commits found', 'info');
-      return patterns;
+      // FALLBACK: If filtering removed all commits, use first 30 without filtering
+      log('No commits passed significance filter, using first 30 commits unfiltered', 'info');
+      const fallbackCommits = limitedCommits.slice(0, 30);
+      if (fallbackCommits.length === 0) {
+        return patterns;
+      }
+      // Use fallback commits instead
+      return this.extractPatternsFromCommits(fallbackCommits);
     }
 
     try {
@@ -2831,9 +2841,30 @@ Significance: [1-10]`;
     return patterns;
   }
 
+  // Fallback pattern extraction without LLM - uses theme grouping
+  private async extractPatternsFromCommits(commits: any[]): Promise<IdentifiedPattern[]> {
+    const patterns: IdentifiedPattern[] = [];
+    const themeGroups = this.groupCommitsByTheme(commits);
+    let patternCount = 0;
+
+    themeGroups.forEach((themeCommits, theme) => {
+      if (themeCommits.length >= 2 && patternCount < 15) {
+        const pattern = this.createArchitecturalPattern(theme, themeCommits);
+        if (pattern) {
+          // Boost significance for patterns with multiple commits
+          pattern.significance = Math.min(10, 4 + Math.floor(themeCommits.length / 2));
+          patterns.push(pattern);
+          patternCount++;
+        }
+      }
+    });
+
+    return patterns;
+  }
+
   private extractImplementationPatterns(codeEvolution: any[]): IdentifiedPattern[] {
     const patterns: IdentifiedPattern[] = [];
-    
+
     // Limit processing to prevent performance issues
     const limitedEvolution = codeEvolution.slice(0, 20);
     
@@ -3349,6 +3380,7 @@ ${data.appendices || 'Additional metadata and references.'}
     if (significance >= 9) return 'Critical architecture pattern for system success';
     if (significance >= 7) return 'Important pattern with significant impact';
     if (significance >= 5) return 'Useful pattern for specific scenarios';
+    if (significance >= 3) return 'Pattern identified with moderate significance';
     return 'Basic pattern with limited scope';
   }
 

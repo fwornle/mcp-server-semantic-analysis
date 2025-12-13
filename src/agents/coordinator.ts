@@ -171,13 +171,13 @@ export class CoordinatorAgent {
             name: "analyze_git_history",
             agent: "git_history",
             action: "analyzeGitHistory",
-            parameters: { 
+            parameters: {
               repository_path: ".",
-              checkpoint_enabled: false, // Disable checkpoint for broader analysis
-              depth: 100, // Number of commits to analyze
-              days_back: 30 // Analyze commits from last 30 days
+              checkpoint_enabled: false, // Disable checkpoint for full history analysis
+              depth: 500, // Analyze up to 500 commits for complete analysis
+              // NOTE: No days_back parameter = analyze all history regardless of date
             },
-            timeout: 120,
+            timeout: 180, // Longer timeout for full history
           },
           {
             name: "analyze_vibe_history", 

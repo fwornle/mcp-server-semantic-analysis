@@ -318,13 +318,14 @@ export class WebSearchAgent {
   }
 
   private async calculateRelevance(title: string, snippet: string, query: string): Promise<number> {
-    // Calculate keyword-based relevance (fast baseline)
+    // Keyword-based relevance scoring only (fast)
+    // NOTE: LLM-based scoring removed - was causing timeouts due to 10+ LLM calls per search
     const queryWords = query.toLowerCase().split(/\s+/);
     const titleWords = title.toLowerCase().split(/\s+/);
     const snippetWords = snippet.toLowerCase().split(/\s+/);
 
     let keywordScore = 0;
-    let totalWords = queryWords.length;
+    const totalWords = queryWords.length;
 
     for (const word of queryWords) {
       // Exact matches in title (highest weight)
@@ -346,53 +347,7 @@ export class WebSearchAgent {
       }
     }
 
-    const baselineScore = Math.min(keywordScore / totalWords, 1.0);
-
-    // ENHANCEMENT: Use LLM for semantic relevance scoring
-    try {
-      const prompt = `Rate the relevance of this search result to the query on a scale of 0.0 to 1.0:
-
-Query: "${query}"
-Title: "${title}"
-Snippet: "${snippet}"
-
-Consider:
-- Semantic meaning beyond keyword matching
-- Context and intent of the query
-- Quality and depth of the result
-
-Respond with only a JSON object:
-{
-  "relevanceScore": number, // 0.0 to 1.0
-  "reasoning": string, // Brief explanation
-  "confidence": number // 0.0 to 1.0
-}`;
-
-      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-        analysisType: "general",
-        provider: "auto"
-      });
-
-      const llmScore = JSON.parse(result.insights);
-
-      // Blend keyword and semantic scores (weighted average)
-      // 40% keyword matching + 60% semantic understanding
-      const blendedScore = (baselineScore * 0.4) + (llmScore.relevanceScore * 0.6);
-
-      log("LLM-enhanced relevance scoring", "debug", {
-        query,
-        title: title.substring(0, 50),
-        keywordScore: baselineScore.toFixed(2),
-        semanticScore: llmScore.relevanceScore.toFixed(2),
-        blendedScore: blendedScore.toFixed(2),
-        confidence: llmScore.confidence
-      });
-
-      return Math.min(blendedScore, 1.0);
-    } catch (error) {
-      log("LLM relevance scoring failed, using keyword-based score", "warning", error);
-      return baselineScore;
-    }
+    return Math.min(keywordScore / totalWords, 1.0);
   }
 
   private extractCodeBlocks(content: string): string[] {
@@ -598,12 +553,15 @@ const result = ${query.replace(/\s+/g, '')}();`,
 
   async searchSimilarPatterns(pattern: string): Promise<SearchResult[]> {
     const patternQuery = `"${pattern}" design pattern implementation`;
-    
+
+    // NOTE: Content extraction disabled for performance
+    // Fetching 3+ URLs sequentially was causing timeouts
     const response = await this.search(patternQuery, {
       maxResults: 6,
+      timeout: 15000, // 15 second timeout
       contentExtraction: {
-        extractCode: true,
-        extractLinks: true,
+        extractCode: false,
+        extractLinks: false,
       },
     });
 

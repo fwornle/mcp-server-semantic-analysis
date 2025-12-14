@@ -3328,19 +3328,13 @@ ${data.appendices || 'Additional metadata and references.'}
         patterns.push(this.finalizePattern(currentPattern, commits));
       }
       
-      // If no structured patterns found, create a general one
-      if (patterns.length === 0 && llmInsights.length > 100) {
-        patterns.push({
-          name: 'ArchitecturalEvolutionPattern',
-          category: 'Architecture',
-          description: llmInsights.substring(0, 200) + '...',
-          significance: 6,
-          evidence: [llmInsights],
-          relatedComponents: commits.flatMap(c => c.files?.map((f: any) => f.path) || []).slice(0, 5),
-          implementation: {
-            language: 'TypeScript',
-            usageNotes: ['See detailed analysis in the insight document']
-          }
+      // NOTE: Removed generic fallback pattern creation (ArchitecturalEvolutionPattern)
+      // Creating meaningless fallback entities pollutes the knowledge graph.
+      // If no structured patterns are found, return empty array - QA will handle it.
+      if (patterns.length === 0) {
+        log('No structured patterns could be extracted from LLM insights', 'warning', {
+          llmInsightsLength: llmInsights.length,
+          commitCount: commits.length
         });
       }
     } catch (error) {

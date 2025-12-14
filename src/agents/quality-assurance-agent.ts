@@ -1080,6 +1080,174 @@ Respond with a JSON object:
     }
   }
 
+  /**
+   * Validates the semantic value of an entity using LLM-based analysis.
+   * Returns a recommendation: 'keep', 'improve', or 'remove'.
+   *
+   * This method addresses the core issue of meaningless entities like
+   * "ArchitecturalEvolutionPattern" that don't provide actual value.
+   */
+  async validateSemanticValue(entity: {
+    name: string;
+    entityType: string;
+    observations: Array<string | { type: string; content: string; date?: string }>;
+  }): Promise<{
+    hasSemanticValue: boolean;
+    score: number;
+    reason: string;
+    recommendation: 'keep' | 'improve' | 'remove';
+    suggestedImprovement?: string;
+  }> {
+    // Quick structural checks first (fast path)
+    const genericPatterns = [
+      /^(Generic|Misc|Various|Other|Default|Unknown)/i,
+      /Evolution$/i,  // "ArchitecturalEvolution" - evolution is process, not pattern
+      /^(Abstract|Base|Common)(Pattern|Entity|Type)$/i,
+    ];
+
+    // Check for generic "SomethingPattern" without specificity (just adding "Pattern" to a word)
+    const isSimplePatternName = /^[A-Z][a-z]+Pattern$/.test(entity.name);  // e.g., "ConfigurationPattern"
+
+    const isGenericName = genericPatterns.some(p => p.test(entity.name)) || isSimplePatternName;
+
+    // Check observations quality
+    const observationContents = entity.observations
+      .map(o => typeof o === 'string' ? o : o.content)
+      .filter(Boolean);
+
+    const avgObsLength = observationContents.length > 0
+      ? observationContents.reduce((sum, o) => sum + o.length, 0) / observationContents.length
+      : 0;
+
+    // If obviously generic or low-quality, skip expensive LLM call
+    if (isGenericName && avgObsLength < 50) {
+      return {
+        hasSemanticValue: false,
+        score: 0.2,
+        reason: `Entity name "${entity.name}" appears generic and observations are too brief to provide value`,
+        recommendation: 'remove'
+      };
+    }
+
+    // Use LLM for deeper semantic evaluation
+    try {
+      const prompt = `You are evaluating whether a knowledge graph entity provides meaningful, actionable value.
+
+Entity to evaluate:
+- Name: "${entity.name}"
+- Type: ${entity.entityType}
+- Observations (${observationContents.length}):
+${observationContents.slice(0, 5).map((o, i) => `  ${i + 1}. ${o.substring(0, 200)}${o.length > 200 ? '...' : ''}`).join('\n')}
+
+Evaluate this entity on these criteria:
+1. SPECIFICITY: Does the name describe something concrete and specific? (not generic like "MiscPattern" or process-oriented like "ArchitecturalEvolution")
+2. ACTIONABILITY: Do the observations teach something a developer could use?
+3. EVIDENCE: Are observations backed by concrete code/file references?
+4. UNIQUENESS: Does this entity represent a distinct concept, not a catch-all bucket?
+5. NAMING: Is the entityType correct? (e.g., "Evolution" is not a "Pattern")
+
+Respond with JSON only:
+{
+  "score": <0.0-1.0>,
+  "hasValue": <boolean>,
+  "issues": [<string array of specific issues>],
+  "recommendation": "keep" | "improve" | "remove",
+  "reason": "<one sentence explanation>",
+  "suggestedImprovement": "<if recommendation is 'improve', how to fix it>"
+}`;
+
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: "general",
+        provider: "auto"
+      });
+
+      const analysis = JSON.parse(result.insights);
+
+      log("Semantic value validation completed", "info", {
+        entity: entity.name,
+        score: analysis.score,
+        recommendation: analysis.recommendation
+      });
+
+      return {
+        hasSemanticValue: analysis.hasValue,
+        score: analysis.score,
+        reason: analysis.reason,
+        recommendation: analysis.recommendation,
+        suggestedImprovement: analysis.suggestedImprovement
+      };
+    } catch (error) {
+      log("Semantic value validation LLM call failed, using heuristic", "warning", error);
+
+      // Fallback: use heuristics if LLM fails
+      const score = isGenericName ? 0.3 : (avgObsLength > 100 ? 0.7 : 0.5);
+      return {
+        hasSemanticValue: score >= 0.5,
+        score,
+        reason: isGenericName
+          ? `Entity name appears generic (LLM validation unavailable)`
+          : `Heuristic evaluation based on observation quality`,
+        recommendation: score < 0.4 ? 'remove' : score < 0.6 ? 'improve' : 'keep'
+      };
+    }
+  }
+
+  /**
+   * Filters a list of entities by semantic value, removing those that don't provide
+   * meaningful knowledge graph value. This is the batch operation for workflow QA.
+   */
+  async filterEntitiesBySemanticValue(entities: Array<{
+    name: string;
+    entityType: string;
+    observations: Array<string | { type: string; content: string; date?: string }>;
+  }>): Promise<{
+    kept: typeof entities;
+    removed: Array<{ entity: typeof entities[0]; reason: string }>;
+    improved: Array<{ entity: typeof entities[0]; suggestion: string }>;
+    summary: { total: number; kept: number; removed: number; improved: number };
+  }> {
+    const kept: typeof entities = [];
+    const removed: Array<{ entity: typeof entities[0]; reason: string }> = [];
+    const improved: Array<{ entity: typeof entities[0]; suggestion: string }> = [];
+
+    for (const entity of entities) {
+      const evaluation = await this.validateSemanticValue(entity);
+
+      switch (evaluation.recommendation) {
+        case 'keep':
+          kept.push(entity);
+          break;
+        case 'remove':
+          removed.push({ entity, reason: evaluation.reason });
+          log(`Removing low-value entity: ${entity.name}`, "info", {
+            score: evaluation.score,
+            reason: evaluation.reason
+          });
+          break;
+        case 'improve':
+          // Keep but flag for improvement
+          kept.push(entity);
+          improved.push({
+            entity,
+            suggestion: evaluation.suggestedImprovement || evaluation.reason
+          });
+          break;
+      }
+    }
+
+    return {
+      kept,
+      removed,
+      improved,
+      summary: {
+        total: entities.length,
+        kept: kept.length,
+        removed: removed.length,
+        improved: improved.length
+      }
+    };
+  }
+
   private async validateInsightGeneration(result: any, errors: string[], warnings: string[]): Promise<void> {
     if (!result) {
       errors.push('Insight generation result is null or undefined');
@@ -1294,9 +1462,50 @@ Respond with a JSON object:
       correctedObservations.push(correctedObs);
     }
 
+    // SEMANTIC VALUE FILTERING: Remove entities that don't provide meaningful value
+    // This addresses the issue of meaningless entities like "ArchitecturalEvolutionPattern"
+    log("Starting semantic value filtering for entities", "info", {
+      entityCount: correctedObservations.length
+    });
+
+    const semanticFilterResult = await this.filterEntitiesBySemanticValue(
+      correctedObservations.map(obs => ({
+        name: obs.name,
+        entityType: obs.entityType || 'Entity',
+        observations: obs.observations
+      }))
+    );
+
+    // Update correctedObservations to only include entities that passed semantic filtering
+    const keptNames = new Set(semanticFilterResult.kept.map(e => e.name));
+    const finalObservations = correctedObservations.filter(obs => keptNames.has(obs.name));
+
+    // Log filtering results
+    if (semanticFilterResult.removed.length > 0) {
+      corrected = true;
+      warnings.push(`Semantic value filter removed ${semanticFilterResult.removed.length} low-value entities:`);
+      semanticFilterResult.removed.forEach(({ entity, reason }) => {
+        warnings.push(`  - Removed "${entity.name}": ${reason}`);
+      });
+    }
+
+    if (semanticFilterResult.improved.length > 0) {
+      warnings.push(`${semanticFilterResult.improved.length} entities flagged for improvement:`);
+      semanticFilterResult.improved.forEach(({ entity, suggestion }) => {
+        warnings.push(`  - "${entity.name}": ${suggestion}`);
+      });
+    }
+
+    log("Semantic value filtering completed", "info", {
+      original: correctedObservations.length,
+      kept: finalObservations.length,
+      removed: semanticFilterResult.removed.length,
+      improved: semanticFilterResult.improved.length
+    });
+
     return {
       corrected,
-      correctedOutput: corrected ? { ...result, observations: correctedObservations } : undefined
+      correctedOutput: corrected ? { ...result, observations: finalObservations } : undefined
     };
   }
 

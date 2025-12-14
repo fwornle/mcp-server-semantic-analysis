@@ -11,6 +11,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { log } from '../logging.js';
 import type { CodeEntity } from './code-graph-agent.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface DocumentationLink {
   id: string;
@@ -46,10 +47,12 @@ export interface DocumentMetadata {
 export class DocumentationLinkerAgent {
   private repositoryPath: string;
   private knownCodeEntities: Map<string, CodeEntity>;
+  private semanticAnalyzer: SemanticAnalyzer;
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = path.resolve(repositoryPath);
     this.knownCodeEntities = new Map();
+    this.semanticAnalyzer = new SemanticAnalyzer();
 
     log(`[DocumentationLinkerAgent] Initialized with repo: ${this.repositoryPath}`, 'info');
   }
@@ -424,5 +427,130 @@ export class DocumentationLinkerAgent {
 
     log(`[DocumentationLinkerAgent] Transformed ${knowledgeEntities.length} documentation links to knowledge entities`, 'info');
     return knowledgeEntities;
+  }
+
+  /**
+   * Use LLM to semantically match unresolved documentation references to code entities
+   */
+  async resolveReferencesWithLLM(
+    unresolvedReferences: string[],
+    availableEntities: CodeEntity[]
+  ): Promise<Array<{
+    reference: string;
+    matchedEntity: string | null;
+    confidence: number;
+    reasoning: string;
+  }>> {
+    if (unresolvedReferences.length === 0 || availableEntities.length === 0) {
+      return [];
+    }
+
+    const results: Array<{
+      reference: string;
+      matchedEntity: string | null;
+      confidence: number;
+      reasoning: string;
+    }> = [];
+
+    // Process in batches to avoid LLM overload
+    const batchSize = 10;
+    const entityNames = availableEntities.slice(0, 100).map(e => e.name).join(', ');
+
+    for (let i = 0; i < unresolvedReferences.length; i += batchSize) {
+      const batch = unresolvedReferences.slice(i, i + batchSize);
+
+      try {
+        const prompt = `Match these documentation references to the most likely code entity.
+
+Documentation references to match:
+${batch.map((ref, idx) => `${idx + 1}. "${ref}"`).join('\n')}
+
+Available code entities:
+${entityNames}
+
+For each reference, find the best matching entity or null if no good match.
+Respond with JSON array:
+[
+  {"reference": "<ref>", "matchedEntity": "<entity name or null>", "confidence": <0.0-1.0>, "reasoning": "<brief explanation>"}
+]`;
+
+        const response = await this.semanticAnalyzer.analyzeContent(prompt, {
+          maxTokens: 1000,
+          temperature: 0.3,
+        });
+
+        // Parse LLM response
+        const jsonMatch = response.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          results.push(...parsed);
+        }
+      } catch (error) {
+        log(`[DocumentationLinkerAgent] LLM matching failed for batch: ${error}`, 'warning');
+        // Add fallback results for failed batch
+        for (const ref of batch) {
+          results.push({
+            reference: ref,
+            matchedEntity: null,
+            confidence: 0,
+            reasoning: 'LLM matching failed',
+          });
+        }
+      }
+    }
+
+    log(`[DocumentationLinkerAgent] LLM resolved ${results.filter(r => r.matchedEntity).length}/${unresolvedReferences.length} references`, 'info');
+    return results;
+  }
+
+  /**
+   * Analyze documentation with LLM-enhanced semantic matching
+   */
+  async analyzeDocumentationWithLLM(options: {
+    markdownPaths?: string[];
+    plantumlPaths?: string[];
+    includePatterns?: string[];
+    excludePatterns?: string[];
+  } = {}): Promise<DocumentationAnalysisResult & { llmResolvedReferences?: number }> {
+    // First do standard analysis
+    const result = await this.analyzeDocumentation(options);
+
+    // If there are unresolved references and known entities, try LLM matching
+    if (result.statistics.unresolvedReferences.length > 0 && this.knownCodeEntities.size > 0) {
+      const entities = Array.from(this.knownCodeEntities.values());
+      const llmMatches = await this.resolveReferencesWithLLM(
+        result.statistics.unresolvedReferences,
+        entities
+      );
+
+      // Update links with LLM-resolved matches
+      let resolvedCount = 0;
+      for (const match of llmMatches) {
+        if (match.matchedEntity && match.confidence > 0.6) {
+          // Find and update the corresponding link
+          const link = result.links.find(
+            l => l.codeReference === match.reference && l.confidence < 0.7
+          );
+          if (link) {
+            link.confidence = match.confidence;
+            resolvedCount++;
+          }
+        }
+      }
+
+      // Remove resolved references from unresolved list
+      const stillUnresolved = result.statistics.unresolvedReferences.filter(ref => {
+        const match = llmMatches.find(m => m.reference === ref);
+        return !match || !match.matchedEntity || match.confidence <= 0.6;
+      });
+      result.statistics.unresolvedReferences = stillUnresolved;
+
+      return {
+        ...result,
+        llmResolvedReferences: resolvedCount,
+      };
+    }
+
+    return result;
   }
 }

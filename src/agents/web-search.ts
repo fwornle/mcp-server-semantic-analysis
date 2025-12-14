@@ -13,6 +13,8 @@ export interface SearchOptions {
     extractCode?: boolean;
     extractLinks?: boolean;
   };
+  /** Use LLM to summarize and re-rank top results */
+  useLLMSummarization?: boolean;
 }
 
 export interface SearchResult {
@@ -31,6 +33,10 @@ export interface SearchResponse {
   results: SearchResult[];
   totalResults: number;
   searchTime: number;
+  /** LLM-generated summary of results (if useLLMSummarization is true) */
+  llmSummary?: string;
+  /** LLM-generated insights (if useLLMSummarization is true) */
+  llmInsights?: string[];
 }
 
 export class WebSearchAgent {
@@ -68,6 +74,20 @@ export class WebSearchAgent {
         try {
           const results = await this.searchWithProvider(query, provider, searchOptions);
           const searchTime = Date.now() - startTime;
+
+          // Optionally use LLM to summarize and re-rank results
+          if (searchOptions.useLLMSummarization && results.length > 0) {
+            const { summary, rankedResults, insights } = await this.summarizeTopResults(query, results);
+            return {
+              query,
+              provider,
+              results: rankedResults,
+              totalResults: rankedResults.length,
+              searchTime,
+              llmSummary: summary,
+              llmInsights: insights,
+            };
+          }
 
           return {
             query,
@@ -318,8 +338,7 @@ export class WebSearchAgent {
   }
 
   private async calculateRelevance(title: string, snippet: string, query: string): Promise<number> {
-    // Keyword-based relevance scoring only (fast)
-    // NOTE: LLM-based scoring removed - was causing timeouts due to 10+ LLM calls per search
+    // Keyword-based relevance scoring (fast baseline)
     const queryWords = query.toLowerCase().split(/\s+/);
     const titleWords = title.toLowerCase().split(/\s+/);
     const snippetWords = snippet.toLowerCase().split(/\s+/);
@@ -348,6 +367,82 @@ export class WebSearchAgent {
     }
 
     return Math.min(keywordScore / totalWords, 1.0);
+  }
+
+  /**
+   * Use LLM to summarize and rank top search results
+   * Called after initial keyword-based filtering to provide semantic insights
+   */
+  async summarizeTopResults(query: string, results: SearchResult[]): Promise<{
+    summary: string;
+    rankedResults: SearchResult[];
+    insights: string[];
+  }> {
+    if (results.length === 0) {
+      return { summary: 'No results found', rankedResults: [], insights: [] };
+    }
+
+    try {
+      // Only process top 5 results to avoid LLM overload
+      const topResults = results.slice(0, 5);
+
+      const prompt = `Analyze these search results for the query "${query}" and provide:
+1. A brief summary of what these results offer
+2. Rank them by relevance (most to least relevant)
+3. Key insights or patterns
+
+Results:
+${topResults.map((r, i) => `${i + 1}. "${r.title}" - ${r.snippet}`).join('\n')}
+
+Respond with JSON:
+{
+  "summary": "<2-3 sentence summary>",
+  "ranking": [<indices 1-${topResults.length} in order of relevance>],
+  "insights": ["<insight 1>", "<insight 2>"]
+}`;
+
+      const response = await this.semanticAnalyzer.analyzeContent(prompt, {
+        maxTokens: 500,
+        temperature: 0.5,
+      });
+
+      // Parse LLM response
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+
+        // Reorder results based on LLM ranking
+        const rankedResults: SearchResult[] = [];
+        for (const idx of parsed.ranking || []) {
+          if (idx >= 1 && idx <= topResults.length) {
+            rankedResults.push(topResults[idx - 1]);
+          }
+        }
+        // Add any remaining results
+        for (const result of topResults) {
+          if (!rankedResults.includes(result)) {
+            rankedResults.push(result);
+          }
+        }
+        // Add remaining results beyond top 5
+        rankedResults.push(...results.slice(5));
+
+        return {
+          summary: parsed.summary || 'Results analyzed',
+          rankedResults,
+          insights: parsed.insights || [],
+        };
+      }
+    } catch (error) {
+      log('LLM summarization failed, returning original results', 'warning', error);
+    }
+
+    // Fallback: return original results
+    return {
+      summary: `Found ${results.length} results for "${query}"`,
+      rankedResults: results,
+      insights: [],
+    };
   }
 
   private extractCodeBlocks(content: string): string[] {

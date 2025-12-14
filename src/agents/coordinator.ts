@@ -1396,139 +1396,233 @@ export class CoordinatorAgent {
   /**
    * Attempt to recover from QA failures by retrying failed steps with enhanced parameters
    */
+  /**
+   * Quality-based recovery loop with multiple iterations.
+   * Implements a feedback loop where agents can retry with enhanced parameters
+   * based on QA feedback, up to a configurable maximum iteration count.
+   */
   private async attemptQARecovery(
     failures: string[],
     execution: WorkflowExecution,
     workflow: WorkflowDefinition
-  ): Promise<{ success: boolean; remainingFailures: string[] }> {
-    log('Attempting QA recovery', 'info', { failures });
-    
-    const remainingFailures: string[] = [];
-    const failedSteps = new Set<string>();
-    
-    // Identify which steps need retry based on failures
-    failures.forEach(failure => {
-      const [stepName] = failure.split(':');
-      if (stepName) {
-        failedSteps.add(stepName.trim());
-      }
+  ): Promise<{ success: boolean; remainingFailures: string[]; iterations: number }> {
+    const MAX_QA_ITERATIONS = 3;  // Maximum retry iterations
+    let currentFailures = [...failures];
+    let iteration = 0;
+
+    log('Starting quality-based recovery loop', 'info', {
+      initialFailures: failures.length,
+      maxIterations: MAX_QA_ITERATIONS
     });
-    
-    // Retry each failed step with enhanced parameters
-    for (const stepName of failedSteps) {
-      const step = workflow.steps.find(s => s.name === stepName);
-      if (!step) continue;
-      
-      try {
-        log(`Retrying step ${stepName} with enhanced parameters`, 'info');
-        
-        // Build enhanced parameters based on the failure type
-        const enhancedParams = this.buildEnhancedParameters(stepName, failures, execution);
-        
-        // Get the agent and retry the action
-        const agent = this.agents.get(step.agent);
-        if (!agent) {
-          throw new Error(`Agent ${step.agent} not found`);
+
+    while (currentFailures.length > 0 && iteration < MAX_QA_ITERATIONS) {
+      iteration++;
+      log(`QA Recovery iteration ${iteration}/${MAX_QA_ITERATIONS}`, 'info', {
+        failuresRemaining: currentFailures.length
+      });
+
+      const iterationFailures: string[] = [];
+      const failedSteps = new Set<string>();
+
+      // Identify which steps need retry based on failures
+      currentFailures.forEach(failure => {
+        const [stepName] = failure.split(':');
+        if (stepName) {
+          failedSteps.add(stepName.trim());
         }
-        
-        const action = (agent as any)[step.action];
-        if (!action) {
-          throw new Error(`Action ${step.action} not found on agent ${step.agent}`);
+      });
+
+      // Retry each failed step with enhanced parameters
+      for (const stepName of failedSteps) {
+        const step = workflow.steps.find(s => s.name === stepName);
+        if (!step) continue;
+
+        try {
+          log(`Iteration ${iteration}: Retrying step ${stepName}`, 'info', {
+            previousFailures: currentFailures.filter(f => f.startsWith(stepName))
+          });
+
+          // Build enhanced parameters based on the failure type and iteration
+          const enhancedParams = this.buildEnhancedParameters(stepName, currentFailures, execution, iteration);
+
+          // Get the agent and retry the action
+          const agent = this.agents.get(step.agent);
+          if (!agent) {
+            throw new Error(`Agent ${step.agent} not found`);
+          }
+
+          const action = (agent as any)[step.action];
+          if (!action) {
+            throw new Error(`Action ${step.action} not found on agent ${step.agent}`);
+          }
+
+          // Retry with enhanced parameters
+          const retryResult = await action.call(agent, enhancedParams);
+
+          // Update execution results
+          execution.results[stepName] = retryResult;
+
+          log(`Iteration ${iteration}: Successfully retried step ${stepName}`, 'info');
+
+        } catch (retryError) {
+          const errorMsg = retryError instanceof Error ? retryError.message : String(retryError);
+          iterationFailures.push(`${stepName}: ${errorMsg} (iteration ${iteration})`);
+          log(`Iteration ${iteration}: Failed to retry step ${stepName}`, 'error', { error: errorMsg });
         }
-        
-        // Retry with enhanced parameters
-        const retryResult = await action.call(agent, enhancedParams);
-        
-        // Update execution results
-        execution.results[stepName] = retryResult;
-        
-        log(`Successfully retried step ${stepName}`, 'info');
-        
-      } catch (retryError) {
-        const errorMsg = retryError instanceof Error ? retryError.message : String(retryError);
-        remainingFailures.push(`${stepName}: ${errorMsg} (after retry)`);
-        log(`Failed to retry step ${stepName}`, 'error', { error: errorMsg });
       }
-    }
-    
-    // Re-run QA to check if issues are resolved
-    if (remainingFailures.length === 0) {
-      try {
-        const qaStep = workflow.steps.find(s => s.name === 'quality_assurance');
-        if (qaStep) {
-          const qaAgent = this.agents.get(qaStep.agent);
-          if (qaAgent) {
-            const qaAction = (qaAgent as any)[qaStep.action];
-            if (qaAction) {
-              const qaParams = { ...qaStep.parameters };
-              this.resolveParameterTemplates(qaParams, execution.results);
-              qaParams._context = {
-                workflow: execution.workflow,
-                executionId: execution.id,
-                previousResults: execution.results,
-                step: qaStep.name
-              };
-              const newQaResult = await qaAction.call(qaAgent, qaParams);
-              
-              // Validate the new QA results
-              const newFailures = this.validateQualityAssuranceResults(newQaResult);
-              if (newFailures.length > 0) {
-                remainingFailures.push(...newFailures);
+
+      // Re-run QA to check if issues are resolved
+      if (iterationFailures.length === 0) {
+        try {
+          const qaStep = workflow.steps.find(s => s.name === 'quality_assurance');
+          if (qaStep) {
+            const qaAgent = this.agents.get(qaStep.agent);
+            if (qaAgent) {
+              const qaAction = (qaAgent as any)[qaStep.action];
+              if (qaAction) {
+                const qaParams = { ...qaStep.parameters };
+                this.resolveParameterTemplates(qaParams, execution.results);
+                qaParams._context = {
+                  workflow: execution.workflow,
+                  executionId: execution.id,
+                  previousResults: execution.results,
+                  step: qaStep.name,
+                  qaIteration: iteration  // Pass iteration info for adaptive QA
+                };
+                const newQaResult = await qaAction.call(qaAgent, qaParams);
+
+                // Validate the new QA results
+                const newFailures = this.validateQualityAssuranceResults(newQaResult);
+                if (newFailures.length > 0) {
+                  iterationFailures.push(...newFailures);
+                  log(`Iteration ${iteration}: QA validation still failing`, 'warning', {
+                    newFailures: newFailures.length
+                  });
+                } else {
+                  log(`Iteration ${iteration}: QA validation passed`, 'info');
+                }
               }
             }
           }
+        } catch (qaError) {
+          log(`Iteration ${iteration}: Failed to re-run QA`, 'error', qaError);
         }
-      } catch (qaError) {
-        log('Failed to re-run QA after retry', 'error', qaError);
+      }
+
+      // Update failures for next iteration
+      currentFailures = iterationFailures;
+
+      // If we fixed everything, break early
+      if (currentFailures.length === 0) {
+        log(`Quality issues resolved after ${iteration} iteration(s)`, 'info');
+        break;
       }
     }
-    
+
+    const success = currentFailures.length === 0;
+    log('Quality-based recovery loop completed', success ? 'info' : 'warning', {
+      success,
+      iterations: iteration,
+      remainingFailures: currentFailures.length
+    });
+
     return {
-      success: remainingFailures.length === 0,
-      remainingFailures
+      success,
+      remainingFailures: currentFailures,
+      iterations: iteration
     };
   }
 
   /**
-   * Build enhanced parameters for retry based on failure analysis
+   * Build enhanced parameters for retry based on failure analysis and iteration number.
+   * Parameters become progressively stricter with each iteration.
    */
   private buildEnhancedParameters(
     stepName: string,
     failures: string[],
-    execution: WorkflowExecution
+    execution: WorkflowExecution,
+    iteration: number = 1
   ): any {
     const baseParams = execution.results[stepName]?._parameters || {};
     const enhancedParams = { ...baseParams };
-    
+
     // Analyze failures to determine enhancement strategy
     const stepFailures = failures.filter(f => f.startsWith(`${stepName}:`));
-    
+
+    // Progressive enhancement based on iteration
+    const progressiveFactor = iteration;  // Gets stricter with each iteration
+
     if (stepName === 'semantic_analysis') {
       // If semantic analysis failed due to missing insights, enhance the analysis depth
       if (stepFailures.some(f => f.includes('Missing insights'))) {
         enhancedParams.analysisDepth = 'comprehensive';
         enhancedParams.includeDetailedInsights = true;
-        enhancedParams.minInsightLength = 200;
+        enhancedParams.minInsightLength = 200 + (progressiveFactor * 100);  // 200, 300, 400
       }
+      // Progressive: increase analysis depth with each iteration
+      enhancedParams.semanticValueThreshold = 0.5 + (progressiveFactor * 0.1);  // 0.6, 0.7, 0.8
     } else if (stepName === 'insight_generation') {
       // If insight generation failed, request more detailed insights
       enhancedParams.generateDetailedInsights = true;
       enhancedParams.includeCodeExamples = true;
-      enhancedParams.minPatternSignificance = 5;
+      enhancedParams.minPatternSignificance = 5 + progressiveFactor;  // 6, 7, 8
+      // Progressive: stricter quality requirements
+      enhancedParams.rejectGenericPatterns = progressiveFactor >= 2;  // Reject generic after 2nd iteration
+      enhancedParams.requireConcreteEvidence = progressiveFactor >= 2;
+    } else if (stepName === 'generate_observations') {
+      // For observation generation, increase semantic value requirements
+      enhancedParams.semanticValueThreshold = 0.6 + (progressiveFactor * 0.1);  // 0.7, 0.8, 0.9
+      enhancedParams.minObservationsPerEntity = 2 + progressiveFactor;  // 3, 4, 5
     } else if (stepName === 'web_search') {
       // If web search failed, try with broader search parameters
       enhancedParams.searchDepth = 'comprehensive';
       enhancedParams.includeAlternativePatterns = true;
     }
-    
+
     // Add retry context to help agents understand they're in a retry
     enhancedParams._retryContext = {
       isRetry: true,
+      iteration,
       previousFailures: stepFailures,
-      enhancementReason: 'QA validation failure'
+      enhancementReason: 'QA validation failure',
+      progressiveFactor,
+      // Provide feedback about what needs improvement
+      feedback: this.generateRetryFeedback(stepFailures, iteration)
     };
-    
+
     return enhancedParams;
+  }
+
+  /**
+   * Generate human-readable feedback for retry attempts
+   */
+  private generateRetryFeedback(failures: string[], iteration: number): string {
+    const feedbackParts: string[] = [];
+
+    if (iteration === 1) {
+      feedbackParts.push('Initial quality check failed. Retrying with enhanced parameters.');
+    } else if (iteration === 2) {
+      feedbackParts.push('Quality still insufficient. Applying stricter requirements.');
+    } else {
+      feedbackParts.push(`Iteration ${iteration}: Final attempt with maximum quality requirements.`);
+    }
+
+    // Analyze failure patterns
+    const hasLowQuality = failures.some(f => f.includes('low-value') || f.includes('meaningless'));
+    const hasMissingContent = failures.some(f => f.includes('missing') || f.includes('insufficient'));
+    const hasGenericContent = failures.some(f => f.includes('generic') || f.includes('vague'));
+
+    if (hasLowQuality) {
+      feedbackParts.push('Previous output contained low-value content. Focus on actionable insights.');
+    }
+    if (hasMissingContent) {
+      feedbackParts.push('Previous output was incomplete. Ensure comprehensive coverage.');
+    }
+    if (hasGenericContent) {
+      feedbackParts.push('Previous output was too generic. Provide specific, concrete examples.');
+    }
+
+    return feedbackParts.join(' ');
   }
 
   /**

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import { log } from '../logging.js';
 import { CheckpointManager } from '../utils/checkpoint-manager.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface GitCommit {
   hash: string;
@@ -62,6 +63,7 @@ export class GitHistoryAgent {
   private repositoryPath: string;
   private team: string;
   private checkpointManager: CheckpointManager;
+  private semanticAnalyzer: SemanticAnalyzer;
   private excludePatterns: string[] = [
     'node_modules',
     '.git',
@@ -76,6 +78,7 @@ export class GitHistoryAgent {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.checkpointManager = new CheckpointManager(repositoryPath);
+    this.semanticAnalyzer = new SemanticAnalyzer();
   }
 
   async analyzeGitHistory(fromTimestampOrParams?: Date | Record<string, any>): Promise<GitHistoryAnalysisResult> {
@@ -460,20 +463,71 @@ export class GitHistoryAgent {
     return 'low';
   }
 
-  private extractCodeEvolution(commits: GitCommit[]): CodeEvolutionPattern[] {
-    // DISABLED: Hardcoded pattern matching has been removed in favor of LLM-based pattern extraction
-    // The InsightGenerationAgent.extractArchitecturalPatternsFromCommits() method uses LLM to
-    // extract meaningful, context-specific patterns instead of generic regex-based patterns.
-    //
-    // Previous implementation used hardcoded patterns like:
-    // - "bug fixes" (regex: /fix|bug|error|issue/)
-    // - "JavaScript development" (test: f.endsWith('.js'))
-    // - "Documentation updates" (test: f.endsWith('.md'))
-    // etc.
-    //
-    // These generic patterns were dominating the results and preventing meaningful
-    // LLM-extracted patterns from being used.
+  private async extractCodeEvolutionWithLLM(commits: GitCommit[]): Promise<CodeEvolutionPattern[]> {
+    if (commits.length === 0) {
+      return [];
+    }
 
+    try {
+      // Prepare commit summary for LLM analysis
+      const commitSummary = commits.slice(0, 50).map(c => ({
+        hash: c.hash,
+        message: c.message,
+        files: c.files.map(f => f.path).slice(0, 5),
+        changes: c.stats.totalChanges,
+      }));
+
+      const prompt = `Analyze these git commits and identify development patterns and evolution trends.
+
+Commits (most recent first):
+${commitSummary.map(c => `- [${c.hash}] ${c.message} (${c.changes} changes, files: ${c.files.join(', ')})`).join('\n')}
+
+Identify:
+1. Development patterns (e.g., "MCP agent development", "UI component work", "API refactoring")
+2. Evolution trends (increasing, decreasing, stable activity in each area)
+3. Key architectural changes
+
+Respond with JSON:
+{
+  "patterns": [
+    {
+      "pattern": "<descriptive pattern name>",
+      "occurrences": <count>,
+      "trend": "increasing|decreasing|stable",
+      "relatedCommits": ["<hash1>", "<hash2>"],
+      "description": "<brief explanation>"
+    }
+  ]
+}`;
+
+      const response = await this.semanticAnalyzer.analyzeContent(prompt, {
+        maxTokens: 1500,
+        temperature: 0.5,
+      });
+
+      // Parse LLM response
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+
+        return (parsed.patterns || []).map((p: any) => ({
+          pattern: p.pattern,
+          occurrences: p.occurrences || 1,
+          files: [],  // Files extracted separately
+          commits: p.relatedCommits || [],
+          trend: p.trend || 'stable',
+        }));
+      }
+    } catch (error) {
+      log('LLM code evolution analysis failed', 'warning', error);
+    }
+
+    return [];
+  }
+
+  private extractCodeEvolution(commits: GitCommit[]): CodeEvolutionPattern[] {
+    // Synchronous fallback - returns empty as per original design
+    // Use extractCodeEvolutionWithLLM for LLM-powered analysis
     return [];
   }
 
@@ -598,6 +652,93 @@ export class GitHistoryAgent {
       activeDevelopmentAreas,
       refactoringPatterns,
       insights
+    };
+  }
+
+  /**
+   * Analyze git history with LLM-enhanced pattern extraction
+   * This provides richer semantic analysis than the standard method
+   */
+  async analyzeGitHistoryWithLLM(fromTimestampOrParams?: Date | Record<string, any>): Promise<GitHistoryAnalysisResult & { llmPatterns?: CodeEvolutionPattern[] }> {
+    // First do standard analysis
+    const result = await this.analyzeGitHistory(fromTimestampOrParams);
+
+    // Then enhance with LLM-based code evolution analysis
+    if (result.commits.length > 0) {
+      try {
+        const llmPatterns = await this.extractCodeEvolutionWithLLM(result.commits);
+
+        // Merge LLM patterns into result
+        if (llmPatterns.length > 0) {
+          result.codeEvolution = llmPatterns;
+
+          // Update summary with LLM insights
+          result.summary.insights = `${result.summary.insights} LLM identified ${llmPatterns.length} development patterns: ${llmPatterns.map(p => p.pattern).join(', ')}.`;
+        }
+
+        return {
+          ...result,
+          llmPatterns,
+        };
+      } catch (error) {
+        log('LLM analysis failed, returning standard results', 'warning', error);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Analyze commit messages semantically using LLM
+   */
+  async analyzeCommitMessagesSemantically(commits: GitCommit[]): Promise<{
+    themes: string[];
+    keyDecisions: string[];
+    technicalDebt: string[];
+    summary: string;
+  }> {
+    if (commits.length === 0) {
+      return { themes: [], keyDecisions: [], technicalDebt: [], summary: 'No commits to analyze' };
+    }
+
+    try {
+      const messages = commits.slice(0, 30).map(c => `[${c.hash}] ${c.message}`).join('\n');
+
+      const prompt = `Analyze these git commit messages and extract:
+1. Main development themes/areas of focus
+2. Key architectural or design decisions
+3. Signs of technical debt or areas needing attention
+4. Overall summary of development direction
+
+Commit messages:
+${messages}
+
+Respond with JSON:
+{
+  "themes": ["<theme1>", "<theme2>"],
+  "keyDecisions": ["<decision1>", "<decision2>"],
+  "technicalDebt": ["<debt indicator1>", "<debt indicator2>"],
+  "summary": "<2-3 sentence summary of development activity>"
+}`;
+
+      const response = await this.semanticAnalyzer.analyzeContent(prompt, {
+        maxTokens: 800,
+        temperature: 0.5,
+      });
+
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+    } catch (error) {
+      log('Semantic commit analysis failed', 'warning', error);
+    }
+
+    return {
+      themes: [],
+      keyDecisions: [],
+      technicalDebt: [],
+      summary: 'Analysis failed',
     };
   }
 }

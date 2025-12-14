@@ -18,6 +18,7 @@ import { OntologyValidator } from '../ontology/OntologyValidator.js';
 import { OntologyClassifier } from '../ontology/OntologyClassifier.js';
 import { createHeuristicClassifier } from '../ontology/heuristics/index.js';
 import type { OntologyClassification } from '../ontology/types.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 /**
  * Ontology metadata to be attached to entities
@@ -100,6 +101,7 @@ export class OntologyClassificationAgent {
   private ontologyManager: OntologyManager | null = null;
   private validator: OntologyValidator | null = null;
   private classifier: OntologyClassifier | null = null;
+  private semanticAnalyzer: SemanticAnalyzer;
   private team: string;
   private basePath: string;
   private initialized: boolean = false;
@@ -107,6 +109,7 @@ export class OntologyClassificationAgent {
   constructor(team: string = 'coding', repositoryPath?: string) {
     this.team = team;
     this.basePath = repositoryPath || process.env.KNOWLEDGE_BASE_PATH || process.cwd();
+    this.semanticAnalyzer = new SemanticAnalyzer();
   }
 
   /**
@@ -137,7 +140,7 @@ export class OntologyClassificationAgent {
           useUpper: true,
           useLower: true,
           minConfidence: 0.6,
-          enableLLM: false,
+          enableLLM: true,  // LLM enabled for semantic classification
           enableHeuristics: true,
           llmBudgetPerClassification: 500,
         },
@@ -180,24 +183,72 @@ export class OntologyClassificationAgent {
 
       const heuristicClassifier = createHeuristicClassifier();
 
-      // Create mock inference engine (LLM classification disabled by default)
-      const mockInferenceEngine = {
-        generateCompletion: async () => ({
-          content: JSON.stringify({
-            entityClass: 'Unknown',
-            confidence: 0,
-            reasoning: 'LLM classification disabled',
-          }),
-          model: 'mock',
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-        }),
+      // Create LLM inference engine using SemanticAnalyzer
+      const llmInferenceEngine = {
+        generateCompletion: async (prompt: string) => {
+          try {
+            // Get available ontology classes for context
+            const availableClasses = this.ontologyManager?.getAllEntityClasses() || [];
+            const classNames = availableClasses.map(c => c.name).join(', ');
+
+            const classificationPrompt = `You are an ontology classifier. Given the following entity description, classify it into ONE of these ontology classes: ${classNames}
+
+Entity to classify:
+${prompt}
+
+Respond with JSON only:
+{
+  "entityClass": "<class name from the list above>",
+  "confidence": <0.0-1.0>,
+  "reasoning": "<brief explanation>"
+}`;
+
+            const result = await this.semanticAnalyzer.analyzeContent(classificationPrompt, {
+              maxTokens: 200,
+              temperature: 0.3,  // Low temperature for consistent classification
+            });
+
+            // Parse LLM response
+            const jsonMatch = result.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              const parsed = JSON.parse(jsonMatch[0]);
+              return {
+                content: JSON.stringify(parsed),
+                model: 'semantic-analyzer',
+                usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+              };
+            }
+
+            // Fallback if parsing fails
+            return {
+              content: JSON.stringify({
+                entityClass: 'Unknown',
+                confidence: 0.3,
+                reasoning: 'LLM response parsing failed, using fallback',
+              }),
+              model: 'semantic-analyzer',
+              usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            };
+          } catch (error) {
+            log('LLM classification failed, falling back to heuristics', 'warning', error);
+            return {
+              content: JSON.stringify({
+                entityClass: 'Unknown',
+                confidence: 0,
+                reasoning: `LLM error: ${error instanceof Error ? error.message : String(error)}`,
+              }),
+              model: 'fallback',
+              usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            };
+          }
+        },
       };
 
       this.classifier = new OntologyClassifier(
         this.ontologyManager,
         this.validator,
         heuristicClassifier,
-        mockInferenceEngine as any
+        llmInferenceEngine as any
       );
 
       this.initialized = true;

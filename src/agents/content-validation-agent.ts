@@ -128,6 +128,7 @@ export interface ContentValidationAgentConfig {
   stalenessThresholdDays?: number;
   useGitBasedDetection?: boolean; // Use git commit history for staleness detection (default: true)
   parallelWorkers?: number; // Number of parallel workers for batch refresh (default: 1, max: 20)
+  team?: string; // Team name for knowledge base operations (default: derived from repositoryPath)
 }
 
 // Entity refresh result interfaces
@@ -168,6 +169,7 @@ export class ContentValidationAgent {
   private gitStalenessDetector: GitStalenessDetector | null = null;
   private useGitBasedDetection: boolean;
   private parallelWorkers: number;
+  private team: string;
 
   // Known patterns for reference extraction
   private filePathPatterns = [
@@ -202,6 +204,8 @@ export class ContentValidationAgent {
     this.useGitBasedDetection = config?.useGitBasedDetection ?? true;
     // Parallel workers: default 1 (sequential), max 20 for batch entity refresh
     this.parallelWorkers = Math.min(Math.max(config?.parallelWorkers ?? 1, 1), 20);
+    // Team: derive from repository path basename if not provided
+    this.team = config?.team || path.basename(this.repositoryPath);
     this.semanticAnalyzer = new SemanticAnalyzer();
 
     // Initialize GitStalenessDetector for git-based staleness detection
@@ -421,7 +425,7 @@ export class ContentValidationAgent {
       // Process entities in batches with event loop yields to prevent blocking
       const BATCH_SIZE = 10;
       let processedCount = 0;
-      const team = 'coding';
+      const team = this.team;
 
       for (const entity of entities) {
         // Yield to event loop every BATCH_SIZE entities to prevent blocking

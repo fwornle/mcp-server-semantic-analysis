@@ -1655,7 +1655,8 @@ async function handleRefreshEntity(args: any): Promise<any> {
     // Initialize ContentValidationAgent with required dependencies
     const contentValidationAgent = new ContentValidationAgent({
       repositoryPath,
-      enableDeepValidation: true
+      enableDeepValidation: true,
+      team: team === '*' ? 'coding' : team
     });
 
     // Initialize GraphDB adapter

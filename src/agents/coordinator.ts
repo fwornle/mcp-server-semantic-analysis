@@ -801,7 +801,8 @@ export class CoordinatorAgent {
       // Content Validation Agent for entity accuracy checking
       const contentValidationAgent = new ContentValidationAgent({
         repositoryPath: this.repositoryPath,
-        enableDeepValidation: true
+        enableDeepValidation: true,
+        team: this.team
       });
       contentValidationAgent.setGraphDB(this.graphDB);
       contentValidationAgent.setPersistenceAgent(persistenceAgent);

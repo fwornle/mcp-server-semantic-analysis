@@ -170,14 +170,14 @@ export class CoordinatorAgent {
           {
             name: "analyze_git_history",
             agent: "git_history",
-            action: "analyzeGitHistory",
+            action: "analyzeGitHistoryWithLLM",
             parameters: {
               repository_path: ".",
               checkpoint_enabled: false, // Disable checkpoint for full history analysis
               depth: 500, // Analyze up to 500 commits for complete analysis
               // NOTE: No days_back parameter = analyze all history regardless of date
             },
-            timeout: 180, // Longer timeout for full history
+            timeout: 300, // Longer timeout for LLM analysis
           },
           {
             name: "analyze_vibe_history", 
@@ -362,13 +362,13 @@ export class CoordinatorAgent {
           {
             name: "analyze_recent_changes",
             agent: "git_history",
-            action: "analyzeGitHistory",
+            action: "analyzeGitHistoryWithLLM",
             parameters: {
               repository: null,  // Will be filled from workflow params
               maxCommits: 10,
               sinceCommit: null
             },
-            timeout: 60,
+            timeout: 120, // Longer timeout for LLM analysis
           },
           {
             name: "analyze_recent_vibes",
@@ -1947,7 +1947,14 @@ Expected locations for generated files:
     if (Array.isArray(result.patterns)) summary.patternsCount = result.patterns.length;
     if (Array.isArray(result.insights)) summary.insightsCount = result.insights.length;
     if (Array.isArray(result.entities)) summary.entitiesCount = result.entities.length;
-    if (Array.isArray(result.commits)) summary.commitsCount = result.commits.length;
+    if (Array.isArray(result.commits)) {
+      summary.commitsCount = result.commits.length;
+      // Calculate total files changed across all commits (files are nested inside each commit)
+      const totalFiles = result.commits.reduce((sum: number, commit: any) => {
+        return sum + (Array.isArray(commit.files) ? commit.files.length : 0);
+      }, 0);
+      if (totalFiles > 0) summary.filesCount = totalFiles;
+    }
     if (Array.isArray(result.sessions)) summary.sessionsCount = result.sessions.length;
     if (Array.isArray(result.observations)) summary.observationsCount = result.observations.length;
 

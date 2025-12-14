@@ -474,13 +474,12 @@ Respond with JSON array:
   {"reference": "<ref>", "matchedEntity": "<entity name or null>", "confidence": <0.0-1.0>, "reasoning": "<brief explanation>"}
 ]`;
 
-        const response = await this.semanticAnalyzer.analyzeContent(prompt, {
-          maxTokens: 1000,
-          temperature: 0.3,
+        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+          analysisType: 'code',
         });
 
         // Parse LLM response
-        const jsonMatch = response.match(/\[[\s\S]*\]/);
+        const jsonMatch = result.insights.match(/\[[\s\S]*\]/);
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
           results.push(...parsed);

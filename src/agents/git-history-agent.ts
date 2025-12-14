@@ -500,13 +500,12 @@ Respond with JSON:
   ]
 }`;
 
-      const response = await this.semanticAnalyzer.analyzeContent(prompt, {
-        maxTokens: 1500,
-        temperature: 0.5,
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: 'patterns',
       });
 
       // Parse LLM response
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      const jsonMatch = result.insights.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
 
@@ -721,12 +720,11 @@ Respond with JSON:
   "summary": "<2-3 sentence summary of development activity>"
 }`;
 
-      const response = await this.semanticAnalyzer.analyzeContent(prompt, {
-        maxTokens: 800,
-        temperature: 0.5,
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: 'general',
       });
 
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      const jsonMatch = result.insights.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         return JSON.parse(jsonMatch[0]);
       }

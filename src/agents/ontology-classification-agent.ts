@@ -189,7 +189,7 @@ export class OntologyClassificationAgent {
           try {
             // Get available ontology classes for context
             const availableClasses = this.ontologyManager?.getAllEntityClasses() || [];
-            const classNames = availableClasses.map(c => c.name).join(', ');
+            const classNames = availableClasses.map((c: any) => typeof c === 'string' ? c : c.name).join(', ');
 
             const classificationPrompt = `You are an ontology classifier. Given the following entity description, classify it into ONE of these ontology classes: ${classNames}
 
@@ -204,12 +204,11 @@ Respond with JSON only:
 }`;
 
             const result = await this.semanticAnalyzer.analyzeContent(classificationPrompt, {
-              maxTokens: 200,
-              temperature: 0.3,  // Low temperature for consistent classification
+              analysisType: 'general',
             });
 
             // Parse LLM response
-            const jsonMatch = result.match(/\{[\s\S]*\}/);
+            const jsonMatch = result.insights.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
               const parsed = JSON.parse(jsonMatch[0]);
               return {

@@ -401,13 +401,12 @@ Respond with JSON:
   "insights": ["<insight 1>", "<insight 2>"]
 }`;
 
-      const response = await this.semanticAnalyzer.analyzeContent(prompt, {
-        maxTokens: 500,
-        temperature: 0.5,
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: 'general',
       });
 
       // Parse LLM response
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      const jsonMatch = result.insights.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
 

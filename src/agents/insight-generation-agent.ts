@@ -1466,6 +1466,36 @@ Each section should provide genuine insight, not just reformatted input.**`;
       });
     }
 
+    // Fix 12: Convert class diagram relationships to component relationships in non-class diagrams
+    // Detect if this is a component/architecture diagram (has component keywords, no class keywords)
+    const isComponentDiagram = /\bcomponent\b/.test(fixed) && !/\bclass\b/.test(fixed);
+    if (isComponentDiagram) {
+      // Convert --* (composition) to --> (dependency)
+      fixed = fixed.replace(/\s+--\*\s+/g, ' --> ');
+      // Convert --o (aggregation) to --> (dependency)
+      fixed = fixed.replace(/\s+--o\s+/g, ' --> ');
+      // Convert --|> (inheritance) to --> (dependency)
+      fixed = fixed.replace(/\s+--\|>\s+/g, ' --> ');
+      // Convert ..|> (implements) to ..> (weak dependency)
+      fixed = fixed.replace(/\s+\.\.\|>\s+/g, ' ..> ');
+    }
+
+    // Fix 13: Remove redundant aliases where component "X" as "X" (quoted alias should be unquoted)
+    // Pattern: component "SomeName" as "SomeName" -> component "SomeName" as SomeName
+    fixed = fixed.replace(/(\bcomponent\s+"([^"]+)")\s+as\s+"([^"]+)"/g, (match, prefix, name, alias) => {
+      // Convert quoted alias to unquoted short form
+      const shortAlias = alias.replace(/[^a-zA-Z0-9_]/g, '');
+      return `${prefix} as ${shortAlias}`;
+    });
+
+    // Fix 14: Shorten overly long component aliases (often happens with pattern names)
+    // Long aliases like "MultiAgentSystemCoordinationPattern" should be shorter
+    fixed = fixed.replace(/\bcomponent\s+"([^"]+)"\s+as\s+([A-Za-z][A-Za-z0-9_]{25,})\b/g, (_match, name, longAlias) => {
+      // Create a short alias from initials or first chars
+      const shortAlias = longAlias.slice(0, 12);
+      return `component "${name}" as ${shortAlias}`;
+    });
+
     // Validate: Must have both start and end tags
     if (!fixed.includes('@startuml') || !fixed.includes('@enduml')) {
       log('PlantUML validation failed: missing @startuml/@enduml tags', 'warning');
@@ -1613,6 +1643,31 @@ ${analysisContext}
 \`\`\``;
 
     if (type === 'architecture') {
+      // Common architecture diagram syntax rules
+      const architectureSyntaxRules = `
+
+**VALID Component Diagram Syntax (MUST FOLLOW):**
+- component "Display Name" as shortAlias <<stereotype>>
+  Example: component "Knowledge Graph" as kg <<storage>>
+- Aliases MUST be short, unquoted identifiers (NOT "quoted strings")
+- Stereotypes: <<api>>, <<core>>, <<storage>>, <<agent>>, <<external>>, <<cli>>
+- package "Package Name" { ... } for grouping
+- database "Name" as alias for databases
+- cloud "Name" as alias for external services
+
+**VALID Relationships for Architecture Diagrams:**
+- --> : dependency (A --> B means A uses B)
+- ..> : weak dependency
+- -- : association
+- .. : weak association
+Labels: A --> B : "uses" or A --> B : processes
+
+**DO NOT USE these (they are for CLASS diagrams):**
+- --* (composition) - WRONG for architecture diagrams
+- --o (aggregation) - WRONG for architecture diagrams
+- --|> (inheritance) - WRONG for architecture diagrams
+- ..|> (implements) - WRONG for architecture diagrams`;
+
       if (hasEntityObservations) {
         // Entity-specific architecture diagram instructions
         prompt += `
@@ -1620,23 +1675,23 @@ ${analysisContext}
 **Architecture Diagram Specifics for "${entityInfo.name}":**
 - Extract ACTUAL components mentioned in the observations (e.g., GraphDatabase, LevelDB, MCP tools, agents, etc.)
 - Show these real components as PlantUML components with appropriate stereotypes
-- Use stereotypes like <<storage>> for databases, <<api>> for interfaces, <<core>> for main logic, <<agent>> for agents
-- Show relationships between components based on what the observations describe
-- Group related components into meaningful packages
+- Group related components into meaningful packages (max 3-4 packages)
+- Show logical data flow with --> arrows between components
 - Include a brief summary note about the entity's purpose
-- PREFER vertical layout (top-to-bottom) over horizontal to avoid excessive width
-- DO NOT use generic placeholder names - use the actual names from the observations`;
+- PREFER vertical layout (top-to-bottom) over horizontal
+- Keep the diagram focused - max 8-10 components for clarity
+- DO NOT use generic placeholder names - use actual names from observations
+${architectureSyntaxRules}`;
       } else {
         prompt += `
 
 **Architecture Diagram Specifics:**
-- Show ${patternCount} identified patterns as components
+- Show ${patternCount} identified patterns as components (max 10)
 - Group related patterns into packages by category
-- Use stereotypes like <<api>>, <<core>>, <<storage>>, <<agent>> for different component types (defined in style sheet)
-- Show relationships between related components
+- Show meaningful relationships between components using --> arrows
 - Include a summary note with key metrics
-- Use component diagram syntax with packages, components, and interfaces
-- PREFER vertical layout (top-to-bottom) over horizontal to avoid excessive width`;
+- PREFER vertical layout (top-to-bottom) over horizontal
+${architectureSyntaxRules}`;
       }
 
     } else if (type === 'class') {

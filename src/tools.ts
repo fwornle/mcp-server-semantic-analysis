@@ -784,7 +784,8 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
 
   // Initialize coordinator and execute real workflow
   // Use repository_path from parameters or default to current directory
-  let repositoryPath = parameters?.repository_path || '.';
+  // Accept both snake_case (repository_path) and camelCase (repositoryPath) for robustness
+  let repositoryPath = parameters?.repository_path || parameters?.repositoryPath || '.';
 
   // If we're running from the semantic analysis subdirectory, resolve the main repo path
   if (repositoryPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {

@@ -79,9 +79,19 @@ export class CodeGraphAgent {
 
   /**
    * Index a repository using code-graph-rag CLI
+   * Uses: uv run graph-code index --repo-path <path> --output-proto-dir <dir>
    */
-  async indexRepository(targetPath?: string): Promise<CodeGraphAnalysisResult> {
-    const repoPath = typeof targetPath === 'string' ? targetPath : this.repositoryPath;
+  async indexRepository(targetPath?: string | { target_path?: string }): Promise<CodeGraphAnalysisResult> {
+    // Handle both direct path and wrapped parameter object from coordinator
+    let repoPath: string;
+    if (typeof targetPath === 'object' && targetPath !== null) {
+      repoPath = targetPath.target_path || this.repositoryPath;
+    } else if (typeof targetPath === 'string') {
+      repoPath = targetPath;
+    } else {
+      repoPath = this.repositoryPath;
+    }
+
     log(`[CodeGraphAgent] Indexing repository: ${repoPath}`, 'info');
 
     try {
@@ -89,11 +99,14 @@ export class CodeGraphAgent {
       const result = await this.runCodeGraphCommand('index', [repoPath]);
 
       // Parse the result from code-graph-rag
+      // The CLI outputs protobuf files and logs stats to stderr
+      const indexingStats = result.indexingStats || {};
+
       const analysisResult: CodeGraphAnalysisResult = {
         entities: result.entities || [],
         relationships: result.relationships || [],
         statistics: {
-          totalEntities: result.entities?.length || 0,
+          totalEntities: indexingStats.entitiesIndexed || result.entities?.length || 0,
           totalRelationships: result.relationships?.length || 0,
           languageDistribution: this.calculateLanguageDistribution(result.entities || []),
           entityTypeDistribution: this.calculateEntityTypeDistribution(result.entities || []),
@@ -102,13 +115,18 @@ export class CodeGraphAgent {
         repositoryPath: repoPath,
       };
 
-      log(`[CodeGraphAgent] Indexed ${analysisResult.statistics.totalEntities} entities`, 'info');
+      // Include indexing stats in result for reporting
+      if (indexingStats.protoFilesGenerated > 0) {
+        (analysisResult as any).indexingStats = indexingStats;
+      }
+
+      log(`[CodeGraphAgent] Indexed repository - ${indexingStats.filesProcessed || 0} files, ${indexingStats.protoFilesGenerated || 0} proto files generated`, 'info');
       return analysisResult;
     } catch (error) {
       // Return empty result instead of throwing - allows workflow to continue
       // The code-graph-rag CLI may not be properly configured or available
       log(`[CodeGraphAgent] Failed to index repository (returning empty result): ${error}`, 'warning');
-      log(`[CodeGraphAgent] Code graph analysis requires code-graph-rag MCP server with Memgraph. Use mcp__code-graph-rag__index_repository directly.`, 'info');
+      log(`[CodeGraphAgent] Code graph analysis requires code-graph-rag MCP server with Memgraph. Ensure Memgraph is running: docker ps | grep memgraph`, 'info');
 
       // Return valid result WITHOUT error field to not break workflow dependencies
       // The 'warning' field is informational and won't trigger dependency failures
@@ -123,7 +141,7 @@ export class CodeGraphAgent {
         },
         indexedAt: new Date().toISOString(),
         repositoryPath: repoPath,
-        warning: `Code graph indexing skipped - use mcp__code-graph-rag__index_repository directly: ${error instanceof Error ? error.message : String(error)}`,
+        warning: `Code graph indexing failed: ${error instanceof Error ? error.message : String(error)}`,
         skipped: true,
       };
     }
@@ -206,21 +224,56 @@ export class CodeGraphAgent {
 
   /**
    * Run a code-graph-rag CLI command
+   * The CLI uses: graph-code index --repo-path <path> --output-proto-dir <dir>
+   * It outputs protobuf files and logs to stderr, returning summary stats
    */
   private async runCodeGraphCommand(command: string, args: string[]): Promise<any> {
     return new Promise((resolve, reject) => {
-      const uvProcess = spawn('uv', [
-        'run',
-        '--directory', this.codeGraphRagDir,
-        'graph-code', command,
-        ...args,
-        '--output-format', 'json',
-      ], {
+      const fs = require('fs');
+      const os = require('os');
+
+      // Create temp directory for protobuf output
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-graph-'));
+
+      // Build proper CLI arguments based on command
+      let cliArgs: string[];
+      if (command === 'index') {
+        // For index: graph-code index --repo-path <path> --output-proto-dir <dir>
+        const repoPath = args[0] || this.repositoryPath;
+        cliArgs = [
+          'run',
+          '--directory', this.codeGraphRagDir,
+          'graph-code', 'index',
+          '--repo-path', repoPath,
+          '--output-proto-dir', tmpDir,
+        ];
+      } else if (command === 'query') {
+        // For query: pass through args (query, similar, call-graph)
+        cliArgs = [
+          'run',
+          '--directory', this.codeGraphRagDir,
+          'graph-code', command,
+          ...args,
+        ];
+      } else {
+        // Other commands - pass through
+        cliArgs = [
+          'run',
+          '--directory', this.codeGraphRagDir,
+          'graph-code', command,
+          ...args,
+        ];
+      }
+
+      log(`[CodeGraphAgent] Running: uv ${cliArgs.join(' ')}`, 'info');
+
+      const uvProcess = spawn('uv', cliArgs, {
         env: {
           ...process.env,
           MEMGRAPH_HOST: this.memgraphHost,
           MEMGRAPH_PORT: this.memgraphPort.toString(),
         },
+        timeout: 300000, // 5 minute timeout for large codebases
       });
 
       let stdout = '';
@@ -232,20 +285,54 @@ export class CodeGraphAgent {
 
       uvProcess.stderr.on('data', (data) => {
         stderr += data.toString();
+        // Log progress from stderr (CLI logs there)
+        const lines = data.toString().trim().split('\n');
+        for (const line of lines) {
+          if (line.includes('INFO') || line.includes('SUCCESS')) {
+            log(`[CodeGraphAgent] ${line}`, 'debug');
+          }
+        }
       });
 
       uvProcess.on('close', (code) => {
         if (code === 0) {
           try {
-            const result = JSON.parse(stdout);
-            resolve(result);
+            // For index command, read protobuf output files and parse stats
+            if (command === 'index') {
+              const protoFiles = fs.readdirSync(tmpDir).filter((f: string) => f.endsWith('.pb') || f.endsWith('.proto'));
+              log(`[CodeGraphAgent] Generated ${protoFiles.length} protobuf files in ${tmpDir}`, 'info');
+
+              // Parse entity counts from stderr output
+              const entitiesMatch = stderr.match(/Indexed (\d+) entities/);
+              const filesMatch = stderr.match(/Processed (\d+) files/);
+
+              // Return structured result with indexing stats
+              resolve({
+                entities: [], // Would need protobuf parsing to extract actual entities
+                relationships: [],
+                indexingStats: {
+                  entitiesIndexed: entitiesMatch ? parseInt(entitiesMatch[1]) : 0,
+                  filesProcessed: filesMatch ? parseInt(filesMatch[1]) : 0,
+                  protoFilesGenerated: protoFiles.length,
+                  outputDir: tmpDir,
+                },
+                raw: { stdout, stderr },
+              });
+            } else {
+              // Try to parse as JSON for other commands
+              try {
+                const result = JSON.parse(stdout);
+                resolve(result);
+              } catch (e) {
+                resolve({ raw: stdout, stderr });
+              }
+            }
           } catch (e) {
-            // If not JSON, return as raw output
-            resolve({ raw: stdout });
+            resolve({ raw: stdout, stderr, error: String(e) });
           }
         } else {
           log(`[CodeGraphAgent] Command failed with code ${code}: ${stderr}`, 'error');
-          reject(new Error(`code-graph-rag command failed: ${stderr}`));
+          reject(new Error(`code-graph-rag command failed (code ${code}): ${stderr.slice(0, 500)}`));
         }
       });
 

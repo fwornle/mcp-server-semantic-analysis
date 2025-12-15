@@ -121,10 +121,15 @@ export class QualityAssuranceAgent {
       'analyze_vibe_history': { min: 0.01, ideal: 0.5, max: 5 },       // Similar to git history
       'semantic_analysis': { min: 3, ideal: 8, max: 15 },              // Actually runs 4-8 seconds with LLM
       'web_search': { min: 0.1, ideal: 2, max: 10 },                   // Quick web operations
-      'generate_insights': { min: 3, ideal: 8, max: 20 },              // Similar to semantic analysis
+      'generate_insights': { min: 3, ideal: 8, max: 20 },              // Similar to semantic analysis with LLM
       'generate_observations': { min: 0.1, ideal: 2, max: 10 },        // Data processing
-      'quality_assurance': { min: 0.05, ideal: 0.2, max: 2 },         // Fast validation
-      'persist_results': { min: 0.05, ideal: 0.5, max: 3 }            // File I/O operations
+      'classify_with_ontology': { min: 0.5, ideal: 5, max: 30 },       // LLM-based classification per observation
+      'index_codebase': { min: 0.01, ideal: 30, max: 300 },            // AST parsing (may skip if Memgraph unavailable)
+      'transform_code_entities': { min: 0.01, ideal: 1, max: 10 },     // Entity transformation (may be empty)
+      'quality_assurance': { min: 0.05, ideal: 0.2, max: 2 },          // Fast validation
+      'persist_results': { min: 0.05, ideal: 0.5, max: 3 },            // File I/O operations
+      'deduplicate_insights': { min: 0.01, ideal: 2, max: 30 },        // Similarity comparison
+      'validate_content': { min: 1, ideal: 15, max: 60 }               // Entity validation with LLM
     };
 
     const expected = timingExpectations[stepName] || { min: 1, ideal: 30, max: 120 };
@@ -149,7 +154,8 @@ export class QualityAssuranceAgent {
     }
 
     // LLM-specific timing validation (updated based on actual performance)
-    if (stepName === 'semantic_analysis' || stepName === 'generate_insights') {
+    const llmSteps = ['semantic_analysis', 'generate_insights', 'classify_with_ontology', 'validate_content'];
+    if (llmSteps.includes(stepName)) {
       if (durationSeconds < 2) {
         errors.push(`LLM step ${stepName} completed too quickly (${durationSeconds.toFixed(1)}s) - likely skipped LLM calls`);
       } else if (durationSeconds < 3) {
@@ -162,6 +168,11 @@ export class QualityAssuranceAgent {
       if (durationSeconds < 0.01) {
         warnings.push(`File analysis step ${stepName} completed extremely quickly - may indicate insufficient file processing`);
       }
+    }
+
+    // Check for steps that completed in effectively 0 time (likely skipped or received empty input)
+    if (durationSeconds < 0.001) {
+      errors.push(`Step ${stepName} completed in <1ms - effectively skipped or received empty input`);
     }
   }
 

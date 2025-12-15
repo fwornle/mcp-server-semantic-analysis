@@ -101,6 +101,8 @@ export class VibeHistoryAgent {
   async analyzeVibeHistory(fromTimestampOrParams?: Date | Record<string, any>): Promise<VibeHistoryAnalysisResult> {
     // Handle both Date parameter (old API) and parameters object (new coordinator API)
     let fromTimestamp: Date | undefined;
+    let checkpointEnabled = true; // Default: use checkpoint filtering
+
     if (fromTimestampOrParams instanceof Date) {
       fromTimestamp = fromTimestampOrParams;
     } else if (typeof fromTimestampOrParams === 'object' && fromTimestampOrParams !== null) {
@@ -108,21 +110,33 @@ export class VibeHistoryAgent {
       if (fromTimestampOrParams.fromTimestamp) {
         fromTimestamp = new Date(fromTimestampOrParams.fromTimestamp);
       }
+      // Check if checkpoint filtering should be disabled (for complete-analysis)
+      if (fromTimestampOrParams.checkpoint_enabled === false) {
+        checkpointEnabled = false;
+      }
     }
 
     log('Starting vibe history analysis', 'info', {
       repositoryPath: this.repositoryPath,
       specstoryPath: this.specstoryPath,
-      fromTimestamp: fromTimestamp?.toISOString() || 'beginning'
+      fromTimestamp: fromTimestamp?.toISOString() || 'beginning',
+      checkpointEnabled
     });
 
     try {
       // Validate specstory directory
       this.validateSpecstoryDirectory();
 
-      // Get analysis checkpoint
-      const checkpoint = await this.getLastAnalysisCheckpoint();
-      const effectiveFromTimestamp = fromTimestamp || checkpoint;
+      // Get analysis checkpoint (only if checkpoint filtering is enabled)
+      let effectiveFromTimestamp: Date | null = null;
+      if (checkpointEnabled) {
+        const checkpoint = await this.getLastAnalysisCheckpoint();
+        effectiveFromTimestamp = fromTimestamp || checkpoint;
+      } else {
+        // For complete-analysis: analyze ALL sessions
+        effectiveFromTimestamp = fromTimestamp || null;
+        log('Checkpoint filtering disabled - analyzing ALL sessions', 'info');
+      }
 
       // Discover and parse session files
       const sessions = await this.parseSessionFiles(effectiveFromTimestamp);

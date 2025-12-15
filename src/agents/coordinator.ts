@@ -180,12 +180,12 @@ export class CoordinatorAgent {
             timeout: 300, // Longer timeout for LLM analysis
           },
           {
-            name: "analyze_vibe_history", 
+            name: "analyze_vibe_history",
             agent: "vibe_history",
             action: "analyzeVibeHistory",
             parameters: {
               history_path: ".specstory/history",
-              checkpoint_enabled: true
+              checkpoint_enabled: false // For complete-analysis: analyze ALL sessions
             },
             timeout: 120,
           },
@@ -1027,7 +1027,7 @@ export class CoordinatorAgent {
 
       // Check if there were actual content changes before updating the checkpoint
       // This prevents "empty" updates that only touch timestamps
-      const persistResult = execution.results?.persist_incremental || execution.results?.persist_analysis;
+      const persistResult = execution.results?.persist_results || execution.results?.persist_incremental || execution.results?.persist_analysis;
       const hasContentChanges = persistResult?.hasContentChanges || false;
 
       // Save successful workflow completion checkpoint ONLY if there were actual content changes
@@ -1277,17 +1277,24 @@ export class CoordinatorAgent {
     for (const [key, value] of Object.entries(parameters)) {
       if (typeof value === 'string' && value.startsWith('{{') && value.endsWith('}}')) {
         const template = value.slice(2, -2); // Remove {{ and }}
-        const [stepName, property = 'result'] = template.split('.');
-        
+        const parts = template.split('.');
+        const stepName = parts[0];
+        const propertyPath = parts.slice(1).join('.'); // Handle deep paths like "result.observations"
+
         if (results[stepName] && !results[stepName].error) {
-          const resolvedValue = property === 'result' ? results[stepName] : results[stepName][property];
+          // Use getNestedValue for deep property paths
+          const resolvedValue = propertyPath
+            ? this.getNestedValue(results[stepName], propertyPath)
+            : results[stepName];
           parameters[key] = resolvedValue;
-          
+
           log(`Resolved template: ${value} -> ${typeof resolvedValue}`, "debug", {
             template: value,
             stepName,
-            property,
-            resolvedType: typeof resolvedValue
+            propertyPath,
+            resolvedType: typeof resolvedValue,
+            isArray: Array.isArray(resolvedValue),
+            length: Array.isArray(resolvedValue) ? resolvedValue.length : undefined
           });
         } else {
           log(`Failed to resolve template: ${value} - step not found or failed`, "warning", {

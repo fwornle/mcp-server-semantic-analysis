@@ -74,7 +74,7 @@ export class CodeGraphAgent {
     this.memgraphHost = options.memgraphHost || process.env.MEMGRAPH_HOST || 'localhost';
     this.memgraphPort = options.memgraphPort || parseInt(process.env.MEMGRAPH_PORT || '7687');
 
-    log(`[CodeGraphAgent] Initialized with repo: ${this.repositoryPath}`, 'info');
+    log(`[CodeGraphAgent] Initialized with repo: ${this.repositoryPath}, codeGraphRagDir: ${this.codeGraphRagDir}`, 'info');
   }
 
   /**

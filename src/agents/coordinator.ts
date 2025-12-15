@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import { log } from "../logging.js";
 import { GitHistoryAgent } from "./git-history-agent.js";
 import { VibeHistoryAgent } from "./vibe-history-agent.js";
@@ -185,9 +186,11 @@ export class CoordinatorAgent {
             action: "analyzeVibeHistory",
             parameters: {
               history_path: ".specstory/history",
-              checkpoint_enabled: false // For complete-analysis: analyze ALL sessions
+              checkpoint_enabled: false, // For complete-analysis: analyze ALL sessions
+              maxSessions: 200, // Limit to recent 200 sessions for performance
+              skipLlmEnhancement: false // Still generate LLM insights
             },
-            timeout: 120,
+            timeout: 300, // 5 minutes for comprehensive vibe analysis
           },
           {
             name: "semantic_analysis",
@@ -246,7 +249,7 @@ export class CoordinatorAgent {
               minConfidence: 0.6
             },
             dependencies: ["generate_observations"],
-            timeout: 60,
+            timeout: 600, // 10 minutes for large observation sets (1000+ observations)
           },
           {
             name: "index_codebase",
@@ -429,7 +432,7 @@ export class CoordinatorAgent {
               minConfidence: 0.6
             },
             dependencies: ["generate_observations"],
-            timeout: 30,
+            timeout: 300, // 5 minutes for incremental observation sets
           },
           {
             name: "index_recent_code",
@@ -815,7 +818,10 @@ export class CoordinatorAgent {
       dedupAgent.registerAgent("persistence", persistenceAgent);
 
       // Code Graph Agent for AST-based code analysis (integrates with code-graph-rag)
-      const codeGraphAgent = new CodeGraphAgent(this.repositoryPath);
+      // Compute the code-graph-rag directory - it's in the coding repo's integrations folder
+      const codingRepoPath = process.env.CODING_TOOLS_PATH || this.repositoryPath;
+      const codeGraphRagDir = path.join(codingRepoPath, 'integrations/code-graph-rag');
+      const codeGraphAgent = new CodeGraphAgent(this.repositoryPath, { codeGraphRagDir });
       this.agents.set("code_graph", codeGraphAgent);
 
       // Documentation Linker Agent for linking docs to code entities
@@ -875,28 +881,41 @@ export class CoordinatorAgent {
 
     try {
       execution.status = "running";
-      
-      // Execute workflow steps
-      for (let i = 0; i < workflow.steps.length; i++) {
-        execution.currentStep = i;
-        const step = workflow.steps[i];
 
-        // Write progress before starting step
-        this.writeProgressFile(execution, workflow, step.name);
+      // DAG-based parallel execution
+      const maxConcurrent = workflow.config?.max_concurrent_steps || 3;
+      const completedSteps = new Set<string>();
+      const runningSteps = new Map<string, Promise<{ step: WorkflowStep; result: any; error?: Error }>>();
+      const skippedSteps = new Set<string>();
 
-        // Check dependencies
-        if (step.dependencies) {
-          for (const dep of step.dependencies) {
-            const depResult = execution.results[dep];
-            // Check if dependency exists and wasn't a failure
-            // Distinguish between: { error: "..." } (step failure) vs { ..., error: "info" } (success with warning)
-            // A failure has ONLY an error field (and possibly _timing), success has other data fields
-            const isFailure = !depResult || (depResult.error && Object.keys(depResult).filter(k => !k.startsWith('_')).length === 1);
-            if (isFailure) {
-              throw new Error(`Step dependency not satisfied: ${dep}`);
-            }
-          }
+      // Helper: Check if step dependencies are satisfied
+      const areDependenciesSatisfied = (step: WorkflowStep): boolean => {
+        if (!step.dependencies || step.dependencies.length === 0) {
+          return true;
         }
+        return step.dependencies.every(dep => {
+          if (skippedSteps.has(dep)) return true; // Skipped counts as satisfied
+          const depResult = execution.results[dep];
+          if (!depResult) return false;
+          // Check if it's a failure (only has error field)
+          const isFailure = depResult.error && Object.keys(depResult).filter(k => !k.startsWith('_')).length === 1;
+          return !isFailure;
+        });
+      };
+
+      // Helper: Get ready steps (dependencies satisfied, not completed/running/skipped)
+      const getReadySteps = (): WorkflowStep[] => {
+        return workflow.steps.filter(step =>
+          !completedSteps.has(step.name) &&
+          !runningSteps.has(step.name) &&
+          !skippedSteps.has(step.name) &&
+          areDependenciesSatisfied(step)
+        );
+      };
+
+      // Helper: Execute a single step and return result
+      const executeStepAsync = async (step: WorkflowStep): Promise<{ step: WorkflowStep; result: any; error?: Error }> => {
+        const stepStartTime = new Date();
 
         // Check condition if present
         if (step.condition) {
@@ -906,20 +925,16 @@ export class CoordinatorAgent {
               condition: step.condition,
               result: conditionResult
             });
-            execution.results[step.name] = { skipped: true, reason: 'condition not met' };
-            continue;
+            return { step, result: { skipped: true, reason: 'condition not met' } };
           }
         }
 
-        // Execute step with timing tracking
-        const stepStartTime = new Date();
         try {
           const stepResult = await this.executeStepWithTimeout(execution, step, parameters);
           const stepEndTime = new Date();
           const stepDuration = stepEndTime.getTime() - stepStartTime.getTime();
-          
-          // Store timing information with result
-          execution.results[step.name] = {
+
+          const resultWithTiming = {
             ...stepResult,
             _timing: {
               startTime: stepStartTime,
@@ -928,17 +943,6 @@ export class CoordinatorAgent {
               timeout: step.timeout || 60
             }
           };
-          
-          log(`Step completed: ${step.name}`, "info", {
-            step: step.name,
-            agent: step.agent,
-            hasResult: !!stepResult,
-            duration: `${(stepDuration / 1000).toFixed(1)}s`,
-            timeoutUtilization: `${((stepDuration / 1000) / (step.timeout || 60) * 100).toFixed(1)}%`
-          });
-
-          // Update progress file after step completion
-          this.writeProgressFile(execution, workflow);
 
           // Record step in workflow report
           this.reportAgent.recordStep({
@@ -956,45 +960,10 @@ export class CoordinatorAgent {
             errors: []
           });
 
-          // QA Enforcement: Check quality assurance results and implement retry logic
-          if (step.name === 'quality_assurance' && stepResult) {
-            const qaFailures = this.validateQualityAssuranceResults(stepResult);
-            if (qaFailures.length > 0) {
-              log(`QA Enforcement: Quality issues detected, attempting intelligent retry`, "warning", {
-                failures: qaFailures,
-                step: step.name,
-                workflow: execution.workflow
-              });
-              
-              // Attempt to fix the issues by retrying failed steps with enhanced parameters
-              const retryResult = await this.attemptQARecovery(qaFailures, execution, workflow);
-              
-              if (!retryResult.success) {
-                const qaError = `Quality Assurance failed after retry with ${retryResult.remainingFailures.length} critical issues: ${retryResult.remainingFailures.join(', ')}`;
-                log(`QA Enforcement: Halting workflow after retry attempt`, "error", {
-                  failures: retryResult.remainingFailures,
-                  step: step.name,
-                  workflow: execution.workflow
-                });
-                throw new Error(qaError);
-              }
-              
-              log(`QA Enforcement: Quality validation passed after retry`, "info");
-            } else {
-              log(`QA Enforcement: Quality validation passed`, "info");
-            }
-          }
-          
+          return { step, result: resultWithTiming };
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
           const stepEndTime = new Date();
           const stepDuration = stepEndTime.getTime() - stepStartTime.getTime();
-
-          execution.results[step.name] = { error: errorMessage };
-          execution.errors.push(`Step ${step.name} failed: ${errorMessage}`);
-
-          // Update progress file after step failure
-          this.writeProgressFile(execution, workflow);
 
           // Record failed step in workflow report
           this.reportAgent.recordStep({
@@ -1009,19 +978,130 @@ export class CoordinatorAgent {
             outputs: {},
             decisions: [],
             warnings: [],
-            errors: [errorMessage]
+            errors: [error instanceof Error ? error.message : String(error)]
           });
 
-          log(`Step failed: ${step.name}`, "error", {
-            step: step.name,
+          return { step, result: null, error: error instanceof Error ? error : new Error(String(error)) };
+        }
+      };
+
+      log(`Starting DAG-based parallel execution with max ${maxConcurrent} concurrent steps`, "info");
+
+      // Main DAG execution loop
+      while (completedSteps.size + skippedSteps.size < workflow.steps.length) {
+        // Get steps that are ready to run
+        const readySteps = getReadySteps();
+
+        // If nothing is ready and nothing is running, we have a deadlock (shouldn't happen with valid DAG)
+        if (readySteps.length === 0 && runningSteps.size === 0) {
+          const remainingSteps = workflow.steps.filter(s => !completedSteps.has(s.name) && !skippedSteps.has(s.name));
+          throw new Error(`DAG deadlock: No steps ready to run. Remaining: ${remainingSteps.map(s => s.name).join(', ')}`);
+        }
+
+        // Start new steps up to maxConcurrent
+        const slotsAvailable = maxConcurrent - runningSteps.size;
+        const stepsToStart = readySteps.slice(0, slotsAvailable);
+
+        for (const step of stepsToStart) {
+          log(`Starting step in parallel: ${step.name}`, "info", {
             agent: step.agent,
-            error: errorMessage
+            runningCount: runningSteps.size + 1,
+            maxConcurrent
           });
 
-          // Stop workflow on step failure
-          throw error;
+          // Write progress before starting step
+          this.writeProgressFile(execution, workflow, step.name);
+
+          const promise = executeStepAsync(step);
+          runningSteps.set(step.name, promise);
+        }
+
+        // Wait for at least one step to complete
+        if (runningSteps.size > 0) {
+          const runningPromises = Array.from(runningSteps.entries());
+          const completedResult = await Promise.race(runningPromises.map(([name, promise]) =>
+            promise.then(result => ({ name, ...result }))
+          ));
+
+          // Remove from running
+          runningSteps.delete(completedResult.name);
+
+          // Handle result
+          if (completedResult.result?.skipped) {
+            skippedSteps.add(completedResult.name);
+            execution.results[completedResult.name] = completedResult.result;
+            log(`Step skipped: ${completedResult.name}`, "info");
+          } else if (completedResult.error) {
+            // Step failed - store error and stop workflow
+            const errorMessage = completedResult.error.message;
+            execution.results[completedResult.name] = { error: errorMessage };
+            execution.errors.push(`Step ${completedResult.name} failed: ${errorMessage}`);
+
+            log(`Step failed: ${completedResult.name}`, "error", {
+              step: completedResult.name,
+              agent: completedResult.step.agent,
+              error: errorMessage
+            });
+
+            // Cancel other running steps and throw
+            throw completedResult.error;
+          } else {
+            // Step succeeded
+            completedSteps.add(completedResult.name);
+            execution.results[completedResult.name] = completedResult.result;
+            execution.currentStep = completedSteps.size;
+
+            const duration = completedResult.result._timing?.duration || 0;
+            log(`Step completed: ${completedResult.name}`, "info", {
+              step: completedResult.name,
+              agent: completedResult.step.agent,
+              duration: `${(duration / 1000).toFixed(1)}s`,
+              completedCount: completedSteps.size,
+              totalSteps: workflow.steps.length
+            });
+
+            // Update progress file after step completion
+            this.writeProgressFile(execution, workflow);
+
+            // QA Enforcement: Check quality assurance results
+            if (completedResult.name === 'quality_assurance' && completedResult.result) {
+              const qaFailures = this.validateQualityAssuranceResults(completedResult.result);
+              if (qaFailures.length > 0) {
+                log(`QA Enforcement: Quality issues detected, attempting intelligent retry`, "warning", {
+                  failures: qaFailures
+                });
+
+                const retryResult = await this.attemptQARecovery(qaFailures, execution, workflow);
+
+                if (!retryResult.success) {
+                  throw new Error(`Quality Assurance failed after retry with ${retryResult.remainingFailures.length} critical issues`);
+                }
+
+                log(`QA Enforcement: Quality validation passed after retry`, "info");
+              }
+            }
+          }
         }
       }
+
+      // Wait for any remaining running steps (shouldn't be any, but just in case)
+      if (runningSteps.size > 0) {
+        log(`Waiting for ${runningSteps.size} remaining steps to complete`, "info");
+        const remainingResults = await Promise.all(Array.from(runningSteps.values()));
+        for (const result of remainingResults) {
+          if (result.error) {
+            throw result.error;
+          }
+          if (result.result?.skipped) {
+            skippedSteps.add(result.step.name);
+          } else {
+            completedSteps.add(result.step.name);
+          }
+          execution.results[result.step.name] = result.result || { error: 'Unknown error' };
+        }
+      }
+
+      log(`DAG execution completed: ${completedSteps.size} steps completed, ${skippedSteps.size} skipped`, "info");
 
       execution.status = "completed";
       execution.endTime = new Date();

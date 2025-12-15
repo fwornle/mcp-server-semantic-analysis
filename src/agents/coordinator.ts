@@ -230,7 +230,8 @@ export class CoordinatorAgent {
             parameters: {
               insights_results: "{{generate_insights.result}}",
               semantic_analysis_results: "{{semantic_analysis.result}}",
-              git_analysis_results: "{{analyze_git_history.result}}"
+              git_analysis_results: "{{analyze_git_history.result}}",
+              vibe_analysis_results: "{{analyze_vibe_history.result}}"
             },
             dependencies: ["generate_insights"],
             timeout: 90,
@@ -1282,10 +1283,25 @@ export class CoordinatorAgent {
         const propertyPath = parts.slice(1).join('.'); // Handle deep paths like "result.observations"
 
         if (results[stepName] && !results[stepName].error) {
-          // Use getNestedValue for deep property paths
-          const resolvedValue = propertyPath
-            ? this.getNestedValue(results[stepName], propertyPath)
-            : results[stepName];
+          // Special case: ".result" suffix means "get the entire step result"
+          // This is a common pattern in workflow definitions: {{step_name.result}}
+          // Other property paths like ".result.observations" work normally
+          let resolvedValue: any;
+          if (propertyPath === 'result') {
+            // Return entire step result (excluding internal timing metadata)
+            const { _timing, ...stepResultData } = results[stepName];
+            resolvedValue = stepResultData;
+          } else if (propertyPath.startsWith('result.')) {
+            // Handle nested paths like "result.observations" -> just "observations"
+            const nestedPath = propertyPath.substring(7); // Remove "result." prefix
+            resolvedValue = this.getNestedValue(results[stepName], nestedPath);
+          } else if (propertyPath) {
+            // Standard nested property access
+            resolvedValue = this.getNestedValue(results[stepName], propertyPath);
+          } else {
+            // No property path - return entire result
+            resolvedValue = results[stepName];
+          }
           parameters[key] = resolvedValue;
 
           log(`Resolved template: ${value} -> ${typeof resolvedValue}`, "debug", {

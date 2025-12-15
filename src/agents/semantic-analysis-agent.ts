@@ -224,9 +224,9 @@ export class SemanticAnalysisAgent {
     options: { maxFiles?: number; includePatterns?: string[]; excludePatterns?: string[] }
   ): string[] {
     const {
-      maxFiles = 50,
-      includePatterns = ['**/*.ts', '**/*.js', '**/*.json', '**/*.md'],
-      excludePatterns = ['node_modules/**', 'dist/**', '.git/**', '**/*.log']
+      maxFiles = 100, // Increased from 50 to capture more relevant files
+      includePatterns = ['**/*.ts', '**/*.js', '**/*.tsx', '**/*.jsx', '**/*.json', '**/*.md'],
+      excludePatterns = ['node_modules/**', 'dist/**', '.git/**', '**/*.log', '**/package-lock.json', '**/yarn.lock']
     } = options;
 
     const filesSet = new Set<string>();
@@ -1065,48 +1065,103 @@ export class SemanticAnalysisAgent {
     vibeAnalysis: any,
     crossAnalysis: any
   ): string {
-    const codeOverview = codeFiles.slice(0, 5).map(file => ({
+    // Include more files with meaningful content (up to 15)
+    const codeOverview = codeFiles.slice(0, 15).map(file => ({
       path: file.path,
       language: file.language,
       patterns: file.patterns,
-      functions: file.functions.slice(0, 5),
+      functions: file.functions.slice(0, 10),
       complexity: file.complexity
     }));
 
-    return `Analyze this software development session and provide key insights:
+    // Extract ACTUAL commit messages (most recent 30 significant commits)
+    const recentCommits = (gitAnalysis?.commits || [])
+      .slice(0, 30)
+      .map((c: any) => ({
+        message: c.message,
+        files: c.files?.map((f: any) => f.path).slice(0, 5),
+        changes: c.stats?.totalChanges || 0,
+        date: c.date
+      }));
 
-CODE ANALYSIS:
+    // Extract ACTUAL architectural decisions with details
+    const architecturalDecisions = (gitAnalysis?.architecturalDecisions || [])
+      .slice(0, 15)
+      .map((d: any) => ({
+        type: d.type,
+        description: d.description,
+        impact: d.impact,
+        files: d.files?.slice(0, 3)
+      }));
+
+    // Extract code evolution patterns with details
+    const codeEvolution = (gitAnalysis?.codeEvolution || [])
+      .slice(0, 10)
+      .map((p: any) => ({
+        pattern: p.pattern,
+        trend: p.trend,
+        occurrences: p.occurrences,
+        files: p.files?.slice(0, 3)
+      }));
+
+    // Extract ACTUAL problem-solution pairs from VIBE sessions
+    const problemSolutions = (vibeAnalysis?.problemSolutionPairs || [])
+      .slice(0, 15)
+      .map((ps: any) => ({
+        problem: ps.problem?.substring(0, 200),
+        solution: ps.solution?.substring(0, 200),
+        difficulty: ps.difficulty
+      }));
+
+    // Extract development themes with context
+    const devThemes = (vibeAnalysis?.patterns?.developmentThemes || [])
+      .slice(0, 10)
+      .map((t: any) => ({
+        theme: t.theme,
+        frequency: t.frequency,
+        examples: t.examples?.slice(0, 2)
+      }));
+
+    return `Analyze this software development project and provide comprehensive insights.
+
+=== CODE ANALYSIS (${codeFiles.length} files analyzed) ===
 ${JSON.stringify(codeOverview, null, 2)}
 
-GIT CHANGES:
-- Commits: ${gitAnalysis?.commits?.length || 0}
-- Architectural decisions: ${gitAnalysis?.architecturalDecisions?.length || 0}
-- Code evolution patterns: ${gitAnalysis?.codeEvolution?.map((p: any) => p.pattern).join(', ') || 'None'}
+=== RECENT COMMIT HISTORY (${gitAnalysis?.commits?.length || 0} total commits) ===
+${JSON.stringify(recentCommits, null, 2)}
 
-CONVERSATION ANALYSIS:
-- Sessions: ${vibeAnalysis?.sessions?.length || 0}
-- Problem-solution pairs: ${vibeAnalysis?.problemSolutionPairs?.length || 0}
-- Main themes: ${vibeAnalysis?.patterns?.developmentThemes?.map((t: any) => t.theme).join(', ') || 'None'}
+=== ARCHITECTURAL DECISIONS (${gitAnalysis?.architecturalDecisions?.length || 0} identified) ===
+${JSON.stringify(architecturalDecisions, null, 2)}
 
-CROSS-ANALYSIS:
-${crossAnalysis.gitCodeCorrelation.join('\n')}
-${crossAnalysis.vibeCodeCorrelation.join('\n')}
+=== CODE EVOLUTION PATTERNS ===
+${JSON.stringify(codeEvolution, null, 2)}
 
-Please provide insights in JSON format:
+=== DEVELOPMENT SESSIONS (${vibeAnalysis?.sessions?.length || 0} sessions) ===
+Problem-Solution Pairs:
+${JSON.stringify(problemSolutions, null, 2)}
+
+Development Themes:
+${JSON.stringify(devThemes, null, 2)}
+
+=== CROSS-ANALYSIS CORRELATIONS ===
+${crossAnalysis.gitCodeCorrelation?.join('\n') || 'None'}
+${crossAnalysis.vibeCodeCorrelation?.join('\n') || 'None'}
+
+Based on this comprehensive analysis, provide insights in JSON format:
 {
-  "keyPatterns": ["pattern1", "pattern2", ...],
-  "architecturalDecisions": ["decision1", "decision2", ...],
-  "technicalDebt": ["debt1", "debt2", ...],
-  "innovativeApproaches": ["approach1", "approach2", ...],
-  "learnings": ["learning1", "learning2", ...]
+  "keyPatterns": ["specific pattern with evidence..."],
+  "architecturalDecisions": ["specific decision: rationale and impact..."],
+  "technicalDebt": ["specific debt item: location and recommended fix..."],
+  "innovativeApproaches": ["specific innovation: what makes it novel..."],
+  "learnings": ["specific learning: applicable context and takeaway..."]
 }
 
-Focus on:
-1. What architectural patterns are being used effectively
-2. What technical decisions show good engineering practices
-3. What areas need improvement or refactoring
-4. What innovative approaches were taken
-5. What can be learned for future development`;
+Focus on SPECIFIC, ACTIONABLE insights:
+1. Name specific files, patterns, and commits that demonstrate good practices
+2. Identify specific technical debt with file locations
+3. Highlight innovative approaches with concrete examples
+4. Extract learnings that can be applied to future development
+5. Connect insights to actual commit messages and code changes`;
   }
 
   private parseInsightsFromLLMResponse(response: string): SemanticAnalysisResult['semanticInsights'] {

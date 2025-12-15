@@ -102,6 +102,8 @@ export class VibeHistoryAgent {
     // Handle both Date parameter (old API) and parameters object (new coordinator API)
     let fromTimestamp: Date | undefined;
     let checkpointEnabled = true; // Default: use checkpoint filtering
+    let maxSessions: number | undefined; // Limit sessions for performance
+    let skipLlmEnhancement = false; // Skip LLM call for large datasets
 
     if (fromTimestampOrParams instanceof Date) {
       fromTimestamp = fromTimestampOrParams;
@@ -114,13 +116,23 @@ export class VibeHistoryAgent {
       if (fromTimestampOrParams.checkpoint_enabled === false) {
         checkpointEnabled = false;
       }
+      // Optional session limit for performance
+      if (typeof fromTimestampOrParams.maxSessions === 'number') {
+        maxSessions = fromTimestampOrParams.maxSessions;
+      }
+      // Option to skip LLM enhancement for faster processing
+      if (fromTimestampOrParams.skipLlmEnhancement === true) {
+        skipLlmEnhancement = true;
+      }
     }
 
     log('Starting vibe history analysis', 'info', {
       repositoryPath: this.repositoryPath,
       specstoryPath: this.specstoryPath,
       fromTimestamp: fromTimestamp?.toISOString() || 'beginning',
-      checkpointEnabled
+      checkpointEnabled,
+      maxSessions: maxSessions || 'unlimited',
+      skipLlmEnhancement
     });
 
     try {
@@ -139,7 +151,7 @@ export class VibeHistoryAgent {
       }
 
       // Discover and parse session files
-      const sessions = await this.parseSessionFiles(effectiveFromTimestamp);
+      const sessions = await this.parseSessionFiles(effectiveFromTimestamp, maxSessions);
       log(`Parsed ${sessions.length} conversation sessions`, 'info');
 
       // Extract development contexts
@@ -151,8 +163,8 @@ export class VibeHistoryAgent {
       // Analyze patterns
       const patterns = this.analyzePatterns(sessions, developmentContexts, problemSolutionPairs);
 
-      // Generate summary
-      const summary = await this.generateSummary(sessions, developmentContexts, problemSolutionPairs, patterns);
+      // Generate summary (optionally skip LLM enhancement for faster processing)
+      const summary = await this.generateSummary(sessions, developmentContexts, problemSolutionPairs, patterns, skipLlmEnhancement);
 
       const result: VibeHistoryAnalysisResult = {
         checkpointInfo: {
@@ -200,30 +212,43 @@ export class VibeHistoryAgent {
     this.checkpointManager.setLastVibeAnalysis(timestamp);
   }
 
-  private async parseSessionFiles(fromTimestamp: Date | null): Promise<ConversationSession[]> {
+  private async parseSessionFiles(fromTimestamp: Date | null, maxSessions?: number): Promise<ConversationSession[]> {
     const sessions: ConversationSession[] = [];
-    
+
     try {
+      // Sort files by modification time descending to get most recent first
       const files = fs.readdirSync(this.specstoryPath)
         .filter(file => file.endsWith('.md'))
-        .sort();
+        .map(file => ({
+          name: file,
+          path: path.join(this.specstoryPath, file),
+          mtime: fs.statSync(path.join(this.specstoryPath, file)).mtime
+        }))
+        .sort((a, b) => b.mtime.getTime() - a.mtime.getTime()); // Most recent first
 
+      log(`Found ${files.length} session files, processing${maxSessions ? ` up to ${maxSessions}` : ' all'}`, 'info');
+
+      let processedCount = 0;
       for (const file of files) {
-        const filePath = path.join(this.specstoryPath, file);
-        const fileStats = fs.statSync(filePath);
-        
+        // Stop if we've reached maxSessions
+        if (maxSessions && processedCount >= maxSessions) {
+          log(`Reached maxSessions limit (${maxSessions}), stopping`, 'info');
+          break;
+        }
+
         // Skip files older than checkpoint
-        if (fromTimestamp && fileStats.mtime < fromTimestamp) {
+        if (fromTimestamp && file.mtime < fromTimestamp) {
           continue;
         }
 
         try {
-          const session = await this.parseSessionFile(filePath);
+          const session = await this.parseSessionFile(file.path);
           if (session) {
             sessions.push(session);
+            processedCount++;
           }
         } catch (error) {
-          log(`Failed to parse session file: ${file}`, 'warning', error);
+          log(`Failed to parse session file: ${file.name}`, 'warning', error);
         }
       }
 
@@ -793,7 +818,8 @@ export class VibeHistoryAgent {
     sessions: ConversationSession[],
     contexts: DevelopmentContext[],
     pairs: ProblemSolutionPair[],
-    patterns: VibeHistoryAnalysisResult['patterns']
+    patterns: VibeHistoryAnalysisResult['patterns'],
+    skipLlmEnhancement = false
   ): Promise<VibeHistoryAnalysisResult['summary']> {
     const totalExchanges = sessions.reduce((sum, s) => sum + s.exchanges.length, 0);
 
@@ -815,12 +841,23 @@ export class VibeHistoryAgent {
       keyLearnings.push(`Preferred approach: ${patterns.preferredSolutions[0].solution}`);
     }
 
-    // ENHANCEMENT: Use LLM to generate richer insights from conversation patterns
+    // Base insights (always generated - no LLM needed)
     let enhancedInsights = `Analyzed ${sessions.length} conversation sessions with ${totalExchanges} exchanges. ` +
       `Primary development focus: ${primaryFocus}. ` +
       `Identified ${pairs.length} problem-solution patterns and ${contexts.length} development contexts. ` +
       `Most used tool: ${patterns.toolUsage[0]?.tool || 'N/A'}. ` +
       `Success rate: ${Math.round((pairs.length / Math.max(contexts.length, 1)) * 100)}% of contexts resulted in clear solutions.`;
+
+    // Skip LLM enhancement if requested (for performance)
+    if (skipLlmEnhancement) {
+      log('Skipping LLM enhancement for faster processing', 'info');
+      return {
+        totalExchanges,
+        primaryFocus,
+        keyLearnings: keyLearnings.slice(0, 5),
+        insights: enhancedInsights
+      };
+    }
 
     try {
       // Build context for LLM analysis

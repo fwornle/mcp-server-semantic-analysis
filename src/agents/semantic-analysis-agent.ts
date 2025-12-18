@@ -43,6 +43,7 @@ export interface SemanticAnalysisResult {
   crossAnalysisInsights: {
     gitCodeCorrelation: string[];
     vibeCodeCorrelation: string[];
+    codeGraphCorrelation?: string[];
     conversationImplementationMap: {
       problem: string;
       implementation: string[];
@@ -82,9 +83,13 @@ export class SemanticAnalysisAgent {
       includePatterns?: string[];
       excludePatterns?: string[];
       analysisDepth?: 'surface' | 'deep' | 'comprehensive';
+      codeGraphAnalysis?: any;  // AST-parsed code entities from code-graph-rag
+      docAnalysis?: any;  // Documentation analysis from documentation-linker agent
     } = {}
   ): Promise<SemanticAnalysisResult> {
     const startTime = Date.now();
+    const codeGraph = options.codeGraphAnalysis;
+    const docData = options.docAnalysis;
 
     // ULTRA DEBUG: Write input data to trace file
     const fs = await import('fs');
@@ -105,6 +110,13 @@ export class SemanticAnalysisAgent {
         firstSession: vibeAnalysis?.sessions?.[0] || null,
         fullData: vibeAnalysis
       },
+      codeGraphAnalysis: {
+        hasData: !!codeGraph,
+        entitiesCount: codeGraph?.statistics?.totalEntities || 0,
+        relationshipsCount: codeGraph?.statistics?.totalRelationships || 0,
+        languages: Object.keys(codeGraph?.statistics?.languageDistribution || {}),
+        skipped: codeGraph?.skipped || false
+      },
       options
     }, null, 2));
     log(`🔍 TRACE: Input data written to ${traceFile}`, 'info');
@@ -112,6 +124,8 @@ export class SemanticAnalysisAgent {
     log('Starting comprehensive semantic analysis', 'info', {
       gitCommits: gitAnalysis?.commits?.length || 0,
       vibeSessions: vibeAnalysis?.sessions?.length || 0,
+      codeGraphEntities: codeGraph?.statistics?.totalEntities || 0,
+      codeGraphSkipped: codeGraph?.skipped || false,
       analysisDepth: options.analysisDepth || 'deep',
       traceFile
     });
@@ -127,14 +141,14 @@ export class SemanticAnalysisAgent {
       // Generate code analysis metrics
       const codeAnalysis = this.generateCodeAnalysisMetrics(codeFiles);
 
-      // Perform cross-analysis correlation
+      // Perform cross-analysis correlation (including code graph structural data)
       const crossAnalysisInsights = await this.performCrossAnalysis(
-        codeFiles, gitAnalysis, vibeAnalysis
+        codeFiles, gitAnalysis, vibeAnalysis, codeGraph
       );
 
-      // Generate semantic insights using LLM
+      // Generate semantic insights using LLM (with code graph context)
       const semanticInsights = await this.generateSemanticInsights(
-        codeFiles, gitAnalysis, vibeAnalysis, crossAnalysisInsights
+        codeFiles, gitAnalysis, vibeAnalysis, crossAnalysisInsights, codeGraph
       );
 
       const processingTime = Date.now() - startTime;
@@ -599,16 +613,18 @@ export class SemanticAnalysisAgent {
   private async performCrossAnalysis(
     codeFiles: CodeFile[],
     gitAnalysis: any,
-    vibeAnalysis: any
+    vibeAnalysis: any,
+    codeGraph?: any
   ): Promise<SemanticAnalysisResult['crossAnalysisInsights']> {
     const gitCodeCorrelation: string[] = [];
     const vibeCodeCorrelation: string[] = [];
+    const codeGraphCorrelation: string[] = [];
     const conversationImplementationMap: any[] = [];
 
     // Correlate git patterns with code patterns
     if (gitAnalysis?.codeEvolution) {
       gitAnalysis.codeEvolution.forEach((pattern: any) => {
-        const relatedFiles = codeFiles.filter(file => 
+        const relatedFiles = codeFiles.filter(file =>
           pattern.files.some((gitFile: any) => {
             const fileName = typeof gitFile === 'string' ? gitFile : String(gitFile);
             return file.path.includes(fileName);
@@ -627,7 +643,7 @@ export class SemanticAnalysisAgent {
     if (vibeAnalysis?.problemSolutionPairs) {
       vibeAnalysis.problemSolutionPairs.forEach((pair: any) => {
         const implementationFiles = codeFiles.filter(file =>
-          pair.solution.technologies.some((tech: string) => 
+          pair.solution.technologies.some((tech: string) =>
             file.language.toLowerCase().includes(tech.toLowerCase()) ||
             file.content.toLowerCase().includes(tech.toLowerCase())
           )
@@ -647,9 +663,63 @@ export class SemanticAnalysisAgent {
       });
     }
 
+    // Correlate code graph AST entities with git changes
+    if (codeGraph && !codeGraph.skipped && codeGraph.statistics) {
+      const stats = codeGraph.statistics;
+
+      // Summarize code structure from AST analysis
+      if (stats.totalEntities > 0) {
+        codeGraphCorrelation.push(
+          `Code graph indexed ${stats.totalEntities} entities (functions, classes, methods) with ${stats.totalRelationships || 0} relationships`
+        );
+      }
+
+      // Language distribution insights
+      if (stats.languageDistribution) {
+        const langs = Object.entries(stats.languageDistribution)
+          .sort((a: any, b: any) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([lang, count]) => `${lang}: ${count}`)
+          .join(', ');
+        if (langs) {
+          codeGraphCorrelation.push(`Language distribution: ${langs}`);
+        }
+      }
+
+      // Entity type breakdown
+      if (stats.entityTypes) {
+        const types = Object.entries(stats.entityTypes)
+          .filter(([_, count]) => (count as number) > 0)
+          .map(([type, count]) => `${type}: ${count}`)
+          .join(', ');
+        if (types) {
+          codeGraphCorrelation.push(`Entity types: ${types}`);
+        }
+      }
+
+      // Correlate git-changed files with code graph entities
+      if (gitAnalysis?.commits && codeGraph.entities) {
+        const changedFiles = new Set<string>();
+        gitAnalysis.commits.forEach((commit: any) => {
+          commit.files?.forEach((f: any) => changedFiles.add(f.path || f));
+        });
+
+        const affectedEntities = (codeGraph.entities || []).filter((entity: any) =>
+          [...changedFiles].some(file => entity.file?.includes(file))
+        );
+
+        if (affectedEntities.length > 0) {
+          codeGraphCorrelation.push(
+            `Git changes affected ${affectedEntities.length} code entities (${affectedEntities.slice(0, 5).map((e: any) => e.name).join(', ')}${affectedEntities.length > 5 ? '...' : ''})`
+          );
+        }
+      }
+    }
+
     return {
       gitCodeCorrelation,
       vibeCodeCorrelation,
+      codeGraphCorrelation,
       conversationImplementationMap
     };
   }
@@ -658,11 +728,12 @@ export class SemanticAnalysisAgent {
     codeFiles: CodeFile[],
     gitAnalysis: any,
     vibeAnalysis: any,
-    crossAnalysis: any
+    crossAnalysis: any,
+    codeGraph?: any
   ): Promise<SemanticAnalysisResult['semanticInsights']> {
     // Generate insights using LLM if available
     if (this.groqClient || this.geminiClient || this.anthropicClient || this.openaiClient) {
-      return await this.generateLLMInsights(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis);
+      return await this.generateLLMInsights(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis, codeGraph);
     }
 
     // Fallback to rule-based insights
@@ -673,10 +744,11 @@ export class SemanticAnalysisAgent {
     codeFiles: CodeFile[],
     gitAnalysis: any,
     vibeAnalysis: any,
-    crossAnalysis: any
+    crossAnalysis: any,
+    codeGraph?: any
   ): Promise<SemanticAnalysisResult['semanticInsights']> {
     try {
-      const analysisPrompt = this.buildAnalysisPrompt(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis);
+      const analysisPrompt = this.buildAnalysisPrompt(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis, codeGraph);
 
       // ULTRA DEBUG: Write LLM prompt to trace file
       const fs2 = await import('fs');
@@ -1063,7 +1135,8 @@ export class SemanticAnalysisAgent {
     codeFiles: CodeFile[],
     gitAnalysis: any,
     vibeAnalysis: any,
-    crossAnalysis: any
+    crossAnalysis: any,
+    codeGraph?: any
   ): string {
     // Include more files with meaningful content (up to 15)
     const codeOverview = codeFiles.slice(0, 15).map(file => ({
@@ -1122,6 +1195,54 @@ export class SemanticAnalysisAgent {
         examples: t.examples?.slice(0, 2)
       }));
 
+    // Build code graph section if available
+    let codeGraphSection = '';
+    if (codeGraph && !codeGraph.skipped && codeGraph.statistics) {
+      const stats = codeGraph.statistics;
+      const entitySummary = {
+        totalEntities: stats.totalEntities || 0,
+        totalRelationships: stats.totalRelationships || 0,
+        languages: stats.languageDistribution || {},
+        entityTypes: stats.entityTypes || {}
+      };
+
+      // Include top entities if available
+      const topEntities = (codeGraph.entities || [])
+        .slice(0, 20)
+        .map((e: any) => ({
+          name: e.name,
+          type: e.type,
+          file: e.file,
+          callers: e.callers?.length || 0,
+          callees: e.callees?.length || 0
+        }));
+
+      codeGraphSection = `
+=== CODE GRAPH (AST Analysis) ===
+Summary: ${JSON.stringify(entitySummary, null, 2)}
+
+Top Entities (functions, classes, methods with call relationships):
+${JSON.stringify(topEntities, null, 2)}
+`;
+    }
+
+    // Build cross-analysis section with code graph correlations
+    let crossAnalysisSection = '';
+    if (crossAnalysis.gitCodeCorrelation?.length || crossAnalysis.vibeCodeCorrelation?.length || crossAnalysis.codeGraphCorrelation?.length) {
+      crossAnalysisSection = `=== CROSS-ANALYSIS CORRELATIONS ===
+Git-Code Correlations:
+${crossAnalysis.gitCodeCorrelation?.join('\n') || 'None'}
+
+Session-Code Correlations:
+${crossAnalysis.vibeCodeCorrelation?.join('\n') || 'None'}
+
+Code Graph Correlations:
+${crossAnalysis.codeGraphCorrelation?.join('\n') || 'None'}`;
+    } else {
+      crossAnalysisSection = `=== CROSS-ANALYSIS CORRELATIONS ===
+None`;
+    }
+
     return `Analyze this software development project and provide comprehensive insights.
 
 === CODE ANALYSIS (${codeFiles.length} files analyzed) ===
@@ -1135,7 +1256,7 @@ ${JSON.stringify(architecturalDecisions, null, 2)}
 
 === CODE EVOLUTION PATTERNS ===
 ${JSON.stringify(codeEvolution, null, 2)}
-
+${codeGraphSection}
 === DEVELOPMENT SESSIONS (${vibeAnalysis?.sessions?.length || 0} sessions) ===
 Problem-Solution Pairs:
 ${JSON.stringify(problemSolutions, null, 2)}
@@ -1143,9 +1264,7 @@ ${JSON.stringify(problemSolutions, null, 2)}
 Development Themes:
 ${JSON.stringify(devThemes, null, 2)}
 
-=== CROSS-ANALYSIS CORRELATIONS ===
-${crossAnalysis.gitCodeCorrelation?.join('\n') || 'None'}
-${crossAnalysis.vibeCodeCorrelation?.join('\n') || 'None'}
+${crossAnalysisSection}
 
 Based on this comprehensive analysis, provide insights in JSON format:
 {
@@ -1161,7 +1280,8 @@ Focus on SPECIFIC, ACTIONABLE insights:
 2. Identify specific technical debt with file locations
 3. Highlight innovative approaches with concrete examples
 4. Extract learnings that can be applied to future development
-5. Connect insights to actual commit messages and code changes`;
+5. Connect insights to actual commit messages and code changes
+6. Analyze code graph relationships to identify architectural patterns and dependencies`;
   }
 
   private parseInsightsFromLLMResponse(response: string): SemanticAnalysisResult['semanticInsights'] {
@@ -1295,14 +1415,28 @@ Focus on SPECIFIC, ACTIONABLE insights:
 
   // Public wrapper methods for coordinator and tools compatibility
   async analyzeSemantics(parameters: any): Promise<SemanticAnalysisResult> {
-    const { _context, incremental, git_analysis_results, vibe_analysis_results } = parameters;
-    
+    const { _context, incremental, git_analysis_results, vibe_analysis_results, code_graph_results, doc_analysis_results } = parameters;
+
     // Support both direct parameters and context-based parameters
     const gitAnalysis = git_analysis_results || _context?.previousResults?.analyze_git_history;
     const vibeAnalysis = vibe_analysis_results || _context?.previousResults?.analyze_vibe_history;
-    
+    const codeGraph = code_graph_results || _context?.previousResults?.index_recent_code || _context?.previousResults?.index_codebase;
+    const docAnalysis = doc_analysis_results || _context?.previousResults?.link_documentation;
+
+    log('analyzeSemantics called with all 4 data sources', 'info', {
+      hasGitAnalysis: !!gitAnalysis,
+      hasVibeAnalysis: !!vibeAnalysis,
+      hasCodeGraph: !!codeGraph,
+      hasDocAnalysis: !!docAnalysis,
+      codeGraphEntities: codeGraph?.statistics?.totalEntities || 0,
+      docFilesAnalyzed: docAnalysis?.markdownFiles?.length || docAnalysis?.filesAnalyzed || 0,
+      incremental
+    });
+
     return await this.analyzeGitAndVibeData(gitAnalysis, vibeAnalysis, {
-      analysisDepth: incremental ? 'surface' : 'deep'
+      analysisDepth: incremental ? 'surface' : 'deep',
+      codeGraphAnalysis: codeGraph,  // Pass code graph data for enhanced analysis
+      docAnalysis: docAnalysis  // Pass documentation analysis for context
     });
   }
 
@@ -1413,10 +1547,383 @@ Focus on SPECIFIC, ACTIONABLE insights:
   async extractPatterns(source: string, patternTypes?: string[], context?: string): Promise<string[]> {
     // Legacy compatibility - this should be private but tools.ts expects it public
     const patterns = this.detectCodePatterns(source, 'generic');
-    return patterns.filter((pattern: any) => 
-      !patternTypes || patternTypes.some(type => 
+    return patterns.filter((pattern: any) =>
+      !patternTypes || patternTypes.some(type =>
         pattern.toLowerCase().includes(type.toLowerCase())
       )
     );
+  }
+
+  /**
+   * Analyze documentation semantics - LLM analysis of docstrings and documentation content
+   *
+   * This method bridges the gap where docstrings and documentation are captured but not
+   * semantically analyzed. It extracts meaning, patterns, and insights from:
+   * 1. Code entity docstrings (purpose, params, usage patterns, warnings)
+   * 2. Documentation prose around code references (tutorials, best practices, examples)
+   */
+  async analyzeDocumentationSemantics(params: {
+    code_entities?: any[];
+    doc_analysis?: {
+      links?: Array<{
+        codeReference: string;
+        context: string;
+        documentPath: string;
+        confidence: number;
+      }>;
+      documents?: Array<{
+        path: string;
+        title?: string;
+        codeReferences: string[];
+      }>;
+    };
+    raw_code_entities?: Array<{
+      id: string;
+      name: string;
+      type: string;
+      docstring?: string;
+      signature?: string;
+      filePath: string;
+    }>;
+    batch_size?: number;
+    min_docstring_length?: number;
+  }): Promise<{
+    entityAnalyses: Record<string, {
+      purpose: string;
+      parameters: string[];
+      returnValue: string;
+      usagePatterns: string[];
+      warnings: string[];
+      relatedEntities: string[];
+      semanticScore: number;
+    }>;
+    proseAnalyses: Array<{
+      documentPath: string;
+      summary: string;
+      tutorials: string[];
+      bestPractices: string[];
+      warnings: string[];
+      linkedEntities: string[];
+    }>;
+    statistics: {
+      entitiesAnalyzed: number;
+      entitiesSkipped: number;
+      documentsAnalyzed: number;
+      patternsExtracted: number;
+    };
+    enrichedObservations: Array<{
+      entityName: string;
+      observations: string[];
+    }>;
+  }> {
+    const batchSize = params.batch_size || 20;
+    const minDocstringLength = params.min_docstring_length || 50;
+
+    log('Starting documentation semantics analysis', 'info', {
+      codeEntitiesCount: params.code_entities?.length || 0,
+      rawCodeEntitiesCount: params.raw_code_entities?.length || 0,
+      docLinksCount: params.doc_analysis?.links?.length || 0,
+      documentsCount: params.doc_analysis?.documents?.length || 0,
+      batchSize,
+      minDocstringLength
+    });
+
+    const entityAnalyses: Record<string, any> = {};
+    const proseAnalyses: any[] = [];
+    const enrichedObservations: Array<{ entityName: string; observations: string[] }> = [];
+    let entitiesAnalyzed = 0;
+    let entitiesSkipped = 0;
+    let patternsExtracted = 0;
+
+    // Phase 1: Analyze docstrings from raw code entities
+    const rawEntities = params.raw_code_entities || [];
+    const entitiesWithDocstrings = rawEntities.filter(entity =>
+      entity.docstring &&
+      entity.docstring.length >= minDocstringLength &&
+      ['class', 'function', 'method'].includes(entity.type)
+    );
+
+    log(`Filtered ${entitiesWithDocstrings.length} entities with meaningful docstrings`, 'info');
+
+    // Process docstrings in batches
+    for (let i = 0; i < entitiesWithDocstrings.length; i += batchSize) {
+      const batch = entitiesWithDocstrings.slice(i, i + batchSize);
+
+      try {
+        const batchAnalyses = await this.analyzeDocstringBatch(batch);
+
+        for (const analysis of batchAnalyses) {
+          entityAnalyses[analysis.entityId] = {
+            purpose: analysis.purpose,
+            parameters: analysis.parameters,
+            returnValue: analysis.returnValue,
+            usagePatterns: analysis.usagePatterns,
+            warnings: analysis.warnings,
+            relatedEntities: analysis.relatedEntities,
+            semanticScore: analysis.semanticScore
+          };
+
+          // Create enriched observations for this entity
+          const observations: string[] = [];
+          if (analysis.purpose) {
+            observations.push(`Purpose: ${analysis.purpose}`);
+          }
+          if (analysis.usagePatterns.length > 0) {
+            observations.push(`Usage: ${analysis.usagePatterns.join('; ')}`);
+          }
+          if (analysis.warnings.length > 0) {
+            observations.push(`Caveats: ${analysis.warnings.join('; ')}`);
+          }
+          if (analysis.relatedEntities.length > 0) {
+            observations.push(`Related: ${analysis.relatedEntities.join(', ')}`);
+          }
+
+          if (observations.length > 0) {
+            enrichedObservations.push({
+              entityName: analysis.entityName,
+              observations
+            });
+          }
+
+          entitiesAnalyzed++;
+          patternsExtracted += analysis.usagePatterns.length;
+        }
+      } catch (error) {
+        log(`Failed to analyze docstring batch ${i}-${i + batchSize}`, 'warning', error);
+        entitiesSkipped += batch.length;
+      }
+    }
+
+    // Phase 2: Analyze documentation prose
+    const docLinks = params.doc_analysis?.links || [];
+    const documents = params.doc_analysis?.documents || [];
+
+    // Group links by document for context-aware analysis
+    const linksByDocument = new Map<string, typeof docLinks>();
+    for (const link of docLinks) {
+      if (!linksByDocument.has(link.documentPath)) {
+        linksByDocument.set(link.documentPath, []);
+      }
+      linksByDocument.get(link.documentPath)!.push(link);
+    }
+
+    // Analyze each document with its associated links
+    for (const [docPath, links] of linksByDocument) {
+      if (links.length < 2) continue; // Only analyze docs with multiple code references
+
+      try {
+        const docMetadata = documents.find(d => d.path === docPath);
+        const proseAnalysis = await this.analyzeDocumentProse(docPath, links, docMetadata);
+
+        if (proseAnalysis) {
+          proseAnalyses.push(proseAnalysis);
+          patternsExtracted += proseAnalysis.bestPractices.length;
+        }
+      } catch (error) {
+        log(`Failed to analyze document prose: ${docPath}`, 'warning', error);
+      }
+    }
+
+    const result = {
+      entityAnalyses,
+      proseAnalyses,
+      statistics: {
+        entitiesAnalyzed,
+        entitiesSkipped,
+        documentsAnalyzed: proseAnalyses.length,
+        patternsExtracted
+      },
+      enrichedObservations
+    };
+
+    log('Documentation semantics analysis completed', 'info', result.statistics);
+
+    return result;
+  }
+
+  /**
+   * Analyze a batch of docstrings using LLM
+   */
+  private async analyzeDocstringBatch(entities: Array<{
+    id: string;
+    name: string;
+    type: string;
+    docstring?: string;
+    signature?: string;
+    filePath: string;
+  }>): Promise<Array<{
+    entityId: string;
+    entityName: string;
+    purpose: string;
+    parameters: string[];
+    returnValue: string;
+    usagePatterns: string[];
+    warnings: string[];
+    relatedEntities: string[];
+    semanticScore: number;
+  }>> {
+    const prompt = `Analyze these code docstrings and extract semantic information for each.
+
+For each entity, provide:
+1. Purpose: What does this code do? (1-2 sentences)
+2. Parameters: What inputs does it accept? (list of param descriptions)
+3. Return Value: What does it return?
+4. Usage Patterns: How should it be used? (list of usage guidelines)
+5. Warnings: Any caveats, deprecated notices, or gotchas?
+6. Related Entities: What other code does it reference or depend on?
+
+Entities to analyze:
+${entities.map((e, idx) => `
+[${idx + 1}] ${e.type} ${e.name}
+File: ${e.filePath}
+${e.signature ? `Signature: ${e.signature}` : ''}
+Docstring:
+${e.docstring}
+`).join('\n---\n')}
+
+Respond with a JSON array where each element has:
+{
+  "index": <1-based index>,
+  "purpose": "...",
+  "parameters": ["param1: description", "param2: description"],
+  "returnValue": "...",
+  "usagePatterns": ["pattern1", "pattern2"],
+  "warnings": ["warning1"],
+  "relatedEntities": ["EntityName1", "EntityName2"],
+  "semanticScore": <0.0-1.0 quality score>
+}`;
+
+    try {
+      let response: string;
+
+      if (this.groqClient) {
+        response = await this.callGroqWithRetry(prompt);
+      } else if (this.geminiClient) {
+        response = await this.callGeminiWithRetry(prompt);
+      } else if (this.anthropicClient) {
+        response = await this.callAnthropicWithRetry(prompt);
+      } else if (this.openaiClient) {
+        response = await this.callOpenAIWithRetry(prompt);
+      } else {
+        throw new Error('No LLM client available for docstring analysis');
+      }
+
+      // Parse JSON response
+      const jsonMatch = response.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        throw new Error('No JSON array found in LLM response');
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      return parsed.map((item: any) => {
+        const entity = entities[item.index - 1];
+        return {
+          entityId: entity.id,
+          entityName: entity.name,
+          purpose: item.purpose || '',
+          parameters: item.parameters || [],
+          returnValue: item.returnValue || '',
+          usagePatterns: item.usagePatterns || [],
+          warnings: item.warnings || [],
+          relatedEntities: item.relatedEntities || [],
+          semanticScore: item.semanticScore || 0.5
+        };
+      });
+
+    } catch (error) {
+      log('Docstring batch analysis failed', 'warning', error);
+      // Return basic analysis as fallback
+      return entities.map(entity => ({
+        entityId: entity.id,
+        entityName: entity.name,
+        purpose: entity.docstring?.substring(0, 200) || '',
+        parameters: [],
+        returnValue: '',
+        usagePatterns: [],
+        warnings: [],
+        relatedEntities: [],
+        semanticScore: 0.3
+      }));
+    }
+  }
+
+  /**
+   * Analyze documentation prose for a single document
+   */
+  private async analyzeDocumentProse(
+    docPath: string,
+    links: Array<{ codeReference: string; context: string; confidence: number }>,
+    metadata?: { title?: string; codeReferences: string[] }
+  ): Promise<{
+    documentPath: string;
+    summary: string;
+    tutorials: string[];
+    bestPractices: string[];
+    warnings: string[];
+    linkedEntities: string[];
+  } | null> {
+    // Collect context snippets from links
+    const contextSnippets = links
+      .filter(l => l.context && l.context.length > 50)
+      .slice(0, 10)
+      .map(l => `[${l.codeReference}]: ${l.context}`);
+
+    if (contextSnippets.length < 2) {
+      return null; // Not enough content to analyze
+    }
+
+    const prompt = `Analyze this documentation content and extract useful patterns.
+
+Document: ${metadata?.title || docPath}
+Code References: ${links.map(l => l.codeReference).join(', ')}
+
+Documentation snippets:
+${contextSnippets.join('\n\n')}
+
+Extract and respond with JSON:
+{
+  "summary": "Brief summary of what this documentation covers",
+  "tutorials": ["Step-by-step guide extracted", "Another tutorial if present"],
+  "bestPractices": ["Best practice 1", "Best practice 2"],
+  "warnings": ["Any warnings or caveats mentioned"],
+  "linkedEntities": ["Code entities discussed in this doc"]
+}`;
+
+    try {
+      let response: string;
+
+      if (this.groqClient) {
+        response = await this.callGroqWithRetry(prompt);
+      } else if (this.geminiClient) {
+        response = await this.callGeminiWithRetry(prompt);
+      } else if (this.anthropicClient) {
+        response = await this.callAnthropicWithRetry(prompt);
+      } else if (this.openaiClient) {
+        response = await this.callOpenAIWithRetry(prompt);
+      } else {
+        return null;
+      }
+
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return null;
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      return {
+        documentPath: docPath,
+        summary: parsed.summary || '',
+        tutorials: parsed.tutorials || [],
+        bestPractices: parsed.bestPractices || [],
+        warnings: parsed.warnings || [],
+        linkedEntities: parsed.linkedEntities || links.map(l => l.codeReference)
+      };
+
+    } catch (error) {
+      log(`Document prose analysis failed for ${docPath}`, 'warning', error);
+      return null;
+    }
   }
 }

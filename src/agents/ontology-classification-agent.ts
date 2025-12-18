@@ -308,33 +308,62 @@ Respond with JSON only:
     const byClass: Record<string, number> = {};
     let totalConfidence = 0;
 
-    for (const observation of observationsList) {
-      try {
-        const result = await this.classifySingleObservation(observation, minConfidence);
+    // Process observations in parallel batches for faster classification
+    // Configurable via LLM_BATCH_SIZE env var (default: 20, min: 1, max: 50)
+    const BATCH_SIZE = Math.min(Math.max(
+      parseInt(process.env.LLM_BATCH_SIZE || '20', 10), 1
+    ), 50);
+    const batches: any[][] = [];
+    for (let i = 0; i < observationsList.length; i += BATCH_SIZE) {
+      batches.push(observationsList.slice(i, i + BATCH_SIZE));
+    }
 
-        if (result.classified) {
-          classified.push(result);
-          totalConfidence += result.ontologyMetadata.classificationConfidence;
+    log(`Processing ${observationsList.length} observations in ${batches.length} batches of ${BATCH_SIZE} (parallel)`, 'info');
 
-          // Track statistics
-          const method = result.ontologyMetadata.classificationMethod;
-          byMethod[method] = (byMethod[method] || 0) + 1;
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
+      log(`Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} observations)`, 'debug');
 
-          const className = result.ontologyMetadata.ontologyClass;
-          byClass[className] = (byClass[className] || 0) + 1;
+      // Process batch in parallel
+      const batchResults = await Promise.all(
+        batch.map(async (observation) => {
+          try {
+            const result = await this.classifySingleObservation(observation, minConfidence);
+            return { success: true, result, observation };
+          } catch (error) {
+            log('Error classifying observation', 'warning', { error, observation: observation.name });
+            return { success: false, error, observation };
+          }
+        })
+      );
+
+      // Collect results from batch
+      for (const batchResult of batchResults) {
+        if (batchResult.success && batchResult.result) {
+          const result = batchResult.result;
+          if (result.classified) {
+            classified.push(result);
+            totalConfidence += result.ontologyMetadata.classificationConfidence;
+
+            // Track statistics
+            const method = result.ontologyMetadata.classificationMethod;
+            byMethod[method] = (byMethod[method] || 0) + 1;
+
+            const className = result.ontologyMetadata.ontologyClass;
+            byClass[className] = (byClass[className] || 0) + 1;
+          } else {
+            unclassified.push({
+              observation: batchResult.observation,
+              reason: 'No matching ontology class found',
+              suggestedClass: this.suggestClass(batchResult.observation),
+            });
+          }
         } else {
           unclassified.push({
-            observation,
-            reason: 'No matching ontology class found',
-            suggestedClass: this.suggestClass(observation),
+            observation: batchResult.observation,
+            reason: batchResult.error instanceof Error ? batchResult.error.message : String(batchResult.error),
           });
         }
-      } catch (error) {
-        log('Error classifying observation', 'warning', { error, observation: observation.name });
-        unclassified.push({
-          observation,
-          reason: error instanceof Error ? error.message : String(error),
-        });
       }
     }
 

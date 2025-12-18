@@ -131,6 +131,59 @@ export class CoordinatorAgent {
 
       const completedSteps = stepsDetail.filter(s => s.status === 'completed').map(s => s.name);
       const failedSteps = stepsDetail.filter(s => s.status === 'failed').map(s => s.name);
+      const skippedSteps = stepsDetail.filter(s => s.status === 'skipped').map(s => s.name);
+
+      // Build summary statistics from all step outputs
+      const summaryStats: Record<string, any> = {
+        totalCommits: 0,
+        totalFiles: 0,
+        totalSessions: 0,
+        totalObservations: 0,
+        totalInsights: 0,
+        totalPatterns: 0,
+        insightsGenerated: [] as Array<{ name: string; filePath?: string; significance?: number }>,
+        patternsFound: [] as Array<{ name: string; category: string; significance: number }>,
+        codeGraphStats: null as { totalEntities: number; languages: string[] } | null,
+        skippedReasons: {} as Record<string, string>
+      };
+
+      for (const step of stepsDetail) {
+        const outputs = step.outputs || {};
+
+        // Aggregate counts
+        if (outputs.commitsCount) summaryStats.totalCommits += outputs.commitsCount;
+        if (outputs.filesCount) summaryStats.totalFiles += outputs.filesCount;
+        if (outputs.sessionsCount) summaryStats.totalSessions += outputs.sessionsCount;
+        if (outputs.observationsCount) summaryStats.totalObservations += outputs.observationsCount;
+        if (outputs.totalInsights) summaryStats.totalInsights += outputs.totalInsights;
+        if (outputs.totalPatterns) summaryStats.totalPatterns += outputs.totalPatterns;
+
+        // Collect insight documents
+        if (outputs.insightDocuments) {
+          summaryStats.insightsGenerated.push(...outputs.insightDocuments);
+        }
+
+        // Collect top patterns
+        if (outputs.patterns) {
+          summaryStats.patternsFound.push(...outputs.patterns);
+        }
+
+        // Collect code graph stats
+        if (outputs.codeGraphStats) {
+          summaryStats.codeGraphStats = {
+            totalEntities: outputs.codeGraphStats.totalEntities,
+            languages: Object.keys(outputs.codeGraphStats.languageDistribution || {})
+          };
+        }
+
+        // Collect skip reasons
+        if (outputs.skipped && outputs.skipReason) {
+          summaryStats.skippedReasons[step.name] = outputs.skipReason;
+        }
+      }
+
+      // Sort patterns by significance
+      summaryStats.patternsFound.sort((a: any, b: any) => (b.significance || 0) - (a.significance || 0));
 
       const progress = {
         workflowName: workflow.name,
@@ -143,9 +196,12 @@ export class CoordinatorAgent {
         totalSteps: workflow.steps.length,
         completedSteps: completedSteps.length,
         failedSteps: failedSteps.length,
+        skippedSteps: skippedSteps.length,
         stepsCompleted: completedSteps,
         stepsFailed: failedSteps,
-        stepsDetail: stepsDetail, // New: detailed step info with timing
+        stepsSkipped: skippedSteps,
+        stepsDetail: stepsDetail,
+        summary: summaryStats,  // New: aggregated statistics
         lastUpdate: new Date().toISOString(),
         elapsedSeconds: Math.round((Date.now() - execution.startTime.getTime()) / 1000),
       };
@@ -198,10 +254,12 @@ export class CoordinatorAgent {
             action: "analyzeSemantics",
             parameters: {
               git_analysis_results: "{{analyze_git_history.result}}",
-              vibe_analysis_results: "{{analyze_vibe_history.result}}"
+              vibe_analysis_results: "{{analyze_vibe_history.result}}",
+              code_graph_results: "{{index_codebase.result}}",
+              doc_analysis_results: "{{link_documentation.result}}"
             },
-            dependencies: ["analyze_git_history", "analyze_vibe_history"],
-            timeout: 180,
+            dependencies: ["analyze_git_history", "analyze_vibe_history", "index_codebase", "link_documentation"],
+            timeout: 240, // 4 minutes for comprehensive semantic analysis with all inputs
           },
           {
             name: "web_search",
@@ -221,9 +279,10 @@ export class CoordinatorAgent {
               semantic_analysis_results: "{{semantic_analysis.result}}",
               web_search_results: "{{web_search.result}}",
               git_analysis_results: "{{analyze_git_history.result}}",
-              vibe_analysis_results: "{{analyze_vibe_history.result}}"
+              vibe_analysis_results: "{{analyze_vibe_history.result}}",
+              code_graph_results: "{{index_codebase.result}}"
             },
-            dependencies: ["semantic_analysis", "web_search"],
+            dependencies: ["semantic_analysis", "web_search", "index_codebase"],
             timeout: 300,
           },
           {
@@ -258,7 +317,7 @@ export class CoordinatorAgent {
             parameters: {
               target_path: "{{params.repositoryPath}}"
             },
-            timeout: 300, // 5 minutes for large codebases
+            timeout: 600, // 10 minutes for large codebases (AST parsing is slow)
           },
           {
             name: "link_documentation",
@@ -281,6 +340,21 @@ export class CoordinatorAgent {
             dependencies: ["index_codebase"],
             timeout: 60,
           },
+          // NEW: Semantic analysis of docstrings and documentation prose
+          {
+            name: "analyze_documentation_semantics",
+            agent: "semantic_analysis",
+            action: "analyzeDocumentationSemantics",
+            parameters: {
+              code_entities: "{{transform_code_entities.result}}",
+              doc_analysis: "{{link_documentation.result}}",
+              raw_code_entities: "{{index_codebase.result.entities}}",
+              batch_size: 20,
+              min_docstring_length: 50
+            },
+            dependencies: ["transform_code_entities", "link_documentation"],
+            timeout: 180, // 3 minutes for LLM-based docstring analysis
+          },
           {
             name: "quality_assurance",
             agent: "quality_assurance",
@@ -294,10 +368,11 @@ export class CoordinatorAgent {
                 insights: "{{generate_insights.result}}",
                 observations: "{{generate_observations.result}}",
                 ontology_classification: "{{classify_with_ontology.result}}",
-                code_graph: "{{transform_code_entities.result}}"
+                code_graph: "{{transform_code_entities.result}}",
+                doc_semantics: "{{analyze_documentation_semantics.result}}"
               }
             },
-            dependencies: ["classify_with_ontology", "transform_code_entities"],
+            dependencies: ["classify_with_ontology", "transform_code_entities", "analyze_documentation_semantics"],
             timeout: 90, // Increased timeout for comprehensive analysis
           },
           {
@@ -314,6 +389,7 @@ export class CoordinatorAgent {
                 observations: "{{generate_observations.result}}",
                 ontology_classification: "{{classify_with_ontology.result}}",
                 code_graph: "{{transform_code_entities.result}}",
+                doc_semantics: "{{analyze_documentation_semantics.result}}",
                 quality_assurance: "{{quality_assurance.result}}"
               }
             },
@@ -363,26 +439,39 @@ export class CoordinatorAgent {
                  "observation_generation", "ontology_classification", "quality_assurance",
                  "persistence", "deduplication", "content_validation", "code_graph", "documentation_linker"],
         steps: [
+          // PHASE 1: Parallel Data Collection
+          // All three run in parallel - no dependencies
           {
             name: "analyze_recent_changes",
             agent: "git_history",
             action: "analyzeGitHistoryWithLLM",
             parameters: {
               repository: null,  // Will be filled from workflow params
-              maxCommits: 10,
+              maxCommits: 50,    // Increased for better analysis
               sinceCommit: null
             },
-            timeout: 120, // Longer timeout for LLM analysis
+            timeout: 180, // 3 min for LLM-enhanced git analysis
           },
           {
             name: "analyze_recent_vibes",
             agent: "vibe_history",
             action: "analyzeVibeHistory",
             parameters: {
-              maxSessions: 5
+              maxSessions: 20    // Analyze more sessions
             },
-            timeout: 60,
+            timeout: 120,       // 2 min for vibe analysis
           },
+          {
+            name: "index_recent_code",
+            agent: "code_graph",
+            action: "indexRepository",
+            parameters: {
+              target_path: "{{params.repositoryPath}}"
+            },
+            timeout: 600, // 10 min for large repos - AST parsing takes time
+          },
+          // PHASE 2: Semantic Understanding
+          // Waits for ALL data collection to complete, then synthesizes
           {
             name: "analyze_semantics",
             agent: "semantic_analysis",
@@ -390,11 +479,14 @@ export class CoordinatorAgent {
             parameters: {
               git_analysis_results: "{{analyze_recent_changes.result}}",
               vibe_analysis_results: "{{analyze_recent_vibes.result}}",
+              code_graph_results: "{{index_recent_code.result}}",
               incremental: true
             },
-            dependencies: ["analyze_recent_changes", "analyze_recent_vibes"],
-            timeout: 90,
+            dependencies: ["analyze_recent_changes", "analyze_recent_vibes", "index_recent_code"],
+            timeout: 120,
           },
+          // PHASE 3: Insight Generation
+          // All data flows through semantic_analysis first
           {
             name: "generate_insights",
             agent: "insight_generation",
@@ -403,10 +495,11 @@ export class CoordinatorAgent {
               git_analysis_results: "{{analyze_recent_changes.result}}",
               vibe_analysis_results: "{{analyze_recent_vibes.result}}",
               semantic_analysis_results: "{{analyze_semantics.result}}",
+              code_graph_results: "{{index_recent_code.result}}",
               incremental: true
             },
             dependencies: ["analyze_semantics"],
-            timeout: 90,
+            timeout: 180, // 3 min for insight generation with diagrams
           },
           {
             name: "generate_observations",
@@ -434,15 +527,7 @@ export class CoordinatorAgent {
             dependencies: ["generate_observations"],
             timeout: 300, // 5 minutes for incremental observation sets
           },
-          {
-            name: "index_recent_code",
-            agent: "code_graph",
-            action: "indexRepository",
-            parameters: {
-              target_path: "{{params.repositoryPath}}"
-            },
-            timeout: 180, // 3 minutes for incremental
-          },
+          // PHASE 5: Transform code entities (index_recent_code already ran in Phase 1)
           {
             name: "transform_code_entities_incremental",
             agent: "code_graph",
@@ -452,6 +537,20 @@ export class CoordinatorAgent {
             },
             dependencies: ["index_recent_code"],
             timeout: 60,
+          },
+          // NEW: Semantic analysis of docstrings from recent code (no doc_analysis in incremental)
+          {
+            name: "analyze_documentation_semantics_incremental",
+            agent: "semantic_analysis",
+            action: "analyzeDocumentationSemantics",
+            parameters: {
+              code_entities: "{{transform_code_entities_incremental.result}}",
+              raw_code_entities: "{{index_recent_code.result.entities}}",
+              batch_size: 10, // Smaller batch for incremental
+              min_docstring_length: 50
+            },
+            dependencies: ["transform_code_entities_incremental"],
+            timeout: 120, // 2 minutes for incremental
           },
           {
             name: "validate_incremental_qa",
@@ -465,11 +564,12 @@ export class CoordinatorAgent {
                 insights: "{{generate_insights.result}}",
                 observations: "{{generate_observations.result}}",
                 ontology_classification: "{{classify_with_ontology.result}}",
-                code_graph: "{{transform_code_entities_incremental.result}}"
+                code_graph: "{{transform_code_entities_incremental.result}}",
+                doc_semantics: "{{analyze_documentation_semantics_incremental.result}}"
               },
               lightweight: true // Skip heavy validation for incremental runs
             },
-            dependencies: ["classify_with_ontology", "transform_code_entities_incremental"],
+            dependencies: ["classify_with_ontology", "analyze_documentation_semantics_incremental"],
             timeout: 30,
           },
           {
@@ -485,6 +585,7 @@ export class CoordinatorAgent {
                 observations: "{{generate_observations.result}}",
                 ontology_classification: "{{classify_with_ontology.result}}",
                 code_graph: "{{transform_code_entities_incremental.result}}",
+                doc_semantics: "{{analyze_documentation_semantics_incremental.result}}",
                 quality_assurance: "{{validate_incremental_qa.result}}"
               }
             },
@@ -668,7 +769,7 @@ export class CoordinatorAgent {
             parameters: {
               target_path: "{{params.repositoryPath}}"
             },
-            timeout: 300, // 5 minutes for large codebases
+            timeout: 600, // 10 minutes for large codebases (AST parsing is slow)
           },
           {
             name: "link_documentation",
@@ -2061,10 +2162,60 @@ Expected locations for generated files:
     if (Array.isArray(result.sessions)) summary.sessionsCount = result.sessions.length;
     if (Array.isArray(result.observations)) summary.observationsCount = result.observations.length;
 
+    // Extract insight document details (for generate_insights step)
+    if (result.insightDocument || result.insightDocuments) {
+      const docs = result.insightDocuments || [result.insightDocument];
+      if (Array.isArray(docs) && docs.length > 0) {
+        summary.insightDocuments = docs.map((doc: any) => ({
+          name: doc.name || doc.title || 'Unnamed Insight',
+          title: doc.title,
+          filePath: doc.filePath ? path.resolve(this.repositoryPath, doc.filePath) : undefined,
+          significance: doc.metadata?.significance || doc.significance,
+          diagramCount: doc.diagrams?.filter((d: any) => d.success)?.length || 0
+        }));
+        summary.totalInsights = docs.length;
+      }
+    }
+
+    // Extract pattern catalog details (for generate_insights step)
+    if (result.patternCatalog?.patterns && Array.isArray(result.patternCatalog.patterns)) {
+      const patterns = result.patternCatalog.patterns;
+      summary.patterns = patterns.slice(0, 10).map((p: any) => ({
+        name: p.name,
+        category: p.category,
+        significance: p.significance
+      }));
+      summary.totalPatterns = patterns.length;
+      summary.avgPatternSignificance = result.patternCatalog.summary?.avgSignificance;
+    }
+
+    // Extract code graph statistics (for index_codebase step)
+    if (result.statistics) {
+      summary.codeGraphStats = {
+        totalEntities: result.statistics.totalEntities,
+        totalRelationships: result.statistics.totalRelationships,
+        languageDistribution: result.statistics.languageDistribution,
+        entityTypeDistribution: result.statistics.entityTypeDistribution
+      };
+    }
+    if (result.skipped) {
+      summary.skipped = true;
+      summary.skipReason = result.warning || 'Unknown reason';
+    }
+    if (result.diagnostics) {
+      summary.diagnostics = result.diagnostics;
+    }
+
+    // Extract generation metrics (from insight generation)
+    if (result.generationMetrics) {
+      summary.generationMetrics = result.generationMetrics;
+    }
+
     // Extract error info if present
     if (result.error) summary.error = result.error;
     if (result.errors && Array.isArray(result.errors)) summary.errorsCount = result.errors.length;
     if (result.warnings && Array.isArray(result.warnings)) summary.warningsCount = result.warnings.length;
+    if (result.warning) summary.warning = result.warning;
 
     // Include timing if present
     if (result._timing) {

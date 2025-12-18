@@ -475,20 +475,29 @@ Each section should provide genuine insight, not just reformatted input.**`;
     const vibeAnalysis = params.vibe_analysis_results || params.vibeAnalysis;
     const semanticAnalysis = params.semantic_analysis_results || params.semanticAnalysis;
     const webResults = params.web_search_results || params.webResults;
+    const codeGraphResults = params.code_graph_results || params.codeGraphResults;
+    const docSemanticsResults = params.doc_semantics_results || params.docSemanticsResults;
 
     log('Data availability checked', 'debug', {
       gitAnalysis: !!gitAnalysis,
       vibeAnalysis: !!vibeAnalysis,
       semanticAnalysis: !!semanticAnalysis,
-      webResults: !!webResults
+      webResults: !!webResults,
+      codeGraphResults: !!codeGraphResults,
+      docSemanticsResults: !!docSemanticsResults
     });
-    
+
     log('Starting comprehensive insight generation', 'info', {
       receivedParams: Object.keys(params || {}),
       hasGitAnalysis: !!gitAnalysis,
       hasVibeAnalysis: !!vibeAnalysis,
       hasSemanticAnalysis: !!semanticAnalysis,
       hasWebResults: !!webResults,
+      hasCodeGraphResults: !!codeGraphResults,
+      hasDocSemanticsResults: !!docSemanticsResults,
+      codeGraphSkipped: codeGraphResults?.skipped || false,
+      codeGraphEntities: codeGraphResults?.statistics?.totalEntities || 0,
+      docSemanticsAnalyzed: docSemanticsResults?.statistics?.analyzed || 0,
       gitCommitCount: gitAnalysis?.commits?.length || 0
     });
 
@@ -531,9 +540,9 @@ Each section should provide genuine insight, not just reformatted input.**`;
         };
       }
 
-      // Extract patterns from all analyses
+      // Extract patterns from all analyses (including code graph and doc semantics if available)
       const patternCatalog = await this.generatePatternCatalog(
-        filteredGitAnalysis, vibeAnalysis, semanticAnalysis, webResults
+        filteredGitAnalysis, vibeAnalysis, semanticAnalysis, webResults, codeGraphResults, docSemanticsResults
       );
 
       // DEBUGGING: Log all pattern significance scores BEFORE filtering
@@ -684,14 +693,29 @@ Each section should provide genuine insight, not just reformatted input.**`;
     gitAnalysis: any,
     vibeAnalysis: any,
     semanticAnalysis: any,
-    webResults?: any
+    webResults?: any,
+    codeGraphResults?: any,
+    docSemanticsResults?: any
   ): Promise<PatternCatalog> {
     FilenameTracer.trace('PATTERN_CATALOG_START', 'generatePatternCatalog',
-      { hasGit: !!gitAnalysis, hasVibe: !!vibeAnalysis, hasSemantic: !!semanticAnalysis },
+      { hasGit: !!gitAnalysis, hasVibe: !!vibeAnalysis, hasSemantic: !!semanticAnalysis, hasCodeGraph: !!codeGraphResults, hasDocSemantics: !!docSemanticsResults },
       'Starting pattern catalog generation'
     );
-    
+
     const patterns: IdentifiedPattern[] = [];
+
+    // Extract patterns from code graph analysis (AST-based)
+    try {
+      if (codeGraphResults && !codeGraphResults.skipped) {
+        const codeGraphPatterns = this.extractCodeGraphPatterns(codeGraphResults);
+        patterns.push(...codeGraphPatterns);
+        log(`Extracted ${codeGraphPatterns.length} patterns from code graph analysis`, 'info');
+      } else if (codeGraphResults?.skipped) {
+        log(`Code graph analysis was skipped: ${codeGraphResults.warning || 'unknown reason'}`, 'warning');
+      }
+    } catch (error) {
+      console.warn('Error extracting code graph patterns:', error);
+    }
 
     // Generate REAL architectural patterns based on actual code analysis
     // This should analyze actual code commits and file changes to identify meaningful patterns
@@ -746,6 +770,17 @@ Each section should provide genuine insight, not just reformatted input.**`;
       console.warn('Error extracting solution patterns:', error);
     }
 
+    // Extract patterns from documentation semantics (LLM-analyzed docstrings and prose)
+    try {
+      if (docSemanticsResults && docSemanticsResults.statistics?.analyzed > 0) {
+        const docPatterns = this.extractDocumentationPatterns(docSemanticsResults);
+        patterns.push(...docPatterns);
+        log(`Extracted ${docPatterns.length} patterns from documentation semantics`, 'info');
+      }
+    } catch (error) {
+      console.warn('Error extracting documentation patterns:', error);
+    }
+
     // Analyze and summarize patterns
     const byCategory: Record<string, number> = {};
     let totalSignificance = 0;
@@ -769,6 +804,166 @@ Each section should provide genuine insight, not just reformatted input.**`;
         topPatterns
       }
     };
+  }
+
+  /**
+   * Extract patterns from code graph analysis (AST-based)
+   * Analyzes language distribution, entity types, and architectural patterns
+   */
+  private extractCodeGraphPatterns(codeGraphResults: any): IdentifiedPattern[] {
+    const patterns: IdentifiedPattern[] = [];
+    const stats = codeGraphResults?.statistics || {};
+
+    // Analyze language distribution for polyglot patterns
+    const langDist = stats.languageDistribution || {};
+    const languages = Object.keys(langDist);
+
+    if (languages.length > 1) {
+      // Polyglot codebase pattern
+      const dominantLang = languages.reduce((a, b) => langDist[a] > langDist[b] ? a : b, languages[0]);
+      const langBreakdown = languages.map(l => `${l}: ${langDist[l]}`).join(', ');
+
+      patterns.push({
+        name: 'Polyglot Codebase Architecture',
+        category: 'architectural',
+        description: `Multi-language codebase with ${languages.length} languages (${langBreakdown}). Dominant: ${dominantLang}`,
+        significance: Math.min(8, 4 + languages.length),
+        evidence: [`Languages: ${languages.join(', ')}`, `Entity distribution: ${langBreakdown}`],
+        relatedComponents: languages,
+        implementation: {
+          language: dominantLang,
+          usageNotes: [
+            `Ensure consistent build tooling across ${languages.length} languages`,
+            'Consider language-specific linting and testing strategies'
+          ]
+        }
+      });
+    } else if (languages.length === 1) {
+      patterns.push({
+        name: `${languages[0]} Monolingual Codebase`,
+        category: 'architectural',
+        description: `Single-language codebase using ${languages[0]}`,
+        significance: 3,
+        evidence: [`Primary language: ${languages[0]}`, `Total entities: ${stats.totalEntities}`],
+        relatedComponents: [],
+        implementation: {
+          language: languages[0],
+          usageNotes: []
+        }
+      });
+    }
+
+    // Analyze entity type distribution for OOP vs functional patterns
+    const entityDist = stats.entityTypeDistribution || {};
+    const classCount = entityDist['class'] || 0;
+    const functionCount = entityDist['function'] || 0;
+    const methodCount = entityDist['method'] || 0;
+
+    if (classCount > 0 && functionCount > 0) {
+      const ratio = classCount / (functionCount + 1);
+      const dominantLang = languages[0] || 'unknown';
+
+      if (ratio > 0.5) {
+        patterns.push({
+          name: 'Object-Oriented Design Pattern',
+          category: 'design',
+          description: `Predominantly OOP architecture with ${classCount} classes and ${methodCount} methods`,
+          significance: 6,
+          evidence: [
+            `Classes: ${classCount}`,
+            `Methods: ${methodCount}`,
+            `Functions: ${functionCount}`,
+            `Class-to-function ratio: ${ratio.toFixed(2)}`
+          ],
+          relatedComponents: ['classes', 'methods', 'inheritance'],
+          implementation: {
+            language: dominantLang,
+            usageNotes: [
+              'Ensure SOLID principles are followed',
+              'Consider composition over inheritance where appropriate'
+            ]
+          }
+        });
+      } else if (ratio < 0.2) {
+        patterns.push({
+          name: 'Functional Programming Pattern',
+          category: 'design',
+          description: `Predominantly functional architecture with ${functionCount} standalone functions`,
+          significance: 6,
+          evidence: [
+            `Functions: ${functionCount}`,
+            `Classes: ${classCount}`,
+            `Function-to-class ratio: ${(1/ratio).toFixed(2)}`
+          ],
+          relatedComponents: ['functions', 'modules'],
+          implementation: {
+            language: dominantLang,
+            usageNotes: [
+              'Ensure pure functions where possible',
+              'Consider using immutable data structures'
+            ]
+          }
+        });
+      } else {
+        patterns.push({
+          name: 'Hybrid OOP-Functional Pattern',
+          category: 'design',
+          description: `Mixed paradigm with ${classCount} classes and ${functionCount} functions`,
+          significance: 5,
+          evidence: [
+            `Classes: ${classCount}`,
+            `Functions: ${functionCount}`,
+            `Methods: ${methodCount}`
+          ],
+          relatedComponents: ['classes', 'functions'],
+          implementation: {
+            language: dominantLang,
+            usageNotes: [
+              'Document when to use classes vs functions',
+              'Establish clear boundaries between paradigms'
+            ]
+          }
+        });
+      }
+    }
+
+    // Analyze total entities for codebase scale
+    const totalEntities = stats.totalEntities || 0;
+    const dominantLang = languages[0] || 'unknown';
+
+    if (totalEntities > 500) {
+      patterns.push({
+        name: 'Large-Scale Codebase Pattern',
+        category: 'architectural',
+        description: `Enterprise-scale codebase with ${totalEntities} code entities`,
+        significance: 7,
+        evidence: [`Total entities: ${totalEntities}`, `Relationships: ${stats.totalRelationships || 0}`],
+        relatedComponents: ['modules', 'architecture'],
+        implementation: {
+          language: dominantLang,
+          usageNotes: [
+            'Consider modular architecture to manage complexity',
+            'Use dependency analysis for refactoring decisions'
+          ]
+        }
+      });
+    } else if (totalEntities > 100) {
+      patterns.push({
+        name: 'Medium-Scale Codebase Pattern',
+        category: 'architectural',
+        description: `Medium-scale codebase with ${totalEntities} code entities`,
+        significance: 4,
+        evidence: [`Total entities: ${totalEntities}`],
+        relatedComponents: [],
+        implementation: {
+          language: dominantLang,
+          usageNotes: []
+        }
+      });
+    }
+
+    log(`[CodeGraph] Extracted ${patterns.length} patterns from code graph (${totalEntities} entities, ${languages.length} languages)`, 'info');
+    return patterns;
   }
 
   private generateMeaningfulNameAndTitle(
@@ -2950,11 +3145,11 @@ Significance: [1-10]`;
 
   private extractCodeSolutionPatterns(problemSolutionPairs: any[]): IdentifiedPattern[] {
     const patterns: IdentifiedPattern[] = [];
-    
+
     // Limit processing to prevent performance issues
     const limitedPairs = problemSolutionPairs.slice(0, 10);
-    
-    const codeSolutions = limitedPairs.filter(pair => 
+
+    const codeSolutions = limitedPairs.filter(pair =>
       this.isCodeRelatedSolution(pair.solution) && this.isSignificantSolution(pair)
     );
 
@@ -2966,6 +3161,178 @@ Significance: [1-10]`;
     });
 
     return patterns;
+  }
+
+  /**
+   * Extract patterns from LLM-analyzed documentation semantics
+   * Analyzes docstring analyses and prose analyses for usage patterns, API patterns, and documentation patterns
+   */
+  private extractDocumentationPatterns(docSemanticsResults: any): IdentifiedPattern[] {
+    const patterns: IdentifiedPattern[] = [];
+
+    const entityAnalyses = docSemanticsResults.entityAnalyses || {};
+    const proseAnalyses = docSemanticsResults.proseAnalyses || [];
+
+    // Group entities by usage patterns for pattern discovery
+    const usagePatternGroups = new Map<string, string[]>();
+    const warningGroups = new Map<string, string[]>();
+
+    for (const [entityName, analysis] of Object.entries(entityAnalyses)) {
+      const typedAnalysis = analysis as {
+        purpose?: string;
+        usagePatterns?: string[];
+        warnings?: string[];
+        semanticScore?: number;
+        relatedEntities?: string[];
+      };
+
+      // Group by usage patterns
+      if (typedAnalysis.usagePatterns && typedAnalysis.usagePatterns.length > 0) {
+        typedAnalysis.usagePatterns.forEach(pattern => {
+          const normalizedPattern = pattern.toLowerCase().trim();
+          if (!usagePatternGroups.has(normalizedPattern)) {
+            usagePatternGroups.set(normalizedPattern, []);
+          }
+          usagePatternGroups.get(normalizedPattern)!.push(entityName);
+        });
+      }
+
+      // Group by warnings (design constraints)
+      if (typedAnalysis.warnings && typedAnalysis.warnings.length > 0) {
+        typedAnalysis.warnings.forEach(warning => {
+          const normalizedWarning = warning.toLowerCase().trim();
+          if (!warningGroups.has(normalizedWarning)) {
+            warningGroups.set(normalizedWarning, []);
+          }
+          warningGroups.get(normalizedWarning)!.push(entityName);
+        });
+      }
+    }
+
+    // Create patterns from repeated usage patterns (at least 2 entities share the pattern)
+    for (const [patternText, entities] of usagePatternGroups.entries()) {
+      if (entities.length >= 2 && patterns.length < 5) {
+        const patternName = this.generatePatternNameFromUsage(patternText);
+        patterns.push({
+          name: patternName,
+          category: 'Documentation',
+          description: `Usage pattern "${patternText}" documented across ${entities.length} code entities`,
+          significance: Math.min(7, 3 + entities.length),
+          evidence: [
+            `Documented in ${entities.length} entities`,
+            `Example entities: ${entities.slice(0, 3).join(', ')}`,
+            `Pattern: ${patternText.substring(0, 100)}`
+          ],
+          relatedComponents: entities.slice(0, 10),
+          implementation: {
+            language: 'TypeScript',
+            usageNotes: [`Follow the documented pattern: ${patternText}`]
+          }
+        });
+      }
+    }
+
+    // Create patterns from repeated warnings (design constraints)
+    for (const [warningText, entities] of warningGroups.entries()) {
+      if (entities.length >= 2 && patterns.length < 8) {
+        patterns.push({
+          name: `Design Constraint: ${warningText.substring(0, 50)}`,
+          category: 'Documentation',
+          description: `Design constraint "${warningText}" documented in ${entities.length} entities`,
+          significance: Math.min(6, 3 + entities.length),
+          evidence: [
+            `Warning found in ${entities.length} entities`,
+            `Affected entities: ${entities.slice(0, 3).join(', ')}`
+          ],
+          relatedComponents: entities.slice(0, 10),
+          implementation: {
+            language: 'TypeScript',
+            usageNotes: [`Be aware: ${warningText}`]
+          }
+        });
+      }
+    }
+
+    // Extract patterns from prose analyses (documentation context)
+    if (proseAnalyses.length > 0 && patterns.length < 10) {
+      const bestPractices = proseAnalyses.flatMap((p: any) => p.bestPractices || []);
+      const tutorials = proseAnalyses.filter((p: any) => p.tutorialContext);
+
+      // Create pattern from documented best practices
+      if (bestPractices.length >= 2) {
+        patterns.push({
+          name: 'Documented Best Practices',
+          category: 'Documentation',
+          description: `${bestPractices.length} best practices documented in project documentation`,
+          significance: Math.min(6, 3 + Math.floor(bestPractices.length / 2)),
+          evidence: bestPractices.slice(0, 5).map((bp: string) => `Best practice: ${bp.substring(0, 80)}`),
+          relatedComponents: proseAnalyses.map((p: any) => p.documentPath).filter(Boolean),
+          implementation: {
+            language: 'TypeScript',
+            usageNotes: bestPractices.slice(0, 3)
+          }
+        });
+      }
+
+      // Create pattern if significant tutorial documentation exists
+      if (tutorials.length >= 1) {
+        patterns.push({
+          name: 'Tutorial Documentation Pattern',
+          category: 'Documentation',
+          description: `${tutorials.length} tutorial-style documentation sections found`,
+          significance: 4,
+          evidence: tutorials.slice(0, 3).map((t: any) => `Tutorial: ${t.documentPath || 'unknown'}`),
+          relatedComponents: tutorials.map((t: any) => t.documentPath).filter(Boolean),
+          implementation: {
+            language: 'TypeScript',
+            usageNotes: ['Follow tutorials for onboarding new developers']
+          }
+        });
+      }
+    }
+
+    return patterns;
+  }
+
+  /**
+   * Generate a meaningful pattern name from usage text
+   */
+  private generatePatternNameFromUsage(usageText: string): string {
+    const text = usageText.toLowerCase();
+
+    if (text.includes('async') || text.includes('await') || text.includes('promise')) {
+      return 'Async Pattern';
+    }
+    if (text.includes('callback') || text.includes('handler')) {
+      return 'Callback Pattern';
+    }
+    if (text.includes('singleton') || text.includes('instance')) {
+      return 'Singleton Pattern';
+    }
+    if (text.includes('factory') || text.includes('create')) {
+      return 'Factory Pattern';
+    }
+    if (text.includes('cache') || text.includes('memoize')) {
+      return 'Caching Pattern';
+    }
+    if (text.includes('validate') || text.includes('check')) {
+      return 'Validation Pattern';
+    }
+    if (text.includes('transform') || text.includes('convert')) {
+      return 'Transformation Pattern';
+    }
+    if (text.includes('batch') || text.includes('bulk')) {
+      return 'Batch Processing Pattern';
+    }
+    if (text.includes('error') || text.includes('exception')) {
+      return 'Error Handling Pattern';
+    }
+    if (text.includes('log') || text.includes('trace')) {
+      return 'Logging Pattern';
+    }
+
+    // Default: use first 40 chars of usage text
+    return `Usage Pattern: ${usageText.substring(0, 40)}`;
   }
 
   private isArchitecturalCommit(message: string): boolean {

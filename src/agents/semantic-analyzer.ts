@@ -55,14 +55,17 @@ export class SemanticAnalyzer {
   private openaiClient: OpenAI | null = null;
   
   // PERFORMANCE OPTIMIZATION: Request batching for improved throughput
-  private batchQueue: Array<{ 
-    prompt: string; 
-    options: AnalysisOptions; 
-    resolve: (result: AnalysisResult) => void; 
+  // Configurable via LLM_BATCH_SIZE env var (default: 20, min: 1, max: 50)
+  private batchQueue: Array<{
+    prompt: string;
+    options: AnalysisOptions;
+    resolve: (result: AnalysisResult) => void;
     reject: (error: any) => void;
   }> = [];
   private batchTimer: NodeJS.Timeout | null = null;
-  private readonly BATCH_SIZE = 5;
+  private readonly BATCH_SIZE = Math.min(Math.max(
+    parseInt(process.env.LLM_BATCH_SIZE || '20', 10), 1
+  ), 50);
   private readonly BATCH_TIMEOUT = 100; // ms
 
   constructor() {

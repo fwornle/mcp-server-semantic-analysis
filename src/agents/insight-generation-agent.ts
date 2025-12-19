@@ -11,6 +11,8 @@ import {
   createSerenaAnalyzer,
   type SerenaAnalysisResult
 } from '../utils/serena-code-analyzer.js';
+import type { IntelligentQueryResult } from './code-graph-agent.js';
+import { WebSearchAgent, type SearchResult } from './web-search.js';
 
 export interface InsightDocument {
   name: string;
@@ -120,6 +122,7 @@ export class InsightGenerationAgent {
   private contextManager: RepositoryContextManager;
   private serenaAnalyzer: SerenaCodeAnalyzer;
   private repositoryPath: string;
+  private webSearchAgent: WebSearchAgent;
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
@@ -129,6 +132,7 @@ export class InsightGenerationAgent {
     this.contentAnalyzer = new ContentAgnosticAnalyzer(repositoryPath);
     this.contextManager = new RepositoryContextManager(repositoryPath);
     this.serenaAnalyzer = createSerenaAnalyzer(repositoryPath);
+    this.webSearchAgent = new WebSearchAgent();
     this.initializeDirectories();
     this.checkPlantUMLAvailability();
   }
@@ -810,7 +814,10 @@ Each section should provide genuine insight, not just reformatted input.**`;
    * Extract patterns from code graph analysis (AST-based)
    * Analyzes language distribution, entity types, and architectural patterns
    */
-  private extractCodeGraphPatterns(codeGraphResults: any): IdentifiedPattern[] {
+  private extractCodeGraphPatterns(
+    codeGraphResults: any,
+    intelligentResults?: IntelligentQueryResult
+  ): IdentifiedPattern[] {
     const patterns: IdentifiedPattern[] = [];
     const stats = codeGraphResults?.statistics || {};
 
@@ -962,8 +969,234 @@ Each section should provide genuine insight, not just reformatted input.**`;
       });
     }
 
+    // Add evidence-backed patterns from intelligent query results
+    if (intelligentResults) {
+      log(`[CodeGraph] Processing intelligent query results with ${intelligentResults.rawQueries.length} queries`, 'info');
+
+      // Critical Hotspots Pattern (high significance - these are architectural risks)
+      if (intelligentResults.hotspots.length > 0) {
+        const topHotspots = intelligentResults.hotspots
+          .sort((a, b) => b.connections - a.connections)
+          .slice(0, 10);
+
+        patterns.push({
+          name: 'Critical Code Hotspots',
+          category: 'code-health',
+          description: `Identified ${intelligentResults.hotspots.length} highly connected code entities that may require careful change management`,
+          significance: 8, // High significance - these are potential risk areas
+          evidence: topHotspots.map(h =>
+            `${h.name} (${h.type}) has ${h.connections} dependencies`
+          ),
+          relatedComponents: topHotspots.map(h => h.name),
+          implementation: {
+            language: dominantLang,
+            usageNotes: [
+              'Changes to hotspots may have wide-reaching effects',
+              'Consider adding extra test coverage for these areas',
+              'Review dependencies before refactoring'
+            ]
+          }
+        });
+      }
+
+      // Circular Dependency Pattern (critical significance - these are bugs)
+      if (intelligentResults.circularDeps.length > 0) {
+        patterns.push({
+          name: 'Circular Dependency Risk',
+          category: 'code-health',
+          description: `Detected ${intelligentResults.circularDeps.length} potential circular dependencies that may cause issues`,
+          significance: 9, // Critical - these are architectural problems
+          evidence: intelligentResults.circularDeps.slice(0, 10).map(d =>
+            `${d.from} <-> ${d.to}`
+          ),
+          relatedComponents: [...new Set(intelligentResults.circularDeps.flatMap(d => [d.from, d.to]))].slice(0, 10),
+          implementation: {
+            language: dominantLang,
+            usageNotes: [
+              'PRIORITY: Resolve circular dependencies to improve maintainability',
+              'Consider introducing interfaces or dependency injection',
+              'May cause issues with module loading and testing'
+            ]
+          }
+        });
+      }
+
+      // Inheritance Hierarchy Pattern
+      if (intelligentResults.inheritanceTree.length > 0) {
+        const totalChildren = intelligentResults.inheritanceTree.reduce((sum, i) => sum + i.children.length, 0);
+        const deepHierarchies = intelligentResults.inheritanceTree.filter(i => i.children.length > 3);
+
+        patterns.push({
+          name: 'Class Inheritance Structure',
+          category: 'architectural',
+          description: `Found ${intelligentResults.inheritanceTree.length} base classes with ${totalChildren} total derived classes`,
+          significance: deepHierarchies.length > 0 ? 7 : 5,
+          evidence: intelligentResults.inheritanceTree.slice(0, 8).map(i =>
+            `${i.parent} -> [${i.children.slice(0, 5).join(', ')}${i.children.length > 5 ? '...' : ''}]`
+          ),
+          relatedComponents: intelligentResults.inheritanceTree.slice(0, 5).map(i => i.parent),
+          implementation: {
+            language: dominantLang,
+            usageNotes: deepHierarchies.length > 0
+              ? ['Consider composition over deep inheritance', 'Review if all inheritance is necessary']
+              : ['Inheritance structure appears well-organized']
+          }
+        });
+      }
+
+      // Change Impact Analysis Pattern
+      if (intelligentResults.changeImpact.length > 0) {
+        const totalAffected = intelligentResults.changeImpact.reduce((sum, c) => sum + c.affected.length, 0);
+        const highImpact = intelligentResults.changeImpact.filter(c => c.affected.length > 5);
+
+        patterns.push({
+          name: 'Change Impact Analysis',
+          category: 'code-health',
+          description: `Recent changes affect ${totalAffected} dependent code entities across ${intelligentResults.changeImpact.length} change points`,
+          significance: highImpact.length > 0 ? 7 : 5,
+          evidence: intelligentResults.changeImpact.slice(0, 8).map(c =>
+            `${c.changed} affects ${c.affected.length} dependents: ${c.affected.slice(0, 3).join(', ')}${c.affected.length > 3 ? '...' : ''}`
+          ),
+          relatedComponents: intelligentResults.changeImpact.slice(0, 5).map(c => c.changed),
+          implementation: {
+            language: dominantLang,
+            usageNotes: highImpact.length > 0
+              ? ['High impact changes detected - ensure thorough testing', 'Consider staged rollout for affected areas']
+              : ['Change impact appears manageable']
+          }
+        });
+      }
+
+      // Architectural Patterns from queries
+      if (intelligentResults.architecturalPatterns.length > 0) {
+        for (const archPattern of intelligentResults.architecturalPatterns.slice(0, 3)) {
+          patterns.push({
+            name: `Discovered: ${archPattern.pattern.slice(0, 50)}`,
+            category: 'architectural',
+            description: `Pattern discovered through code graph analysis with ${archPattern.evidence.length} evidence items`,
+            significance: 6,
+            evidence: archPattern.evidence.slice(0, 10),
+            relatedComponents: archPattern.evidence.slice(0, 5),
+            implementation: {
+              language: dominantLang,
+              usageNotes: ['Pattern discovered via automated code graph analysis']
+            }
+          });
+        }
+      }
+    }
+
     log(`[CodeGraph] Extracted ${patterns.length} patterns from code graph (${totalEntities} entities, ${languages.length} languages)`, 'info');
     return patterns;
+  }
+
+  /**
+   * Fetch best practices from web search for identified patterns.
+   * Enhances patterns with external references and industry recommendations.
+   */
+  async fetchBestPractices(patterns: IdentifiedPattern[]): Promise<void> {
+    const architecturalPatterns = patterns.filter(p =>
+      p.category === 'architectural' || p.category === 'code-health'
+    );
+
+    if (architecturalPatterns.length === 0) {
+      log('[InsightGeneration] No architectural patterns to enrich with best practices', 'info');
+      return;
+    }
+
+    log(`[InsightGeneration] Fetching best practices for ${architecturalPatterns.length} patterns`, 'info');
+
+    // Limit to top 3 most significant patterns to avoid too many searches
+    const topPatterns = architecturalPatterns
+      .sort((a, b) => b.significance - a.significance)
+      .slice(0, 3);
+
+    for (const pattern of topPatterns) {
+      try {
+        const searchQuery = `${pattern.name} best practices implementation`;
+        log(`[InsightGeneration] Searching: "${searchQuery}"`, 'debug');
+
+        const results = await this.webSearchAgent.searchSimilarPatterns(pattern.name);
+
+        if (results.length > 0) {
+          // Extract best practices from search results
+          const bestPractices = this.extractBestPracticesFromResults(results);
+
+          // Add best practices to pattern implementation notes
+          if (bestPractices.length > 0) {
+            pattern.implementation = pattern.implementation || { language: 'unknown', usageNotes: [] };
+            pattern.implementation.usageNotes = [
+              ...(pattern.implementation.usageNotes || []),
+              '--- Best Practices from Web ---',
+              ...bestPractices.slice(0, 5)
+            ];
+
+            // Add source references to evidence
+            pattern.evidence = pattern.evidence || [];
+            pattern.evidence.push(
+              ...results.slice(0, 3).map(r => `Reference: ${r.title} (${r.url})`)
+            );
+
+            log(`[InsightGeneration] Added ${bestPractices.length} best practices to "${pattern.name}"`, 'info');
+          }
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        log(`[InsightGeneration] Failed to fetch best practices for "${pattern.name}": ${errorMsg}`, 'warning');
+      }
+    }
+  }
+
+  /**
+   * Extract best practice recommendations from search results
+   */
+  private extractBestPracticesFromResults(results: SearchResult[]): string[] {
+    const bestPractices: string[] = [];
+
+    for (const result of results) {
+      // Extract key points from snippet
+      if (result.snippet) {
+        const snippet = result.snippet;
+
+        // Look for recommendation patterns
+        const recommendationPatterns = [
+          /(?:best practice|recommendation|should|consider|avoid|prefer)[:\s]+([^.]+\.)/gi,
+          /(?:tip|guideline|rule)[:\s]+([^.]+\.)/gi,
+        ];
+
+        for (const pattern of recommendationPatterns) {
+          const matches = snippet.matchAll(pattern);
+          for (const match of matches) {
+            if (match[1] && match[1].length > 20 && match[1].length < 200) {
+              bestPractices.push(match[1].trim());
+            }
+          }
+        }
+
+        // If no pattern matches, extract first meaningful sentence as a summary
+        if (bestPractices.length === 0 && snippet.length > 50) {
+          const firstSentence = snippet.split('.')[0];
+          if (firstSentence && firstSentence.length > 30) {
+            bestPractices.push(`${firstSentence}. (from ${result.title})`);
+          }
+        }
+      }
+
+      // Extract from content if available
+      if (result.content) {
+        const contentLines = result.content.split('\n').slice(0, 10);
+        for (const line of contentLines) {
+          if (line.includes('best') || line.includes('recommend') || line.includes('should')) {
+            if (line.length > 20 && line.length < 200) {
+              bestPractices.push(line.trim());
+            }
+          }
+        }
+      }
+    }
+
+    // Remove duplicates and limit
+    return [...new Set(bestPractices)].slice(0, 10);
   }
 
   private generateMeaningfulNameAndTitle(

@@ -66,6 +66,24 @@ export interface NaturalLanguageQueryResult {
   provider: string;
 }
 
+export interface IntelligentQueryContext {
+  changedFiles?: string[];
+  recentCommits?: string[];
+  projectGoals?: string[];
+  vibePatterns?: string[];
+}
+
+export interface IntelligentQueryResult {
+  hotspots: Array<{ name: string; type: string; connections: number }>;
+  circularDeps: Array<{ from: string; to: string }>;
+  inheritanceTree: Array<{ parent: string; children: string[] }>;
+  changeImpact: Array<{ changed: string; affected: string[] }>;
+  architecturalPatterns: Array<{ pattern: string; evidence: string[] }>;
+  correlations: string[];
+  rawQueries: Array<{ question: string; cypher: string; results: any[] }>;
+  queryTime: number;
+}
+
 export class CodeGraphAgent {
   private codeGraphRagDir: string;
   private repositoryPath: string;
@@ -534,6 +552,136 @@ export class CodeGraphAgent {
   }
 
   /**
+   * Supported file extensions for code graph indexing
+   */
+  private readonly SUPPORTED_EXTENSIONS = [
+    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',  // JavaScript/TypeScript
+    '.py', '.pyi',                                   // Python
+    '.java',                                         // Java
+    '.go',                                           // Go
+    '.rs',                                           // Rust
+    '.cpp', '.cc', '.cxx', '.hpp', '.h',            // C++
+    '.c',                                            // C
+    '.scala',                                        // Scala
+    '.lua',                                          // Lua
+  ];
+
+  /**
+   * Index repository incrementally based on git changes
+   * Only re-indexes files that have changed since a commit or time period
+   */
+  async indexIncrementally(repoPath?: string, options: {
+    sinceCommit?: string;    // Compare against this commit (e.g., 'HEAD~10', commit hash)
+    sinceDays?: number;      // Or use time-based (default: 7 days)
+  } = {}): Promise<CodeGraphAnalysisResult> {
+    const targetPath = repoPath || this.repositoryPath;
+    const projectName = path.basename(targetPath);
+    const { sinceCommit, sinceDays = 7 } = options;
+
+    log(`[CodeGraphAgent] Incremental indexing for ${projectName}`, 'info');
+
+    // Check Memgraph connection first
+    const connectionCheck = await this.checkMemgraphConnection();
+    if (!connectionCheck.connected) {
+      log(`[CodeGraphAgent] Memgraph not reachable, skipping incremental indexing`, 'warning');
+      return this.getExistingStats(targetPath);
+    }
+
+    try {
+      // Get list of changed files using git
+      const changedFiles = await this.getChangedFiles(targetPath, sinceCommit, sinceDays);
+
+      if (changedFiles.length === 0) {
+        log(`[CodeGraphAgent] No changed files found, using existing index`, 'info');
+        return this.getExistingStats(targetPath);
+      }
+
+      // Filter to supported file types
+      const supportedFiles = changedFiles.filter(file =>
+        this.SUPPORTED_EXTENSIONS.some(ext => file.toLowerCase().endsWith(ext))
+      );
+
+      if (supportedFiles.length === 0) {
+        log(`[CodeGraphAgent] No supported source files changed, using existing index`, 'info');
+        return this.getExistingStats(targetPath);
+      }
+
+      log(`[CodeGraphAgent] Found ${supportedFiles.length} changed source files to re-index`, 'info');
+
+      // For now, if there are changed files, trigger a full re-index
+      // TODO: Implement true incremental indexing with file list
+      // This would require modifying the code-graph-rag CLI to accept a file list
+      return this.indexRepository({
+        target_path: targetPath,
+        forceReindex: true,  // Force re-index when we have changes
+        minNodeThreshold: 0  // Don't skip based on existing data
+      });
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`[CodeGraphAgent] Incremental indexing failed: ${errorMessage}`, 'warning');
+      // Fall back to existing stats
+      return this.getExistingStats(targetPath);
+    }
+  }
+
+  /**
+   * Get list of files changed since a commit or time period
+   */
+  private async getChangedFiles(repoPath: string, sinceCommit?: string, sinceDays?: number): Promise<string[]> {
+    return new Promise((resolve) => {
+      let gitArgs: string[];
+
+      if (sinceCommit) {
+        // Use commit-based diff
+        gitArgs = ['diff', '--name-only', `${sinceCommit}..HEAD`];
+      } else {
+        // Use time-based diff (files changed in last N days)
+        const sinceDate = new Date();
+        sinceDate.setDate(sinceDate.getDate() - (sinceDays || 7));
+        const dateStr = sinceDate.toISOString().split('T')[0];
+        gitArgs = ['log', '--name-only', '--pretty=format:', `--since=${dateStr}`];
+      }
+
+      const git = spawn('git', gitArgs, { cwd: repoPath });
+      let stdout = '';
+      let stderr = '';
+
+      git.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      git.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      git.on('close', (code) => {
+        if (code !== 0) {
+          log(`[CodeGraphAgent] Git command failed: ${stderr}`, 'warning');
+          resolve([]);
+          return;
+        }
+
+        // Parse file list, remove duplicates and empty lines
+        const files = [...new Set(
+          stdout
+            .split('\n')
+            .map(f => f.trim())
+            .filter(f => f.length > 0)
+        )];
+
+        log(`[CodeGraphAgent] Git found ${files.length} changed files`, 'info');
+        resolve(files);
+      });
+
+      git.on('error', (err) => {
+        log(`[CodeGraphAgent] Git spawn failed: ${err}`, 'warning');
+        resolve([]);
+      });
+    });
+  }
+
+  /**
    * Query the code graph for entities matching a pattern
    */
   async queryCodeGraph(query: string, options: {
@@ -992,6 +1140,285 @@ Cypher Query:`;
       log(`[CodeGraphAgent] NL query failed: ${errorMessage}`, 'error');
       throw error;
     }
+  }
+
+  /**
+   * Execute intelligent, context-aware queries against the code graph.
+   * Generates targeted questions based on context (changed files, commits, goals, vibes)
+   * and executes them to produce evidence-backed insights.
+   */
+  async queryIntelligently(
+    context: IntelligentQueryContext,
+    options: { maxQueries?: number } = { maxQueries: 8 }
+  ): Promise<IntelligentQueryResult> {
+    const startTime = Date.now();
+    const maxQueries = options.maxQueries || 8;
+    log(`[CodeGraphAgent] Starting intelligent query with context: ${JSON.stringify({
+      changedFiles: context.changedFiles?.length || 0,
+      recentCommits: context.recentCommits?.length || 0,
+      projectGoals: context.projectGoals?.length || 0,
+      vibePatterns: context.vibePatterns?.length || 0,
+    })}`, 'info');
+
+    // Check connection first
+    const connectionCheck = await this.checkMemgraphConnection();
+    if (!connectionCheck.connected) {
+      log(`[CodeGraphAgent] Memgraph not connected, returning empty result`, 'warning');
+      return this.emptyIntelligentResult(Date.now() - startTime);
+    }
+
+    // Generate context-aware questions
+    const questions = this.generateContextAwareQuestions(context, maxQueries);
+    log(`[CodeGraphAgent] Generated ${questions.length} questions`, 'info');
+
+    // Execute queries and collect results
+    const rawQueries: Array<{ question: string; cypher: string; results: any[] }> = [];
+    const hotspots: Array<{ name: string; type: string; connections: number }> = [];
+    const circularDeps: Array<{ from: string; to: string }> = [];
+    const inheritanceTree: Array<{ parent: string; children: string[] }> = [];
+    const changeImpact: Array<{ changed: string; affected: string[] }> = [];
+    const architecturalPatterns: Array<{ pattern: string; evidence: string[] }> = [];
+    const correlations: string[] = [];
+
+    // Execute queries sequentially to avoid overwhelming the LLM API
+    for (const question of questions) {
+      try {
+        const result = await this.queryNaturalLanguage(question);
+        rawQueries.push({
+          question,
+          cypher: result.generatedCypher,
+          results: result.results,
+        });
+
+        // Process results based on question type
+        this.categorizeQueryResults(
+          question,
+          result.results,
+          { hotspots, circularDeps, inheritanceTree, changeImpact, architecturalPatterns, correlations }
+        );
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        log(`[CodeGraphAgent] Query failed: "${question}" - ${errorMsg}`, 'warning');
+        correlations.push(`Query failed: ${question}`);
+      }
+    }
+
+    const queryTime = Date.now() - startTime;
+    log(`[CodeGraphAgent] Intelligent query completed in ${queryTime}ms with ${rawQueries.length} successful queries`, 'info');
+
+    return {
+      hotspots,
+      circularDeps,
+      inheritanceTree,
+      changeImpact,
+      architecturalPatterns,
+      correlations,
+      rawQueries,
+      queryTime,
+    };
+  }
+
+  /**
+   * Generate context-aware questions based on the provided context
+   */
+  private generateContextAwareQuestions(context: IntelligentQueryContext, maxQueries: number): string[] {
+    const questions: string[] = [];
+    const { changedFiles, recentCommits, projectGoals, vibePatterns } = context;
+
+    // Always include baseline architectural questions
+    questions.push('What are the most connected entities (classes or functions with the most relationships)?');
+    questions.push('Are there any circular dependencies between modules or classes?');
+    questions.push('What is the inheritance hierarchy in this codebase?');
+
+    // Questions based on changed files
+    if (changedFiles && changedFiles.length > 0) {
+      const fileList = changedFiles.slice(0, 5).join(', ');
+      questions.push(`What classes or functions are defined in files: ${fileList}?`);
+      questions.push(`What other functions or methods depend on code in files: ${fileList}?`);
+    }
+
+    // Questions based on recent commits
+    if (recentCommits && recentCommits.length > 0) {
+      const commitKeywords = this.extractKeywordsFromCommits(recentCommits);
+      if (commitKeywords.length > 0) {
+        questions.push(`Find code related to: ${commitKeywords.slice(0, 5).join(', ')}`);
+      }
+    }
+
+    // Questions based on project goals
+    if (projectGoals && projectGoals.length > 0) {
+      for (const goal of projectGoals.slice(0, 2)) {
+        questions.push(`What classes or functions implement functionality related to: ${goal}?`);
+      }
+    }
+
+    // Questions based on vibe patterns (problems, issues from session history)
+    if (vibePatterns && vibePatterns.length > 0) {
+      for (const pattern of vibePatterns.slice(0, 2)) {
+        questions.push(`Find code that might be related to: ${pattern}`);
+      }
+    }
+
+    // Additional architectural discovery questions
+    questions.push('What are the main modules and how do they interact?');
+    questions.push('Find functions with high complexity or many dependencies');
+
+    // Limit to maxQueries
+    return questions.slice(0, maxQueries);
+  }
+
+  /**
+   * Extract meaningful keywords from commit messages
+   */
+  private extractKeywordsFromCommits(commits: string[]): string[] {
+    const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought', 'used', 'fix', 'add', 'update', 'change', 'remove', 'delete', 'refactor', 'chore', 'feat', 'docs', 'style', 'test', 'ci', 'build']);
+
+    const keywords: string[] = [];
+    for (const commit of commits) {
+      const words = commit.toLowerCase().split(/\s+/);
+      for (const word of words) {
+        const cleaned = word.replace(/[^a-z0-9]/g, '');
+        if (cleaned.length > 3 && !stopWords.has(cleaned)) {
+          keywords.push(cleaned);
+        }
+      }
+    }
+
+    // Remove duplicates and return
+    return [...new Set(keywords)];
+  }
+
+  /**
+   * Categorize query results into specific buckets based on question type
+   */
+  private categorizeQueryResults(
+    question: string,
+    results: any[],
+    buckets: {
+      hotspots: Array<{ name: string; type: string; connections: number }>;
+      circularDeps: Array<{ from: string; to: string }>;
+      inheritanceTree: Array<{ parent: string; children: string[] }>;
+      changeImpact: Array<{ changed: string; affected: string[] }>;
+      architecturalPatterns: Array<{ pattern: string; evidence: string[] }>;
+      correlations: string[];
+    }
+  ): void {
+    const lowerQuestion = question.toLowerCase();
+
+    if (lowerQuestion.includes('connected') || lowerQuestion.includes('dependencies') || lowerQuestion.includes('complexity')) {
+      // Hotspots detection
+      for (const result of results) {
+        if (result.name && result.connections !== undefined) {
+          buckets.hotspots.push({
+            name: result.name,
+            type: result.type || result.labels || 'unknown',
+            connections: parseInt(result.connections) || 0,
+          });
+        } else if (result.name) {
+          // Try to extract connection count from other fields
+          const connections = result.relationship_count || result.total_relationships || result.degree || 0;
+          buckets.hotspots.push({
+            name: result.name,
+            type: result.type || result.labels || 'unknown',
+            connections: parseInt(connections) || 0,
+          });
+        }
+      }
+      buckets.correlations.push(`Found ${results.length} entities related to: ${question}`);
+    }
+
+    if (lowerQuestion.includes('circular')) {
+      // Circular dependencies
+      for (const result of results) {
+        if (result.from && result.to) {
+          buckets.circularDeps.push({ from: result.from, to: result.to });
+        }
+      }
+      if (results.length === 0) {
+        buckets.correlations.push('No circular dependencies detected');
+      } else {
+        buckets.correlations.push(`Found ${results.length} potential circular dependencies`);
+      }
+    }
+
+    if (lowerQuestion.includes('inheritance') || lowerQuestion.includes('hierarchy')) {
+      // Inheritance tree
+      const inheritanceMap = new Map<string, string[]>();
+      for (const result of results) {
+        const parent = result.parent || result.base_class || result.superclass;
+        const child = result.child || result.derived_class || result.subclass || result.name;
+        if (parent && child) {
+          if (!inheritanceMap.has(parent)) {
+            inheritanceMap.set(parent, []);
+          }
+          inheritanceMap.get(parent)!.push(child);
+        }
+      }
+      for (const [parent, children] of inheritanceMap) {
+        buckets.inheritanceTree.push({ parent, children });
+      }
+      buckets.correlations.push(`Found ${inheritanceMap.size} inheritance relationships`);
+    }
+
+    if (lowerQuestion.includes('depend on') || lowerQuestion.includes('call') || lowerQuestion.includes('affect')) {
+      // Change impact
+      const impactMap = new Map<string, string[]>();
+      for (const result of results) {
+        const source = result.source || result.caller || result.dependent;
+        const target = result.target || result.callee || result.dependency || result.name;
+        if (source && target) {
+          if (!impactMap.has(source)) {
+            impactMap.set(source, []);
+          }
+          impactMap.get(source)!.push(target);
+        }
+      }
+      for (const [changed, affected] of impactMap) {
+        buckets.changeImpact.push({ changed, affected });
+      }
+      if (impactMap.size > 0) {
+        buckets.correlations.push(`Found ${impactMap.size} dependency chains affecting changed code`);
+      }
+    }
+
+    if (lowerQuestion.includes('pattern') || lowerQuestion.includes('module') || lowerQuestion.includes('interact')) {
+      // Architectural patterns
+      const evidence: string[] = [];
+      for (const result of results) {
+        const name = result.name || result.module || result.pattern;
+        const description = result.description || result.relationship || result.type;
+        if (name) {
+          evidence.push(`${name}${description ? ': ' + description : ''}`);
+        }
+      }
+      if (evidence.length > 0) {
+        buckets.architecturalPatterns.push({
+          pattern: question,
+          evidence,
+        });
+      }
+    }
+
+    // Generic results correlation
+    if (results.length > 0 && buckets.correlations.length === 0) {
+      buckets.correlations.push(`Query "${question.slice(0, 50)}..." returned ${results.length} results`);
+    }
+  }
+
+  /**
+   * Return empty result structure for cases where querying isn't possible
+   */
+  private emptyIntelligentResult(queryTime: number): IntelligentQueryResult {
+    return {
+      hotspots: [],
+      circularDeps: [],
+      inheritanceTree: [],
+      changeImpact: [],
+      architecturalPatterns: [],
+      correlations: ['Code graph not available or not connected'],
+      rawQueries: [],
+      queryTime,
+    };
   }
 
   /**

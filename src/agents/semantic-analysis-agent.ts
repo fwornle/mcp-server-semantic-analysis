@@ -5,6 +5,7 @@ import OpenAI from "openai";
 import Groq from "groq-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { log } from '../logging.js';
+import type { IntelligentQueryResult } from './code-graph-agent.js';
 
 export interface CodeFile {
   path: string;
@@ -614,7 +615,8 @@ export class SemanticAnalysisAgent {
     codeFiles: CodeFile[],
     gitAnalysis: any,
     vibeAnalysis: any,
-    codeGraph?: any
+    codeGraph?: any,
+    intelligentResults?: IntelligentQueryResult
   ): Promise<SemanticAnalysisResult['crossAnalysisInsights']> {
     const gitCodeCorrelation: string[] = [];
     const vibeCodeCorrelation: string[] = [];
@@ -714,6 +716,56 @@ export class SemanticAnalysisAgent {
           );
         }
       }
+    }
+
+    // Integrate intelligent query results from code graph
+    if (intelligentResults) {
+      log(`[SemanticAnalysisAgent] Integrating ${intelligentResults.rawQueries.length} intelligent query results`, 'info');
+
+      // Add hotspots as critical correlations
+      if (intelligentResults.hotspots.length > 0) {
+        const topHotspots = intelligentResults.hotspots
+          .sort((a, b) => b.connections - a.connections)
+          .slice(0, 5);
+        codeGraphCorrelation.push(
+          `Critical hotspots (high connectivity): ${topHotspots.map(h => `${h.name} (${h.connections} connections)`).join(', ')}`
+        );
+      }
+
+      // Add circular dependencies as warnings
+      if (intelligentResults.circularDeps.length > 0) {
+        codeGraphCorrelation.push(
+          `WARNING: ${intelligentResults.circularDeps.length} potential circular dependencies detected: ${intelligentResults.circularDeps.slice(0, 3).map(d => `${d.from} <-> ${d.to}`).join(', ')}${intelligentResults.circularDeps.length > 3 ? '...' : ''}`
+        );
+      }
+
+      // Add inheritance insights
+      if (intelligentResults.inheritanceTree.length > 0) {
+        const totalChildren = intelligentResults.inheritanceTree.reduce((sum, i) => sum + i.children.length, 0);
+        codeGraphCorrelation.push(
+          `Inheritance structure: ${intelligentResults.inheritanceTree.length} base classes with ${totalChildren} derived classes`
+        );
+      }
+
+      // Add change impact analysis
+      if (intelligentResults.changeImpact.length > 0) {
+        const totalAffected = intelligentResults.changeImpact.reduce((sum, c) => sum + c.affected.length, 0);
+        codeGraphCorrelation.push(
+          `Change impact analysis: ${intelligentResults.changeImpact.length} changed entities affecting ${totalAffected} dependents`
+        );
+      }
+
+      // Add architectural patterns discovered
+      if (intelligentResults.architecturalPatterns.length > 0) {
+        for (const pattern of intelligentResults.architecturalPatterns.slice(0, 3)) {
+          codeGraphCorrelation.push(
+            `Architectural pattern: ${pattern.pattern.slice(0, 60)} (${pattern.evidence.length} evidence items)`
+          );
+        }
+      }
+
+      // Add general correlations from queries
+      codeGraphCorrelation.push(...intelligentResults.correlations.slice(0, 5));
     }
 
     return {

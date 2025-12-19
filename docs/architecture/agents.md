@@ -1,19 +1,23 @@
 # Agent Architecture
 
-The semantic analysis system consists of **13 specialized agents** organized into orchestration, analysis, quality, infrastructure, and support layers.
+The semantic analysis system consists of **14 specialized agents** organized into orchestration, analysis, quality, infrastructure, and support layers.
 
 ## Agent Count Summary
 
 | Category | Count | Description |
 |----------|-------|-------------|
 | Orchestration | 1 | Workflow coordination |
-| Core Analysis | 5 | Data extraction and analysis |
+| Core Analysis | 6 | Data extraction and analysis |
 | Quality & Validation | 3 | Output validation and repair |
 | Infrastructure | 3 | Storage and deduplication |
 | Support | 1 | LLM integration layer |
-| **Total** | **13** | |
+| **Total** | **14** | |
 
 ## Architecture Diagram
+
+![14-Agent Semantic Analysis System](../../../../docs/images/semantic-analysis-agent-system.png)
+
+## Workflow Sequence Diagram
 
 ![Agent Coordination Flow](../images/agent-coordination-flow.png)
 
@@ -127,11 +131,34 @@ LLM generates PUML → validateAndFixPlantUML() → plantuml -checkonly
 
 **Location**: `src/agents/insight-generation-agent.ts`
 
+#### 7. CodeIntelligenceAgent
+**Purpose**: Generate context-aware code queries and extract evidence-backed insights from the code graph
+
+**Key Capabilities**:
+- Natural language to Cypher query translation
+- Context-aware question generation based on git changes, commits, and vibe patterns
+- Hotspot detection (highly connected code entities)
+- Circular dependency analysis
+- Inheritance hierarchy mapping
+- Change impact analysis
+- Architectural pattern discovery
+- Evidence-backed correlation generation
+
+**Query Types**:
+- Structural: Class hierarchies, module dependencies, function callers
+- Change Impact: What depends on modified files, test coverage
+- Code Health: Circular dependencies, god classes, unused imports
+- Architecture: Design patterns, layering, cross-module dependencies
+
+**LLM Provider Chain**: Groq → Gemini → Custom → Anthropic → OpenAI
+
+**Location**: `src/agents/code-graph-agent.ts` (via `queryIntelligently()` method)
+
 ---
 
 ### Quality & Validation Layer
 
-#### 7. QualityAssuranceAgent
+#### 8. QualityAssuranceAgent
 **Purpose**: Validate and auto-correct agent outputs with LLM semantic validation
 
 **Key Capabilities**:
@@ -147,7 +174,7 @@ LLM generates PUML → validateAndFixPlantUML() → plantuml -checkonly
 
 **Location**: `src/agents/quality-assurance-agent.ts`
 
-#### 8. ContentValidationAgent
+#### 9. ContentValidationAgent
 **Purpose**: Validate entity content accuracy and detect stale knowledge
 
 **Key Capabilities**:
@@ -167,7 +194,7 @@ LLM generates PUML → validateAndFixPlantUML() → plantuml -checkonly
 
 **Location**: `src/agents/content-validation-agent.ts`
 
-#### 9. ObservationGenerationAgent
+#### 10. ObservationGenerationAgent
 **Purpose**: Create structured UKB-compatible observations with LLM-powered insight extraction
 
 **Key Capabilities**:
@@ -187,7 +214,7 @@ LLM generates PUML → validateAndFixPlantUML() → plantuml -checkonly
 
 ### Infrastructure Layer
 
-#### 10. PersistenceAgent
+#### 11. PersistenceAgent
 **Purpose**: Manage knowledge base persistence to GraphDB
 
 **Key Capabilities**:
@@ -199,7 +226,7 @@ LLM generates PUML → validateAndFixPlantUML() → plantuml -checkonly
 
 **Location**: `src/agents/persistence-agent.ts`
 
-#### 11. DeduplicationAgent
+#### 12. DeduplicationAgent
 **Purpose**: Semantic duplicate detection and removal using OpenAI embeddings
 
 **Key Capabilities**:
@@ -214,7 +241,7 @@ LLM generates PUML → validateAndFixPlantUML() → plantuml -checkonly
 
 **Location**: `src/agents/deduplication.ts`
 
-#### 12. GitStalenessDetector
+#### 13. GitStalenessDetector
 **Purpose**: Detect entity staleness based on git commit activity
 
 **Key Capabilities**:
@@ -230,7 +257,7 @@ LLM generates PUML → validateAndFixPlantUML() → plantuml -checkonly
 
 ### Support Layer
 
-#### 13. SemanticAnalyzer
+#### 14. SemanticAnalyzer
 **Purpose**: Unified LLM integration layer for all agents
 
 **Key Capabilities**:
@@ -295,6 +322,7 @@ interface AgentMessage {
 | SemanticAnalysisAgent | Yes | Groq → Gemini → Custom → Anthropic → OpenAI |
 | WebSearchAgent | Yes | Groq → Gemini → Custom → Anthropic → OpenAI |
 | InsightGenerationAgent | Yes | Groq → Gemini → Custom → Anthropic → OpenAI |
+| CodeIntelligenceAgent | Yes | Groq → Gemini → Custom → Anthropic → OpenAI |
 | ObservationGenerationAgent | Yes | Groq → Gemini → Custom → Anthropic → OpenAI |
 | QualityAssuranceAgent | Yes | Groq → Gemini → Custom → Anthropic → OpenAI |
 | ContentValidationAgent | No | - |
@@ -303,7 +331,7 @@ interface AgentMessage {
 | GitStalenessDetector | No | - |
 | SemanticAnalyzer | Yes | Groq → Gemini → Custom → Anthropic → OpenAI |
 
-**Total LLM-Enhanced**: 7 agents (6 analysis + 1 embeddings)
+**Total LLM-Enhanced**: 8 agents (7 analysis + 1 embeddings)
 
 ## Recent Improvements
 

@@ -464,11 +464,33 @@ export class CoordinatorAgent {
           {
             name: "index_recent_code",
             agent: "code_graph",
-            action: "indexRepository",
+            action: "indexIncrementally",
             parameters: {
-              target_path: "{{params.repositoryPath}}"
+              repoPath: "{{params.repositoryPath}}",
+              options: {
+                sinceDays: 7  // Index files changed in last 7 days
+              }
             },
             timeout: 600, // 10 min for large repos - AST parsing takes time
+          },
+          // NEW: Intelligent Code Graph Querying
+          // Generates context-aware questions and queries the code graph
+          {
+            name: "query_code_intelligence",
+            agent: "code_graph",
+            action: "queryIntelligently",
+            parameters: {
+              context: {
+                changedFiles: "{{analyze_recent_changes.result.changedFiles}}",
+                recentCommits: "{{analyze_recent_changes.result.significantCommits}}",
+                vibePatterns: "{{analyze_recent_vibes.result.problemPatterns}}"
+              },
+              options: {
+                maxQueries: 8  // Balance depth vs cost
+              }
+            },
+            dependencies: ["index_recent_code", "analyze_recent_changes", "analyze_recent_vibes"],
+            timeout: 180, // 3 min for multiple NL->Cypher queries
           },
           // PHASE 2: Semantic Understanding
           // Waits for ALL data collection to complete, then synthesizes
@@ -480,9 +502,10 @@ export class CoordinatorAgent {
               git_analysis_results: "{{analyze_recent_changes.result}}",
               vibe_analysis_results: "{{analyze_recent_vibes.result}}",
               code_graph_results: "{{index_recent_code.result}}",
+              code_intelligence: "{{query_code_intelligence.result}}",
               incremental: true
             },
-            dependencies: ["analyze_recent_changes", "analyze_recent_vibes", "index_recent_code"],
+            dependencies: ["analyze_recent_changes", "analyze_recent_vibes", "index_recent_code", "query_code_intelligence"],
             timeout: 120,
           },
           // PHASE 3: Insight Generation
@@ -496,9 +519,10 @@ export class CoordinatorAgent {
               vibe_analysis_results: "{{analyze_recent_vibes.result}}",
               semantic_analysis_results: "{{analyze_semantics.result}}",
               code_graph_results: "{{index_recent_code.result}}",
+              code_intelligence: "{{query_code_intelligence.result}}",
               incremental: true
             },
-            dependencies: ["analyze_semantics"],
+            dependencies: ["analyze_semantics", "query_code_intelligence"],
             timeout: 180, // 3 min for insight generation with diagrams
           },
           {

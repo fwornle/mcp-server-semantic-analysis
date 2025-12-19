@@ -463,8 +463,8 @@ export const TOOLS: Tool[] = [
       properties: {
         action: {
           type: "string",
-          description: "Action to perform: index (index a repository), query (search code entities), similar (find similar code), call_graph (get function call graph)",
-          enum: ["index", "query", "similar", "call_graph"],
+          description: "Action to perform: index (index a repository), query (search code entities), similar (find similar code), call_graph (get function call graph), nl_query (natural language query)",
+          enum: ["index", "query", "similar", "call_graph", "nl_query"],
         },
         repository_path: {
           type: "string",
@@ -481,6 +481,10 @@ export const TOOLS: Tool[] = [
         entity_name: {
           type: "string",
           description: "Name of function/method to get call graph for (for 'call_graph' action)",
+        },
+        question: {
+          type: "string",
+          description: "Natural language question about the codebase (for 'nl_query' action). Example: 'What functions call registerWithPSM?'",
         },
         entity_types: {
           type: "array",
@@ -2499,11 +2503,12 @@ async function handleSuggestOntologyExtension(args: {
  * Handle analyze_code_graph tool - AST-based code analysis via code-graph-rag
  */
 async function handleAnalyzeCodeGraph(args: {
-  action: 'index' | 'query' | 'similar' | 'call_graph';
+  action: 'index' | 'query' | 'similar' | 'call_graph' | 'nl_query';
   repository_path?: string;
   query?: string;
   code_snippet?: string;
   entity_name?: string;
+  question?: string;
   entity_types?: string[];
   languages?: string[];
   limit?: number;
@@ -2641,6 +2646,46 @@ ${result.calledBy.slice(0, 20).map(r => `- ${r.source} → ${r.target}`).join('\
             entity: args.entity_name,
             calls: result.calls.length,
             called_by: result.calledBy.length
+          }
+        };
+      }
+
+      case 'nl_query': {
+        if (!args.question) {
+          throw new Error("Question parameter required for 'nl_query' action");
+        }
+        const nlResult = await codeGraphAgent.queryNaturalLanguage(args.question);
+        return {
+          content: [{
+            type: "text",
+            text: `# Code Graph Natural Language Query
+
+## Question
+"${args.question}"
+
+## Generated Cypher
+\`\`\`cypher
+${nlResult.generatedCypher}
+\`\`\`
+
+## Results (${nlResult.results.length} items)
+${nlResult.results.length > 0
+  ? nlResult.results.slice(0, 25).map((row, i) =>
+      `### ${i + 1}. ${JSON.stringify(row)}`
+    ).join('\n\n')
+  : '*No results found*'
+}
+
+---
+*Provider: ${nlResult.provider} | Query time: ${nlResult.queryTime}ms*`
+          }],
+          metadata: {
+            question: args.question,
+            generated_cypher: nlResult.generatedCypher,
+            results_count: nlResult.results.length,
+            results: nlResult.results.slice(0, 25),
+            provider: nlResult.provider,
+            query_time: nlResult.queryTime
           }
         };
       }

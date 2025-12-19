@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import { log } from '../logging.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface CodeEntity {
   id: string;
@@ -55,6 +56,14 @@ export interface CodeGraphQueryResult {
   matches: CodeEntity[];
   relevanceScores: Map<string, number>;
   queryTime: number;
+}
+
+export interface NaturalLanguageQueryResult {
+  question: string;
+  generatedCypher: string;
+  results: any[];
+  queryTime: number;
+  provider: string;
 }
 
 export class CodeGraphAgent {
@@ -152,21 +161,250 @@ export class CodeGraphAgent {
   }
 
   /**
+   * Check if Memgraph has existing index data for the repository
+   * Returns node count and whether data exists
+   */
+  async hasExistingIndex(repoPath?: string): Promise<{ hasData: boolean; nodeCount: number; projectName?: string }> {
+    const targetPath = repoPath || this.repositoryPath;
+    const projectName = path.basename(targetPath);
+
+    try {
+      // Query Memgraph for existing project data
+      const result = await this.runCypherQuery(
+        `MATCH (n) WHERE n.project = "${projectName}" OR n.repository_path CONTAINS "${projectName}" RETURN count(n) as nodeCount LIMIT 1`
+      );
+
+      const nodeCount = result?.nodeCount || 0;
+      log(`[CodeGraphAgent] Existing index check for ${projectName}: ${nodeCount} nodes found`, 'info');
+
+      return {
+        hasData: nodeCount > 0,
+        nodeCount,
+        projectName,
+      };
+    } catch (error) {
+      log(`[CodeGraphAgent] Error checking existing index: ${error}`, 'warning');
+      return { hasData: false, nodeCount: 0, projectName };
+    }
+  }
+
+  /**
+   * Get statistics from existing Memgraph data without re-indexing
+   */
+  async getExistingStats(repoPath?: string): Promise<CodeGraphAnalysisResult> {
+    const targetPath = repoPath || this.repositoryPath;
+    const projectName = path.basename(targetPath);
+
+    try {
+      // Query for entity counts by type
+      const statsResult = await this.runCypherQuery(`
+        MATCH (n)
+        WHERE n.project = "${projectName}" OR n.repository_path CONTAINS "${projectName}"
+        RETURN
+          count(n) as totalEntities,
+          count(CASE WHEN n:Function THEN 1 END) as functions,
+          count(CASE WHEN n:Class THEN 1 END) as classes,
+          count(CASE WHEN n:Method THEN 1 END) as methods,
+          count(CASE WHEN n:Module THEN 1 END) as modules
+      `);
+
+      // Query for relationship count
+      const relResult = await this.runCypherQuery(`
+        MATCH (n)-[r]->(m)
+        WHERE (n.project = "${projectName}" OR n.repository_path CONTAINS "${projectName}")
+        RETURN count(r) as totalRelationships
+      `);
+
+      // Query for language distribution
+      const langResult = await this.runCypherQuery(`
+        MATCH (n)
+        WHERE (n.project = "${projectName}" OR n.repository_path CONTAINS "${projectName}") AND n.language IS NOT NULL
+        RETURN n.language as language, count(n) as count
+      `);
+
+      const languageDistribution: Record<string, number> = {};
+      if (Array.isArray(langResult)) {
+        langResult.forEach((row: any) => {
+          if (row.language) {
+            languageDistribution[row.language] = row.count || 0;
+          }
+        });
+      }
+
+      const entityTypeDistribution: Record<string, number> = {
+        function: statsResult?.functions || 0,
+        class: statsResult?.classes || 0,
+        method: statsResult?.methods || 0,
+        module: statsResult?.modules || 0,
+      };
+
+      return {
+        entities: [], // Don't load all entities, just stats
+        relationships: [],
+        statistics: {
+          totalEntities: statsResult?.totalEntities || 0,
+          totalRelationships: relResult?.totalRelationships || 0,
+          languageDistribution,
+          entityTypeDistribution,
+        },
+        indexedAt: new Date().toISOString(),
+        repositoryPath: targetPath,
+        warning: 'Using existing Memgraph data (no re-indexing performed)',
+        skipped: false, // Not skipped, just reused
+      };
+    } catch (error) {
+      log(`[CodeGraphAgent] Error getting existing stats: ${error}`, 'warning');
+      return {
+        entities: [],
+        relationships: [],
+        statistics: {
+          totalEntities: 0,
+          totalRelationships: 0,
+          languageDistribution: {},
+          entityTypeDistribution: {},
+        },
+        indexedAt: new Date().toISOString(),
+        repositoryPath: targetPath,
+        warning: `Failed to get existing stats: ${error}`,
+        skipped: true,
+      };
+    }
+  }
+
+  /**
+   * Execute a Cypher query against Memgraph using mgconsole
+   * Uses CSV output format and parses into JSON objects
+   * Can be called directly for explicit Cypher queries
+   */
+  async runCypherQuery(query: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const docker = spawn('docker', [
+        'exec', '-i', 'code-graph-rag-memgraph-1',
+        'mgconsole', '--output-format=csv'
+      ]);
+
+      let stdout = '';
+      let stderr = '';
+
+      docker.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      docker.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      docker.on('close', (code) => {
+        if (code !== 0) {
+          log(`[CodeGraphAgent] Cypher query failed: ${stderr}`, 'warning');
+          resolve(null);
+          return;
+        }
+
+        try {
+          // Parse CSV output - first line is headers, rest are data rows
+          const lines = stdout.trim().split('\n').filter(l => l.trim());
+          if (lines.length === 0) {
+            resolve([]);
+            return;
+          }
+
+          // Parse CSV header and rows
+          const headers = this.parseCSVLine(lines[0]);
+          const results: any[] = [];
+
+          for (let i = 1; i < lines.length; i++) {
+            const values = this.parseCSVLine(lines[i]);
+            const row: Record<string, any> = {};
+            for (let j = 0; j < headers.length; j++) {
+              row[headers[j]] = values[j] || null;
+            }
+            results.push(row);
+          }
+
+          // Return array of results (or first result for count queries)
+          if (results.length === 1 && headers.some(h => h.includes('count') || h.includes('Count'))) {
+            resolve(results[0]);
+          } else {
+            resolve(results);
+          }
+        } catch (e) {
+          log(`[CodeGraphAgent] Failed to parse Cypher result: ${e}`, 'warning');
+          resolve(null);
+        }
+      });
+
+      docker.on('error', (err) => {
+        log(`[CodeGraphAgent] Docker exec failed: ${err}`, 'warning');
+        resolve(null);
+      });
+
+      // Send query to mgconsole
+      docker.stdin.write(query + ';\n');
+      docker.stdin.end();
+    });
+  }
+
+  /**
+   * Parse a CSV line, handling quoted values
+   */
+  private parseCSVLine(line: string): string[] {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  }
+
+  /**
    * Index a repository using code-graph-rag CLI
    * Uses: uv run graph-code index --repo-path <path> --output-proto-dir <dir>
+   *
+   * Options:
+   * - forceReindex: Force re-indexing even if Memgraph has existing data (default: false)
+   * - minNodeThreshold: Minimum nodes required to consider existing data valid (default: 100)
    */
-  async indexRepository(targetPath?: string | { target_path?: string }): Promise<CodeGraphAnalysisResult> {
+  async indexRepository(targetPath?: string | { target_path?: string; forceReindex?: boolean; minNodeThreshold?: number }): Promise<CodeGraphAnalysisResult> {
     // Handle both direct path and wrapped parameter object from coordinator
     let repoPath: string;
+    let forceReindex = false;
+    let minNodeThreshold = 100;
+
     if (typeof targetPath === 'object' && targetPath !== null) {
       repoPath = targetPath.target_path || this.repositoryPath;
+      forceReindex = targetPath.forceReindex || false;
+      minNodeThreshold = targetPath.minNodeThreshold || 100;
     } else if (typeof targetPath === 'string') {
       repoPath = targetPath;
     } else {
       repoPath = this.repositoryPath;
     }
 
-    log(`[CodeGraphAgent] Indexing repository: ${repoPath}`, 'info');
+    log(`[CodeGraphAgent] Indexing repository: ${repoPath} (forceReindex: ${forceReindex})`, 'info');
+
+    // Check for existing Memgraph data before re-indexing (unless forced)
+    if (!forceReindex) {
+      const existingIndex = await this.hasExistingIndex(repoPath);
+      if (existingIndex.hasData && existingIndex.nodeCount >= minNodeThreshold) {
+        log(`[CodeGraphAgent] Found existing index with ${existingIndex.nodeCount} nodes for ${existingIndex.projectName}, skipping re-index`, 'info');
+        log(`[CodeGraphAgent] To force re-indexing, use forceReindex: true`, 'info');
+        return this.getExistingStats(repoPath);
+      } else if (existingIndex.hasData) {
+        log(`[CodeGraphAgent] Existing index has only ${existingIndex.nodeCount} nodes (threshold: ${minNodeThreshold}), will re-index`, 'info');
+      }
+    }
 
     // Collect diagnostics for better error reporting
     const diagnostics: {
@@ -655,5 +893,155 @@ export class CodeGraphAgent {
 
     log(`[CodeGraphAgent] Transformed ${knowledgeEntities.length} code entities to knowledge entities`, 'info');
     return knowledgeEntities;
+  }
+
+  /**
+   * Graph schema description for NL→Cypher translation
+   */
+  private readonly GRAPH_SCHEMA = `
+Node Types:
+- Function: Represents a function definition
+  Properties: name, file_path, line_number, signature, docstring, language, complexity, project
+- Class: Represents a class definition
+  Properties: name, file_path, line_number, docstring, language, project
+- Method: Represents a method within a class
+  Properties: name, file_path, line_number, signature, docstring, language, project
+- Module: Represents a source file/module
+  Properties: name, file_path, language, project
+- File: Represents a source file
+  Properties: name, path, language, project
+- Folder: Represents a directory
+  Properties: name, path, project
+- Package: Represents a package/library
+  Properties: name, version, project
+
+Relationship Types:
+- CALLS: (Function|Method)-[:CALLS]->(Function|Method) - Function/method calls another
+- DEFINES: (Module|Class)-[:DEFINES]->(Function|Method|Class) - Module/class defines a symbol
+- IMPORTS: (Module)-[:IMPORTS]->(Module|Package) - Module imports another module/package
+- INHERITS: (Class)-[:INHERITS]->(Class) - Class inheritance
+- OVERRIDES: (Method)-[:OVERRIDES]->(Method) - Method overrides parent method
+- CONTAINS_FILE: (Folder)-[:CONTAINS_FILE]->(File) - Folder contains file
+- DEFINES_METHOD: (Class)-[:DEFINES_METHOD]->(Method) - Class defines method
+`;
+
+  /**
+   * Query the code graph using natural language
+   * Uses SemanticAnalyzer to translate natural language to Cypher
+   */
+  async queryNaturalLanguage(question: string): Promise<NaturalLanguageQueryResult> {
+    const startTime = Date.now();
+    log(`[CodeGraphAgent] Natural language query: ${question}`, 'info');
+
+    // Check Memgraph connection first
+    const connectionCheck = await this.checkMemgraphConnection();
+    if (!connectionCheck.connected) {
+      throw new Error(`Memgraph not reachable: ${connectionCheck.error}`);
+    }
+
+    // Initialize SemanticAnalyzer for NL→Cypher translation
+    const semanticAnalyzer = new SemanticAnalyzer();
+
+    const cypherPrompt = `You are a Cypher query generator for a code knowledge graph stored in Memgraph.
+
+${this.GRAPH_SCHEMA}
+
+IMPORTANT RULES:
+1. Return ONLY the Cypher query, no explanations or markdown formatting
+2. Do NOT use backticks or code blocks
+3. Always use LIMIT to avoid returning too many results (default LIMIT 25)
+4. For text matching, use CONTAINS for partial matches or = for exact matches
+5. Property names are lowercase with underscores (file_path, line_number)
+6. Node labels are PascalCase (Function, Class, Method, Module, File, Folder)
+
+User Question: ${question}
+
+Cypher Query:`;
+
+    try {
+      // Use SemanticAnalyzer with auto provider fallback (Groq → Gemini → Anthropic → OpenAI)
+      const result = await semanticAnalyzer.analyzeContent(cypherPrompt, {
+        analysisType: 'code',
+        provider: 'auto'
+      });
+
+      // Extract Cypher from response
+      const cypher = this.extractCypher(result.insights);
+
+      if (!cypher) {
+        throw new Error('Failed to extract valid Cypher query from LLM response');
+      }
+
+      log(`[CodeGraphAgent] Generated Cypher: ${cypher}`, 'info');
+
+      // Execute the generated Cypher query
+      const queryResult = await this.runCypherQuery(cypher);
+
+      const queryTime = Date.now() - startTime;
+      log(`[CodeGraphAgent] NL query completed in ${queryTime}ms`, 'info');
+
+      return {
+        question,
+        generatedCypher: cypher,
+        results: Array.isArray(queryResult) ? queryResult : queryResult ? [queryResult] : [],
+        queryTime,
+        provider: result.provider || 'auto'
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`[CodeGraphAgent] NL query failed: ${errorMessage}`, 'error');
+      throw error;
+    }
+  }
+
+  /**
+   * Extract Cypher query from LLM response
+   * Handles various response formats (with/without code blocks, explanations, etc.)
+   */
+  private extractCypher(response: string): string | null {
+    if (!response) return null;
+
+    // First, try to find Cypher in code blocks
+    const codeBlockMatch = response.match(/```(?:cypher)?\s*([\s\S]*?)```/i);
+    if (codeBlockMatch) {
+      return codeBlockMatch[1].trim();
+    }
+
+    // Try to find a MATCH statement (most Cypher queries start with MATCH)
+    const matchStatement = response.match(/\b(MATCH\s+[\s\S]*?)(?:$|(?=\n\n))/i);
+    if (matchStatement) {
+      // Clean up: remove any trailing explanation text
+      let query = matchStatement[1].trim();
+      // Remove anything after a line that doesn't look like Cypher
+      const lines = query.split('\n');
+      const cypherLines: string[] = [];
+      for (const line of lines) {
+        // Check if line looks like Cypher (contains keywords or is a continuation)
+        if (/^\s*(MATCH|WHERE|RETURN|WITH|OPTIONAL|UNWIND|ORDER|LIMIT|SKIP|CREATE|MERGE|DELETE|SET|REMOVE|CALL|UNION|FOREACH|\||\(|{|,|-|\[)/i.test(line) ||
+            line.trim() === '' ||
+            /^\s*[a-z_]+\s*[<>=!]/i.test(line)) {
+          cypherLines.push(line);
+        } else if (cypherLines.length > 0) {
+          // If we have some Cypher and hit a non-Cypher line, stop
+          break;
+        }
+      }
+      return cypherLines.join('\n').trim();
+    }
+
+    // Try CREATE, MERGE, or other Cypher starts
+    const otherCypherMatch = response.match(/\b((?:CREATE|MERGE|CALL|UNWIND)\s+[\s\S]*?)(?:$|(?=\n\n))/i);
+    if (otherCypherMatch) {
+      return otherCypherMatch[1].trim();
+    }
+
+    // If the entire response looks like Cypher (no prose), use it
+    const trimmed = response.trim();
+    if (/^(?:MATCH|CREATE|MERGE|CALL|UNWIND)\s/i.test(trimmed) &&
+        !/^[A-Z][a-z]+\s+[a-z]+\s/i.test(trimmed)) {  // Not starting with "This query..."
+      return trimmed;
+    }
+
+    return null;
   }
 }

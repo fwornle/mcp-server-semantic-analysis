@@ -1,0 +1,230 @@
+# Unified Agent Registry - Single Source of Truth
+# Used by: Coordinator, Dashboard, PlantUML Generator
+# Version: 1.0
+
+# Orchestrator - Special node that coordinates all agents
+orchestrator:
+  id: orchestrator
+  name: Orchestrator
+  shortName: Coordinator
+  icon: Play
+  description: "DAG-based workflow coordinator. Manages parallel execution with max 3 concurrent steps, handles dependencies, retries failed steps, and aggregates results."
+  usesLLM: false
+  llmModel: null
+  techStack: "TypeScript DAG executor"
+  phase: 0
+  row: -1
+  col: 1.125
+
+# 14 Workflow Agents
+agents:
+  - id: git_history
+    name: Git History
+    shortName: Git
+    icon: GitBranch
+    description: "Analyzes commit history via git CLI with LLM-powered pattern extraction. Identifies code evolution patterns, development themes, architectural decisions, and technical debt from commit messages and file changes."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: "Git CLI + SemanticAnalyzer"
+    phase: 1
+    row: 0
+    col: 0
+
+  - id: vibe_history
+    name: Vibe History
+    shortName: Vibe
+    icon: MessageSquare
+    description: "Parses LSL session files to identify problem-solution pairs, extract development contexts, and discover workflow patterns from human-AI conversations."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: SemanticAnalyzer
+    phase: 1
+    row: 0
+    col: 0.75
+
+  - id: code_graph
+    name: Code Graph
+    shortName: Code
+    icon: Code
+    description: "Builds AST-based knowledge graph using Tree-sitter parsing. Uses external LLM (via code-graph-rag MCP) for Cypher query generation and RAG orchestration. Indexes functions, classes, imports, and call relationships into Memgraph."
+    usesLLM: true
+    llmModel: "External: code-graph-rag (OpenAI/Anthropic/Ollama)"
+    techStack: "Tree-sitter + Memgraph + pydantic_ai"
+    phase: 1
+    row: 0
+    col: 1.5
+
+  - id: code_intelligence
+    name: Code Intelligence
+    shortName: Intel
+    icon: Zap
+    description: "Generates context-aware questions about the codebase based on git changes, commit themes, and session patterns. Queries the code graph via NL->Cypher to discover hotspots, circular dependencies, inheritance structures, and change impact."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: "NL->Cypher + Memgraph + SemanticAnalyzer"
+    phase: 1.5
+    row: 0.5
+    col: 1.125
+
+  - id: documentation_linker
+    name: Documentation Linker
+    shortName: Docs
+    icon: FileText
+    description: "Links markdown docs and PlantUML diagrams to code entities. Uses LLM-powered semantic matching to resolve unresolved references and build intelligent doc-to-code mappings."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: "Regex + glob patterns + SemanticAnalyzer"
+    phase: 1
+    row: 0
+    col: 2.25
+
+  - id: semantic_analysis
+    name: Semantic Analysis
+    shortName: Semantic
+    icon: Brain
+    description: "Deep code analysis to detect patterns (MVC, Factory, Observer, etc.), assess quality metrics, identify anti-patterns, and generate LLM-powered insights on architecture."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: "Direct LLM clients"
+    phase: 2
+    row: 1
+    col: 0.375
+
+  - id: web_search
+    name: Web Search
+    shortName: Web
+    icon: Search
+    description: "Searches for similar patterns, code examples, and documentation using DuckDuckGo/Google. Optional LLM-powered result summarization and intelligent ranking of top results."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile (optional)"
+    techStack: "DuckDuckGo/Google APIs + SemanticAnalyzer"
+    phase: 2.5
+    row: 2
+    col: 0.375
+
+  - id: insight_generation
+    name: Insight Generation
+    shortName: Insights
+    icon: Lightbulb
+    description: "Generates comprehensive insights, PlantUML architecture diagrams, design pattern documentation, and knowledge synthesis from analysis results."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: SemanticAnalyzer
+    phase: 3
+    row: 3
+    col: 0.75
+
+  - id: observation_generation
+    name: Observation Generation
+    shortName: Observations
+    icon: Eye
+    description: "Creates structured observations for entities: pattern observations, problem-solution pairs, architectural decisions, and contextual metadata."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: SemanticAnalyzer
+    phase: 3.5
+    row: 4
+    col: 0.75
+
+  - id: ontology_classification
+    name: Ontology Classification
+    shortName: Ontology
+    icon: Tags
+    description: "Maps entities to ontology classes (upper/lower) using LLM-powered semantic inference. Assigns categories, properties, and confidence scores with intelligent taxonomy alignment."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: "OntologyClassifier + SemanticAnalyzer"
+    phase: 4
+    row: 5
+    col: 0.75
+
+  - id: documentation_semantics
+    name: Documentation Semantics
+    shortName: DocSem
+    icon: FileText
+    description: "LLM-powered semantic analysis of docstrings and documentation prose. Extracts purpose, parameters, usage patterns, warnings, and related entities from code documentation."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: "SemanticAnalyzer + Batch Processing"
+    phase: 4
+    row: 5.5
+    col: 1.875
+
+  - id: quality_assurance
+    name: Quality Assurance
+    shortName: QA
+    icon: Shield
+    description: "Validates insights, PlantUML syntax, entity coherence. LLM-powered semantic value filtering removes low-value entities. Quality-based feedback loops (up to 3 iterations) with progressive parameter tightening."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: "SemanticAnalyzer + Semantic Value Filter"
+    phase: 5
+    row: 6
+    col: 1.125
+
+  - id: persistence
+    name: Persistence
+    shortName: Persist
+    icon: Database
+    description: "Manages entity CRUD operations, checkpoint tracking, and bi-temporal staleness detection. Writes entities with ontology metadata to LevelDB graph storage."
+    usesLLM: false
+    llmModel: null
+    techStack: "LevelDB + Graphology"
+    phase: 6
+    row: 7
+    col: 1.125
+
+  - id: deduplication
+    name: Deduplication
+    shortName: Dedup
+    icon: Copy
+    description: "Detects duplicate entities using cosine/semantic similarity on embeddings. Merges similar entities, removes duplicate observations, and consolidates patterns. Uses OpenAI embeddings API (not generative LLM)."
+    usesLLM: false
+    llmModel: "Embeddings: text-embedding-3-small"
+    techStack: "OpenAI Embeddings API"
+    phase: 6
+    row: 8
+    col: 1.125
+
+  - id: content_validation
+    name: Content Validation
+    shortName: Validate
+    icon: CheckCircle2
+    description: "Validates entity accuracy against current codebase. Detects git-based staleness, verifies file/command references, and regenerates stale entity content."
+    usesLLM: true
+    llmModel: "Groq: llama-3.3-70b-versatile"
+    techStack: SemanticAnalyzer
+    phase: 6
+    row: 9
+    col: 1.125
+
+# Step name to agent ID mapping
+# Used to map workflow step names to their executing agents
+step_mappings:
+  analyze_git_history: git_history
+  analyze_recent_changes: git_history
+  analyze_vibe_history: vibe_history
+  analyze_recent_vibes: vibe_history
+  semantic_analysis: semantic_analysis
+  analyze_semantics: semantic_analysis
+  web_search: web_search
+  generate_insights: insight_generation
+  generate_observations: observation_generation
+  classify_with_ontology: ontology_classification
+  index_codebase: code_graph
+  index_recent_code: code_graph
+  transform_code_entities: code_graph
+  transform_code_entities_incremental: code_graph
+  query_code_intelligence: code_intelligence
+  link_documentation: documentation_linker
+  analyze_documentation_semantics: documentation_semantics
+  analyze_documentation_semantics_incremental: documentation_semantics
+  quality_assurance: quality_assurance
+  validate_incremental_qa: quality_assurance
+  persist_results: persistence
+  persist_incremental: persistence
+  persist_code_entities: persistence
+  deduplicate_insights: deduplication
+  deduplicate_incremental: deduplication
+  validate_content: content_validation
+  validate_content_incremental: content_validation

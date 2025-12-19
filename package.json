@@ -27,7 +27,8 @@
     "graphology": "^0.25.4",
     "groq-sdk": "^0.36.0",
     "level": "^10.0.0",
-    "openai": "^4.52.0"
+    "openai": "^4.52.0",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

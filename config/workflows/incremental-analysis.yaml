@@ -1,0 +1,299 @@
+# Incremental Analysis Workflow - Single Source of Truth
+# 14-agent analysis since last checkpoint with code graph and ontology
+# Version: 1.0
+
+workflow:
+  name: incremental-analysis
+  version: "1.0"
+  description: "14-agent incremental analysis since last checkpoint with code graph, code intelligence, and ontology"
+
+config:
+  max_concurrent_steps: 3
+  timeout: 600  # 10 minutes for incremental with code graph
+  quality_validation: true
+
+# Workflow steps with dependencies
+# Dependencies define the DAG execution order
+steps:
+  # PHASE 1: Parallel Data Collection (no dependencies = parallel entry points)
+  - name: analyze_recent_changes
+    agent: git_history
+    action: analyzeGitHistoryWithLLM
+    parameters:
+      repository: null  # Filled from workflow params
+      maxCommits: 50
+      sinceCommit: null
+    timeout: 180  # 3 min for LLM-enhanced git analysis
+    dependencies: []
+
+  - name: analyze_recent_vibes
+    agent: vibe_history
+    action: analyzeVibeHistory
+    parameters:
+      maxSessions: 20
+    timeout: 120  # 2 min for vibe analysis
+    dependencies: []
+
+  - name: index_recent_code
+    agent: code_graph
+    action: indexIncrementally
+    parameters:
+      repoPath: "{{params.repositoryPath}}"
+      options:
+        sinceDays: 7
+    timeout: 600  # 10 min for large repos
+    dependencies: []
+
+  - name: link_documentation
+    agent: documentation_linker
+    action: analyzeDocumentation
+    parameters:
+      markdown_paths: ["**/*.md"]
+      plantuml_paths: ["**/*.puml", "**/*.plantuml"]
+      exclude_patterns: ["**/node_modules/**", "**/dist/**"]
+    timeout: 120
+    dependencies: []
+
+  # PHASE 1.5: Code Intelligence (depends on Phase 1)
+  - name: query_code_intelligence
+    agent: code_intelligence
+    action: queryIntelligently
+    parameters:
+      context:
+        changedFiles: "{{analyze_recent_changes.result.changedFiles}}"
+        recentCommits: "{{analyze_recent_changes.result.significantCommits}}"
+        vibePatterns: "{{analyze_recent_vibes.result.problemPatterns}}"
+      options:
+        maxQueries: 8
+    timeout: 180
+    dependencies:
+      - index_recent_code
+      - analyze_recent_changes
+      - analyze_recent_vibes
+
+  # PHASE 2: Semantic Analysis (depends on Phase 1 + 1.5)
+  - name: analyze_semantics
+    agent: semantic_analysis
+    action: analyzeSemantics
+    parameters:
+      git_analysis: "{{analyze_recent_changes.result}}"
+      vibe_analysis: "{{analyze_recent_vibes.result}}"
+      code_graph: "{{index_recent_code.result}}"
+      doc_analysis: "{{link_documentation.result}}"
+      code_intelligence: "{{query_code_intelligence.result}}"
+    timeout: 180
+    dependencies:
+      - analyze_recent_changes
+      - analyze_recent_vibes
+      - index_recent_code
+      - link_documentation
+      - query_code_intelligence
+
+  # PHASE 2.5: Web Search (depends on Semantic)
+  - name: web_search
+    agent: web_search
+    action: searchSimilarPatterns
+    parameters:
+      semantic_analysis_results: "{{analyze_semantics.result}}"
+    timeout: 90
+    dependencies:
+      - analyze_semantics
+
+  # PHASE 3: Insight Generation (depends on Semantic + Web + Intel)
+  - name: generate_insights
+    agent: insight_generation
+    action: generateInsights
+    parameters:
+      semantic_analysis: "{{analyze_semantics.result}}"
+      web_search_results: "{{web_search.result}}"
+      code_intelligence: "{{query_code_intelligence.result}}"
+    timeout: 240
+    dependencies:
+      - analyze_semantics
+      - web_search
+      - query_code_intelligence
+
+  # PHASE 3.5: Observation Generation
+  - name: generate_observations
+    agent: observation_generation
+    action: generateObservations
+    parameters:
+      insights: "{{generate_insights.result}}"
+    timeout: 120
+    dependencies:
+      - generate_insights
+
+  # PHASE 4: Classification + Doc Semantics (parallel)
+  - name: classify_with_ontology
+    agent: ontology_classification
+    action: classifyEntities
+    parameters:
+      observations: "{{generate_observations.result}}"
+      team: "{{params.team}}"
+    timeout: 180
+    dependencies:
+      - generate_observations
+
+  - name: transform_code_entities_incremental
+    agent: code_graph
+    action: transformToKnowledgeEntities
+    parameters:
+      code_analysis: "{{index_recent_code.result}}"
+    timeout: 60
+    dependencies:
+      - index_recent_code
+
+  - name: analyze_documentation_semantics_incremental
+    agent: documentation_semantics
+    action: analyzeDocSemantics
+    parameters:
+      code_entities: "{{transform_code_entities_incremental.result}}"
+      doc_links: "{{link_documentation.result}}"
+    timeout: 120
+    dependencies:
+      - transform_code_entities_incremental
+      - link_documentation
+
+  # PHASE 5: Quality Assurance
+  - name: validate_incremental_qa
+    agent: quality_assurance
+    action: validateAll
+    parameters:
+      ontology_results: "{{classify_with_ontology.result}}"
+      doc_semantics: "{{analyze_documentation_semantics_incremental.result}}"
+    timeout: 120
+    dependencies:
+      - classify_with_ontology
+      - analyze_documentation_semantics_incremental
+
+  # PHASE 6: Persistence -> Dedup -> Validation
+  - name: persist_incremental
+    agent: persistence
+    action: persistEntities
+    parameters:
+      qa_results: "{{validate_incremental_qa.result}}"
+      team: "{{params.team}}"
+    timeout: 60
+    dependencies:
+      - validate_incremental_qa
+
+  - name: deduplicate_incremental
+    agent: deduplication
+    action: deduplicateEntities
+    parameters:
+      persisted: "{{persist_incremental.result}}"
+    timeout: 120
+    dependencies:
+      - persist_incremental
+
+  - name: validate_content_incremental
+    agent: content_validation
+    action: validateContent
+    parameters:
+      dedup_results: "{{deduplicate_incremental.result}}"
+    timeout: 60
+    dependencies:
+      - deduplicate_incremental
+
+# DAG visualization edges
+# Defines how agents connect in the workflow visualization
+# These are derived from step dependencies but can include additional visual connections
+edges:
+  # Orchestrator dispatches to entry points
+  - from: orchestrator
+    to: git_history
+    type: dataflow
+  - from: orchestrator
+    to: vibe_history
+    type: dataflow
+  - from: orchestrator
+    to: code_graph
+    type: dataflow
+  - from: orchestrator
+    to: documentation_linker
+    type: dataflow
+
+  # Phase 1 -> Code Intelligence
+  - from: git_history
+    to: code_intelligence
+    type: dependency
+  - from: vibe_history
+    to: code_intelligence
+    type: dependency
+  - from: code_graph
+    to: code_intelligence
+    type: dependency
+
+  # Phase 1 + Code Intel -> Semantic Analysis
+  - from: git_history
+    to: semantic_analysis
+    type: dependency
+  - from: vibe_history
+    to: semantic_analysis
+    type: dependency
+  - from: code_graph
+    to: semantic_analysis
+    type: dependency
+  - from: code_intelligence
+    to: semantic_analysis
+    type: dependency
+  - from: documentation_linker
+    to: semantic_analysis
+    type: dependency
+
+  # Semantic -> Web Search
+  - from: semantic_analysis
+    to: web_search
+    type: dependency
+
+  # Semantic + Web + Intel -> Insights
+  - from: semantic_analysis
+    to: insight_generation
+    type: dependency
+  - from: web_search
+    to: insight_generation
+    type: dependency
+  - from: code_intelligence
+    to: insight_generation
+    type: dependency
+
+  # Insights -> Observations
+  - from: insight_generation
+    to: observation_generation
+    type: dependency
+
+  # Observations -> Ontology
+  - from: observation_generation
+    to: ontology_classification
+    type: dependency
+
+  # Code Graph -> Doc Semantics
+  - from: code_graph
+    to: documentation_semantics
+    type: dependency
+  - from: documentation_linker
+    to: documentation_semantics
+    type: dependency
+
+  # Ontology + Doc Semantics -> QA
+  - from: ontology_classification
+    to: quality_assurance
+    type: dependency
+  - from: documentation_semantics
+    to: quality_assurance
+    type: dependency
+
+  # QA -> Persistence
+  - from: quality_assurance
+    to: persistence
+    type: dependency
+
+  # Persistence -> Deduplication
+  - from: persistence
+    to: deduplication
+    type: dependency
+
+  # Deduplication -> Content Validation
+  - from: deduplication
+    to: content_validation
+    type: dependency

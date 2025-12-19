@@ -16,6 +16,7 @@ import { CodeGraphAgent } from "./code-graph-agent.js";
 import { DocumentationLinkerAgent } from "./documentation-linker-agent.js";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 import { WorkflowReportAgent, type StepReport } from "./workflow-report-agent.js";
+import { loadAllWorkflows, loadWorkflowFromYAML, getConfigDir } from "../utils/workflow-loader.js";
 
 export interface WorkflowDefinition {
   name: string;
@@ -214,6 +215,38 @@ export class CoordinatorAgent {
   }
 
   private initializeWorkflows(): void {
+    // Try to load workflows from YAML (single source of truth)
+    try {
+      const configDir = getConfigDir();
+      const workflowsDir = path.join(configDir, 'workflows');
+
+      if (fs.existsSync(workflowsDir)) {
+        const yamlWorkflows = loadAllWorkflows(configDir);
+        if (yamlWorkflows.size > 0) {
+          yamlWorkflows.forEach((workflow, name) => {
+            this.workflows.set(name, workflow);
+          });
+          log(`Loaded ${yamlWorkflows.size} workflows from YAML configuration`, "info");
+
+          // Still load inline workflows that don't exist in YAML (for backward compat)
+          this.initializeInlineWorkflows(true); // true = only add missing
+          return;
+        }
+      }
+    } catch (error) {
+      log(`YAML workflow loading failed, using inline definitions: ${error}`, "warning");
+    }
+
+    // Fallback: use inline workflow definitions
+    this.initializeInlineWorkflows(false);
+  }
+
+  /**
+   * Initialize workflows from inline TypeScript definitions.
+   * Used as fallback when YAML config is not available.
+   * @param onlyMissing - If true, only add workflows not already in this.workflows
+   */
+  private initializeInlineWorkflows(onlyMissing: boolean): void {
     // Define standard workflows
     const workflows: WorkflowDefinition[] = [
       {
@@ -838,11 +871,23 @@ export class CoordinatorAgent {
       },
     ];
 
+    let addedCount = 0;
     workflows.forEach(workflow => {
+      if (onlyMissing && this.workflows.has(workflow.name)) {
+        // Skip - already loaded from YAML
+        return;
+      }
       this.workflows.set(workflow.name, workflow);
+      addedCount++;
     });
 
-    log(`Initialized ${workflows.length} workflows`, "info");
+    if (onlyMissing) {
+      if (addedCount > 0) {
+        log(`Added ${addedCount} additional inline workflows not in YAML`, "info");
+      }
+    } else {
+      log(`Initialized ${workflows.length} inline workflows`, "info");
+    }
   }
 
   private async initializeAgents(): Promise<void> {

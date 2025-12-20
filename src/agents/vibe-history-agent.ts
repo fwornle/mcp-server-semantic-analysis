@@ -389,7 +389,8 @@ export class VibeHistoryAgent {
     // - "### ToolName - TIMESTAMP" with "**User Request:**", "**Tool:**", "**Result:**"
 
     // First try LSL format (## Prompt Set)
-    const promptSetSections = content.split(/## Prompt Set \([^)]+\)/).slice(1);
+    // Handle both old format "## Prompt Set 1 (ps_...)" and new format "## Prompt Set (ps_...)"
+    const promptSetSections = content.split(/## Prompt Set (?:\d+ )?\([^)]+\)/).slice(1);
 
     if (promptSetSections.length > 0) {
       // LSL format detected
@@ -421,14 +422,15 @@ export class VibeHistoryAgent {
   /**
    * Parse LSL format Prompt Set section
    * Contains "### Text Exchange" for user messages and "### ToolName" for tool calls
+   * Also handles older format with "### User" / "### Assistant" sections
    */
   private parseLslPromptSet(promptSet: string, startId: number): ConversationExchange[] {
     const exchanges: ConversationExchange[] = [];
-
-    // Find all Text Exchange sections (actual user conversations)
-    const textExchangeRegex = /### Text Exchange - ([^\n]+)\n\n\*\*User Message:\*\* ([\s\S]*?)(?=\n---|\n### |\n## |$)/g;
-    let match;
     let id = startId;
+
+    // NEW FORMAT: Find all Text Exchange sections (actual user conversations)
+    const textExchangeRegex = /### Text Exchange - ([^\n]+)\n\n\*\*User Message:\*\* ([\s\S]*?)(?=\n\n\*\*|\n---|\n### |\n## |$)/g;
+    let match;
 
     while ((match = textExchangeRegex.exec(promptSet)) !== null) {
       const timestampStr = match[1];
@@ -454,7 +456,39 @@ export class VibeHistoryAgent {
       });
     }
 
-    // If no Text Exchange found, check for tool-only prompt sets (user sent image/continued)
+    // OLD FORMAT: Handle "### User" / "### Assistant" sections (older LSL format)
+    // In old format: first ### User is the user request, subsequent ### User are tool results
+    if (exchanges.length === 0) {
+      // Find the FIRST ### User section (the actual user request)
+      // Subsequent ### User sections contain tool results (start with **Result:**)
+      const firstUserMatch = promptSet.match(/### User\n\n([\s\S]*?)(?=\n### Assistant|\n### User|\n## |$)/);
+      if (firstUserMatch) {
+        const userMessage = firstUserMatch[1].trim();
+        // Only process if it's not a tool result
+        if (!userMessage.startsWith('**Result:**')) {
+          // Find the first assistant response
+          const assistantMatch = promptSet.match(/### Assistant\n\n([\s\S]*?)(?=\n### User|\n### Assistant|\n## |$)/);
+          const assistantMessage = assistantMatch ? assistantMatch[1].trim() : '';
+
+          // Extract tool calls from the full prompt set for context
+          const toolCalls = this.extractToolCallsFromPromptSet(promptSet);
+
+          exchanges.push({
+            id: id++,
+            timestamp: new Date(), // Old format doesn't have per-message timestamps
+            userMessage,
+            assistantMessage,
+            context: {
+              tools: toolCalls.map(t => t.tool),
+              files: this.extractFilesFromToolCalls(toolCalls),
+              actions: this.extractActionsFromMessage(userMessage)
+            }
+          });
+        }
+      }
+    }
+
+    // If still no exchanges found, check for tool-only prompt sets (user sent image/continued)
     if (exchanges.length === 0) {
       const toolCalls = this.extractToolCallsFromPromptSet(promptSet);
       if (toolCalls.length > 0) {

@@ -483,7 +483,7 @@ export class CoordinatorAgent {
           }
         ],
         config: {
-          max_concurrent_steps: 3,
+          max_concurrent_steps: 10,
           timeout: 1200, // 20 minutes total for comprehensive analysis
           quality_validation: true,
         },
@@ -696,7 +696,7 @@ export class CoordinatorAgent {
           }
         ],
         config: {
-          max_concurrent_steps: 3,
+          max_concurrent_steps: 10,
           timeout: 600, // 10 minutes for incremental with code graph
           quality_validation: true,
         },
@@ -1076,7 +1076,7 @@ export class CoordinatorAgent {
       execution.status = "running";
 
       // DAG-based parallel execution
-      const maxConcurrent = workflow.config?.max_concurrent_steps || 3;
+      const maxConcurrent = workflow.config?.max_concurrent_steps || 10;
       const completedSteps = new Set<string>();
       const runningSteps = new Map<string, Promise<{ step: WorkflowStep; result: any; error?: Error }>>();
       const skippedSteps = new Set<string>();

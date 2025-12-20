@@ -193,18 +193,24 @@ export class CodeGraphAgent {
   /**
    * Check if Memgraph has existing index data for the repository
    * Returns node count and whether data exists
+   *
+   * Note: code-graph-rag doesn't set project property on nodes during indexing,
+   * so we query ALL nodes instead of filtering by project name.
+   * For multi-project support, nodes would need a project property during indexing.
    */
   async hasExistingIndex(repoPath?: string): Promise<{ hasData: boolean; nodeCount: number; projectName?: string }> {
     const targetPath = repoPath || this.repositoryPath;
     const projectName = path.basename(targetPath);
 
     try {
-      // Query Memgraph for existing project data
+      // Query Memgraph for total node count (no project filter - code-graph-rag doesn't set project property)
       const result = await this.runCypherQuery(
-        `MATCH (n) WHERE n.project = "${projectName}" OR n.repository_path CONTAINS "${projectName}" RETURN count(n) as nodeCount LIMIT 1`
+        `MATCH (n) RETURN count(n) as nodeCount`
       );
 
-      const nodeCount = result?.nodeCount || 0;
+      // Parse nodeCount - handle both string and number responses
+      const rawCount = result?.nodeCount;
+      const nodeCount = typeof rawCount === 'string' ? parseInt(rawCount, 10) : (rawCount || 0);
       log(`[CodeGraphAgent] Existing index check for ${projectName}: ${nodeCount} nodes found`, 'info');
 
       return {

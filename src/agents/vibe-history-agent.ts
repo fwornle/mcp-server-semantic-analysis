@@ -60,6 +60,26 @@ export interface ProblemSolutionPair {
   };
 }
 
+/**
+ * Semantic topic extracted from session analysis using LLM
+ * Replaces keyword-based problem-solution pairs with meaningful semantic understanding
+ */
+export interface KeyTopic {
+  topic: string;                    // Main topic/theme (e.g., "UKB Workflow Optimization")
+  category: 'feature' | 'bugfix' | 'refactoring' | 'infrastructure' | 'documentation' | 'investigation' | 'configuration';
+  description: string;              // What was discussed/worked on
+  keyDecisions: string[];           // Important decisions made
+  technologies: string[];           // Tools/technologies involved
+  outcome: 'completed' | 'in_progress' | 'blocked' | 'deferred';
+  significance: number;             // 1-10 importance score
+  relatedFiles: string[];           // Files mentioned/modified
+  sessions: string[];               // Session filenames where this topic appeared
+  timespan: {
+    first: Date;
+    last: Date;
+  };
+}
+
 export interface VibeHistoryAnalysisResult {
   checkpointInfo: {
     fromTimestamp: Date | null;
@@ -68,7 +88,8 @@ export interface VibeHistoryAnalysisResult {
   };
   sessions: ConversationSession[];
   developmentContexts: DevelopmentContext[];
-  problemSolutionPairs: ProblemSolutionPair[];
+  problemSolutionPairs: ProblemSolutionPair[];  // Deprecated - kept for backward compatibility
+  keyTopics: KeyTopic[];                         // NEW: Semantic topics extracted via LLM
   patterns: {
     commonProblems: { problem: string; frequency: number }[];
     preferredSolutions: { solution: string; frequency: number }[];
@@ -80,6 +101,7 @@ export interface VibeHistoryAnalysisResult {
     primaryFocus: string;
     keyLearnings: string[];
     insights: string;
+    topTopics: string[];  // NEW: Top 5 most significant topics
   };
 }
 
@@ -157,14 +179,17 @@ export class VibeHistoryAgent {
       // Extract development contexts
       const developmentContexts = this.extractDevelopmentContexts(sessions);
 
-      // Identify problem-solution pairs
+      // Legacy: Identify problem-solution pairs (keyword-based, kept for backward compatibility)
       const problemSolutionPairs = this.identifyProblemSolutionPairs(sessions);
+
+      // NEW: Extract key topics using semantic LLM analysis (parallelized)
+      const keyTopics = await this.extractKeyTopics(sessions, skipLlmEnhancement);
 
       // Analyze patterns
       const patterns = this.analyzePatterns(sessions, developmentContexts, problemSolutionPairs);
 
-      // Generate summary (optionally skip LLM enhancement for faster processing)
-      const summary = await this.generateSummary(sessions, developmentContexts, problemSolutionPairs, patterns, skipLlmEnhancement);
+      // Generate summary with key topics
+      const summary = await this.generateSummary(sessions, developmentContexts, problemSolutionPairs, patterns, skipLlmEnhancement, keyTopics);
 
       const result: VibeHistoryAnalysisResult = {
         checkpointInfo: {
@@ -175,6 +200,7 @@ export class VibeHistoryAgent {
         sessions,
         developmentContexts,
         problemSolutionPairs,
+        keyTopics,
         patterns,
         summary
       };
@@ -185,6 +211,7 @@ export class VibeHistoryAgent {
       log('Vibe history analysis completed', 'info', {
         sessionsAnalyzed: sessions.length,
         contextsExtracted: developmentContexts.length,
+        keyTopicsExtracted: keyTopics.length,
         problemSolutionPairs: problemSolutionPairs.length
       });
 
@@ -214,10 +241,11 @@ export class VibeHistoryAgent {
 
   private async parseSessionFiles(fromTimestamp: Date | null, maxSessions?: number): Promise<ConversationSession[]> {
     const sessions: ConversationSession[] = [];
+    const PARALLEL_BATCH_SIZE = 20; // Process 20 files in parallel
 
     try {
       // Sort files by modification time descending to get most recent first
-      const files = fs.readdirSync(this.specstoryPath)
+      let files = fs.readdirSync(this.specstoryPath)
         .filter(file => file.endsWith('.md'))
         .map(file => ({
           name: file,
@@ -226,31 +254,46 @@ export class VibeHistoryAgent {
         }))
         .sort((a, b) => b.mtime.getTime() - a.mtime.getTime()); // Most recent first
 
-      log(`Found ${files.length} session files, processing${maxSessions ? ` up to ${maxSessions}` : ' all'}`, 'info');
+      // Filter by timestamp if provided
+      if (fromTimestamp) {
+        files = files.filter(f => f.mtime >= fromTimestamp);
+      }
 
-      let processedCount = 0;
-      for (const file of files) {
-        // Stop if we've reached maxSessions
-        if (maxSessions && processedCount >= maxSessions) {
-          log(`Reached maxSessions limit (${maxSessions}), stopping`, 'info');
-          break;
-        }
+      // Apply maxSessions limit if provided and > 0
+      if (maxSessions && maxSessions > 0) {
+        files = files.slice(0, maxSessions);
+      }
 
-        // Skip files older than checkpoint
-        if (fromTimestamp && file.mtime < fromTimestamp) {
-          continue;
-        }
+      log(`Found ${files.length} session files to process (parallel batches of ${PARALLEL_BATCH_SIZE})`, 'info');
 
-        try {
-          const session = await this.parseSessionFile(file.path);
+      // Process files in parallel batches for performance
+      for (let i = 0; i < files.length; i += PARALLEL_BATCH_SIZE) {
+        const batch = files.slice(i, i + PARALLEL_BATCH_SIZE);
+        const batchNum = Math.floor(i / PARALLEL_BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(files.length / PARALLEL_BATCH_SIZE);
+
+        log(`Processing batch ${batchNum}/${totalBatches} (${batch.length} files)`, 'info');
+
+        const batchResults = await Promise.all(
+          batch.map(async (file) => {
+            try {
+              return await this.parseSessionFile(file.path);
+            } catch (error) {
+              log(`Failed to parse session file: ${file.name}`, 'warning', error);
+              return null;
+            }
+          })
+        );
+
+        // Collect successful parses
+        for (const session of batchResults) {
           if (session) {
             sessions.push(session);
-            processedCount++;
           }
-        } catch (error) {
-          log(`Failed to parse session file: ${file.name}`, 'warning', error);
         }
       }
+
+      log(`Successfully parsed ${sessions.length} sessions from ${files.length} files`, 'info');
 
     } catch (error) {
       log('Failed to read specstory directory', 'error', error);
@@ -339,26 +382,222 @@ export class VibeHistoryAgent {
 
   private parseExchanges(content: string): ConversationExchange[] {
     const exchanges: ConversationExchange[] = [];
-    
-    // Split content into exchange sections
-    const exchangeSections = content.split(/## Exchange \d+/).slice(1);
 
-    for (let i = 0; i < exchangeSections.length; i++) {
-      try {
-        const section = exchangeSections[i];
-        const exchange = this.parseExchange(i + 1, section);
-        if (exchange) {
-          exchanges.push(exchange);
+    // LSL format uses "## Prompt Set" sections containing multiple interactions
+    // Each Prompt Set can have:
+    // - "### Text Exchange - TIMESTAMP" with "**User Message:**"
+    // - "### ToolName - TIMESTAMP" with "**User Request:**", "**Tool:**", "**Result:**"
+
+    // First try LSL format (## Prompt Set)
+    const promptSetSections = content.split(/## Prompt Set \([^)]+\)/).slice(1);
+
+    if (promptSetSections.length > 0) {
+      // LSL format detected
+      let exchangeId = 1;
+      for (const promptSet of promptSetSections) {
+        const parsedExchanges = this.parseLslPromptSet(promptSet, exchangeId);
+        exchanges.push(...parsedExchanges);
+        exchangeId += parsedExchanges.length;
+      }
+    } else {
+      // Fallback to legacy format (## Exchange \d+)
+      const exchangeSections = content.split(/## Exchange \d+/).slice(1);
+      for (let i = 0; i < exchangeSections.length; i++) {
+        try {
+          const section = exchangeSections[i];
+          const exchange = this.parseLegacyExchange(i + 1, section);
+          if (exchange) {
+            exchanges.push(exchange);
+          }
+        } catch (error) {
+          log(`Error parsing exchange ${i + 1}`, 'warning', error);
         }
-      } catch (error) {
-        log(`Error parsing exchange ${i + 1}`, 'warning', error);
       }
     }
 
     return exchanges;
   }
 
-  private parseExchange(id: number, section: string): ConversationExchange | null {
+  /**
+   * Parse LSL format Prompt Set section
+   * Contains "### Text Exchange" for user messages and "### ToolName" for tool calls
+   */
+  private parseLslPromptSet(promptSet: string, startId: number): ConversationExchange[] {
+    const exchanges: ConversationExchange[] = [];
+
+    // Find all Text Exchange sections (actual user conversations)
+    const textExchangeRegex = /### Text Exchange - ([^\n]+)\n\n\*\*User Message:\*\* ([\s\S]*?)(?=\n---|\n### |\n## |$)/g;
+    let match;
+    let id = startId;
+
+    while ((match = textExchangeRegex.exec(promptSet)) !== null) {
+      const timestampStr = match[1];
+      const userMessage = match[2].trim();
+
+      // Parse timestamp from format "2025-12-20 06:50:12 UTC [07:50:12 CEST]"
+      const timestamp = this.parseTimestamp(timestampStr);
+
+      // Look for tool calls that follow this user message (assistant response)
+      const toolCalls = this.extractToolCallsFromPromptSet(promptSet);
+      const assistantMessage = this.buildAssistantMessageFromToolCalls(toolCalls);
+
+      exchanges.push({
+        id: id++,
+        timestamp,
+        userMessage,
+        assistantMessage,
+        context: {
+          tools: toolCalls.map(t => t.tool),
+          files: this.extractFilesFromToolCalls(toolCalls),
+          actions: this.extractActionsFromMessage(userMessage)
+        }
+      });
+    }
+
+    // If no Text Exchange found, check for tool-only prompt sets (user sent image/continued)
+    if (exchanges.length === 0) {
+      const toolCalls = this.extractToolCallsFromPromptSet(promptSet);
+      if (toolCalls.length > 0) {
+        // Extract user request from first tool call if available
+        const firstToolWithRequest = toolCalls.find(t => t.userRequest);
+        const userMessage = firstToolWithRequest?.userRequest || '[Image or continuation]';
+
+        exchanges.push({
+          id: startId,
+          timestamp: toolCalls[0]?.timestamp || new Date(),
+          userMessage,
+          assistantMessage: this.buildAssistantMessageFromToolCalls(toolCalls),
+          context: {
+            tools: toolCalls.map(t => t.tool),
+            files: this.extractFilesFromToolCalls(toolCalls),
+            actions: this.extractActionsFromToolCalls(toolCalls)
+          }
+        });
+      }
+    }
+
+    return exchanges;
+  }
+
+  private parseTimestamp(timestampStr: string): Date {
+    // Format: "2025-12-20 06:50:12 UTC [07:50:12 CEST]" or "2025-12-20 06:50:12 UTC"
+    const cleanStr = timestampStr.split(' [')[0].replace(' UTC', 'Z').replace(' ', 'T');
+    const parsed = new Date(cleanStr);
+    return isNaN(parsed.getTime()) ? new Date() : parsed;
+  }
+
+  private extractToolCallsFromPromptSet(promptSet: string): Array<{tool: string; timestamp: Date; result: string; output?: string; userRequest?: string}> {
+    const toolCalls: Array<{tool: string; timestamp: Date; result: string; output?: string; userRequest?: string}> = [];
+
+    // Match tool sections: ### ToolName - TIMESTAMP
+    const toolSectionRegex = /### ([A-Za-z_]+) - ([^\n]+)\n\n([\s\S]*?)(?=\n---\n|\n### |\n## |$)/g;
+    let match;
+
+    while ((match = toolSectionRegex.exec(promptSet)) !== null) {
+      const toolName = match[1];
+      if (toolName === 'Text') continue; // Skip "Text Exchange" sections
+
+      const timestampStr = match[2];
+      const toolContent = match[3];
+
+      // Extract result status
+      const resultMatch = toolContent.match(/\*\*Result:\*\* (✅ Success|❌ Error)/);
+      const result = resultMatch ? resultMatch[1] : 'unknown';
+
+      // Extract output if present
+      const outputMatch = toolContent.match(/\*\*Output:\*\* ```[^\n]*\n([\s\S]*?)```/);
+      const output = outputMatch ? outputMatch[1].trim() : undefined;
+
+      // Extract user request
+      const userRequestMatch = toolContent.match(/\*\*User Request:\*\* ([\s\S]*?)(?=\n\*\*Tool:\*\*|\n\*\*Input:\*\*|$)/);
+      const userRequest = userRequestMatch ? userRequestMatch[1].trim() : undefined;
+
+      toolCalls.push({
+        tool: toolName,
+        timestamp: this.parseTimestamp(timestampStr),
+        result,
+        output,
+        userRequest
+      });
+    }
+
+    return toolCalls;
+  }
+
+  private buildAssistantMessageFromToolCalls(toolCalls: Array<{tool: string; result: string; output?: string}>): string {
+    if (toolCalls.length === 0) return '';
+
+    const parts: string[] = [];
+    for (const call of toolCalls.slice(0, 10)) { // Limit to first 10 for reasonable size
+      parts.push(`[Tool: ${call.tool}] ${call.result}`);
+      if (call.output) {
+        parts.push(call.output.substring(0, 200)); // Truncate long outputs
+      }
+    }
+    return parts.join('\n');
+  }
+
+  private extractFilesFromToolCalls(toolCalls: Array<{output?: string}>): string[] {
+    const files: string[] = [];
+    for (const call of toolCalls) {
+      if (call.output) {
+        const fileMatches = call.output.match(/[\w\-./]+\.(ts|js|json|md|py|txt|yml|yaml|tsx|jsx)\b/g);
+        if (fileMatches) {
+          fileMatches.forEach(f => {
+            if (!files.includes(f)) files.push(f);
+          });
+        }
+      }
+    }
+    return files.slice(0, 20);
+  }
+
+  private extractActionsFromToolCalls(toolCalls: Array<{tool: string}>): string[] {
+    const actions: string[] = [];
+    const toolToAction: Record<string, string> = {
+      'Edit': 'update',
+      'Write': 'create',
+      'Read': 'analyze',
+      'Bash': 'execute',
+      'Grep': 'search',
+      'Glob': 'search',
+      'TodoWrite': 'plan'
+    };
+
+    for (const call of toolCalls) {
+      const action = toolToAction[call.tool];
+      if (action && !actions.includes(action)) {
+        actions.push(action);
+      }
+    }
+    return actions;
+  }
+
+  private extractActionsFromMessage(message: string): string[] {
+    const actions: string[] = [];
+    const actionPatterns = [
+      { pattern: /creating?|create/i, action: 'create' },
+      { pattern: /updating?|update/i, action: 'update' },
+      { pattern: /fixing?|fix/i, action: 'fix' },
+      { pattern: /analyzing?|analyze/i, action: 'analyze' },
+      { pattern: /implementing?|implement/i, action: 'implement' },
+      { pattern: /refactoring?|refactor/i, action: 'refactor' },
+      { pattern: /debug/i, action: 'debug' },
+      { pattern: /test/i, action: 'test' }
+    ];
+
+    for (const { pattern, action } of actionPatterns) {
+      if (pattern.test(message) && !actions.includes(action)) {
+        actions.push(action);
+      }
+    }
+    return actions;
+  }
+
+  /**
+   * Legacy format parser for backwards compatibility
+   */
+  private parseLegacyExchange(id: number, section: string): ConversationExchange | null {
     try {
       // Extract user message
       const userMatch = section.match(/\*\*User:\*\* \*\(([^)]+)\)\*\n([\s\S]*?)(?=\n\*\*Assistant:\*\*|\n---|\n## Exchange|\n\*\*Extraction Summary|\nEOF|$)/);
@@ -599,6 +838,227 @@ export class VibeHistoryAgent {
     return outcomes.slice(0, 5);
   }
 
+  /**
+   * Extract key topics from sessions using semantic LLM analysis
+   * Groups sessions into batches and processes them in parallel for efficiency
+   */
+  private async extractKeyTopics(sessions: ConversationSession[], skipLlm: boolean = false): Promise<KeyTopic[]> {
+    if (sessions.length === 0) return [];
+
+    // If skipping LLM, return empty (fall back to keyword-based problemSolutionPairs)
+    if (skipLlm) {
+      log('Skipping LLM topic extraction (skipLlmEnhancement=true)', 'info');
+      return [];
+    }
+
+    const BATCH_SIZE = 15;  // Sessions per batch for LLM analysis
+    const PARALLEL_BATCHES = 3;  // Process 3 batches in parallel
+    const allTopics: KeyTopic[] = [];
+
+    // Sort sessions by date for chronological grouping
+    const sortedSessions = [...sessions].sort((a, b) =>
+      a.timestamp.getTime() - b.timestamp.getTime()
+    );
+
+    // Create batches
+    const batches: ConversationSession[][] = [];
+    for (let i = 0; i < sortedSessions.length; i += BATCH_SIZE) {
+      batches.push(sortedSessions.slice(i, i + BATCH_SIZE));
+    }
+
+    log(`Extracting key topics from ${sessions.length} sessions in ${batches.length} batches`, 'info');
+
+    // Process batches in parallel chunks
+    for (let chunkStart = 0; chunkStart < batches.length; chunkStart += PARALLEL_BATCHES) {
+      const chunk = batches.slice(chunkStart, chunkStart + PARALLEL_BATCHES);
+
+      const batchPromises = chunk.map(async (batch, idx) => {
+        try {
+          return await this.extractTopicsFromBatch(batch, chunkStart + idx);
+        } catch (error) {
+          log(`Failed to extract topics from batch ${chunkStart + idx}`, 'warning', error);
+          return [];
+        }
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+      for (const topics of batchResults) {
+        allTopics.push(...topics);
+      }
+    }
+
+    // Merge similar topics across batches
+    const mergedTopics = this.mergeSimiLarTopics(allTopics);
+
+    // Sort by significance and return top topics
+    mergedTopics.sort((a, b) => b.significance - a.significance);
+
+    log(`Extracted ${mergedTopics.length} unique key topics`, 'info');
+    return mergedTopics.slice(0, 50);  // Return top 50 topics
+  }
+
+  /**
+   * Extract topics from a single batch of sessions using LLM
+   */
+  private async extractTopicsFromBatch(sessions: ConversationSession[], batchIndex: number): Promise<KeyTopic[]> {
+    // Create condensed representation of sessions for LLM
+    const sessionSummaries = sessions.map(session => {
+      const exchanges = session.exchanges.slice(0, 5);  // First 5 exchanges per session
+      const userMessages = exchanges.map(e => e.userMessage).filter(m => m.length > 10);
+      const files = [...new Set(exchanges.flatMap(e => e.context.files))].slice(0, 10);
+      const tools = [...new Set(exchanges.flatMap(e => e.context.tools))].slice(0, 10);
+
+      return {
+        date: session.timestamp.toISOString().split('T')[0],
+        filename: session.filename,
+        messages: userMessages.slice(0, 3).map(m => m.substring(0, 200)),
+        files,
+        tools
+      };
+    });
+
+    const prompt = `Analyze these development session summaries and extract the KEY TOPICS discussed.
+For each topic, identify:
+- What was being worked on (main topic/theme)
+- Category: feature, bugfix, refactoring, infrastructure, documentation, investigation, or configuration
+- Key decisions made
+- Technologies/tools involved
+- Outcome: completed, in_progress, blocked, or deferred
+- Significance (1-10, where 10 = critical architectural change)
+
+Sessions (batch ${batchIndex + 1}):
+${JSON.stringify(sessionSummaries, null, 2)}
+
+Return a JSON array of topics:
+[{
+  "topic": "Short topic name",
+  "category": "feature|bugfix|refactoring|infrastructure|documentation|investigation|configuration",
+  "description": "What was discussed/worked on",
+  "keyDecisions": ["decision1", "decision2"],
+  "technologies": ["tech1", "tech2"],
+  "outcome": "completed|in_progress|blocked|deferred",
+  "significance": 7,
+  "relatedFiles": ["file1.ts", "file2.ts"]
+}]
+
+Focus on SUBSTANTIVE development topics. Ignore trivial commands like "sl" or simple queries.
+Return 3-8 topics per batch. Return ONLY the JSON array, no other text.`;
+
+    try {
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: "patterns",
+        provider: "auto"
+      });
+
+      // Parse LLM response - insights is the string response
+      const jsonMatch = result.insights.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        log(`No JSON array found in LLM response for batch ${batchIndex}`, 'warning');
+        return [];
+      }
+
+      const topics = JSON.parse(jsonMatch[0]) as Array<{
+        topic: string;
+        category: string;
+        description: string;
+        keyDecisions: string[];
+        technologies: string[];
+        outcome: string;
+        significance: number;
+        relatedFiles: string[];
+      }>;
+
+      // Transform to KeyTopic format with session metadata
+      const sessionFilenames = sessions.map(s => s.filename);
+      const timespan = {
+        first: sessions[0].timestamp,
+        last: sessions[sessions.length - 1].timestamp
+      };
+
+      return topics.map(t => ({
+        topic: t.topic,
+        category: (t.category as KeyTopic['category']) || 'investigation',
+        description: t.description,
+        keyDecisions: t.keyDecisions || [],
+        technologies: t.technologies || [],
+        outcome: (t.outcome as KeyTopic['outcome']) || 'in_progress',
+        significance: Math.min(10, Math.max(1, t.significance || 5)),
+        relatedFiles: t.relatedFiles || [],
+        sessions: sessionFilenames,
+        timespan
+      }));
+
+    } catch (error) {
+      log(`LLM topic extraction failed for batch ${batchIndex}`, 'warning', error);
+      return [];
+    }
+  }
+
+  /**
+   * Merge similar topics across batches based on topic name similarity
+   */
+  private mergeSimiLarTopics(topics: KeyTopic[]): KeyTopic[] {
+    if (topics.length === 0) return [];
+
+    const merged: KeyTopic[] = [];
+    const processed = new Set<number>();
+
+    for (let i = 0; i < topics.length; i++) {
+      if (processed.has(i)) continue;
+
+      const current = topics[i];
+      const similar: KeyTopic[] = [current];
+      processed.add(i);
+
+      // Find similar topics (simple word overlap for now)
+      const currentWords = new Set(current.topic.toLowerCase().split(/\s+/));
+
+      for (let j = i + 1; j < topics.length; j++) {
+        if (processed.has(j)) continue;
+
+        const other = topics[j];
+        const otherWords = new Set(other.topic.toLowerCase().split(/\s+/));
+
+        // Calculate word overlap
+        const intersection = [...currentWords].filter(w => otherWords.has(w) && w.length > 3);
+        const similarity = intersection.length / Math.max(currentWords.size, otherWords.size);
+
+        if (similarity > 0.4 || current.topic.toLowerCase().includes(other.topic.toLowerCase()) ||
+            other.topic.toLowerCase().includes(current.topic.toLowerCase())) {
+          similar.push(other);
+          processed.add(j);
+        }
+      }
+
+      // Merge similar topics
+      if (similar.length === 1) {
+        merged.push(current);
+      } else {
+        // Take highest significance topic as base
+        similar.sort((a, b) => b.significance - a.significance);
+        const base = similar[0];
+
+        merged.push({
+          topic: base.topic,
+          category: base.category,
+          description: base.description,
+          keyDecisions: [...new Set(similar.flatMap(t => t.keyDecisions))].slice(0, 10),
+          technologies: [...new Set(similar.flatMap(t => t.technologies))].slice(0, 10),
+          outcome: base.outcome,
+          significance: Math.max(...similar.map(t => t.significance)),
+          relatedFiles: [...new Set(similar.flatMap(t => t.relatedFiles))].slice(0, 20),
+          sessions: [...new Set(similar.flatMap(t => t.sessions))],
+          timespan: {
+            first: new Date(Math.min(...similar.map(t => t.timespan.first.getTime()))),
+            last: new Date(Math.max(...similar.map(t => t.timespan.last.getTime())))
+          }
+        });
+      }
+    }
+
+    return merged;
+  }
+
   private identifyProblemSolutionPairs(sessions: ConversationSession[]): ProblemSolutionPair[] {
     const pairs: ProblemSolutionPair[] = [];
 
@@ -819,34 +1279,54 @@ export class VibeHistoryAgent {
     contexts: DevelopmentContext[],
     pairs: ProblemSolutionPair[],
     patterns: VibeHistoryAnalysisResult['patterns'],
-    skipLlmEnhancement = false
+    skipLlmEnhancement = false,
+    keyTopics: KeyTopic[] = []
   ): Promise<VibeHistoryAnalysisResult['summary']> {
     const totalExchanges = sessions.reduce((sum, s) => sum + s.exchanges.length, 0);
 
-    const primaryFocus = patterns.developmentThemes.length > 0
-      ? patterns.developmentThemes[0].theme
-      : 'General Development';
+    // Use key topics for primary focus if available
+    const primaryFocus = keyTopics.length > 0
+      ? keyTopics[0].topic
+      : patterns.developmentThemes.length > 0
+        ? patterns.developmentThemes[0].theme
+        : 'General Development';
 
     const keyLearnings: string[] = [];
 
-    // Extract key learnings from successful problem-solution pairs
-    pairs.slice(0, 3).forEach(pair => {
-      if (pair.solution.outcome !== 'Solution implemented') {
-        keyLearnings.push(`${pair.problem.description.substring(0, 80)}... → ${pair.solution.outcome}`);
-      }
+    // Extract key learnings from key topics (preferred over problem-solution pairs)
+    keyTopics.slice(0, 5).forEach(topic => {
+      const decisionSummary = topic.keyDecisions.length > 0 ? `: ${topic.keyDecisions[0]}` : '';
+      keyLearnings.push(`[${topic.category}] ${topic.topic}${decisionSummary}`);
     });
+
+    // Fall back to problem-solution pairs if no key topics
+    if (keyLearnings.length === 0) {
+      pairs.slice(0, 3).forEach(pair => {
+        if (pair.solution.outcome !== 'Solution implemented') {
+          keyLearnings.push(`${pair.problem.description.substring(0, 80)}... → ${pair.solution.outcome}`);
+        }
+      });
+    }
 
     // Add pattern insights
     if (patterns.preferredSolutions.length > 0) {
       keyLearnings.push(`Preferred approach: ${patterns.preferredSolutions[0].solution}`);
     }
 
+    // Top topics for summary (sorted by significance)
+    const topTopics = keyTopics
+      .sort((a, b) => b.significance - a.significance)
+      .slice(0, 5)
+      .map(t => t.topic);
+
     // Base insights (always generated - no LLM needed)
-    let enhancedInsights = `Analyzed ${sessions.length} conversation sessions with ${totalExchanges} exchanges. ` +
-      `Primary development focus: ${primaryFocus}. ` +
-      `Identified ${pairs.length} problem-solution patterns and ${contexts.length} development contexts. ` +
-      `Most used tool: ${patterns.toolUsage[0]?.tool || 'N/A'}. ` +
-      `Success rate: ${Math.round((pairs.length / Math.max(contexts.length, 1)) * 100)}% of contexts resulted in clear solutions.`;
+    let enhancedInsights = keyTopics.length > 0
+      ? `Analyzed ${sessions.length} conversation sessions. Extracted ${keyTopics.length} key development topics. ` +
+        `Top focus areas: ${topTopics.slice(0, 3).join(', ')}. ` +
+        `Technologies involved: ${[...new Set(keyTopics.flatMap(t => t.technologies))].slice(0, 5).join(', ') || 'various'}.`
+      : `Analyzed ${sessions.length} conversation sessions with ${totalExchanges} exchanges. ` +
+        `Primary development focus: ${primaryFocus}. ` +
+        `Most used tool: ${patterns.toolUsage[0]?.tool || 'N/A'}.`;
 
     // Skip LLM enhancement if requested (for performance)
     if (skipLlmEnhancement) {
@@ -855,7 +1335,8 @@ export class VibeHistoryAgent {
         totalExchanges,
         primaryFocus,
         keyLearnings: keyLearnings.slice(0, 5),
-        insights: enhancedInsights
+        insights: enhancedInsights,
+        topTopics
       };
     }
 
@@ -924,7 +1405,8 @@ Provide a JSON response:
       totalExchanges,
       primaryFocus,
       keyLearnings: keyLearnings.slice(0, 5), // Limit to top 5
-      insights: enhancedInsights
+      insights: enhancedInsights,
+      topTopics
     };
   }
 }

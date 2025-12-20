@@ -220,16 +220,18 @@ export class CodeGraphAgent {
 
   /**
    * Get statistics from existing Memgraph data without re-indexing
+   * Note: code-graph-rag doesn't set project property on nodes, so we query all entities.
+   * For multi-project support, nodes would need a project/repo_path property during indexing.
    */
   async getExistingStats(repoPath?: string): Promise<CodeGraphAnalysisResult> {
     const targetPath = repoPath || this.repositoryPath;
     const projectName = path.basename(targetPath);
 
     try {
-      // Query for entity counts by type
+      // Query for entity counts by type (no project filter - code-graph-rag doesn't set project property)
+      // Include all nodes since they don't have project property set
       const statsResult = await this.runCypherQuery(`
         MATCH (n)
-        WHERE n.project = "${projectName}" OR n.repository_path CONTAINS "${projectName}"
         RETURN
           count(n) as totalEntities,
           count(CASE WHEN n:Function THEN 1 END) as functions,
@@ -241,14 +243,13 @@ export class CodeGraphAgent {
       // Query for relationship count
       const relResult = await this.runCypherQuery(`
         MATCH (n)-[r]->(m)
-        WHERE (n.project = "${projectName}" OR n.repository_path CONTAINS "${projectName}")
         RETURN count(r) as totalRelationships
       `);
 
-      // Query for language distribution
+      // Query for language distribution (use label as proxy for language if property not set)
       const langResult = await this.runCypherQuery(`
         MATCH (n)
-        WHERE (n.project = "${projectName}" OR n.repository_path CONTAINS "${projectName}") AND n.language IS NOT NULL
+        WHERE n.language IS NOT NULL
         RETURN n.language as language, count(n) as count
       `);
 

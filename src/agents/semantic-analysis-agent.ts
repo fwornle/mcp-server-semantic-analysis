@@ -1639,6 +1639,7 @@ Focus on SPECIFIC, ACTIONABLE insights:
     }>;
     batch_size?: number;
     min_docstring_length?: number;
+    parallel_batches?: number;  // Number of batches to process in parallel
   }): Promise<{
     entityAnalyses: Record<string, {
       purpose: string;
@@ -1670,6 +1671,7 @@ Focus on SPECIFIC, ACTIONABLE insights:
   }> {
     const batchSize = params.batch_size || 20;
     const minDocstringLength = params.min_docstring_length || 50;
+    const parallelBatches = params.parallel_batches || 1;  // Default to sequential for backwards compatibility
 
     log('Starting documentation semantics analysis', 'info', {
       codeEntitiesCount: params.code_entities?.length || 0,
@@ -1677,7 +1679,8 @@ Focus on SPECIFIC, ACTIONABLE insights:
       docLinksCount: params.doc_analysis?.links?.length || 0,
       documentsCount: params.doc_analysis?.documents?.length || 0,
       batchSize,
-      minDocstringLength
+      minDocstringLength,
+      parallelBatches
     });
 
     const entityAnalyses: Record<string, any> = {};
@@ -1697,56 +1700,76 @@ Focus on SPECIFIC, ACTIONABLE insights:
 
     log(`Filtered ${entitiesWithDocstrings.length} entities with meaningful docstrings`, 'info');
 
-    // Process docstrings in batches
+    // Split entities into batches
+    const allBatches: typeof entitiesWithDocstrings[] = [];
     for (let i = 0; i < entitiesWithDocstrings.length; i += batchSize) {
-      const batch = entitiesWithDocstrings.slice(i, i + batchSize);
+      allBatches.push(entitiesWithDocstrings.slice(i, i + batchSize));
+    }
 
+    // Process batches in parallel chunks for better performance
+    const processBatch = async (batch: typeof entitiesWithDocstrings, batchIndex: number) => {
       try {
         const batchAnalyses = await this.analyzeDocstringBatch(batch);
-
-        for (const analysis of batchAnalyses) {
-          entityAnalyses[analysis.entityId] = {
-            purpose: analysis.purpose,
-            parameters: analysis.parameters,
-            returnValue: analysis.returnValue,
-            usagePatterns: analysis.usagePatterns,
-            warnings: analysis.warnings,
-            relatedEntities: analysis.relatedEntities,
-            semanticScore: analysis.semanticScore
-          };
-
-          // Create enriched observations for this entity
-          const observations: string[] = [];
-          if (analysis.purpose) {
-            observations.push(`Purpose: ${analysis.purpose}`);
-          }
-          if (analysis.usagePatterns.length > 0) {
-            observations.push(`Usage: ${analysis.usagePatterns.join('; ')}`);
-          }
-          if (analysis.warnings.length > 0) {
-            observations.push(`Caveats: ${analysis.warnings.join('; ')}`);
-          }
-          if (analysis.relatedEntities.length > 0) {
-            observations.push(`Related: ${analysis.relatedEntities.join(', ')}`);
-          }
-
-          if (observations.length > 0) {
-            enrichedObservations.push({
-              entityName: analysis.entityName,
-              observations
-            });
-          }
-
-          entitiesAnalyzed++;
-          patternsExtracted += analysis.usagePatterns.length;
-        }
+        return { success: true, analyses: batchAnalyses, batchIndex };
       } catch (error) {
-        log(`Failed to analyze docstring batch ${i}-${i + batchSize}`, 'warning', error);
-        entitiesSkipped += batch.length;
+        log(`Failed to analyze docstring batch ${batchIndex}`, 'warning', error);
+        return { success: false, analyses: [], batchIndex, skipped: batch.length };
+      }
+    };
+
+    // Process in parallel chunks of parallelBatches at a time
+    for (let chunkStart = 0; chunkStart < allBatches.length; chunkStart += parallelBatches) {
+      const chunk = allBatches.slice(chunkStart, chunkStart + parallelBatches);
+      const results = await Promise.all(
+        chunk.map((batch, idx) => processBatch(batch, chunkStart + idx))
+      );
+
+      // Aggregate results from parallel batch processing
+      for (const result of results) {
+        if (result.success) {
+          for (const analysis of result.analyses) {
+            entityAnalyses[analysis.entityId] = {
+              purpose: analysis.purpose,
+              parameters: analysis.parameters,
+              returnValue: analysis.returnValue,
+              usagePatterns: analysis.usagePatterns,
+              warnings: analysis.warnings,
+              relatedEntities: analysis.relatedEntities,
+              semanticScore: analysis.semanticScore
+            };
+
+            // Create enriched observations for this entity
+            const observations: string[] = [];
+            if (analysis.purpose) {
+              observations.push(`Purpose: ${analysis.purpose}`);
+            }
+            if (analysis.usagePatterns.length > 0) {
+              observations.push(`Usage: ${analysis.usagePatterns.join('; ')}`);
+            }
+            if (analysis.warnings.length > 0) {
+              observations.push(`Caveats: ${analysis.warnings.join('; ')}`);
+            }
+            if (analysis.relatedEntities.length > 0) {
+              observations.push(`Related: ${analysis.relatedEntities.join(', ')}`);
+            }
+
+            if (observations.length > 0) {
+              enrichedObservations.push({
+                entityName: analysis.entityName,
+                observations
+              });
+            }
+
+            entitiesAnalyzed++;
+            patternsExtracted += analysis.usagePatterns.length;
+          }
+        } else {
+          entitiesSkipped += result.skipped || 0;
+        }
       }
     }
 
-    // Phase 2: Analyze documentation prose
+    // Phase 2: Analyze documentation prose (also parallelized)
     const docLinks = params.doc_analysis?.links || [];
     const documents = params.doc_analysis?.documents || [];
 
@@ -1759,20 +1782,34 @@ Focus on SPECIFIC, ACTIONABLE insights:
       linksByDocument.get(link.documentPath)!.push(link);
     }
 
-    // Analyze each document with its associated links
-    for (const [docPath, links] of linksByDocument) {
-      if (links.length < 2) continue; // Only analyze docs with multiple code references
+    // Filter to only docs with multiple code references
+    const docsToAnalyze = Array.from(linksByDocument.entries())
+      .filter(([_, links]) => links.length >= 2);
 
+    // Process documents in parallel chunks
+    const processDocument = async (docPath: string, links: typeof docLinks) => {
       try {
         const docMetadata = documents.find(d => d.path === docPath);
         const proseAnalysis = await this.analyzeDocumentProse(docPath, links, docMetadata);
-
-        if (proseAnalysis) {
-          proseAnalyses.push(proseAnalysis);
-          patternsExtracted += proseAnalysis.bestPractices.length;
-        }
+        return { success: true, analysis: proseAnalysis };
       } catch (error) {
         log(`Failed to analyze document prose: ${docPath}`, 'warning', error);
+        return { success: false, analysis: null };
+      }
+    };
+
+    // Process in parallel chunks of parallelBatches at a time
+    for (let chunkStart = 0; chunkStart < docsToAnalyze.length; chunkStart += parallelBatches) {
+      const chunk = docsToAnalyze.slice(chunkStart, chunkStart + parallelBatches);
+      const results = await Promise.all(
+        chunk.map(([docPath, links]) => processDocument(docPath, links))
+      );
+
+      for (const result of results) {
+        if (result.success && result.analysis) {
+          proseAnalyses.push(result.analysis);
+          patternsExtracted += result.analysis.bestPractices.length;
+        }
       }
     }
 

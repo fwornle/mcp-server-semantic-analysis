@@ -96,7 +96,7 @@ export class CoordinatorAgent {
    * Write workflow progress to a file for external monitoring
    * File location: .data/workflow-progress.json
    */
-  private writeProgressFile(execution: WorkflowExecution, workflow: WorkflowDefinition, currentStep?: string): void {
+  private writeProgressFile(execution: WorkflowExecution, workflow: WorkflowDefinition, currentStep?: string, runningSteps?: string[]): void {
     try {
       const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
 
@@ -108,6 +108,10 @@ export class CoordinatorAgent {
         error?: string;
         outputs?: Record<string, any>;
       }> = [];
+
+      // Track which steps are currently running (from DAG executor)
+      const activeRunningSteps = new Set(runningSteps || []);
+      if (currentStep) activeRunningSteps.add(currentStep);
 
       for (const [stepName, result] of Object.entries(execution.results)) {
         const timing = result?._timing as { duration?: number } | undefined;
@@ -122,12 +126,14 @@ export class CoordinatorAgent {
         });
       }
 
-      // Add current step if provided and not already in results
-      if (currentStep && !execution.results[currentStep]) {
-        stepsDetail.push({
-          name: currentStep,
-          status: 'running',
-        });
+      // Add ALL currently running steps (for parallel execution visibility)
+      for (const stepName of activeRunningSteps) {
+        if (!execution.results[stepName]) {
+          stepsDetail.push({
+            name: stepName,
+            status: 'running',
+          });
+        }
       }
 
       const completedSteps = stepsDetail.filter(s => s.status === 'completed').map(s => s.name);
@@ -139,9 +145,11 @@ export class CoordinatorAgent {
         totalCommits: 0,
         totalFiles: 0,
         totalSessions: 0,
+        totalKeyTopics: 0,
         totalObservations: 0,
         totalInsights: 0,
         totalPatterns: 0,
+        keyTopics: [] as Array<{ topic: string; category: string; significance: number }>,
         insightsGenerated: [] as Array<{ name: string; filePath?: string; significance?: number }>,
         patternsFound: [] as Array<{ name: string; category: string; significance: number }>,
         codeGraphStats: null as { totalEntities: number; languages: string[] } | null,
@@ -162,6 +170,15 @@ export class CoordinatorAgent {
         // Collect insight documents
         if (outputs.insightDocuments) {
           summaryStats.insightsGenerated.push(...outputs.insightDocuments);
+        }
+
+        // Collect key topics from vibe history (semantic LLM-based)
+        if (outputs.topTopics && Array.isArray(outputs.topTopics)) {
+          summaryStats.keyTopics.push(...outputs.topTopics);
+          summaryStats.totalKeyTopics += outputs.topTopics.length;
+        }
+        if (outputs.keyTopicsCount) {
+          summaryStats.totalKeyTopics = Math.max(summaryStats.totalKeyTopics, outputs.keyTopicsCount);
         }
 
         // Collect top patterns
@@ -186,6 +203,9 @@ export class CoordinatorAgent {
       // Sort patterns by significance
       summaryStats.patternsFound.sort((a: any, b: any) => (b.significance || 0) - (a.significance || 0));
 
+      // Get all currently running steps
+      const currentlyRunning = stepsDetail.filter(s => s.status === 'running').map(s => s.name);
+
       const progress = {
         workflowName: workflow.name,
         executionId: execution.id,
@@ -193,16 +213,18 @@ export class CoordinatorAgent {
         team: this.team,
         repositoryPath: this.repositoryPath,
         startTime: execution.startTime.toISOString(),
-        currentStep: currentStep || null,
+        currentStep: currentStep || currentlyRunning[0] || null,
         totalSteps: workflow.steps.length,
         completedSteps: completedSteps.length,
         failedSteps: failedSteps.length,
         skippedSteps: skippedSteps.length,
+        runningSteps: currentlyRunning.length,  // Count of parallel steps
         stepsCompleted: completedSteps,
         stepsFailed: failedSteps,
         stepsSkipped: skippedSteps,
+        stepsRunning: currentlyRunning,  // NEW: All currently running steps (for parallel visibility)
         stepsDetail: stepsDetail,
-        summary: summaryStats,  // New: aggregated statistics
+        summary: summaryStats,
         lastUpdate: new Date().toISOString(),
         elapsedSeconds: Math.round((Date.now() - execution.startTime.getTime()) / 1000),
       };
@@ -276,10 +298,10 @@ export class CoordinatorAgent {
             parameters: {
               history_path: ".specstory/history",
               checkpoint_enabled: false, // For complete-analysis: analyze ALL sessions
-              maxSessions: 200, // Limit to recent 200 sessions for performance
+              maxSessions: 0, // 0 = unlimited - process all sessions with parallelization
               skipLlmEnhancement: false // Still generate LLM insights
             },
-            timeout: 300, // 5 minutes for comprehensive vibe analysis
+            timeout: 600, // 10 minutes for comprehensive vibe analysis (767+ LSL files)
           },
           {
             name: "semantic_analysis",
@@ -383,10 +405,11 @@ export class CoordinatorAgent {
               doc_analysis: "{{link_documentation.result}}",
               raw_code_entities: "{{index_codebase.result.entities}}",
               batch_size: 20,
-              min_docstring_length: 50
+              min_docstring_length: 50,
+              parallel_batches: 3  // Process 3 batches in parallel for faster completion
             },
             dependencies: ["transform_code_entities", "link_documentation"],
-            timeout: 180, // 3 minutes for LLM-based docstring analysis
+            timeout: 600, // 10 minutes for LLM-based docstring analysis (large codebases with parallel batches)
           },
           {
             name: "quality_assurance",
@@ -1179,11 +1202,14 @@ export class CoordinatorAgent {
             maxConcurrent
           });
 
-          // Write progress before starting step
-          this.writeProgressFile(execution, workflow, step.name);
-
           const promise = executeStepAsync(step);
           runningSteps.set(step.name, promise);
+        }
+
+        // Write progress AFTER all steps started - shows ALL running steps for parallel visibility
+        if (stepsToStart.length > 0) {
+          const allRunningStepNames = Array.from(runningSteps.keys());
+          this.writeProgressFile(execution, workflow, stepsToStart[0].name, allRunningStepNames);
         }
 
         // Wait for at least one step to complete
@@ -1230,8 +1256,9 @@ export class CoordinatorAgent {
               totalSteps: workflow.steps.length
             });
 
-            // Update progress file after step completion
-            this.writeProgressFile(execution, workflow);
+            // Update progress file after step completion - include remaining running steps
+            const remainingRunning = Array.from(runningSteps.keys());
+            this.writeProgressFile(execution, workflow, undefined, remainingRunning);
 
             // QA Enforcement: Check quality assurance results
             if (completedResult.name === 'quality_assurance' && completedResult.result) {
@@ -2230,6 +2257,20 @@ Expected locations for generated files:
     }
     if (Array.isArray(result.sessions)) summary.sessionsCount = result.sessions.length;
     if (Array.isArray(result.observations)) summary.observationsCount = result.observations.length;
+
+    // Extract key topics from vibe history analysis (semantic LLM-based topics)
+    if (Array.isArray(result.keyTopics) && result.keyTopics.length > 0) {
+      summary.keyTopicsCount = result.keyTopics.length;
+      summary.topTopics = result.keyTopics.slice(0, 5).map((t: any) => ({
+        topic: t.topic,
+        category: t.category,
+        significance: t.significance
+      }));
+    }
+    // Also extract from summary if available
+    if (result.summary?.topTopics && Array.isArray(result.summary.topTopics)) {
+      summary.topTopicNames = result.summary.topTopics;
+    }
 
     // Extract insight document details (for generate_insights step)
     if (result.insightDocument || result.insightDocuments) {

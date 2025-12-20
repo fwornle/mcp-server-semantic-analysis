@@ -50,6 +50,18 @@ export interface CodeGraphAnalysisResult {
   warning?: string;
   /** True if indexing was skipped due to CLI unavailability */
   skipped?: boolean;
+  /** True if using incremental mode (reusing existing data) */
+  incrementalMode?: boolean;
+  /** Number of files changed since last index */
+  changedFilesCount?: number;
+  /** Sample of changed file paths */
+  changedFiles?: string[];
+  /** Whether a full re-index was performed */
+  reindexed?: boolean;
+  /** Node count before re-index (if applicable) */
+  previousNodeCount?: number;
+  /** Human-readable message about the indexing result */
+  message?: string;
 }
 
 export interface CodeGraphQueryResult {
@@ -568,15 +580,19 @@ export class CodeGraphAgent {
 
   /**
    * Index repository incrementally based on git changes
-   * Only re-indexes files that have changed since a commit or time period
+   * Smart incremental approach:
+   * - If Memgraph has substantial data (>100 nodes), reuse it for minor changes
+   * - Only trigger full re-index if no data exists or forceReindex is true
    */
   async indexIncrementally(repoPath?: string, options: {
     sinceCommit?: string;    // Compare against this commit (e.g., 'HEAD~10', commit hash)
     sinceDays?: number;      // Or use time-based (default: 7 days)
+    forceReindex?: boolean;  // Force full re-index even if data exists
+    minExistingNodes?: number; // Threshold for "substantial" data (default: 100)
   } = {}): Promise<CodeGraphAnalysisResult> {
     const targetPath = repoPath || this.repositoryPath;
     const projectName = path.basename(targetPath);
-    const { sinceCommit, sinceDays = 7 } = options;
+    const { sinceCommit, sinceDays = 7, forceReindex = false, minExistingNodes = 100 } = options;
 
     log(`[CodeGraphAgent] Incremental indexing for ${projectName}`, 'info');
 
@@ -588,34 +604,65 @@ export class CodeGraphAgent {
     }
 
     try {
-      // Get list of changed files using git
-      const changedFiles = await this.getChangedFiles(targetPath, sinceCommit, sinceDays);
+      // First check if we already have substantial data in Memgraph
+      const existingStats = await this.getExistingStats(targetPath);
+      const existingNodeCount = existingStats.statistics?.totalEntities || 0;
 
-      if (changedFiles.length === 0) {
-        log(`[CodeGraphAgent] No changed files found, using existing index`, 'info');
-        return this.getExistingStats(targetPath);
+      if (!forceReindex && existingNodeCount >= minExistingNodes) {
+        // We have substantial existing data
+        log(`[CodeGraphAgent] Found ${existingNodeCount} existing nodes in Memgraph, checking for changes...`, 'info');
+
+        // Get list of changed files using git
+        const changedFiles = await this.getChangedFiles(targetPath, sinceCommit, sinceDays);
+        const supportedFiles = changedFiles.filter(file =>
+          this.SUPPORTED_EXTENSIONS.some(ext => file.toLowerCase().endsWith(ext))
+        );
+
+        if (supportedFiles.length === 0) {
+          log(`[CodeGraphAgent] No source file changes, using existing index (${existingNodeCount} nodes)`, 'info');
+          return {
+            ...existingStats,
+            incrementalMode: true,
+            changedFilesCount: 0,
+            reindexed: false,
+          };
+        }
+
+        // For incremental analysis with existing data:
+        // Only re-index if there are MANY changes (>20% of codebase or >50 files)
+        const changeThreshold = Math.max(50, existingNodeCount * 0.2);
+        if (supportedFiles.length < changeThreshold) {
+          log(`[CodeGraphAgent] Only ${supportedFiles.length} files changed (threshold: ${Math.floor(changeThreshold)}), using existing index`, 'info');
+          return {
+            ...existingStats,
+            incrementalMode: true,
+            changedFilesCount: supportedFiles.length,
+            changedFiles: supportedFiles.slice(0, 20), // Include sample of changed files
+            reindexed: false,
+            message: `Using existing code graph (${existingNodeCount} nodes). ${supportedFiles.length} files changed since last full index.`,
+          };
+        }
+
+        log(`[CodeGraphAgent] ${supportedFiles.length} files changed (>${Math.floor(changeThreshold)} threshold), triggering full re-index`, 'info');
+      } else if (existingNodeCount > 0) {
+        log(`[CodeGraphAgent] Only ${existingNodeCount} existing nodes (threshold: ${minExistingNodes}), will do full index`, 'info');
+      } else {
+        log(`[CodeGraphAgent] No existing code graph data, will do full index`, 'info');
       }
 
-      // Filter to supported file types
-      const supportedFiles = changedFiles.filter(file =>
-        this.SUPPORTED_EXTENSIONS.some(ext => file.toLowerCase().endsWith(ext))
-      );
-
-      if (supportedFiles.length === 0) {
-        log(`[CodeGraphAgent] No supported source files changed, using existing index`, 'info');
-        return this.getExistingStats(targetPath);
-      }
-
-      log(`[CodeGraphAgent] Found ${supportedFiles.length} changed source files to re-index`, 'info');
-
-      // For now, if there are changed files, trigger a full re-index
-      // TODO: Implement true incremental indexing with file list
-      // This would require modifying the code-graph-rag CLI to accept a file list
-      return this.indexRepository({
+      // Trigger full re-index
+      const result = await this.indexRepository({
         target_path: targetPath,
-        forceReindex: true,  // Force re-index when we have changes
-        minNodeThreshold: 0  // Don't skip based on existing data
+        forceReindex: true,
+        minNodeThreshold: 0
       });
+
+      return {
+        ...result,
+        incrementalMode: false,
+        reindexed: true,
+        previousNodeCount: existingNodeCount,
+      };
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

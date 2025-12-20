@@ -63,8 +63,8 @@ agents:
     llmModel: "Groq: llama-3.3-70b-versatile"
     techStack: "NL->Cypher + Memgraph + SemanticAnalyzer"
     phase: 1.5
-    row: 0.5
-    col: 1.125
+    row: 1
+    col: 1.5
 
   - id: documentation_linker
     name: Documentation Linker

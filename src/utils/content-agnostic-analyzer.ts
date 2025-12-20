@@ -331,62 +331,24 @@ export class ContentAgnosticAnalyzer {
       }
     }
 
-    // FIX: Generate a fallback insight based on available data instead of throwing
-    // This ensures the workflow can continue even with limited pattern detection
-    log('INFO: Generating fallback problem description from available data', 'info');
-    return this.generateFallbackProblem(gitAnalysis, semanticAnalysis, codeQuality, complexity);
-  }
+    // NO FALLBACK: Quality analysis requires proper pattern detection
+    log('CRITICAL: No specific patterns detected - cannot generate quality problem description', 'error', {
+      codeQuality,
+      complexity,
+      gitCommits: gitAnalysis?.commits?.length || 0,
+      hasSemanticAnalysis: !!semanticAnalysis
+    });
 
-  /**
-   * Generate a fallback problem description when specific patterns can't be detected.
-   * This ensures the workflow continues instead of failing completely.
-   */
-  private generateFallbackProblem(gitAnalysis: any, semanticAnalysis: any, codeQuality: number, complexity: number): ContentAgnosticInsight['problem'] {
-    const commits = gitAnalysis?.commits || [];
-    const commitCount = commits.length;
-
-    // Extract some context from commits
-    const commitMessages = commits.slice(0, 10).map((c: any) => c.message || '').join(' ');
-    const hasFixCommits = commitMessages.toLowerCase().includes('fix');
-    const hasFeatureCommits = commitMessages.toLowerCase().includes('feat') || commitMessages.toLowerCase().includes('add');
-    const hasRefactorCommits = commitMessages.toLowerCase().includes('refactor');
-
-    // Determine the primary activity type
-    let activityType = 'development';
-    let description = 'Ongoing software development and maintenance';
-
-    if (hasFixCommits && !hasFeatureCommits && !hasRefactorCommits) {
-      activityType = 'bug fixing and maintenance';
-      description = 'Bug fixes and stability improvements across the codebase';
-    } else if (hasRefactorCommits) {
-      activityType = 'code refactoring';
-      description = 'Code restructuring and quality improvements';
-    } else if (hasFeatureCommits) {
-      activityType = 'feature development';
-      description = 'New feature implementation and enhancements';
-    }
-
-    // Build symptoms from available data
-    const symptoms: string[] = [];
-    if (commitCount > 0) {
-      symptoms.push(`${commitCount} commits analyzed in this period`);
-    }
-    if (codeQuality < 80) {
-      symptoms.push(`Code quality score: ${codeQuality}/100`);
-    }
-    if (complexity > 10) {
-      symptoms.push(`Average code complexity: ${complexity}`);
-    }
-    if (symptoms.length === 0) {
-      symptoms.push('Continuous development activity detected');
-    }
-
-    return {
-      description,
-      context: `Repository ${activityType} activity based on ${commitCount} recent commits`,
-      symptoms,
-      impact: `Ongoing ${activityType} affecting codebase maintainability and evolution`
-    };
+    throw new Error(
+      `ContentAgnosticAnalyzer: Cannot generate problem description without proper pattern detection.\n\n` +
+      `The analysis did not detect specific enough patterns to generate meaningful content.\n` +
+      `This indicates the upstream analysis pipeline needs improvement.\n\n` +
+      `Debug info:\n` +
+      `  - Code quality: ${codeQuality}\n` +
+      `  - Complexity: ${complexity}\n` +
+      `  - Git commits: ${gitAnalysis?.commits?.length || 0}\n\n` +
+      `Check the semantic analysis and pattern extraction for issues.`
+    );
   }
 
   private generateRepositorySpecificProblem(gitAnalysis: any, semanticAnalysis: any): ContentAgnosticInsight['problem'] {
@@ -444,19 +406,29 @@ export class ContentAgnosticAnalyzer {
       }
     }
 
-    // Final fallback - use commit message analysis
-    log('INFO: Using commit message analysis for problem generation', 'info');
-    const codeQuality = semanticAnalysis?.codeAnalysis?.codeQuality?.score || 70;
-    const complexity = semanticAnalysis?.codeAnalysis?.averageComplexity || 15;
-    return this.generateFallbackProblem(gitAnalysis, semanticAnalysis, codeQuality, complexity);
+    // NO FALLBACK: Proper file analysis is required
+    log('CRITICAL: generateRepositorySpecificProblem - no files to analyze', 'error', {
+      totalCommits,
+      allFilesCount: allFiles.length
+    });
+
+    throw new Error(
+      `ContentAgnosticAnalyzer.generateRepositorySpecificProblem: No analyzable files found.\n\n` +
+      `Total commits: ${totalCommits}\n` +
+      `Files found: ${allFiles.length}\n\n` +
+      `Check git history agent for why file data is missing.`
+    );
   }
 
   private generateRepositorySpecificSolution(gitAnalysis: any, semanticAnalysis: any, technologies: string[], patterns: string[]): ContentAgnosticInsight['solution'] {
-    // Extract actual changes from git commits
+    // DEPRECATED: This entire function generates generic/garbage content
+    // It should NOT be called - the main analysis pipeline should use entity observations instead
+    // If you're seeing this error, the upstream pipeline is broken
+
     const allFiles: any[] = [];
     let totalCommits = 0;
-    
-    if (gitAnalysis.commits) {
+
+    if (gitAnalysis?.commits) {
       totalCommits = gitAnalysis.commits.length;
       gitAnalysis.commits.forEach((commit: any) => {
         if (commit.files) {
@@ -465,111 +437,24 @@ export class ContentAgnosticAnalyzer {
       });
     }
 
-    // Categorize files to generate specific solutions
-    const fileTypes = {
-      source: allFiles.filter((f: any) => {
-        const fileName = typeof f === 'string' ? f : (f.path || String(f));
-        return fileName.match(/\.(ts|js|py|java|cpp|cs)$/);
-      }),
-      config: allFiles.filter((f: any) => {
-        const fileName = typeof f === 'string' ? f : (f.path || String(f));
-        return fileName.match(/\.(json|yaml|yml|toml|ini|conf)$/);
-      }),
-      tests: allFiles.filter((f: any) => {
-        const fileName = typeof f === 'string' ? f : (f.path || String(f));
-        return fileName.includes('test') || fileName.includes('spec');
-      })
-    };
-    
-    // Generate agent-specific solutions
-    const agentFiles = fileTypes.source.filter((f: any) => {
-      const fileName = typeof f === 'string' ? f : (f.path || String(f));
-      return fileName.includes('agent') || fileName.includes('Agent');
-    }).length;
-    
-    if (agentFiles > 0) {
-      return {
-        approach: `Modular agent architecture with TypeScript type safety`,
-        implementation: [
-          `Standardize agent interfaces across ${agentFiles} agent components`,
-          `Implement centralized agent orchestration patterns`,
-          `Add comprehensive type definitions for agent communication`,
-          `Create shared utilities for common agent operations`,
-          `Establish agent lifecycle management protocols`
-        ],
-        technologies: [
-          'TypeScript for type safety',
-          'Node.js for runtime environment',
-          'MCP protocol for agent communication',
-          ...technologies.slice(0, 2)
-        ],
-        tradeoffs: [
-          'Agent complexity vs. system modularity',
-          'Type safety overhead vs. runtime flexibility',
-          'Protocol standardization vs. agent autonomy'
-        ]
-      };
-    }
-    
-    // Generate TypeScript-specific solutions for TS-heavy repos
-    const tsFiles = fileTypes.source.filter((f: any) => {
-      const fileName = typeof f === 'string' ? f : (f.path || String(f));
-      return fileName.endsWith('.ts');
-    }).length;
-    
-    if (tsFiles > fileTypes.source.length * 0.7) {
-      return {
-        approach: `TypeScript-first development with enhanced type safety`,
-        implementation: [
-          `Strengthen type definitions across ${tsFiles} TypeScript files`,
-          `Implement strict compiler options for better error detection`,
-          `Add generic interfaces for better code reusability`,
-          `Create utility types for common patterns`,
-          `Establish consistent naming conventions`
-        ],
-        technologies: [
-          'TypeScript strict mode',
-          'Advanced generic types',
-          'Type guards and predicates',
-          ...technologies.slice(0, 2)
-        ],
-        tradeoffs: [
-          'Compile-time safety vs. development velocity',
-          'Type complexity vs. code readability',
-          'Strict typing vs. rapid prototyping'
-        ]
-      };
-    }
-    
-    // Fallback to configuration-based solution if many config files
-    if (fileTypes.config.length > 5) {
-      return {
-        approach: `Configuration-driven development approach`,
-        implementation: [
-          `Standardize configuration management across ${fileTypes.config.length} config files`,
-          `Implement validation schemas for configuration`,
-          `Create centralized configuration loading`,
-          `Add environment-specific configuration support`,
-          `Establish configuration documentation patterns`
-        ],
-        technologies: [
-          'JSON Schema validation',
-          'Environment variable management',
-          'Configuration templating',
-          ...technologies.slice(0, 2)
-        ],
-        tradeoffs: [
-          'Configuration flexibility vs. complexity',
-          'Runtime configuration vs. compile-time constants',
-          'Validation overhead vs. error prevention'
-        ]
-      };
-    }
-    
-    // NO MORE FALLBACKS - throw error instead
-    log('ERROR: Cannot generate repository-specific solution - no recognized patterns found', 'error');
-    log('DEBUG: Solution generation data', 'debug', { totalCommits, technologies, patterns });
-    throw new Error('CONTENT_GENERATION_ERROR: No repository-specific solution patterns found - insufficient analysis data');
+    log('CRITICAL: generateRepositorySpecificSolution called - this produces generic garbage', 'error', {
+      totalCommits,
+      fileCount: allFiles.length,
+      technologies,
+      patterns
+    });
+
+    throw new Error(
+      `ContentAgnosticAnalyzer.generateRepositorySpecificSolution() should NOT be called.\n\n` +
+      `This function generates generic/template content that is NOT useful.\n` +
+      `The main analysis pipeline should use entity observations from semantic analysis.\n\n` +
+      `Debug info:\n` +
+      `  - Total commits: ${totalCommits}\n` +
+      `  - Files analyzed: ${allFiles.length}\n` +
+      `  - Technologies: ${technologies.join(', ')}\n` +
+      `  - Patterns: ${patterns.join(', ')}\n\n` +
+      `Check the InsightGenerationAgent for why entity observations are missing.`
+    );
   }
 
   private async extractRealProblem(correlations: VibeGitCorrelation[], semanticAnalysis: any): Promise<ContentAgnosticInsight['problem']> {

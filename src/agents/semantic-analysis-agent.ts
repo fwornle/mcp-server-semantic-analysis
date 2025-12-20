@@ -783,13 +783,20 @@ export class SemanticAnalysisAgent {
     crossAnalysis: any,
     codeGraph?: any
   ): Promise<SemanticAnalysisResult['semanticInsights']> {
-    // Generate insights using LLM if available
-    if (this.groqClient || this.geminiClient || this.anthropicClient || this.openaiClient) {
-      return await this.generateLLMInsights(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis, codeGraph);
+    // LLM is REQUIRED for quality semantic analysis - NO FALLBACK
+    if (!this.groqClient && !this.geminiClient && !this.anthropicClient && !this.openaiClient) {
+      throw new Error(
+        `SemanticAnalysisAgent: No LLM clients available - cannot generate quality insights.\n\n` +
+        `At least one LLM provider API key must be configured:\n` +
+        `  - GROQ_API_KEY (recommended - fast and free tier available)\n` +
+        `  - GOOGLE_API_KEY (Gemini - good quality)\n` +
+        `  - ANTHROPIC_API_KEY (Claude - high quality)\n` +
+        `  - OPENAI_API_KEY (GPT - reliable)\n\n` +
+        `Set one or more of these environment variables and restart the analysis.`
+      );
     }
 
-    // Fallback to rule-based insights
-    return this.generateRuleBasedInsights(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis);
+    return await this.generateLLMInsights(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis, codeGraph);
   }
 
   private async generateLLMInsights(
@@ -1920,20 +1927,16 @@ Respond with a JSON array where each element has:
         };
       });
 
-    } catch (error) {
-      log('Docstring batch analysis failed', 'warning', error);
-      // Return basic analysis as fallback
-      return entities.map(entity => ({
-        entityId: entity.id,
-        entityName: entity.name,
-        purpose: entity.docstring?.substring(0, 200) || '',
-        parameters: [],
-        returnValue: '',
-        usagePatterns: [],
-        warnings: [],
-        relatedEntities: [],
-        semanticScore: 0.3
-      }));
+    } catch (error: any) {
+      // NO FALLBACK: Docstring analysis requires LLM for quality results
+      log('Docstring batch analysis failed - NO FALLBACK', 'error', error);
+      throw new Error(
+        `SemanticAnalysisAgent: Docstring batch analysis failed.\n` +
+        `Error: ${error.message}\n` +
+        `Entities to analyze: ${entities.length}\n\n` +
+        `This error indicates the LLM service failed to analyze docstrings. ` +
+        `Check LLM provider status and API key validity.`
+      );
     }
   }
 

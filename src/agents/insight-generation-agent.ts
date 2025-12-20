@@ -2553,51 +2553,31 @@ SemanticAnalysisAgent --> InsightGenerationAgent
       });
     }
 
-    // FALLBACK: Legacy content-agnostic analysis (for backward compatibility)
-    log('No entity observations found, falling back to content-agnostic analysis', 'info');
+    // NO FALLBACK: Entity observations are REQUIRED for quality documentation
+    // If we reach here, something went wrong upstream in the pipeline
+    const errorDetails = {
+      hasEntityInfo: !!entityInfo,
+      entityName: entityInfo?.name || 'MISSING',
+      observationCount: entityInfo?.observations?.length || 0,
+      hasGitAnalysis: !!gitAnalysis,
+      hasVibeAnalysis: !!vibeAnalysis,
+      hasSemanticAnalysis: !!semanticAnalysis,
+      patternCount: patternCatalog?.patterns?.length || 0
+    };
 
-    let contentInsight;
-    try {
-      contentInsight = await this.contentAnalyzer.analyzeWithContext(
-        gitAnalysis, vibeAnalysis, semanticAnalysis
-      );
-    } catch (error: any) {
-      log(`Content analysis failed: ${error.message}`, 'error');
-      throw error;
-    }
+    log(`CRITICAL: No entity observations found - cannot generate quality documentation`, 'error', errorDetails);
 
-    // Get repository context for specific details
-    const repositoryContext = await this.contextManager.getRepositoryContext();
-
-    // Determine main pattern for title
-    const mainPattern = patternCatalog?.patterns?.sort((a: any, b: any) => b.significance - a.significance)[0];
-    const patternName = mainPattern?.name || this.generateContextualPatternName(contentInsight, repositoryContext);
-
-    const patternType = this.determinePatternType(contentInsight, repositoryContext);
-    const significance = contentInsight.significance;
-
-    // SIMPLIFIED FALLBACK TEMPLATE (less verbose than before)
-    return `# ${patternName}
-
-**Type:** ${patternType}
-
-${contentInsight.problem.description}
-
-## Implementation
-
-${contentInsight.solution.approach}
-
-${contentInsight.solution.implementation.map((impl: string) => `- ${impl}`).join('\n')}
-
-## Technologies
-
-${contentInsight.solution.technologies.map((tech: string) => `- ${tech}`).join('\n')}
-
-${diagrams?.find((d: PlantUMLDiagram) => d.type === 'architecture' && d.success) ?
-  `## Architecture\n\n![Architecture](images/${diagrams.find((d: PlantUMLDiagram) => d.type === 'architecture' && d.success)?.name}.png)\n` : ''}
-
----
-*Generated via fallback analysis*`;
+    throw new Error(
+      `InsightGenerationAgent: Cannot generate documentation without entity observations.\n` +
+      `Entity: ${errorDetails.entityName}\n` +
+      `Observations: ${errorDetails.observationCount}\n` +
+      `Git Analysis: ${errorDetails.hasGitAnalysis}\n` +
+      `Vibe Analysis: ${errorDetails.hasVibeAnalysis}\n` +
+      `Semantic Analysis: ${errorDetails.hasSemanticAnalysis}\n` +
+      `Patterns: ${errorDetails.patternCount}\n\n` +
+      `This error indicates the upstream analysis pipeline failed to produce observations. ` +
+      `Check the semantic-analysis-agent and ontology-classification-agent for issues.`
+    );
   }
 
 
@@ -3305,20 +3285,16 @@ Significance: [1-10]`;
         );
         patterns.push(...extractedPatterns);
       }
-    } catch (error) {
-      log('Failed to use LLM for pattern extraction, falling back to basic analysis', 'warning', error);
-      // Fallback to basic pattern extraction if LLM fails
-      const themeGroups = this.groupCommitsByTheme(significantCommits);
-      let patternCount = 0;
-      themeGroups.forEach((commits, theme) => {
-        if (commits.length >= 2 && patternCount < 10) {
-          const pattern = this.createArchitecturalPattern(theme, commits);
-          if (pattern) {
-            patterns.push(pattern);
-            patternCount++;
-          }
-        }
-      });
+    } catch (error: any) {
+      // NO FALLBACK: LLM pattern extraction is required for quality analysis
+      log('LLM pattern extraction failed - NO FALLBACK, throwing error', 'error', error);
+      throw new Error(
+        `InsightGenerationAgent: LLM pattern extraction failed.\n` +
+        `Error: ${error.message}\n` +
+        `Commits analyzed: ${significantCommits.length}\n\n` +
+        `This error indicates the LLM service is unavailable or returned an invalid response. ` +
+        `Check LLM provider configuration (ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY).`
+      );
     }
 
     return patterns;

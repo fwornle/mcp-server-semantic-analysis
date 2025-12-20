@@ -1155,8 +1155,32 @@ Return 3-8 topics per batch. Return ONLY the JSON array, no other text.`;
   private extractSolution(exchanges: ConversationExchange[]): ProblemSolutionPair['solution'] | null {
     if (exchanges.length === 0) return null;
 
-    // Find assistant response with substantial content
-    const solutionExchange = exchanges.find(e => e.assistantMessage.length > 200);
+    // In LSL format, user messages and tool responses are often in separate prompt sets
+    // So we need to look for solutions in multiple ways:
+
+    // 1. Find exchange with substantial assistant message (original approach)
+    let solutionExchange = exchanges.find(e => e.assistantMessage.length > 200);
+
+    // 2. If no substantial message, look for exchanges with tool usage (indicates work done)
+    if (!solutionExchange) {
+      solutionExchange = exchanges.find(e =>
+        (e.context?.tools && e.context.tools.length > 2) ||
+        (e.context?.files && e.context.files.length > 0)
+      );
+    }
+
+    // 3. If still nothing, check if any exchange shows edit/write activity
+    if (!solutionExchange) {
+      solutionExchange = exchanges.find(e => {
+        const tools = e.context?.tools || [];
+        return tools.some(t =>
+          t.toLowerCase().includes('edit') ||
+          t.toLowerCase().includes('write') ||
+          t.toLowerCase().includes('bash')
+        );
+      });
+    }
+
     if (!solutionExchange) return null;
 
     const approach = this.extractSolutionApproach([solutionExchange]);

@@ -233,10 +233,24 @@ export class CodeGraphAgent {
     const targetPath = repoPath || this.repositoryPath;
     const projectName = path.basename(targetPath);
 
+    // Helper to parse numeric value (handles string/number and array results)
+    const parseNum = (val: any): number => {
+      if (val === null || val === undefined) return 0;
+      if (typeof val === 'number') return val;
+      if (typeof val === 'string') return parseInt(val, 10) || 0;
+      return 0;
+    };
+
+    // Helper to extract first row from query result (runCypherQuery may return array or object)
+    const getFirstRow = (result: any): any => {
+      if (Array.isArray(result) && result.length > 0) return result[0];
+      return result;
+    };
+
     try {
       // Query for entity counts by type (no project filter - code-graph-rag doesn't set project property)
       // Include all nodes since they don't have project property set
-      const statsResult = await this.runCypherQuery(`
+      const statsRaw = await this.runCypherQuery(`
         MATCH (n)
         RETURN
           count(n) as totalEntities,
@@ -245,12 +259,14 @@ export class CodeGraphAgent {
           count(CASE WHEN n:Method THEN 1 END) as methods,
           count(CASE WHEN n:Module THEN 1 END) as modules
       `);
+      const statsResult = getFirstRow(statsRaw);
 
       // Query for relationship count
-      const relResult = await this.runCypherQuery(`
+      const relRaw = await this.runCypherQuery(`
         MATCH (n)-[r]->(m)
         RETURN count(r) as totalRelationships
       `);
+      const relResult = getFirstRow(relRaw);
 
       // Query for language distribution (use label as proxy for language if property not set)
       const langResult = await this.runCypherQuery(`
@@ -263,24 +279,29 @@ export class CodeGraphAgent {
       if (Array.isArray(langResult)) {
         langResult.forEach((row: any) => {
           if (row.language) {
-            languageDistribution[row.language] = row.count || 0;
+            languageDistribution[row.language] = parseNum(row.count);
           }
         });
       }
 
       const entityTypeDistribution: Record<string, number> = {
-        function: statsResult?.functions || 0,
-        class: statsResult?.classes || 0,
-        method: statsResult?.methods || 0,
-        module: statsResult?.modules || 0,
+        function: parseNum(statsResult?.functions),
+        class: parseNum(statsResult?.classes),
+        method: parseNum(statsResult?.methods),
+        module: parseNum(statsResult?.modules),
       };
+
+      const totalEntities = parseNum(statsResult?.totalEntities);
+      const totalRelationships = parseNum(relResult?.totalRelationships);
+
+      log(`[CodeGraphAgent] getExistingStats for ${projectName}: ${totalEntities} entities, ${totalRelationships} relationships`, 'info');
 
       return {
         entities: [], // Don't load all entities, just stats
         relationships: [],
         statistics: {
-          totalEntities: statsResult?.totalEntities || 0,
-          totalRelationships: relResult?.totalRelationships || 0,
+          totalEntities,
+          totalRelationships,
           languageDistribution,
           entityTypeDistribution,
         },

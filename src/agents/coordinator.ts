@@ -273,11 +273,11 @@ export class CoordinatorAgent {
     const workflows: WorkflowDefinition[] = [
       {
         name: "complete-analysis",
-        description: "Complete 13-agent semantic analysis workflow with code graph and ontology classification",
+        description: "Complete 14-agent semantic analysis workflow with code graph and ontology classification",
         agents: ["git_history", "vibe_history", "semantic_analysis", "web_search",
                  "insight_generation", "observation_generation", "ontology_classification",
                  "quality_assurance", "persistence", "deduplication", "content_validation",
-                 "code_graph", "documentation_linker"],
+                 "code_graph", "documentation_linker", "documentation_semantics"],
         steps: [
           {
             name: "analyze_git_history",
@@ -398,7 +398,7 @@ export class CoordinatorAgent {
           // NEW: Semantic analysis of docstrings and documentation prose
           {
             name: "analyze_documentation_semantics",
-            agent: "semantic_analysis",
+            agent: "documentation_semantics",
             action: "analyzeDocumentationSemantics",
             parameters: {
               code_entities: "{{transform_code_entities.result}}",
@@ -490,10 +490,10 @@ export class CoordinatorAgent {
       },
       {
         name: "incremental-analysis",
-        description: "Incremental 13-agent analysis since last checkpoint with code graph and ontology",
+        description: "Incremental 14-agent analysis since last checkpoint with code graph and ontology",
         agents: ["git_history", "vibe_history", "semantic_analysis", "insight_generation",
                  "observation_generation", "ontology_classification", "quality_assurance",
-                 "persistence", "deduplication", "content_validation", "code_graph", "documentation_linker"],
+                 "persistence", "deduplication", "content_validation", "code_graph", "documentation_linker", "code_intelligence"],
         steps: [
           // PHASE 1: Parallel Data Collection
           // All three run in parallel - no dependencies
@@ -533,7 +533,7 @@ export class CoordinatorAgent {
           // Generates context-aware questions and queries the code graph
           {
             name: "query_code_intelligence",
-            agent: "code_graph",
+            agent: "code_intelligence",
             action: "queryIntelligently",
             parameters: {
               context: {
@@ -1349,7 +1349,7 @@ export class CoordinatorAgent {
       
       log(`Workflow completed: ${executionId}`, "info", {
         duration: execution.endTime.getTime() - execution.startTime.getTime(),
-        stepsCompleted: execution.currentStep + 1,
+        stepsCompleted: execution.currentStep,
         performanceScore: performanceMetrics.overallScore,
         bottlenecks: performanceMetrics.bottlenecks,
         summary
@@ -1357,7 +1357,7 @@ export class CoordinatorAgent {
 
       // Finalize and save workflow report
       const reportPath = this.reportAgent.finalizeReport('completed', {
-        stepsCompleted: execution.currentStep + 1,
+        stepsCompleted: execution.currentStep,
         totalSteps: workflow.steps.length,
         entitiesCreated: persistResult?.entitiesCreated || 0,
         entitiesUpdated: persistResult?.entitiesUpdated || 0,

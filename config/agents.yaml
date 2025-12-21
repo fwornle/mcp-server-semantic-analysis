@@ -16,7 +16,7 @@ orchestrator:
   row: -1
   col: 1.125
 
-# 14 Workflow Agents
+# 15 Workflow Agents
 agents:
   - id: git_history
     name: Git History

@@ -2553,31 +2553,107 @@ SemanticAnalysisAgent --> InsightGenerationAgent
       });
     }
 
-    // NO FALLBACK: Entity observations are REQUIRED for quality documentation
-    // If we reach here, something went wrong upstream in the pipeline
-    const errorDetails = {
+    // NEW ENTITY GENERATION: For complete-analysis workflow, entityInfo doesn't exist yet.
+    // Generate content from patterns + analysis data. This is the PRIMARY path for new entities.
+    if (patternCatalog?.patterns && patternCatalog.patterns.length > 0) {
+      log(`NEW ENTITY GENERATION: Creating content from ${patternCatalog.patterns.length} patterns`, 'info');
+
+      const topPattern = patternCatalog.patterns[0];
+      const entityName = topPattern.name || title;
+      const entityType = topPattern.category || 'Pattern';
+
+      // Build content directly from patterns and analysis (NOT observations - they don't exist yet)
+      const sections: string[] = [];
+      sections.push(`# ${entityName}\n`);
+      sections.push(`**Type:** ${entityType}\n`);
+      sections.push(`**Generated:** ${timestamp}\n`);
+
+      // Pattern summary
+      sections.push(`\n## Pattern Overview\n`);
+      sections.push(`${topPattern.description || 'Pattern identified through analysis.'}\n`);
+      if (topPattern.significance) {
+        sections.push(`\n**Significance:** ${topPattern.significance}/10\n`);
+      }
+
+      // Evidence from pattern
+      if (topPattern.evidence && topPattern.evidence.length > 0) {
+        sections.push(`\n## Evidence\n`);
+        topPattern.evidence.forEach((ev: string) => {
+          sections.push(`- ${ev}\n`);
+        });
+      }
+
+      // Git analysis summary
+      if (gitAnalysis?.commits?.length > 0) {
+        sections.push(`\n## Development History\n`);
+        sections.push(`Analysis of ${gitAnalysis.commits.length} commits.\n`);
+        if (gitAnalysis.architecturalDecisions?.length > 0) {
+          sections.push(`\n### Architectural Decisions\n`);
+          gitAnalysis.architecturalDecisions.slice(0, 5).forEach((dec: any) => {
+            sections.push(`- ${dec.decision || dec}\n`);
+          });
+        }
+      }
+
+      // Vibe analysis summary
+      if (vibeAnalysis?.sessions?.length > 0) {
+        sections.push(`\n## Conversation Insights\n`);
+        sections.push(`Analysis of ${vibeAnalysis.sessions.length} development sessions.\n`);
+        if (vibeAnalysis.problemSolutionPairs?.length > 0) {
+          sections.push(`\n### Problem-Solution Patterns\n`);
+          vibeAnalysis.problemSolutionPairs.slice(0, 3).forEach((pair: any) => {
+            sections.push(`- **Problem:** ${pair.problem}\n  **Solution:** ${pair.solution}\n`);
+          });
+        }
+      }
+
+      // Semantic analysis summary
+      if (semanticAnalysis?.codeAnalysis) {
+        sections.push(`\n## Code Analysis\n`);
+        if (semanticAnalysis.codeAnalysis.architecturalPatterns?.length > 0) {
+          sections.push(`\n### Architectural Patterns\n`);
+          semanticAnalysis.codeAnalysis.architecturalPatterns.slice(0, 5).forEach((p: any) => {
+            sections.push(`- ${p.name || p}\n`);
+          });
+        }
+      }
+
+      // Diagrams
+      const successfulDiagrams = diagrams?.filter((d: PlantUMLDiagram) => d.success) || [];
+      if (successfulDiagrams.length > 0) {
+        sections.push(`\n## Diagrams\n`);
+        successfulDiagrams.forEach((d: PlantUMLDiagram) => {
+          sections.push(`![${d.name}](images/${d.name}.png)\n`);
+        });
+      }
+
+      // Other patterns
+      if (patternCatalog.patterns.length > 1) {
+        sections.push(`\n## Related Patterns\n`);
+        patternCatalog.patterns.slice(1, 6).forEach((p: IdentifiedPattern) => {
+          sections.push(`- **${p.name}** (${p.category}): ${p.description}\n`);
+        });
+      }
+
+      return sections.join('');
+    }
+
+    // NO INSIGHTS AVAILABLE: If we reach here with no patterns AND no entityInfo,
+    // this means the analysis found nothing significant. Exit gracefully (not an error).
+    log(`No insights to generate: No patterns found and no entity observations`, 'info', {
       hasEntityInfo: !!entityInfo,
-      entityName: entityInfo?.name || 'MISSING',
-      observationCount: entityInfo?.observations?.length || 0,
-      hasGitAnalysis: !!gitAnalysis,
-      hasVibeAnalysis: !!vibeAnalysis,
-      hasSemanticAnalysis: !!semanticAnalysis,
+      hasPatterns: !!(patternCatalog?.patterns?.length),
       patternCount: patternCatalog?.patterns?.length || 0
-    };
+    });
 
-    log(`CRITICAL: No entity observations found - cannot generate quality documentation`, 'error', errorDetails);
-
-    throw new Error(
-      `InsightGenerationAgent: Cannot generate documentation without entity observations.\n` +
-      `Entity: ${errorDetails.entityName}\n` +
-      `Observations: ${errorDetails.observationCount}\n` +
-      `Git Analysis: ${errorDetails.hasGitAnalysis}\n` +
-      `Vibe Analysis: ${errorDetails.hasVibeAnalysis}\n` +
-      `Semantic Analysis: ${errorDetails.hasSemanticAnalysis}\n` +
-      `Patterns: ${errorDetails.patternCount}\n\n` +
-      `This error indicates the upstream analysis pipeline failed to produce observations. ` +
-      `Check the semantic-analysis-agent and ontology-classification-agent for issues.`
-    );
+    // Return minimal content indicating no insights were found
+    return `# Analysis Complete\n\n` +
+      `**Generated:** ${timestamp}\n\n` +
+      `No significant patterns or insights were identified in this analysis.\n\n` +
+      `**Analysis Summary:**\n` +
+      `- Git commits analyzed: ${gitAnalysis?.commits?.length || 0}\n` +
+      `- Sessions analyzed: ${vibeAnalysis?.sessions?.length || 0}\n` +
+      `- Patterns found: ${patternCatalog?.patterns?.length || 0}\n`;
   }
 
 

@@ -612,15 +612,36 @@ export class CodeGraphAgent {
    * - If Memgraph has substantial data (>100 nodes), reuse it for minor changes
    * - Only trigger full re-index if no data exists or forceReindex is true
    */
-  async indexIncrementally(repoPath?: string, options: {
+  async indexIncrementally(repoPathOrParams?: string | {
+    repoPath?: string;
+    options?: {
+      sinceCommit?: string;
+      sinceDays?: number;
+      forceReindex?: boolean;
+      minExistingNodes?: number;
+    };
+  }, options: {
     sinceCommit?: string;    // Compare against this commit (e.g., 'HEAD~10', commit hash)
     sinceDays?: number;      // Or use time-based (default: 7 days)
     forceReindex?: boolean;  // Force full re-index even if data exists
     minExistingNodes?: number; // Threshold for "substantial" data (default: 100)
   } = {}): Promise<CodeGraphAnalysisResult> {
-    const targetPath = repoPath || this.repositoryPath;
+    // Handle both direct path and wrapped parameter object from coordinator
+    let targetPath: string;
+    let effectiveOptions = options;
+
+    if (typeof repoPathOrParams === 'object' && repoPathOrParams !== null) {
+      // Wrapped parameter object from coordinator: { repoPath: "...", options: {...} }
+      targetPath = repoPathOrParams.repoPath || this.repositoryPath;
+      effectiveOptions = repoPathOrParams.options || {};
+    } else if (typeof repoPathOrParams === 'string') {
+      targetPath = repoPathOrParams;
+    } else {
+      targetPath = this.repositoryPath;
+    }
+
     const projectName = path.basename(targetPath);
-    const { sinceCommit, sinceDays = 7, forceReindex = false, minExistingNodes = 100 } = options;
+    const { sinceCommit, sinceDays = 7, forceReindex = false, minExistingNodes = 100 } = effectiveOptions;
 
     log(`[CodeGraphAgent] Incremental indexing for ${projectName}`, 'info');
 

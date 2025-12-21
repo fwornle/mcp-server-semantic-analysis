@@ -1214,10 +1214,26 @@ export class CoordinatorAgent {
 
         // Wait for at least one step to complete
         if (runningSteps.size > 0) {
-          const runningPromises = Array.from(runningSteps.entries());
-          const completedResult = await Promise.race(runningPromises.map(([name, promise]) =>
-            promise.then(result => ({ name, ...result }))
-          ));
+          // Heartbeat interval to keep progress file updated during long-running steps
+          // This prevents the workflow from showing as "stale" (>2min) or "frozen" (>5min)
+          const heartbeatInterval = setInterval(() => {
+            const remainingRunning = Array.from(runningSteps.keys());
+            this.writeProgressFile(execution, workflow, undefined, remainingRunning);
+            log(`Heartbeat: ${remainingRunning.length} steps still running`, "debug", {
+              runningSteps: remainingRunning
+            });
+          }, 30000); // 30 second heartbeat - well under the 2-minute stale threshold
+
+          let completedResult: { name: string; result?: any; error?: Error; step: WorkflowStep };
+          try {
+            const runningPromises = Array.from(runningSteps.entries());
+            completedResult = await Promise.race(runningPromises.map(([name, promise]) =>
+              promise.then(result => ({ name, ...result }))
+            ));
+          } finally {
+            // Always clear the heartbeat interval
+            clearInterval(heartbeatInterval);
+          }
 
           // Remove from running
           runningSteps.delete(completedResult.name);

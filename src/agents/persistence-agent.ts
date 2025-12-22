@@ -1250,6 +1250,39 @@ export class PersistenceAgent {
     });
   }
 
+  /**
+   * Serialize observations array to a string for storage.
+   * Handles both string and ObservationTemplate objects properly.
+   */
+  private serializeObservationsToString(observations: any[]): string {
+    if (!observations || observations.length === 0) {
+      return '';
+    }
+
+    return observations.map(obs => {
+      if (typeof obs === 'string') {
+        return obs;
+      }
+
+      if (typeof obs === 'object' && obs !== null) {
+        // Handle ObservationTemplate objects
+        if (obs.content) {
+          const typePrefix = obs.type ? `**${obs.type.charAt(0).toUpperCase() + obs.type.slice(1)}:** ` : '';
+          return `${typePrefix}${obs.content}`;
+        }
+        // Fallback: serialize as JSON if it has meaningful properties
+        try {
+          return JSON.stringify(obs);
+        } catch {
+          return '[Complex Object]';
+        }
+      }
+
+      // Fallback for primitives
+      return String(obs);
+    }).join('\n\n');
+  }
+
   private generateEntityId(name: string): string {
     // Generate a consistent but unique ID
     const timestamp = Date.now();
@@ -3116,7 +3149,7 @@ ${entityData.insights}
             const createResult = await this.createUkbEntity({
               name: entity.name,
               type: entity.entityType,
-              insights: entity.observations.join('\n\n'),
+              insights: this.serializeObservationsToString(entity.observations),
               significance: entity.significance
             });
 

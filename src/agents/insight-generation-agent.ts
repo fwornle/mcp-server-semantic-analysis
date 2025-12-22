@@ -339,7 +339,18 @@ export class InsightGenerationAgent {
     log(`Generating deep insight for ${entityName} with ${observations.length} observations`, 'info');
 
     // Build a comprehensive prompt for the LLM to analyze
-    const observationsText = observations.map((obs, i) => `${i + 1}. ${obs}`).join('\n');
+    // Handle both string and ObservationTemplate objects properly
+    const observationsText = observations.map((obs: any, i: number) => {
+      if (typeof obs === 'string') {
+        return `${i + 1}. ${obs}`;
+      }
+      if (typeof obs === 'object' && obs !== null && obs.content) {
+        const typePrefix = obs.type ? `[${obs.type}] ` : '';
+        return `${i + 1}. ${typePrefix}${obs.content}`;
+      }
+      // Fallback for unexpected types
+      return `${i + 1}. ${JSON.stringify(obs)}`;
+    }).join('\n');
 
     const relationsText = relations.length > 0
       ? `\n\n**Related Entities:**\n${relations.map(r => `- ${r.from} ${r.relationType} ${r.to}`).join('\n')}`
@@ -2035,11 +2046,23 @@ Return the fixed PlantUML code now:`;
     let analysisContext: string;
     if (hasEntityObservations) {
       // Entity-specific diagram: use observations to understand the actual architecture
+      // Handle both string and ObservationTemplate objects properly
+      const observationsText = entityInfo.observations.map((obs: any, i: number) => {
+        if (typeof obs === 'string') {
+          return `${i + 1}. ${obs}`;
+        }
+        if (typeof obs === 'object' && obs !== null && obs.content) {
+          const typePrefix = obs.type ? `[${obs.type}] ` : '';
+          return `${i + 1}. ${typePrefix}${obs.content}`;
+        }
+        return `${i + 1}. ${JSON.stringify(obs)}`;
+      }).join('\n');
+
       analysisContext = `**Entity:** ${entityInfo.name}
 **Type:** ${entityInfo.type || 'Pattern'}
 
 **Observations (use these to understand the architecture):**
-${entityInfo.observations.map((obs: string, i: number) => `${i + 1}. ${obs}`).join('\n')}`;
+${observationsText}`;
     } else {
       // Fallback to generic analysis data
       analysisContext = `**Analysis Data:**

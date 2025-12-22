@@ -273,11 +273,11 @@ export class CoordinatorAgent {
     const workflows: WorkflowDefinition[] = [
       {
         name: "complete-analysis",
-        description: "Complete 14-agent semantic analysis workflow with code graph and ontology classification",
+        description: "Complete 13-agent semantic analysis workflow with code graph and ontology classification",
         agents: ["git_history", "vibe_history", "semantic_analysis", "web_search",
                  "insight_generation", "observation_generation", "ontology_classification",
                  "quality_assurance", "persistence", "deduplication", "content_validation",
-                 "code_graph", "documentation_linker", "documentation_semantics"],
+                 "code_graph", "documentation_linker"],
         steps: [
           {
             name: "analyze_git_history",
@@ -398,7 +398,7 @@ export class CoordinatorAgent {
           // NEW: Semantic analysis of docstrings and documentation prose
           {
             name: "analyze_documentation_semantics",
-            agent: "documentation_semantics",
+            agent: "semantic_analysis",
             action: "analyzeDocumentationSemantics",
             parameters: {
               code_entities: "{{transform_code_entities.result}}",

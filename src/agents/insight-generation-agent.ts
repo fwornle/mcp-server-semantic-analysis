@@ -2613,7 +2613,15 @@ SemanticAnalysisAgent --> InsightGenerationAgent
         if (gitAnalysis.architecturalDecisions?.length > 0) {
           sections.push(`\n### Architectural Decisions\n`);
           gitAnalysis.architecturalDecisions.slice(0, 5).forEach((dec: any) => {
-            sections.push(`- ${dec.decision || dec}\n`);
+            // Handle various formats: string, {decision: string}, or nested object
+            const decisionText = typeof dec === 'string' ? dec
+              : dec?.decision && typeof dec.decision === 'string' ? dec.decision
+              : dec?.summary && typeof dec.summary === 'string' ? dec.summary
+              : dec?.description && typeof dec.description === 'string' ? dec.description
+              : null;
+            if (decisionText) {
+              sections.push(`- ${decisionText}\n`);
+            }
           });
         }
       }
@@ -2625,7 +2633,14 @@ SemanticAnalysisAgent --> InsightGenerationAgent
         if (vibeAnalysis.problemSolutionPairs?.length > 0) {
           sections.push(`\n### Problem-Solution Patterns\n`);
           vibeAnalysis.problemSolutionPairs.slice(0, 3).forEach((pair: any) => {
-            sections.push(`- **Problem:** ${pair.problem}\n  **Solution:** ${pair.solution}\n`);
+            // Extract string values, handling nested objects
+            const problem = typeof pair.problem === 'string' ? pair.problem
+              : pair.problem?.description || pair.problem?.summary || pair.problem?.text || null;
+            const solution = typeof pair.solution === 'string' ? pair.solution
+              : pair.solution?.description || pair.solution?.summary || pair.solution?.text || null;
+            if (problem && solution) {
+              sections.push(`- **Problem:** ${problem}\n  **Solution:** ${solution}\n`);
+            }
           });
         }
       }
@@ -2636,7 +2651,13 @@ SemanticAnalysisAgent --> InsightGenerationAgent
         if (semanticAnalysis.codeAnalysis.architecturalPatterns?.length > 0) {
           sections.push(`\n### Architectural Patterns\n`);
           semanticAnalysis.codeAnalysis.architecturalPatterns.slice(0, 5).forEach((p: any) => {
-            sections.push(`- ${p.name || p}\n`);
+            const patternName = typeof p === 'string' ? p
+              : p?.name && typeof p.name === 'string' ? p.name
+              : p?.pattern && typeof p.pattern === 'string' ? p.pattern
+              : null;
+            if (patternName) {
+              sections.push(`- ${patternName}\n`);
+            }
           });
         }
       }

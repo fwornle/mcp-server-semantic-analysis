@@ -1482,7 +1482,15 @@ export class CoordinatorAgent {
     const executionPromise = this.executeStepOperation(step, stepParams, execution);
 
     try {
-      return await Promise.race([executionPromise, timeoutPromise]);
+      const result = await Promise.race([executionPromise, timeoutPromise]);
+
+      // Store resolved parameters for potential QA retries (exclude internal _context)
+      const { _context, ...resolvedParams } = stepParams;
+      if (result && typeof result === 'object') {
+        result._parameters = resolvedParams;
+      }
+
+      return result;
     } catch (error) {
       log(`Step failed: ${step.name}`, "error", {
         agent: step.agent,

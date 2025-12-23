@@ -1230,8 +1230,21 @@ export class CoordinatorAgent {
           let completedResult: { name: string; result?: any; error?: Error; step: WorkflowStep };
           try {
             const runningPromises = Array.from(runningSteps.entries());
+            // CRITICAL: Handle both resolve and reject cases to prevent unhandled rejections
+            // Each promise is wrapped to always resolve (never reject) with an error property if needed
             completedResult = await Promise.race(runningPromises.map(([name, promise]) =>
-              promise.then(result => ({ name, ...result }))
+              promise
+                .then(result => ({ name, ...result }))
+                .catch((err: Error) => {
+                  // Convert rejection to resolution with error property
+                  log(`Step promise rejected unexpectedly: ${name}`, "error", { error: err.message });
+                  return {
+                    name,
+                    step: { name, agent: 'unknown', action: 'unknown' } as WorkflowStep,
+                    result: undefined,
+                    error: err instanceof Error ? err : new Error(String(err))
+                  };
+                })
             ));
           } finally {
             // Always clear the heartbeat interval
@@ -1303,7 +1316,18 @@ export class CoordinatorAgent {
       // Wait for any remaining running steps (shouldn't be any, but just in case)
       if (runningSteps.size > 0) {
         log(`Waiting for ${runningSteps.size} remaining steps to complete`, "info");
-        const remainingResults = await Promise.all(Array.from(runningSteps.values()));
+        // Wrap each promise to catch individual rejections
+        const wrappedPromises = Array.from(runningSteps.entries()).map(([name, promise]) =>
+          promise.catch((err: Error) => {
+            log(`Remaining step promise rejected: ${name}`, "error", { error: err.message });
+            return {
+              step: { name, agent: 'unknown', action: 'unknown' } as WorkflowStep,
+              result: undefined,
+              error: err instanceof Error ? err : new Error(String(err))
+            };
+          })
+        );
+        const remainingResults = await Promise.all(wrappedPromises);
         for (const result of remainingResults) {
           if (result.error) {
             throw result.error;

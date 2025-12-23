@@ -1309,6 +1309,10 @@ export class CoordinatorAgent {
                 log(`QA Enforcement: Quality validation passed after retry`, "info");
               }
             }
+
+            // MEMORY MANAGEMENT: Clean up step results no longer needed by dependents
+            // This prevents OOM crashes during long workflows with large codebases
+            this.cleanupCompletedStepResults(execution, workflow, completedSteps, skippedSteps);
           }
         }
       }
@@ -1339,6 +1343,8 @@ export class CoordinatorAgent {
           }
           execution.results[result.step.name] = result.result || { error: 'Unknown error' };
         }
+        // Final memory cleanup after all remaining steps complete
+        this.cleanupCompletedStepResults(execution, workflow, completedSteps, skippedSteps);
       }
 
       log(`DAG execution completed: ${completedSteps.size} steps completed, ${skippedSteps.size} skipped`, "info");
@@ -2445,6 +2451,88 @@ Expected locations for generated files:
     }
 
     return summary;
+  }
+
+  /**
+   * Memory Management: Clean up step results that are no longer needed.
+   * After all dependent steps have completed, replace full results with summaries
+   * to free memory during long-running workflows.
+   *
+   * This is critical for workflows processing large codebases (60k+ entities)
+   * where accumulated results can exceed Node.js heap limits (4GB).
+   */
+  private cleanupCompletedStepResults(
+    execution: WorkflowExecution,
+    workflow: WorkflowDefinition,
+    completedSteps: Set<string>,
+    skippedSteps: Set<string>
+  ): void {
+    // Steps whose results have already been compacted
+    const compactedSteps = new Set<string>();
+
+    // Build reverse dependency map: step -> steps that depend on it
+    const dependentsMap = new Map<string, string[]>();
+    for (const step of workflow.steps) {
+      if (step.dependencies) {
+        for (const dep of step.dependencies) {
+          if (!dependentsMap.has(dep)) {
+            dependentsMap.set(dep, []);
+          }
+          dependentsMap.get(dep)!.push(step.name);
+        }
+      }
+    }
+
+    // Check each completed step to see if all its dependents have finished
+    for (const stepName of completedSteps) {
+      // Skip if already compacted or if it's a special step we need to preserve
+      if (compactedSteps.has(stepName)) continue;
+      if (execution.results[stepName]?._compacted) continue;
+
+      // Special steps whose full results should be preserved for final summary
+      const preserveFullResult = ['persist_results', 'persist_incremental', 'quality_assurance'];
+      if (preserveFullResult.includes(stepName)) continue;
+
+      const dependents = dependentsMap.get(stepName) || [];
+
+      // Check if all dependents have completed or been skipped
+      const allDependentsFinished = dependents.every(dep =>
+        completedSteps.has(dep) || skippedSteps.has(dep)
+      );
+
+      if (allDependentsFinished) {
+        const originalResult = execution.results[stepName];
+        if (originalResult && !originalResult._compacted) {
+          // Calculate approximate size before compacting
+          const originalSize = JSON.stringify(originalResult).length;
+
+          // Only compact if result is large (>50KB)
+          if (originalSize > 50000) {
+            // Replace with summarized version to free memory
+            const summary = this.summarizeStepResult(originalResult);
+            execution.results[stepName] = {
+              ...summary,
+              _compacted: true,
+              _originalSize: originalSize,
+              _compactedAt: new Date().toISOString()
+            };
+
+            log(`Memory cleanup: Compacted step "${stepName}" result (${(originalSize / 1024).toFixed(1)}KB -> ~${(JSON.stringify(summary).length / 1024).toFixed(1)}KB)`, "debug");
+            compactedSteps.add(stepName);
+          }
+        }
+      }
+    }
+
+    // Hint garbage collection if available (Node.js with --expose-gc flag)
+    if (compactedSteps.size > 0 && typeof global !== 'undefined' && (global as any).gc) {
+      try {
+        (global as any).gc();
+        log(`Memory cleanup: Triggered garbage collection after compacting ${compactedSteps.size} step(s)`, "debug");
+      } catch (e) {
+        // GC not available, that's fine
+      }
+    }
   }
 
   /**

@@ -1,0 +1,267 @@
+# Complete Analysis Workflow - Single Source of Truth
+# 13-agent full analysis of entire codebase with ontology classification
+# Version: 1.0
+
+workflow:
+  name: complete-analysis
+  version: "1.0"
+  description: "13-agent comprehensive analysis of entire codebase with code graph and ontology classification"
+
+config:
+  max_concurrent_steps: 3
+  timeout: 1800  # 30 minutes for complete analysis
+  quality_validation: true
+
+# Workflow steps with dependencies
+# Dependencies define the DAG execution order
+steps:
+  # PHASE 1: Parallel Data Collection (no dependencies = parallel entry points)
+  - name: analyze_git_history
+    agent: git_history
+    action: analyzeGitHistoryWithLLM
+    parameters:
+      checkpoint_enabled: false
+      depth: 500
+    timeout: 300
+    dependencies: []
+
+  - name: analyze_vibe_history
+    agent: vibe_history
+    action: analyzeVibeHistory
+    parameters:
+      checkpoint_enabled: false
+      maxSessions: 0  # 0 = unlimited
+    timeout: 600
+    dependencies: []
+
+  - name: index_codebase
+    agent: code_graph
+    action: indexRepository
+    parameters:
+      target_path: "{{params.repositoryPath}}"
+    timeout: 600
+    dependencies: []
+
+  - name: link_documentation
+    agent: documentation_linker
+    action: analyzeDocumentation
+    parameters:
+      markdown_paths: ["**/*.md"]
+      plantuml_paths: ["**/*.puml", "**/*.plantuml"]
+      exclude_patterns: ["**/node_modules/**", "**/dist/**"]
+    timeout: 120
+    dependencies: []
+
+  # PHASE 2: Semantic Analysis (depends on Phase 1)
+  - name: semantic_analysis
+    agent: semantic_analysis
+    action: analyzeSemantics
+    parameters:
+      git_analysis_results: "{{analyze_git_history.result}}"
+      vibe_analysis_results: "{{analyze_vibe_history.result}}"
+      code_graph_results: "{{index_codebase.result}}"
+      doc_analysis_results: "{{link_documentation.result}}"
+    timeout: 240
+    dependencies:
+      - analyze_git_history
+      - analyze_vibe_history
+      - index_codebase
+      - link_documentation
+
+  # PHASE 2.5: Web Search (depends on Semantic)
+  - name: web_search
+    agent: web_search
+    action: searchSimilarPatterns
+    parameters:
+      semantic_analysis_results: "{{semantic_analysis.result}}"
+    timeout: 90
+    dependencies:
+      - semantic_analysis
+
+  # PHASE 3: Insight Generation (depends on Semantic + Web)
+  - name: generate_insights
+    agent: insight_generation
+    action: generateComprehensiveInsights
+    parameters:
+      semantic_analysis_results: "{{semantic_analysis.result}}"
+      web_search_results: "{{web_search.result}}"
+      git_analysis_results: "{{analyze_git_history.result}}"
+      vibe_analysis_results: "{{analyze_vibe_history.result}}"
+      code_graph_results: "{{index_codebase.result}}"
+    timeout: 300
+    dependencies:
+      - semantic_analysis
+      - web_search
+      - index_codebase
+
+  # PHASE 3.5: Observation Generation
+  - name: generate_observations
+    agent: observation_generation
+    action: generateStructuredObservations
+    parameters:
+      insights_results: "{{generate_insights.result}}"
+      semantic_analysis_results: "{{semantic_analysis.result}}"
+      git_analysis_results: "{{analyze_git_history.result}}"
+      vibe_analysis_results: "{{analyze_vibe_history.result}}"
+    timeout: 90
+    dependencies:
+      - generate_insights
+
+  # PHASE 4: Classification + Doc Semantics (parallel)
+  - name: classify_with_ontology
+    agent: ontology_classification
+    action: classifyObservations
+    parameters:
+      observations: "{{generate_observations.result.observations}}"
+      autoExtend: true
+      minConfidence: 0.6
+    timeout: 600
+    dependencies:
+      - generate_observations
+
+  - name: transform_code_entities
+    agent: code_graph
+    action: transformToKnowledgeEntities
+    parameters:
+      codebase_analysis: "{{index_codebase.result}}"
+    timeout: 60
+    dependencies:
+      - index_codebase
+
+  - name: analyze_documentation_semantics
+    agent: documentation_semantics
+    action: analyzeDocSemantics
+    parameters:
+      code_entities: "{{transform_code_entities.result}}"
+      doc_links: "{{link_documentation.result}}"
+    timeout: 300
+    dependencies:
+      - transform_code_entities
+      - link_documentation
+
+  # PHASE 5: Quality Assurance
+  - name: quality_assurance
+    agent: quality_assurance
+    action: validateAllResults
+    parameters:
+      ontology_results: "{{classify_with_ontology.result}}"
+      doc_semantics_results: "{{analyze_documentation_semantics.result}}"
+    timeout: 120
+    dependencies:
+      - classify_with_ontology
+      - analyze_documentation_semantics
+
+  # PHASE 6: Persistence -> Dedup -> Validation
+  - name: persist_results
+    agent: persistence
+    action: persistAllEntities
+    parameters:
+      validated_results: "{{quality_assurance.result}}"
+      team: "{{params.team}}"
+    timeout: 60
+    dependencies:
+      - quality_assurance
+
+  - name: deduplicate_insights
+    agent: deduplication
+    action: deduplicateEntities
+    parameters:
+      persisted_results: "{{persist_results.result}}"
+    timeout: 180
+    dependencies:
+      - persist_results
+
+  - name: validate_content
+    agent: content_validation
+    action: validateEntityContent
+    parameters:
+      deduplicated_results: "{{deduplicate_insights.result}}"
+    timeout: 120
+    dependencies:
+      - deduplicate_insights
+
+# DAG visualization edges
+# Defines how agents connect in the workflow visualization
+# Note: complete-analysis does NOT include code_intelligence agent
+edges:
+  # Orchestrator dispatches to entry points
+  - from: orchestrator
+    to: git_history
+    type: dataflow
+  - from: orchestrator
+    to: vibe_history
+    type: dataflow
+  - from: orchestrator
+    to: code_graph
+    type: dataflow
+  - from: orchestrator
+    to: documentation_linker
+    type: dataflow
+
+  # Phase 1 -> Semantic Analysis (no code_intelligence in complete-analysis)
+  - from: git_history
+    to: semantic_analysis
+    type: dependency
+  - from: vibe_history
+    to: semantic_analysis
+    type: dependency
+  - from: code_graph
+    to: semantic_analysis
+    type: dependency
+  - from: documentation_linker
+    to: semantic_analysis
+    type: dependency
+
+  # Semantic -> Web Search
+  - from: semantic_analysis
+    to: web_search
+    type: dependency
+
+  # Semantic + Web -> Insights
+  - from: semantic_analysis
+    to: insight_generation
+    type: dependency
+  - from: web_search
+    to: insight_generation
+    type: dependency
+
+  # Insights -> Observations
+  - from: insight_generation
+    to: observation_generation
+    type: dependency
+
+  # Observations -> Ontology
+  - from: observation_generation
+    to: ontology_classification
+    type: dependency
+
+  # Code Graph -> Doc Semantics
+  - from: code_graph
+    to: documentation_semantics
+    type: dependency
+  - from: documentation_linker
+    to: documentation_semantics
+    type: dependency
+
+  # Ontology + Doc Semantics -> QA
+  - from: ontology_classification
+    to: quality_assurance
+    type: dependency
+  - from: documentation_semantics
+    to: quality_assurance
+    type: dependency
+
+  # QA -> Persistence
+  - from: quality_assurance
+    to: persistence
+    type: dependency
+
+  # Persistence -> Deduplication
+  - from: persistence
+    to: deduplication
+    type: dependency
+
+  # Deduplication -> Content Validation
+  - from: deduplication
+    to: content_validation
+    type: dependency

@@ -2413,19 +2413,33 @@ Respond with a JSON array:
     };
 
     try {
-      // Scan for relevant files based on entity topic
-      const relevantPaths = [
-        'src/knowledge-management',
-        'lib/ukb-unified',
-        'integrations/mcp-server-semantic-analysis/src',
-        '.data/knowledge-graph',
-        '.data/knowledge-export'
-      ];
+      // NOTE: We do NOT add hardcoded paths here anymore.
+      // Entity-specific file discovery should be done by searching for files
+      // that actually match the entity name pattern.
+      // The existingFiles array is kept empty unless we find truly relevant files.
 
-      for (const basePath of relevantPaths) {
-        const fullPath = path.join(this.repositoryPath, basePath);
-        if (fs.existsSync(fullPath)) {
-          result.existingFiles.push(basePath);
+      // Only add files that match the entity name pattern
+      const entityNameLower = entityName.toLowerCase();
+      const nameParts = entityName.split(/(?=[A-Z])/).map(p => p.toLowerCase()).filter(p => p.length > 3);
+
+      // Search for files that might be related to this specific entity
+      const searchDirs = ['src', 'lib', 'integrations'];
+      for (const dir of searchDirs) {
+        const dirPath = path.join(this.repositoryPath, dir);
+        if (fs.existsSync(dirPath)) {
+          try {
+            // Only do shallow search for performance
+            const files = fs.readdirSync(dirPath, { withFileTypes: true });
+            for (const file of files) {
+              const fileLower = file.name.toLowerCase();
+              // Only add if file name contains significant entity name parts
+              if (nameParts.some(p => fileLower.includes(p))) {
+                result.existingFiles.push(path.join(dir, file.name));
+              }
+            }
+          } catch {
+            // Ignore directory read errors
+          }
         }
       }
 
@@ -2459,23 +2473,10 @@ Respond with a JSON array:
         }
       }
 
-      // Check if shared-memory.json exists (it shouldn't anymore)
-      const sharedMemoryPath = path.join(this.repositoryPath, '.mcp-sync/shared-memory.json');
-      if (!fs.existsSync(sharedMemoryPath)) {
-        result.relatedCodeSnippets.push('shared-memory.json has been REMOVED from the codebase');
-      }
-
-      // Check for knowledge graph database files
-      const graphDbPath = path.join(this.repositoryPath, '.data/knowledge-graph');
-      if (fs.existsSync(graphDbPath)) {
-        result.relatedCodeSnippets.push('Knowledge storage uses Graphology + LevelDB at .data/knowledge-graph');
-      }
-
-      // Check for JSON export files
-      const exportPath = path.join(this.repositoryPath, '.data/knowledge-export');
-      if (fs.existsSync(exportPath)) {
-        result.relatedCodeSnippets.push('JSON exports are at .data/knowledge-export (auto-synced from GraphDB)');
-      }
+      // NOTE: Generic codebase facts (shared-memory removal, GraphDB location, etc.)
+      // should NOT be added here as they get applied to ALL entities.
+      // Entity-specific observations are generated in generateObservationsFromCodebaseScan()
+      // for entities whose names match knowledge/persistence patterns.
 
     } catch (error) {
       log('Codebase scan encountered errors', 'warning', error);
@@ -2653,15 +2654,24 @@ Respond with a JSON array:
     // Extract entity name parts for pattern matching
     const nameParts = entityName.split(/(?=[A-Z])/).map(p => p.toLowerCase());
 
-    // GENERIC: Generate observations from any related files found
+    // Only add "implemented across" observation if files are actually relevant to entity name
     if (codebaseState.existingFiles && codebaseState.existingFiles.length > 0) {
-      const relevantFiles = codebaseState.existingFiles.slice(0, 3);
-      observations.push({
-        type: 'implementation',
-        content: `${entityName} is implemented across: ${relevantFiles.join(', ')}`,
-        date: now,
-        metadata: { confidence: 0.9, source: 'codebase-scan', refreshedAt: now }
-      });
+      // Filter files that contain entity name parts (case-insensitive)
+      const relevantFiles = codebaseState.existingFiles
+        .filter((f: string) => {
+          const lowerFile = f.toLowerCase();
+          return nameParts.some(p => p.length > 3 && lowerFile.includes(p));
+        })
+        .slice(0, 3);
+      // Only add observation if we found actually relevant files
+      if (relevantFiles.length > 0) {
+        observations.push({
+          type: 'implementation',
+          content: `${entityName} is implemented across: ${relevantFiles.join(', ')}`,
+          date: now,
+          metadata: { confidence: 0.9, source: 'codebase-scan', refreshedAt: now }
+        });
+      }
     }
 
     // GENERIC: Generate observations from related components
@@ -2679,20 +2689,33 @@ Respond with a JSON array:
       }
     }
 
-    // GENERIC: Generate observations from code snippets
+    // Generate observations from code snippets (only if entity-relevant)
     if (codebaseState.relatedCodeSnippets && codebaseState.relatedCodeSnippets.length > 0) {
-      // Extract meaningful content from code snippets
+      // Skip generic codebase-level snippets that aren't entity-specific
+      const genericPatterns = [
+        'shared-memory.json',
+        'has been REMOVED',
+        'Graphology + LevelDB',
+        '.data/knowledge-graph',
+        '.data/knowledge-export',
+        'auto-synced from GraphDB'
+      ];
+
       for (const snippet of codebaseState.relatedCodeSnippets.slice(0, 3)) {
-        // Skip very short or placeholder snippets
-        if (snippet.length > 30 && !snippet.includes('observations refreshed')) {
-          // Truncate long snippets
-          const content = snippet.length > 200 ? snippet.substring(0, 200) + '...' : snippet;
-          observations.push({
-            type: 'insight',
-            content: content,
-            date: now,
-            metadata: { confidence: 0.85, source: 'codebase-scan', refreshedAt: now }
-          });
+        // Skip very short, placeholder, or generic snippets
+        const isGeneric = genericPatterns.some(p => snippet.includes(p));
+        if (snippet.length > 30 && !snippet.includes('observations refreshed') && !isGeneric) {
+          // Also check if snippet mentions the entity
+          const isRelevant = nameParts.some(p => p.length > 3 && snippet.toLowerCase().includes(p));
+          if (isRelevant) {
+            const content = snippet.length > 200 ? snippet.substring(0, 200) + '...' : snippet;
+            observations.push({
+              type: 'insight',
+              content: content,
+              date: now,
+              metadata: { confidence: 0.85, source: 'codebase-scan', refreshedAt: now }
+            });
+          }
         }
       }
     }

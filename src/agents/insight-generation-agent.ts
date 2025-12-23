@@ -360,30 +360,41 @@ export class InsightGenerationAgent {
       ? `\n\n**Code Structure:**\n- ${serenaAnalysis.symbols.length} code symbols found\n- Key files: ${serenaAnalysis.fileStructures.map(f => f.path).slice(0, 5).join(', ')}`
       : '';
 
-    const prompt = `You are analyzing a knowledge entity called "${entityName}" (type: ${entityType}) to generate a deep, insightful technical document.
+    const prompt = `You are a technical documentation expert creating a comprehensive insight document for "${entityName}" (type: ${entityType}).
 
-**Observations gathered about this entity:**
+**CRITICAL GROUNDING RULES:**
+1. PRESERVE ALL specific file paths, class names, function names from observations - these are your primary source of truth
+2. DO NOT invent patterns (like "microservices", "event-driven") unless explicitly mentioned
+3. Build your analysis FROM the observations, don't add ungrounded information
+
+**Source Observations:**
 ${observationsText}
 ${relationsText}
 ${codeContextText}
 
-**Your task:**
-Generate a comprehensive technical insight document that goes BEYOND just restating the observations. Instead:
+**Generate a comprehensive technical insight document with these sections:**
 
-1. **Synthesize Understanding**: What is this entity really about? What problem does it solve? What is its core purpose?
+## What It Is
+A clear technical description synthesizing the observations. Start with WHERE it's implemented (specific paths from observations).
 
-2. **Architecture & Design**: What architectural decisions are evident? What patterns are being used? What are the trade-offs?
+## Architecture and Design
+Analyze the architectural approach evident from the observations. What design patterns are used? How do components interact? Reference specific code paths.
 
-3. **Implementation Details**: How is this implemented? What technologies and approaches are used? What are the key components?
+## Implementation Details
+Deep dive into HOW it's implemented. Cover key components, classes, functions mentioned in observations. Explain the technical mechanics.
 
-4. **Integration Points**: How does this integrate with other parts of the system? What are the dependencies and interfaces?
+## Integration Points
+How this entity connects with other parts of the system. What dependencies and interfaces are evident from observations?
 
-5. **Best Practices & Guidelines**: What are the important rules or conventions for using this correctly?
+## Usage Guidelines
+Best practices, rules, and conventions for using this correctly. What should developers know?
 
-**Format your response as markdown sections (## headers) with meaningful prose paragraphs, not just bullet point lists.
-Write in a technical documentation style - clear, precise, and informative.
-DO NOT just repeat the observations - ANALYZE and SYNTHESIZE them into coherent understanding.
-Each section should provide genuine insight, not just reformatted input.**`;
+**FORMAT:**
+- Write in clear technical prose, not just bullet points
+- Each section should have substantive content (3-5 paragraphs where appropriate)
+- ALWAYS ground your analysis in the specific observations provided
+- Reference actual file paths, class names, and implementation details from observations
+- If observations don't support a section, write a brief note and move on rather than inventing content`;
 
     try {
       const result = await this.semanticAnalyzer.analyzeContent(prompt, {
@@ -4851,10 +4862,31 @@ class SolutionPattern {
 
       // If insight refresh is needed, regenerate the insight document
       if (validation_report?.suggestedActions?.refreshInsight) {
+        // Include EXISTING diagrams as well as newly regenerated ones
+        const allDiagrams = [...result.regeneratedDiagrams];
+
+        // Scan for existing diagrams for this entity
+        const imagesDir = path.join(this.outputDir, 'images');
+        const entityNameKebab = toKebabCase(entityName);
+        try {
+          const existingFiles = await fs.promises.readdir(imagesDir);
+          for (const file of existingFiles) {
+            if (file.startsWith(entityNameKebab) && file.endsWith('.png')) {
+              const fullPath = path.join(imagesDir, file);
+              if (!allDiagrams.includes(fullPath)) {
+                allDiagrams.push(fullPath);
+                log(`Including existing diagram: ${file}`, 'info');
+              }
+            }
+          }
+        } catch (e) {
+          log('Could not scan for existing diagrams', 'debug');
+        }
+
         const insightResult = await this.generateRefreshedInsightDocument(
           entityName,
           current_analysis,
-          result.regeneratedDiagrams
+          allDiagrams
         );
 
         if (insightResult) {

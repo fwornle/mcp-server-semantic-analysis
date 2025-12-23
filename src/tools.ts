@@ -1262,7 +1262,7 @@ function generateArchitectureDiagram(title: string, analysis: any): string {
   let components = [];
   
   // Debug: log what we received
-  console.log(`🎨 PlantUML generateArchitectureDiagram called:`, {
+  console.error(`🎨 PlantUML generateArchitectureDiagram called:`, {
     title,
     hasAnalysis: !!analysis, 
     hasSemanticInsights: !!analysis?.semanticInsights,

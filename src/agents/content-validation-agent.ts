@@ -27,9 +27,9 @@ const log = (message: string, level: string = "info", data?: any) => {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] [ContentValidationAgent] [${level.toUpperCase()}] ${message}`;
   if (data) {
-    console.log(logMessage, JSON.stringify(data, null, 2));
+    console.error(logMessage, JSON.stringify(data, null, 2));
   } else {
-    console.log(logMessage);
+    console.error(logMessage);
   }
 };
 

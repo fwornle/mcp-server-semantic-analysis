@@ -740,7 +740,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         log(`Code graph analysis was skipped: ${codeGraphResults.warning || 'unknown reason'}`, 'warning');
       }
     } catch (error) {
-      console.warn('Error extracting code graph patterns:', error);
+      console.error('Error extracting code graph patterns:', error);
     }
 
     // Generate REAL architectural patterns based on actual code analysis
@@ -763,7 +763,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         patterns.push(...architecturalPatterns);
       }
     } catch (error) {
-      console.warn('Error extracting architectural patterns:', error);
+      console.error('Error extracting architectural patterns:', error);
     }
 
     // Analyze code changes for implementation patterns  
@@ -773,7 +773,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         patterns.push(...implementationPatterns);
       }
     } catch (error) {
-      console.warn('Error extracting implementation patterns:', error);
+      console.error('Error extracting implementation patterns:', error);
     }
 
     // Analyze semantic code structure for design patterns
@@ -783,7 +783,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         patterns.push(...designPatterns);
       }
     } catch (error) {
-      console.warn('Error extracting design patterns:', error);
+      console.error('Error extracting design patterns:', error);
     }
 
     // Only analyze conversation patterns if they relate to actual code solutions
@@ -793,7 +793,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         patterns.push(...codeSolutionPatterns);
       }
     } catch (error) {
-      console.warn('Error extracting solution patterns:', error);
+      console.error('Error extracting solution patterns:', error);
     }
 
     // Extract patterns from documentation semantics (LLM-analyzed docstrings and prose)
@@ -804,7 +804,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         log(`Extracted ${docPatterns.length} patterns from documentation semantics`, 'info');
       }
     } catch (error) {
-      console.warn('Error extracting documentation patterns:', error);
+      console.error('Error extracting documentation patterns:', error);
     }
 
     // Analyze and summarize patterns
@@ -1385,7 +1385,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
       relations    // NEW: Pass relations
     });
 
-    console.log('✅ generateInsightContent completed, content length:', content.length);
+    console.error('✅ generateInsightContent completed, content length:', content.length);
 
     // Save the document with tracing
     FilenameTracer.trace('FILE_WRITE_INPUT', 'generateInsightDocument',
@@ -1466,12 +1466,12 @@ Best practices, rules, and conventions for using this correctly. What should dev
       if (diagram.success && diagram.pngFile) {
         try {
           await fs.promises.unlink(diagram.pngFile);
-          console.log(`  Cleaned up: ${diagram.pngFile}`);
+          console.error(`  Cleaned up: ${diagram.pngFile}`);
           // Also try to clean up the PUML source file
           if (diagram.pumlFile) {
             try {
               await fs.promises.unlink(diagram.pumlFile);
-              console.log(`  Cleaned up: ${diagram.pumlFile}`);
+              console.error(`  Cleaned up: ${diagram.pumlFile}`);
             } catch {
               // PUML file may not exist, ignore
             }
@@ -4175,7 +4175,7 @@ ${data.appendices || 'Additional metadata and references.'}
         return problemElements.join('. ') + '.';
       }
     } catch (error) {
-      console.warn('Failed to generate structured problem statement, using fallback', { error: error instanceof Error ? error.message : String(error) });
+      console.error('Failed to generate structured problem statement, using fallback', { error: error instanceof Error ? error.message : String(error) });
     }
 
     // Fallback to structured analysis if LLM fails

@@ -26,7 +26,7 @@ export class FilenameGenerator {
     
     let baseName: string;
     
-    console.log('FilenameGenerator DEBUG:', {
+    console.error('FilenameGenerator DEBUG:', {
       topPatternName: topPattern?.name,
       hasPatterns: patternCatalog?.patterns?.length,
       allPatternNames: patternCatalog?.patterns?.map((p: any) => p.name)
@@ -34,16 +34,16 @@ export class FilenameGenerator {
     
     if (topPattern?.name) {
       // CRITICAL: Fix corrupted input at source
-      console.log('Fixing corrupted pattern name:', topPattern.name);
+      console.error('Fixing corrupted pattern name:', topPattern.name);
       baseName = this.fixCorruptedPatternName(topPattern.name);
-      console.log('Fixed to:', baseName);
+      console.error('Fixed to:', baseName);
     } else if (gitAnalysis?.summary?.focusAreas?.[0]) {
       baseName = this.toCamelCase(gitAnalysis.summary.focusAreas[0]) + 'Pattern';
     } else {
       baseName = 'SemanticAnalysisPattern';
     }
     
-    console.log('Final filename:', baseName);
+    console.error('Final filename:', baseName);
     
     return {
       filename: baseName,

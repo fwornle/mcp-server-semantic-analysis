@@ -30,10 +30,10 @@ class FilenameTracer {
 
     this.traces.push(trace);
     
-    console.log(`🔍 FILENAME TRACE [${step}] at ${location}:`);
-    console.log(`   INPUT:  ${trace.input}`);
-    console.log(`   OUTPUT: ${trace.output}`);
-    console.log(`   STACK:  ${trace.stackTrace.split('\n')[0]}`);
+    console.error(`🔍 FILENAME TRACE [${step}] at ${location}:`);
+    console.error(`   INPUT:  ${trace.input}`);
+    console.error(`   OUTPUT: ${trace.output}`);
+    console.error(`   STACK:  ${trace.stackTrace.split('\n')[0]}`);
     
     // Detect corruption immediately
     if (typeof output === 'string' && output.includes('documentationupdates')) {
@@ -55,17 +55,17 @@ class FilenameTracer {
   }
 
   static printSummary() {
-    console.log('\n📋 FILENAME TRACE SUMMARY:');
-    console.log(`Total traces: ${this.traces.length}`);
+    console.error('\n📋 FILENAME TRACE SUMMARY:');
+    console.error(`Total traces: ${this.traces.length}`);
     
     const corrupted = this.getCorruptionTraces();
     if (corrupted.length > 0) {
-      console.log(`🚨 CORRUPTION FOUND in ${corrupted.length} traces:`);
+      console.error(`🚨 CORRUPTION FOUND in ${corrupted.length} traces:`);
       corrupted.forEach((trace, i) => {
-        console.log(`  ${i + 1}. ${trace.step} at ${trace.location}: ${trace.output}`);
+        console.error(`  ${i + 1}. ${trace.step} at ${trace.location}: ${trace.output}`);
       });
     } else {
-      console.log('✅ No corruption detected in traces');
+      console.error('✅ No corruption detected in traces');
     }
   }
 

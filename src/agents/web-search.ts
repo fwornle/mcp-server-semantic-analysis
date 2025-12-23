@@ -566,7 +566,7 @@ Respond with JSON:
     return [
       `// Example code for ${query}
 function ${query.replace(/\s+/g, '')}() {
-  console.log('Example implementation');
+  console.error('Example implementation');
   return true;
 }`,
       `/* 

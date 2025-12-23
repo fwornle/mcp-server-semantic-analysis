@@ -170,7 +170,7 @@ export function loadAllWorkflows(configDir?: string): Map<string, WorkflowDefini
   const workflows = new Map<string, WorkflowDefinition>();
 
   if (!fs.existsSync(workflowsDir)) {
-    console.warn(`Workflows directory not found: ${workflowsDir}`);
+    console.error(`Workflows directory not found: ${workflowsDir}`);
     return workflows;
   }
 
@@ -181,7 +181,7 @@ export function loadAllWorkflows(configDir?: string): Map<string, WorkflowDefini
     try {
       const definition = loadWorkflowFromYAML(workflowName, dir);
       workflows.set(workflowName, definition);
-      console.log(`Loaded workflow: ${workflowName}`);
+      console.error(`Loaded workflow: ${workflowName}`);
     } catch (error) {
       console.error(`Failed to load workflow ${workflowName}:`, error);
     }

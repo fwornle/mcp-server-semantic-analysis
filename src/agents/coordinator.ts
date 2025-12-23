@@ -34,6 +34,7 @@ export interface WorkflowStep {
   dependencies?: string[];
   timeout?: number;
   condition?: string; // Optional condition for conditional execution (e.g., "{{params.autoRefresh}} === true")
+  preferredModel?: 'groq' | 'anthropic' | 'openai' | 'gemini' | 'auto'; // Optional model preference for LLM-intensive steps
 }
 
 export interface WorkflowExecution {
@@ -1433,12 +1434,13 @@ export class CoordinatorAgent {
     // Resolve template placeholders in parameters
     this.resolveParameterTemplates(stepParams, execution.results);
 
-    // Add execution context
+    // Add execution context including model preference
     stepParams._context = {
       workflow: execution.workflow,
       executionId: execution.id,
       previousResults: execution.results,
-      step: step.name
+      step: step.name,
+      preferredModel: step.preferredModel || 'auto' // Pass model preference to agent
     };
 
     const timeoutPromise = new Promise((_, reject) => {
@@ -1459,7 +1461,7 @@ export class CoordinatorAgent {
     }
   }
 
-  private async executeStepOperation(step: WorkflowStep, parameters: Record<string, any>, execution: WorkflowExecution): Promise<any> {
+  private async executeStepOperation(step: WorkflowStep, parameters: Record<string, any>, _execution: WorkflowExecution): Promise<any> {
     const agent = this.agents.get(step.agent);
     
     if (!agent) {
@@ -2324,6 +2326,64 @@ Expected locations for generated files:
         entityTypeDistribution: result.statistics.entityTypeDistribution
       };
     }
+
+    // Extract documentation linker results (for link_documentation step)
+    if (Array.isArray(result.links)) {
+      summary.linksCount = result.links.length;
+      summary.documentsLinked = result.links.length;
+    }
+    if (Array.isArray(result.documents)) {
+      summary.documentsCount = result.documents.length;
+      // Extract document types distribution
+      const docTypes: Record<string, number> = {};
+      result.documents.forEach((doc: any) => {
+        const docType = doc.type || 'unknown';
+        docTypes[docType] = (docTypes[docType] || 0) + 1;
+      });
+      if (Object.keys(docTypes).length > 0) {
+        summary.documentTypes = docTypes;
+      }
+    }
+    // Extract documentation statistics (from DocumentationLinkerAgent)
+    if (result.statistics?.totalDocuments !== undefined) {
+      summary.totalDocuments = result.statistics.totalDocuments;
+      summary.totalLinks = result.statistics.totalLinks;
+      if (result.statistics.linksByType) {
+        summary.linksByType = result.statistics.linksByType;
+      }
+      if (Array.isArray(result.statistics.unresolvedReferences)) {
+        summary.unresolvedReferences = result.statistics.unresolvedReferences.length;
+      }
+    }
+
+    // Extract semantic analysis results (for semantic_analysis step)
+    if (result.semanticInsights) {
+      const si = result.semanticInsights;
+      summary.keyPatternsCount = si.keyPatterns?.length || 0;
+      summary.learningsCount = si.learnings?.length || 0;
+      summary.architecturalDecisionsCount = si.architecturalDecisions?.length || 0;
+      if (si.keyPatterns && si.keyPatterns.length > 0) {
+        summary.topKeyPatterns = si.keyPatterns.slice(0, 3);
+      }
+    }
+    if (result.crossAnalysisInsights) {
+      const cai = result.crossAnalysisInsights;
+      summary.crossAnalysisCount = (cai.correlations?.length || 0) +
+                                    (cai.evolutionTrends?.length || 0) +
+                                    (cai.riskFactors?.length || 0);
+    }
+    if (result.codeAnalysis) {
+      summary.filesAnalyzed = result.codeAnalysis.totalFiles || 0;
+      summary.avgComplexity = result.codeAnalysis.averageComplexity;
+    }
+    if (result.confidence !== undefined) {
+      summary.confidence = result.confidence;
+    }
+    // Extract string insights field (aggregated insights)
+    if (typeof result.insights === 'string' && result.insights.length > 0) {
+      summary.insightsSummary = result.insights.substring(0, 200) + (result.insights.length > 200 ? '...' : '');
+    }
+
     if (result.skipped) {
       summary.skipped = true;
       summary.skipReason = result.warning || 'Unknown reason';

@@ -105,6 +105,7 @@ export class CoordinatorAgent {
       const stepsDetail: Array<{
         name: string;
         status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+        startTime?: string;
         duration?: number;
         error?: string;
         outputs?: Record<string, any>;
@@ -133,6 +134,7 @@ export class CoordinatorAgent {
           stepsDetail.push({
             name: stepName,
             status: 'running',
+            startTime: new Date().toISOString(),
           });
         }
       }

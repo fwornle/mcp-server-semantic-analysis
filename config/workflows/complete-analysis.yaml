@@ -154,7 +154,7 @@ steps:
   # PHASE 6: Persistence -> Dedup -> Validation
   - name: persist_results
     agent: persistence
-    action: persistAllEntities
+    action: persistEntities
     parameters:
       validated_results: "{{quality_assurance.result}}"
       team: "{{params.team}}"
@@ -173,7 +173,7 @@ steps:
 
   - name: validate_content
     agent: content_validation
-    action: validateEntityContent
+    action: validateAllEntities
     parameters:
       deduplicated_results: "{{deduplicate_insights.result}}"
     timeout: 120

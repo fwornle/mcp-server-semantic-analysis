@@ -1498,6 +1498,9 @@ export class CoordinatorAgent {
     try {
       execution.status = 'running';
 
+      // Write initial progress file for dashboard visibility
+      this.writeProgressFile(execution, workflow, 'plan_batches', ['plan_batches']);
+
       // Initialize batch scheduler
       const batchScheduler = getBatchScheduler(
         parameters.repositoryPath || this.repositoryPath,
@@ -1647,6 +1650,10 @@ export class CoordinatorAgent {
             relations: accumulatedKG.relations.length
           });
 
+          // Update progress file after each batch for dashboard visibility
+          execution.currentStep = batchCount;
+          this.writeProgressFile(execution, workflow, `batch_${batchCount}`, []);
+
         } catch (error) {
           batchScheduler.failBatch(batch.id, error instanceof Error ? error.message : String(error));
           log(`Batch ${batch.id} failed`, 'error', { error });
@@ -1686,6 +1693,9 @@ export class CoordinatorAgent {
         accumulatedStats: progress.accumulatedStats
       });
 
+      // Write final progress file for dashboard
+      this.writeProgressFile(execution, workflow);
+
     } catch (error) {
       execution.status = 'failed';
       execution.endTime = new Date();
@@ -1698,6 +1708,9 @@ export class CoordinatorAgent {
         stack: stackTrace,
         duration: execution.endTime.getTime() - execution.startTime.getTime()
       });
+
+      // Write final progress file for dashboard
+      this.writeProgressFile(execution, workflow);
     }
 
     return execution;

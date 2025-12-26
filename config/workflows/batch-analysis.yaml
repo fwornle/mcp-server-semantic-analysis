@@ -227,7 +227,7 @@ steps:
   # PHASE 6: Final Persistence (runs once after all batches)
   - name: final_persist
     agent: persistence
-    action: persistAllEntities
+    action: persistEntities
     parameters:
       accumulatedKG: "{{accumulatedKG}}"
       team: "{{params.team}}"
@@ -250,7 +250,7 @@ steps:
   # PHASE 8: Content Validation
   - name: final_validation
     agent: content_validation
-    action: validateEntityContent
+    action: validateAllEntities
     parameters:
       deduplicated_results: "{{final_dedup.result}}"
     timeout: 120

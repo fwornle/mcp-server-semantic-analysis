@@ -234,6 +234,162 @@ export class GitHistoryAgent {
     }
   }
 
+  /**
+   * Extract commits for a specific batch by SHA range
+   * Used by batch processing to extract commits in chronological order
+   *
+   * @param startCommit - First commit SHA in the batch (inclusive)
+   * @param endCommit - Last commit SHA in the batch (inclusive)
+   * @returns Commits in chronological order (oldest first)
+   */
+  async extractCommitsForBatch(
+    startCommit: string,
+    endCommit: string
+  ): Promise<{ commits: GitCommit[], filteredCount: number }> {
+    try {
+      // Check if startCommit is the initial commit (has no parent)
+      let isInitialCommit = false;
+      try {
+        execSync(`git rev-parse ${startCommit}^`, {
+          cwd: this.repositoryPath,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe']
+        });
+      } catch {
+        // If rev-parse fails, this is the initial commit
+        isInitialCommit = true;
+        log('Start commit is the initial commit, using alternative range syntax', 'info');
+      }
+
+      // Use git log with range syntax to get commits between SHAs
+      // For initial commit: use startCommit..endCommit and include startCommit separately
+      // For normal commits: use startCommit^..endCommit (includes startCommit)
+      // --reverse gives us chronological order (oldest first)
+      let gitCommand: string;
+      if (isInitialCommit) {
+        // For initial commit, we need to include it explicitly
+        // Get commits from startCommit to endCommit inclusive
+        gitCommand = `git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --reverse ${endCommit} --not $(git rev-list --max-parents=0 HEAD)^ 2>/dev/null || git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --reverse ${endCommit}`;
+      } else {
+        gitCommand = `git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --reverse ${startCommit}^..${endCommit}`;
+      }
+
+      const output = execSync(gitCommand, {
+        cwd: this.repositoryPath,
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        shell: '/bin/bash'
+      });
+
+      const result = this.parseGitLogOutput(output);
+
+      // If initial commit, filter to only include commits in our range
+      if (isInitialCommit && result.commits.length > 0) {
+        // Get list of commits in range to filter
+        const rangeOutput = execSync(
+          `git rev-list --reverse ${startCommit}^..${endCommit} 2>/dev/null || git rev-list --reverse ${endCommit}`,
+          { cwd: this.repositoryPath, encoding: 'utf8', shell: '/bin/bash' }
+        ).trim().split('\n').filter(Boolean);
+
+        const rangeSet = new Set(rangeOutput);
+        // Always include startCommit for initial commit case
+        rangeSet.add(startCommit);
+
+        result.commits = result.commits.filter(c => rangeSet.has(c.hash));
+      }
+
+      log('Extracted commits for batch', 'info', {
+        startCommit: startCommit.substring(0, 7),
+        endCommit: endCommit.substring(0, 7),
+        commitCount: result.commits.length,
+        filteredCount: result.filteredCount,
+        isInitialCommit
+      });
+
+      return result;
+
+    } catch (error) {
+      log('Failed to extract batch commits', 'error', { startCommit, endCommit, error });
+      throw new Error(`Git batch extraction failed: ${error}`);
+    }
+  }
+
+  /**
+   * Extract commits by list of SHA hashes
+   * Used when batch scheduler provides explicit commit list
+   *
+   * @param commitShas - Array of commit SHAs to extract
+   * @returns Commits in the order provided
+   */
+  async extractCommitsByShas(
+    commitShas: string[]
+  ): Promise<{ commits: GitCommit[], filteredCount: number }> {
+    if (commitShas.length === 0) {
+      return { commits: [], filteredCount: 0 };
+    }
+
+    try {
+      // Extract each commit individually and combine
+      // This ensures we get exactly the commits requested in order
+      const allCommits: GitCommit[] = [];
+      let totalFiltered = 0;
+
+      // Process in batches of 50 to avoid command line length limits
+      const chunkSize = 50;
+      for (let i = 0; i < commitShas.length; i += chunkSize) {
+        const chunk = commitShas.slice(i, i + chunkSize);
+        const shaList = chunk.join(' ');
+
+        const gitCommand = `git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --no-walk ${shaList}`;
+
+        const output = execSync(gitCommand, {
+          cwd: this.repositoryPath,
+          encoding: 'utf8',
+          maxBuffer: 10 * 1024 * 1024
+        });
+
+        const result = this.parseGitLogOutput(output);
+        allCommits.push(...result.commits);
+        totalFiltered += result.filteredCount;
+      }
+
+      log('Extracted commits by SHAs', 'info', {
+        requestedCount: commitShas.length,
+        extractedCount: allCommits.length,
+        filteredCount: totalFiltered
+      });
+
+      return { commits: allCommits, filteredCount: totalFiltered };
+
+    } catch (error) {
+      log('Failed to extract commits by SHAs', 'error', { count: commitShas.length, error });
+      throw new Error(`Git SHA extraction failed: ${error}`);
+    }
+  }
+
+  /**
+   * Get estimated token count for a batch
+   * Used by batch scheduler to estimate processing cost
+   */
+  estimateBatchTokens(commits: GitCommit[]): number {
+    let totalTokens = 0;
+
+    for (const commit of commits) {
+      // Estimate tokens for commit metadata
+      totalTokens += Math.ceil(commit.message.length / 4); // ~4 chars per token
+      totalTokens += Math.ceil(commit.author.length / 4);
+      totalTokens += 20; // date, hash overhead
+
+      // Estimate tokens for file changes
+      for (const file of commit.files) {
+        totalTokens += Math.ceil(file.path.length / 4);
+        totalTokens += 10; // stats overhead
+      }
+    }
+
+    return totalTokens;
+  }
+
   private parseGitLogOutput(output: string): { commits: GitCommit[], filteredCount: number } {
     const commits: GitCommit[] = [];
     const sections = output.split('\n\n').filter(section => section.trim());

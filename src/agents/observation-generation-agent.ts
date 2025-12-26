@@ -871,7 +871,8 @@ Provide a JSON response with:
 
         const result = await this.semanticAnalyzer.analyzeContent(prompt, {
           analysisType: "general",
-          provider: "auto"
+          provider: "auto",
+          taskType: "observation_generation"  // Uses premium tier for quality observations
         });
 
         enhancedInsights = JSON.parse(result.insights);

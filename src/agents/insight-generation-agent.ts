@@ -400,7 +400,8 @@ Best practices, rules, and conventions for using this correctly. What should dev
       const result = await this.semanticAnalyzer.analyzeContent(prompt, {
         analysisType: 'architecture',
         context: `Deep insight generation for ${entityName}`,
-        provider: 'auto'
+        provider: 'auto',
+        taskType: 'insight_generation'  // Uses premium tier for better quality
       });
 
       if (result && result.insights) {

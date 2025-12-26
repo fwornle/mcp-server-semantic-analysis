@@ -1059,7 +1059,8 @@ Respond with a JSON object:
 
       const result = await this.semanticAnalyzer.analyzeContent(prompt, {
         analysisType: "general",
-        provider: "auto"
+        provider: "auto",
+        taskType: "quality_assurance_review"  // Uses premium tier for accurate quality assessment
       });
 
       // Parse LLM response
@@ -1169,7 +1170,8 @@ Respond with JSON only:
 
       const result = await this.semanticAnalyzer.analyzeContent(prompt, {
         analysisType: "general",
-        provider: "auto"
+        provider: "auto",
+        taskType: "quality_assurance_review"  // Uses premium tier for accurate value assessment
       });
 
       const analysis = JSON.parse(result.insights);

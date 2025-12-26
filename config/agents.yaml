@@ -1,6 +1,11 @@
 # Unified Agent Registry - Single Source of Truth
 # Used by: Coordinator, Dashboard, PlantUML Generator
-# Version: 1.0
+# Version: 1.1 - Added tier annotations and batch processing agents
+
+# Model Tiers:
+# - fast: Quick operations, lower cost (Groq llama-3.1-8b-instant, GPT-4o-mini)
+# - standard: Balanced quality/cost (Groq llama-3.3-70b-versatile, Claude Haiku)
+# - premium: High quality, higher cost (Claude Sonnet, GPT-4o)
 
 # Orchestrator - Special node that coordinates all agents
 orchestrator:
@@ -16,8 +21,56 @@ orchestrator:
   row: -1
   col: 1.125
 
-# 15 Workflow Agents
+# 18 Workflow Agents (15 original + 3 batch processing)
 agents:
+  # --- Batch Processing Agents (new) ---
+  - id: batch_scheduler
+    name: Batch Scheduler
+    shortName: Batch
+    icon: Calendar
+    description: "Plans and tracks chronological batch windows. Divides git history into 50-commit batches for incremental processing with checkpoint-based resumption."
+    usesLLM: false
+    llmModel: null
+    tier: fast
+    techStack: "Git CLI + Checkpoint Manager"
+    phase: 0
+    row: -0.5
+    col: 0.5
+
+  - id: kg_operators
+    name: KG Operators
+    shortName: KG-Ops
+    icon: Network
+    description: "Tree-KG inspired operators for incremental knowledge graph expansion. Implements conv, aggr, embed, dedup, pred, merge operators per batch."
+    usesLLM: true
+    llmModel: "Multi-tier: fast/standard/premium per operator"
+    tier: standard  # Default tier, operators override individually
+    operator_tiers:
+      conv: premium    # Context enrichment needs quality
+      aggr: standard   # Role assignment is straightforward
+      embed: fast      # Just embedding API calls
+      dedup: standard  # Similarity + role check
+      pred: premium    # Edge prediction needs reasoning
+      merge: standard  # Structure fusion is algorithmic
+    techStack: "SemanticAnalyzer + Embeddings"
+    phase: 3
+    row: 3.5
+    col: 0.375
+
+  - id: batch_checkpoint_manager
+    name: Batch Checkpoint
+    shortName: Checkpoint
+    icon: Save
+    description: "Per-batch checkpoint state management. Tracks completed batches, operator results, and supports resumption from any batch."
+    usesLLM: false
+    llmModel: null
+    tier: fast
+    techStack: "JSON file persistence"
+    phase: 4
+    row: 4.5
+    col: 0.375
+
+  # --- Original Agents with tier annotations ---
   - id: git_history
     name: Git History
     shortName: Git
@@ -25,6 +78,7 @@ agents:
     description: "Analyzes commit history via git CLI with LLM-powered pattern extraction. Identifies code evolution patterns, development themes, architectural decisions, and technical debt from commit messages and file changes."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: standard
     techStack: "Git CLI + SemanticAnalyzer"
     phase: 1
     row: 0
@@ -37,6 +91,7 @@ agents:
     description: "Parses LSL session files to identify problem-solution pairs, extract development contexts, and discover workflow patterns from human-AI conversations."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: standard
     techStack: SemanticAnalyzer
     phase: 1
     row: 0
@@ -49,6 +104,7 @@ agents:
     description: "Builds AST-based knowledge graph using Tree-sitter parsing. Uses external LLM (via code-graph-rag MCP) for Cypher query generation and RAG orchestration. Indexes functions, classes, imports, and call relationships into Memgraph."
     usesLLM: true
     llmModel: "External: code-graph-rag (OpenAI/Anthropic/Ollama)"
+    tier: standard
     techStack: "Tree-sitter + Memgraph + pydantic_ai"
     phase: 1
     row: 0
@@ -61,6 +117,7 @@ agents:
     description: "Generates context-aware questions about the codebase based on git changes, commit themes, and session patterns. Queries the code graph via NL->Cypher to discover hotspots, circular dependencies, inheritance structures, and change impact."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: standard
     techStack: "NL->Cypher + Memgraph + SemanticAnalyzer"
     phase: 1.5
     row: 1
@@ -73,6 +130,7 @@ agents:
     description: "Links markdown docs and PlantUML diagrams to code entities. Uses LLM-powered semantic matching to resolve unresolved references and build intelligent doc-to-code mappings."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: standard
     techStack: "Regex + glob patterns + SemanticAnalyzer"
     phase: 1
     row: 0
@@ -85,6 +143,7 @@ agents:
     description: "Deep code analysis to detect patterns (MVC, Factory, Observer, etc.), assess quality metrics, identify anti-patterns, and generate LLM-powered insights on architecture."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: premium
     techStack: "Direct LLM clients"
     phase: 2
     row: 1
@@ -97,6 +156,7 @@ agents:
     description: "Searches for similar patterns, code examples, and documentation using DuckDuckGo/Google. Optional LLM-powered result summarization and intelligent ranking of top results."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile (optional)"
+    tier: fast
     techStack: "DuckDuckGo/Google APIs + SemanticAnalyzer"
     phase: 2.5
     row: 2
@@ -109,6 +169,7 @@ agents:
     description: "Generates comprehensive insights, PlantUML architecture diagrams, design pattern documentation, and knowledge synthesis from analysis results."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: premium
     techStack: SemanticAnalyzer
     phase: 3
     row: 3
@@ -121,6 +182,7 @@ agents:
     description: "Creates structured observations for entities: pattern observations, problem-solution pairs, architectural decisions, and contextual metadata."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: premium
     techStack: SemanticAnalyzer
     phase: 3.5
     row: 4
@@ -133,6 +195,7 @@ agents:
     description: "Maps entities to ontology classes (upper/lower) using LLM-powered semantic inference. Assigns categories, properties, and confidence scores with intelligent taxonomy alignment."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: standard
     techStack: "OntologyClassifier + SemanticAnalyzer"
     phase: 4
     row: 5
@@ -145,6 +208,7 @@ agents:
     description: "LLM-powered semantic analysis of docstrings and documentation prose. Extracts purpose, parameters, usage patterns, warnings, and related entities from code documentation."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: standard
     techStack: "SemanticAnalyzer + Batch Processing"
     phase: 4
     row: 5.5
@@ -157,6 +221,7 @@ agents:
     description: "Validates insights, PlantUML syntax, entity coherence. LLM-powered semantic value filtering removes low-value entities. Quality-based feedback loops (up to 3 iterations) with progressive parameter tightening."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: premium
     techStack: "SemanticAnalyzer + Semantic Value Filter"
     phase: 5
     row: 6
@@ -169,6 +234,7 @@ agents:
     description: "Manages entity CRUD operations, checkpoint tracking, and bi-temporal staleness detection. Writes entities with ontology metadata to LevelDB graph storage."
     usesLLM: false
     llmModel: null
+    tier: fast
     techStack: "LevelDB + Graphology"
     phase: 6
     row: 7
@@ -181,6 +247,7 @@ agents:
     description: "Detects duplicate entities using cosine/semantic similarity on embeddings. Merges similar entities, removes duplicate observations, and consolidates patterns. Uses OpenAI embeddings API (not generative LLM)."
     usesLLM: false
     llmModel: "Embeddings: text-embedding-3-small"
+    tier: standard
     techStack: "OpenAI Embeddings API"
     phase: 6
     row: 8
@@ -193,6 +260,7 @@ agents:
     description: "Validates entity accuracy against current codebase. Detects git-based staleness, verifies file/command references, and regenerates stale entity content."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
+    tier: standard
     techStack: SemanticAnalyzer
     phase: 6
     row: 9
@@ -201,6 +269,24 @@ agents:
 # Step name to agent ID mapping
 # Used to map workflow step names to their executing agents
 step_mappings:
+  # Batch workflow steps
+  plan_batches: batch_scheduler
+  extract_batch_commits: git_history
+  extract_batch_sessions: vibe_history
+  batch_semantic_analysis: semantic_analysis
+  operator_conv: kg_operators
+  operator_aggr: kg_operators
+  operator_embed: kg_operators
+  operator_dedup: kg_operators
+  operator_pred: kg_operators
+  operator_merge: kg_operators
+  batch_qa: quality_assurance
+  save_batch_checkpoint: batch_checkpoint_manager
+  final_persist: persistence
+  final_dedup: deduplication
+  final_validation: content_validation
+
+  # Complete/Incremental workflow steps (existing)
   analyze_git_history: git_history
   analyze_recent_changes: git_history
   analyze_vibe_history: vibe_history

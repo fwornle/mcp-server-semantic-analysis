@@ -10,8 +10,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { parse } from 'yaml';
 import type { WorkflowDefinition, WorkflowStep } from '../agents/coordinator.js';
+
+// ES module compatible __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ============================================================================
 // YAML Schema Interfaces
@@ -46,6 +51,9 @@ export interface StepYAML {
   timeout?: number;
   dependencies: string[];
   condition?: string;
+  phase?: 'initialization' | 'batch' | 'finalization';  // For iterative workflows
+  operator?: string;  // Tree-KG operator name (conv, aggr, embed, dedup, pred, merge)
+  tier?: 'fast' | 'standard' | 'premium';  // Model tier override
 }
 
 /** Edge definition for DAG visualization */
@@ -61,6 +69,7 @@ export interface WorkflowYAML {
     name: string;
     version: string;
     description: string;
+    type?: 'standard' | 'iterative';  // iterative = batch processing
   };
   config: {
     max_concurrent_steps: number;
@@ -138,6 +147,9 @@ function convertStep(step: StepYAML): WorkflowStep {
     dependencies: step.dependencies,
     timeout: step.timeout,
     condition: step.condition,
+    phase: step.phase,      // For batch workflows
+    operator: step.operator, // Tree-KG operator
+    tier: step.tier,         // Model tier
   };
 }
 
@@ -158,6 +170,7 @@ export function loadWorkflowFromYAML(workflowName: string, configDir?: string): 
     agents: agentIds,
     steps: workflowYAML.steps.map(convertStep),
     config: workflowYAML.config,
+    type: workflowYAML.workflow.type,  // Map type for batch/iterative workflows
   };
 }
 

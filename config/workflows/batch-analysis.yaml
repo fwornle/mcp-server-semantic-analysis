@@ -1,0 +1,334 @@
+# Batch Analysis Workflow - Chronological Batch Processing with Tree-KG Operators
+# Processes git history in 50-commit batches, applying 6 operators per batch
+# Version: 1.0
+
+workflow:
+  name: batch-analysis
+  version: "1.0"
+  description: "Chronological batch processing with Tree-KG operators for incremental KG expansion"
+  type: iterative  # Signals coordinator to use batch iteration
+
+config:
+  max_concurrent_steps: 2  # Limited concurrency for batch processing
+  timeout_per_batch: 300   # 5 minutes per batch
+  quality_validation: true
+  batch_size: 50           # Commits per batch (overridable via params)
+  max_batches: 0           # 0 = process all batches
+  checkpoint_enabled: true # Enable per-batch checkpointing
+
+# Parameters that can be passed to the workflow
+parameters:
+  repositoryPath:
+    required: true
+    description: "Path to the repository to analyze"
+  team:
+    required: true
+    description: "Team name for knowledge graph storage"
+  batchSize:
+    default: 50
+    description: "Number of commits per batch"
+  maxBatches:
+    default: 0
+    description: "Maximum batches to process (0 = all)"
+  resumeFromCheckpoint:
+    default: true
+    description: "Resume from last completed batch"
+  operatorWeights:
+    default:
+      alpha: 0.6  # Semantic similarity weight
+      beta: 0.2   # Adamic-Adar weight
+      gamma: 0.2  # Common ancestors weight
+    description: "Weights for edge prediction scoring"
+
+# Workflow steps
+steps:
+  # PHASE 0: Plan Batches (runs once at start)
+  - name: plan_batches
+    agent: batch_scheduler
+    action: planBatches
+    parameters:
+      repositoryPath: "{{params.repositoryPath}}"
+      team: "{{params.team}}"
+      batchSize: "{{params.batchSize}}"
+      maxBatches: "{{params.maxBatches}}"
+      resumeFromCheckpoint: "{{params.resumeFromCheckpoint}}"
+    timeout: 60
+    dependencies: []
+    phase: initialization
+
+  # --- BATCH LOOP BEGINS (steps with phase: batch are repeated per batch) ---
+
+  # PHASE 1: Extract Batch Data
+  - name: extract_batch_commits
+    agent: git_history
+    action: extractCommitsForBatch
+    parameters:
+      startCommit: "{{currentBatch.startCommit}}"
+      endCommit: "{{currentBatch.endCommit}}"
+    timeout: 60
+    dependencies:
+      - plan_batches
+    phase: batch
+    operator: extract
+
+  - name: extract_batch_sessions
+    agent: vibe_history
+    action: extractSessionsForCommits
+    parameters:
+      commits: "{{extract_batch_commits.result.commits}}"
+    timeout: 60
+    dependencies:
+      - extract_batch_commits
+    phase: batch
+    operator: extract
+
+  # PHASE 2: Semantic Analysis for Batch
+  - name: batch_semantic_analysis
+    agent: semantic_analysis
+    action: analyzeSemantics
+    tier: premium  # Use high-quality model for semantic analysis
+    parameters:
+      git_commits: "{{extract_batch_commits.result.commits}}"
+      vibe_sessions: "{{extract_batch_sessions.result.sessions}}"
+      session_correlations: "{{extract_batch_sessions.result.correlations}}"
+      batch_context:
+        batchId: "{{currentBatch.id}}"
+        startDate: "{{currentBatch.startDate}}"
+        endDate: "{{currentBatch.endDate}}"
+    timeout: 120
+    dependencies:
+      - extract_batch_commits
+      - extract_batch_sessions
+    phase: batch
+    operator: analyze
+
+  # PHASE 3: Tree-KG Operators (applied in sequence)
+  - name: operator_conv
+    agent: kg_operators
+    action: contextConvolution
+    tier: premium  # Context enrichment needs quality
+    parameters:
+      entities: "{{batch_semantic_analysis.result.entities}}"
+      batchContext:
+        batchId: "{{currentBatch.id}}"
+        startDate: "{{currentBatch.startDate}}"
+        endDate: "{{currentBatch.endDate}}"
+        commits: "{{extract_batch_commits.result.commits}}"
+        sessions: "{{extract_batch_sessions.result.sessions}}"
+    timeout: 60
+    dependencies:
+      - batch_semantic_analysis
+    phase: batch
+    operator: conv
+
+  - name: operator_aggr
+    agent: kg_operators
+    action: entityAggregation
+    tier: standard
+    parameters:
+      entities: "{{operator_conv.result}}"
+    timeout: 30
+    dependencies:
+      - operator_conv
+    phase: batch
+    operator: aggr
+
+  - name: operator_embed
+    agent: kg_operators
+    action: nodeEmbedding
+    tier: fast  # Just embedding API calls
+    parameters:
+      entities: "{{operator_aggr.result.core}}"
+      nonCoreEntities: "{{operator_aggr.result.nonCore}}"
+    timeout: 120
+    dependencies:
+      - operator_aggr
+    phase: batch
+    operator: embed
+
+  - name: operator_dedup
+    agent: kg_operators
+    action: deduplication
+    tier: standard
+    parameters:
+      entities: "{{operator_embed.result}}"
+      accumulatedKG: "{{accumulatedKG}}"
+    timeout: 60
+    dependencies:
+      - operator_embed
+    phase: batch
+    operator: dedup
+
+  - name: operator_pred
+    agent: kg_operators
+    action: edgePrediction
+    tier: premium  # Edge prediction needs reasoning
+    parameters:
+      entities: "{{operator_dedup.result.entities}}"
+      accumulatedKG: "{{accumulatedKG}}"
+      weights: "{{params.operatorWeights}}"
+    timeout: 90
+    dependencies:
+      - operator_dedup
+    phase: batch
+    operator: pred
+
+  - name: operator_merge
+    agent: kg_operators
+    action: structureMerge
+    tier: standard
+    parameters:
+      batchResults:
+        entities: "{{operator_dedup.result.entities}}"
+        relations: "{{operator_pred.result.edges}}"
+      accumulatedKG: "{{accumulatedKG}}"
+    timeout: 30
+    dependencies:
+      - operator_pred
+    phase: batch
+    operator: merge
+
+  # PHASE 4: Batch Quality Check
+  - name: batch_qa
+    agent: quality_assurance
+    action: validateBatch
+    tier: premium  # Accurate QA requires good model
+    parameters:
+      mergeResult: "{{operator_merge.result}}"
+      batchId: "{{currentBatch.id}}"
+    timeout: 60
+    dependencies:
+      - operator_merge
+    phase: batch
+    operator: qa
+
+  # PHASE 5: Batch Checkpoint
+  - name: save_batch_checkpoint
+    agent: batch_checkpoint_manager
+    action: saveBatchCheckpoint
+    parameters:
+      batchId: "{{currentBatch.id}}"
+      batchNumber: "{{currentBatch.batchNumber}}"
+      commitRange:
+        start: "{{currentBatch.startCommit}}"
+        end: "{{currentBatch.endCommit}}"
+      dateRange:
+        start: "{{currentBatch.startDate}}"
+        end: "{{currentBatch.endDate}}"
+      stats: "{{batch_qa.result.stats}}"
+    timeout: 10
+    dependencies:
+      - batch_qa
+    phase: batch
+    operator: checkpoint
+
+  # --- BATCH LOOP ENDS ---
+
+  # PHASE 6: Final Persistence (runs once after all batches)
+  - name: final_persist
+    agent: persistence
+    action: persistAllEntities
+    parameters:
+      accumulatedKG: "{{accumulatedKG}}"
+      team: "{{params.team}}"
+    timeout: 120
+    dependencies:
+      - save_batch_checkpoint  # Depends on all batches completing
+    phase: finalization
+
+  # PHASE 7: Final Deduplication
+  - name: final_dedup
+    agent: deduplication
+    action: deduplicateEntities
+    parameters:
+      persisted_results: "{{final_persist.result}}"
+    timeout: 180
+    dependencies:
+      - final_persist
+    phase: finalization
+
+  # PHASE 8: Content Validation
+  - name: final_validation
+    agent: content_validation
+    action: validateEntityContent
+    parameters:
+      deduplicated_results: "{{final_dedup.result}}"
+    timeout: 120
+    dependencies:
+      - final_dedup
+    phase: finalization
+
+# DAG visualization for batch workflow
+edges:
+  # Initialization phase
+  - from: orchestrator
+    to: batch_scheduler
+    type: control
+
+  # Batch extraction
+  - from: batch_scheduler
+    to: git_history
+    type: dataflow
+    label: "per batch"
+
+  - from: git_history
+    to: vibe_history
+    type: dependency
+
+  # Semantic analysis
+  - from: git_history
+    to: semantic_analysis
+    type: dependency
+  - from: vibe_history
+    to: semantic_analysis
+    type: dependency
+
+  # Tree-KG operator pipeline
+  - from: semantic_analysis
+    to: kg_operators
+    type: dependency
+    label: "conv"
+
+  - from: kg_operators
+    to: kg_operators
+    type: self
+    label: "conv→aggr→embed→dedup→pred→merge"
+
+  # QA and checkpoint
+  - from: kg_operators
+    to: quality_assurance
+    type: dependency
+
+  - from: quality_assurance
+    to: batch_checkpoint_manager
+    type: dependency
+
+  # Loop back for next batch
+  - from: batch_checkpoint_manager
+    to: git_history
+    type: control
+    label: "next batch"
+
+  # Finalization
+  - from: batch_checkpoint_manager
+    to: persistence
+    type: dependency
+    label: "after all batches"
+
+  - from: persistence
+    to: deduplication
+    type: dependency
+
+  - from: deduplication
+    to: content_validation
+    type: dependency
+
+# Operator tier assignments (for coordinator reference)
+operator_tiers:
+  conv: premium
+  aggr: standard
+  embed: fast
+  dedup: standard
+  pred: premium
+  merge: standard
+  qa: premium

@@ -804,7 +804,18 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
   const coordinator = new CoordinatorAgent(repositoryPath);
 
   try {
-    const execution = await coordinator.executeWorkflow(workflow_name, parameters);
+    // Get workflow definition to check if it's iterative/batch type
+    const workflows = coordinator.getWorkflows();
+    const workflow = workflows.find(w => w.name === workflow_name);
+
+    // Route to executeBatchWorkflow for iterative/batch workflows
+    const isBatchWorkflow = workflow?.type === 'iterative' || workflow_name === 'batch-analysis';
+
+    log(`Workflow type: ${workflow?.type || 'standard'}, isBatchWorkflow: ${isBatchWorkflow}`, "info");
+
+    const execution = isBatchWorkflow
+      ? await coordinator.executeBatchWorkflow(workflow_name, parameters)
+      : await coordinator.executeWorkflow(workflow_name, parameters);
     
     // Format execution results
     const statusEmoji = execution.status === "completed" ? "✅" : execution.status === "failed" ? "❌" : "⚡";

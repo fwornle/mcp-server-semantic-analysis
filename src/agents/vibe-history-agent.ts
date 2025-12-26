@@ -303,6 +303,191 @@ export class VibeHistoryAgent {
     return sessions;
   }
 
+  /**
+   * Extract sessions that correspond to a batch of commits
+   * Used by batch processing to correlate vibe sessions with git commits
+   *
+   * @param startDate - Start date of the batch (from first commit)
+   * @param endDate - End date of the batch (from last commit)
+   * @returns Sessions that fall within the date range
+   */
+  async extractSessionsForDateRange(
+    startDate: Date,
+    endDate: Date
+  ): Promise<ConversationSession[]> {
+    const sessions: ConversationSession[] = [];
+    const PARALLEL_BATCH_SIZE = 20;
+
+    try {
+      // Get all session files and filter by date range
+      const allFiles = fs.readdirSync(this.specstoryPath)
+        .filter(file => file.endsWith('.md'))
+        .map(file => {
+          const filePath = path.join(this.specstoryPath, file);
+          const stats = fs.statSync(filePath);
+          // Extract date from filename for more accurate filtering
+          const dateFromFilename = this.extractDateFromFilename(file);
+          return {
+            name: file,
+            path: filePath,
+            date: dateFromFilename || stats.mtime
+          };
+        });
+
+      // Filter files within the date range
+      const files = allFiles.filter(f => {
+        return f.date >= startDate && f.date <= endDate;
+      }).sort((a, b) => a.date.getTime() - b.date.getTime()); // Oldest first
+
+      log(`Found ${files.length} session files for date range`, 'info', {
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+        fileCount: files.length
+      });
+
+      if (files.length === 0) {
+        return [];
+      }
+
+      // Process files in parallel batches
+      for (let i = 0; i < files.length; i += PARALLEL_BATCH_SIZE) {
+        const batch = files.slice(i, i + PARALLEL_BATCH_SIZE);
+
+        const batchResults = await Promise.all(
+          batch.map(async (file) => {
+            try {
+              return await this.parseSessionFile(file.path);
+            } catch (error) {
+              log(`Failed to parse session file: ${file.name}`, 'warning', error);
+              return null;
+            }
+          })
+        );
+
+        for (const session of batchResults) {
+          if (session) {
+            sessions.push(session);
+          }
+        }
+      }
+
+      log(`Extracted ${sessions.length} sessions for date range`, 'info');
+      return sessions;
+
+    } catch (error) {
+      log('Failed to extract sessions for date range', 'error', error);
+      return [];
+    }
+  }
+
+  /**
+   * Extract sessions that correlate with specific commits
+   * Uses commit timestamps to find relevant vibe sessions
+   *
+   * @param commits - Array of commits with date information
+   * @returns Sessions correlated with the commits
+   */
+  async extractSessionsForCommits(
+    commits: Array<{ date: Date; hash: string; message: string }>
+  ): Promise<{
+    sessions: ConversationSession[];
+    correlations: Array<{
+      sessionFilename: string;
+      relatedCommits: string[];
+    }>;
+  }> {
+    if (commits.length === 0) {
+      return { sessions: [], correlations: [] };
+    }
+
+    // Get date range from commits with buffer for session overlap
+    const commitDates = commits.map(c => c.date.getTime());
+    const minDate = new Date(Math.min(...commitDates));
+    const maxDate = new Date(Math.max(...commitDates));
+
+    // Add buffer: sessions might start before first commit or end after last
+    const bufferMs = 2 * 60 * 60 * 1000; // 2 hours
+    const startDate = new Date(minDate.getTime() - bufferMs);
+    const endDate = new Date(maxDate.getTime() + bufferMs);
+
+    // Extract sessions in the date range
+    const sessions = await this.extractSessionsForDateRange(startDate, endDate);
+
+    // Build correlations: map sessions to related commits
+    const correlations: Array<{ sessionFilename: string; relatedCommits: string[] }> = [];
+
+    for (const session of sessions) {
+      const sessionStart = session.timestamp;
+      const sessionEnd = session.metadata?.endTime
+        ? new Date(session.metadata.endTime)
+        : new Date(sessionStart.getTime() + 60 * 60 * 1000); // Default 1 hour
+
+      // Find commits that fall within this session's timeframe
+      const relatedCommits = commits
+        .filter(commit => {
+          const commitTime = commit.date.getTime();
+          return commitTime >= sessionStart.getTime() &&
+                 commitTime <= sessionEnd.getTime();
+        })
+        .map(c => c.hash);
+
+      if (relatedCommits.length > 0) {
+        correlations.push({
+          sessionFilename: session.filename,
+          relatedCommits
+        });
+      }
+    }
+
+    log('Correlated sessions with commits', 'info', {
+      sessionCount: sessions.length,
+      correlationCount: correlations.length,
+      commitCount: commits.length
+    });
+
+    return { sessions, correlations };
+  }
+
+  /**
+   * Extract date from LSL filename format
+   * Filename format: YYYY-MM-DD_HHMM-HHMM_hash.md
+   */
+  private extractDateFromFilename(filename: string): Date | null {
+    const match = filename.match(/^(\d{4}-\d{2}-\d{2})_(\d{4})-(\d{4})/);
+    if (match) {
+      const [, date, startTime] = match;
+      const hour = startTime.substring(0, 2);
+      const minute = startTime.substring(2, 4);
+      return new Date(`${date}T${hour}:${minute}:00`);
+    }
+    return null;
+  }
+
+  /**
+   * Get estimated token count for sessions
+   * Used by batch scheduler to estimate processing cost
+   */
+  estimateSessionTokens(sessions: ConversationSession[]): number {
+    let totalTokens = 0;
+
+    for (const session of sessions) {
+      // Estimate tokens for metadata
+      totalTokens += 50; // filename, timestamps, etc.
+
+      // Estimate tokens for exchanges
+      for (const exchange of session.exchanges) {
+        if (exchange.userMessage) {
+          totalTokens += Math.ceil(exchange.userMessage.length / 4);
+        }
+        if (exchange.assistantMessage) {
+          totalTokens += Math.ceil(exchange.assistantMessage.length / 4);
+        }
+      }
+    }
+
+    return totalTokens;
+  }
+
   private async parseSessionFile(filePath: string): Promise<ConversationSession | null> {
     try {
       const content = fs.readFileSync(filePath, 'utf8');

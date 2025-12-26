@@ -3,11 +3,34 @@ import OpenAI from "openai";
 import Groq from "groq-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { log } from "../logging.js";
+import * as fs from "fs";
+import * as path from "path";
+import { fileURLToPath } from "url";
+import * as yaml from "js-yaml";
+
+// ES module compatible __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Model tier types
+export type ModelTier = "fast" | "standard" | "premium";
+
+// Task types that map to tiers
+export type TaskType =
+  | "git_history_analysis" | "vibe_history_analysis" | "semantic_code_analysis"
+  | "documentation_linking" | "web_search_summarization" | "ontology_classification"
+  | "content_validation" | "deduplication_similarity"
+  | "insight_generation" | "observation_generation" | "pattern_recognition"
+  | "quality_assurance_review" | "deep_code_analysis" | "entity_significance_scoring"
+  | "git_file_extraction" | "commit_message_parsing" | "file_pattern_matching"
+  | "basic_classification" | "documentation_file_scanning";
 
 export interface AnalysisOptions {
   context?: string;
   analysisType?: "general" | "code" | "patterns" | "architecture" | "diagram";
   provider?: "groq" | "gemini" | "anthropic" | "openai" | "custom" | "auto";
+  tier?: ModelTier;      // Explicit tier selection
+  taskType?: TaskType;   // Task type for automatic tier selection
 }
 
 export interface CodeAnalysisOptions {
@@ -47,13 +70,40 @@ export interface PatternExtractionResult {
   summary: string;
 }
 
+// Tier configuration interface
+interface TierConfig {
+  providers: {
+    [provider: string]: {
+      fast?: string;
+      standard?: string;
+      premium?: string;
+    };
+  };
+  provider_priority: {
+    fast: string[];
+    standard: string[];
+    premium: string[];
+  };
+  task_tiers: {
+    fast: string[];
+    standard: string[];
+    premium: string[];
+  };
+  agent_overrides: {
+    [agent: string]: ModelTier;
+  };
+}
+
 export class SemanticAnalyzer {
   private groqClient: Groq | null = null;
   private geminiClient: GoogleGenerativeAI | null = null;
   private customClient: OpenAI | null = null;
   private anthropicClient: Anthropic | null = null;
   private openaiClient: OpenAI | null = null;
-  
+
+  // Tier configuration
+  private tierConfig: TierConfig | null = null;
+
   // PERFORMANCE OPTIMIZATION: Request batching for improved throughput
   // Configurable via LLM_BATCH_SIZE env var (default: 20, min: 1, max: 50)
   private batchQueue: Array<{
@@ -70,6 +120,157 @@ export class SemanticAnalyzer {
 
   constructor() {
     this.initializeClients();
+    this.loadTierConfig();
+  }
+
+  /**
+   * Load tier configuration from YAML file
+   */
+  private loadTierConfig(): void {
+    try {
+      // Try multiple possible locations for the config
+      const possiblePaths = [
+        path.join(process.cwd(), 'config', 'model-tiers.yaml'),
+        path.join(process.cwd(), 'integrations', 'mcp-server-semantic-analysis', 'config', 'model-tiers.yaml'),
+        path.join(__dirname, '..', '..', 'config', 'model-tiers.yaml'),
+      ];
+
+      for (const configPath of possiblePaths) {
+        if (fs.existsSync(configPath)) {
+          const configContent = fs.readFileSync(configPath, 'utf8');
+          this.tierConfig = yaml.load(configContent) as TierConfig;
+          log(`Loaded model tier config from ${configPath}`, 'info');
+          return;
+        }
+      }
+
+      log('No model-tiers.yaml found, using default tier mappings', 'warning');
+      // Set default tier config
+      this.tierConfig = this.getDefaultTierConfig();
+    } catch (error) {
+      log('Failed to load tier config, using defaults', 'warning', error);
+      this.tierConfig = this.getDefaultTierConfig();
+    }
+  }
+
+  /**
+   * Get default tier configuration
+   */
+  private getDefaultTierConfig(): TierConfig {
+    return {
+      providers: {
+        groq: {
+          fast: 'llama-3.1-8b-instant',
+          standard: 'llama-3.3-70b-versatile',
+        },
+        anthropic: {
+          standard: 'claude-3-5-haiku-latest',
+          premium: 'claude-sonnet-4-20250514',
+        },
+        openai: {
+          standard: 'gpt-4o-mini',
+          premium: 'gpt-4o',
+        },
+      },
+      provider_priority: {
+        fast: ['groq'],
+        standard: ['groq', 'anthropic', 'openai'],
+        premium: ['anthropic', 'openai', 'groq'],
+      },
+      task_tiers: {
+        fast: ['git_file_extraction', 'commit_message_parsing', 'file_pattern_matching', 'basic_classification'],
+        standard: ['git_history_analysis', 'vibe_history_analysis', 'semantic_code_analysis', 'documentation_linking', 'ontology_classification'],
+        premium: ['insight_generation', 'observation_generation', 'pattern_recognition', 'quality_assurance_review', 'deep_code_analysis'],
+      },
+      agent_overrides: {
+        insight_generation: 'premium',
+        observation_generation: 'premium',
+        quality_assurance: 'premium',
+      },
+    };
+  }
+
+  /**
+   * Determine tier from task type
+   */
+  getTierForTask(taskType?: TaskType): ModelTier {
+    if (!taskType) return 'standard';
+
+    // Check environment variable override first
+    const envTier = process.env.SEMANTIC_ANALYSIS_TIER?.toLowerCase() as ModelTier;
+    if (envTier && ['fast', 'standard', 'premium'].includes(envTier)) {
+      return envTier;
+    }
+
+    // Check task-specific env override (e.g., INSIGHT_GENERATION_TIER=premium)
+    const taskEnvKey = `${taskType.toUpperCase()}_TIER`;
+    const taskEnvTier = process.env[taskEnvKey]?.toLowerCase() as ModelTier;
+    if (taskEnvTier && ['fast', 'standard', 'premium'].includes(taskEnvTier)) {
+      return taskEnvTier;
+    }
+
+    // Look up in config
+    if (this.tierConfig?.task_tiers) {
+      for (const [tier, tasks] of Object.entries(this.tierConfig.task_tiers)) {
+        if (tasks.includes(taskType)) {
+          return tier as ModelTier;
+        }
+      }
+    }
+
+    return 'standard'; // Default
+  }
+
+  /**
+   * Get provider and model for a specific tier
+   */
+  private getProviderForTier(tier: ModelTier): { provider: string; model: string } | null {
+    // Check task-specific provider override (e.g., INSIGHT_GENERATION_PROVIDER=anthropic)
+    const providerPriority = this.tierConfig?.provider_priority[tier] || ['groq', 'anthropic', 'openai'];
+
+    for (const providerName of providerPriority) {
+      // Check if client is available
+      const clientAvailable =
+        (providerName === 'groq' && this.groqClient) ||
+        (providerName === 'anthropic' && this.anthropicClient) ||
+        (providerName === 'openai' && this.openaiClient) ||
+        (providerName === 'gemini' && this.geminiClient);
+
+      if (!clientAvailable) continue;
+
+      // Get model for this provider and tier
+      const providerConfig = this.tierConfig?.providers[providerName];
+      const model = providerConfig?.[tier] || providerConfig?.standard;
+
+      if (model) {
+        log(`Selected ${providerName}/${model} for tier ${tier}`, 'info');
+        return { provider: providerName, model };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Analyze with specific provider and model (tier-based routing)
+   */
+  private async analyzeWithTier(prompt: string, provider: string, model: string): Promise<AnalysisResult> {
+    log(`analyzeWithTier: ${provider}/${model}`, 'info', { promptLength: prompt.length });
+
+    switch (provider) {
+      case 'groq':
+        return this.analyzeWithGroq(prompt, model);
+      case 'anthropic':
+        return this.analyzeWithAnthropic(prompt, model);
+      case 'openai':
+        return this.analyzeWithOpenAI(prompt, model);
+      case 'gemini':
+        return this.analyzeWithGemini(prompt);
+      case 'custom':
+        return this.analyzeWithCustom(prompt);
+      default:
+        throw new Error(`Unknown provider for tier: ${provider}`);
+    }
   }
 
   // Request timeout for LLM API calls (30 seconds)
@@ -235,11 +436,16 @@ export class SemanticAnalyzer {
   }
 
   async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
-    const { context, analysisType = "general", provider = "auto" } = options;
+    const { context, analysisType = "general", provider = "auto", tier, taskType } = options;
 
-    log(`Analyzing content with ${provider} provider`, "info", {
+    // Determine effective tier (explicit tier > taskType lookup > default)
+    const effectiveTier = tier || this.getTierForTask(taskType as TaskType) || 'standard';
+
+    log(`Analyzing content with ${provider} provider, tier: ${effectiveTier}`, "info", {
       contentLength: content.length,
       analysisType,
+      tier: effectiveTier,
+      taskType,
       hasContext: !!context,
       groqClient: !!this.groqClient,
       geminiClient: !!this.geminiClient,
@@ -249,6 +455,15 @@ export class SemanticAnalyzer {
     });
 
     const prompt = this.buildAnalysisPrompt(content, context, analysisType);
+
+    // If tier is specified (or derived from taskType), use tier-based selection
+    if ((tier || taskType) && provider === "auto") {
+      const tierSelection = this.getProviderForTier(effectiveTier);
+      if (tierSelection) {
+        log(`Using tier-based selection: ${tierSelection.provider}/${tierSelection.model} for tier ${effectiveTier}`, 'info');
+        return this.analyzeWithTier(prompt, tierSelection.provider, tierSelection.model);
+      }
+    }
 
     // PERFORMANCE OPTIMIZATION: Use batching for non-urgent requests
     // For diagram generation and similar tasks, use batching to improve throughput
@@ -513,10 +728,12 @@ For each pattern found, provide:
 5. Usage recommendations`;
   }
 
-  private async analyzeWithGroq(prompt: string): Promise<AnalysisResult> {
+  private async analyzeWithGroq(prompt: string, model?: string): Promise<AnalysisResult> {
+    const selectedModel = model || "llama-3.3-70b-versatile";
     log("analyzeWithGroq called", "info", {
       hasClient: !!this.groqClient,
-      promptLength: prompt.length
+      promptLength: prompt.length,
+      model: selectedModel
     });
 
     if (!this.groqClient) {
@@ -524,9 +741,9 @@ For each pattern found, provide:
     }
 
     try {
-      log("Making Groq API call", "info");
+      log(`Making Groq API call with model ${selectedModel}`, "info");
       const response = await this.groqClient.chat.completions.create({
-        model: "llama-3.3-70b-versatile",
+        model: selectedModel,
         max_tokens: 4096,
         messages: [{ role: "user", content: prompt }],
         temperature: 0.7
@@ -605,20 +822,22 @@ For each pattern found, provide:
     }
   }
 
-  private async analyzeWithAnthropic(prompt: string): Promise<AnalysisResult> {
+  private async analyzeWithAnthropic(prompt: string, model?: string): Promise<AnalysisResult> {
+    const selectedModel = model || "claude-sonnet-4-20250514";
     log("analyzeWithAnthropic called", "info", {
       hasClient: !!this.anthropicClient,
-      promptLength: prompt.length
+      promptLength: prompt.length,
+      model: selectedModel
     });
-    
+
     if (!this.anthropicClient) {
       throw new Error("Anthropic client not initialized");
     }
 
     try {
-      log("Making Anthropic API call", "info");
+      log(`Making Anthropic API call with model ${selectedModel}`, "info");
       const response = await this.anthropicClient.messages.create({
-        model: "claude-sonnet-4-20250514",
+        model: selectedModel,
         max_tokens: 4096,
         messages: [{ role: "user", content: prompt }],
       });
@@ -653,14 +872,16 @@ For each pattern found, provide:
     }
   }
 
-  private async analyzeWithOpenAI(prompt: string): Promise<AnalysisResult> {
+  private async analyzeWithOpenAI(prompt: string, model?: string): Promise<AnalysisResult> {
+    const selectedModel = model || "gpt-4-turbo-preview";
     if (!this.openaiClient) {
       throw new Error("OpenAI client not initialized");
     }
 
     try {
+      log(`Making OpenAI API call with model ${selectedModel}`, "info");
       const response = await this.openaiClient.chat.completions.create({
-        model: "gpt-4-turbo-preview",
+        model: selectedModel,
         messages: [{ role: "user", content: prompt }],
         max_tokens: 4000,
       });

@@ -1,0 +1,142 @@
+# Model Tier Configuration
+# Assigns appropriate LLM models to tasks based on complexity requirements
+# Version: 1.1 - Added operator tiers and batch workflow support
+
+# Available providers and models
+providers:
+  groq:
+    fast: "llama-3.1-8b-instant"        # ~$0.05/M tokens, 750 tok/s
+    standard: "llama-3.3-70b-versatile"  # ~$0.59/M tokens, 275 tok/s
+    # No premium tier on Groq
+
+  anthropic:
+    standard: "claude-3-5-haiku-latest"  # ~$1/M tokens
+    premium: "claude-3-5-sonnet-latest"  # ~$3/M tokens, best reasoning
+
+  openai:
+    standard: "gpt-4o-mini"              # ~$0.15/M tokens
+    premium: "gpt-4o"                    # ~$5/M tokens
+
+# Default provider priority (falls back in order)
+provider_priority:
+  fast: ["groq"]
+  standard: ["groq", "anthropic", "openai"]
+  premium: ["anthropic", "openai", "groq"]  # Prefer Anthropic for premium
+
+# Task-to-tier mapping
+task_tiers:
+  # Tier 1: Fast - Simple extraction and parsing
+  fast:
+    - git_file_extraction
+    - commit_message_parsing
+    - file_pattern_matching
+    - basic_classification
+    - documentation_file_scanning
+
+  # Tier 2: Standard - Most semantic analysis
+  standard:
+    - git_history_analysis
+    - vibe_history_analysis
+    - semantic_code_analysis
+    - documentation_linking
+    - web_search_summarization
+    - ontology_classification
+    - content_validation
+    - deduplication_similarity
+
+  # Tier 3: Premium - Deep understanding required
+  premium:
+    - insight_generation          # Needs nuanced pattern synthesis
+    - observation_generation      # Quality observations need understanding
+    - pattern_recognition         # Complex architectural patterns
+    - quality_assurance_review    # Judging semantic value
+    - deep_code_analysis          # Understanding design decisions
+    - entity_significance_scoring # Determining what's important
+
+# Agent-level overrides (maps agent_id to tier)
+agent_overrides:
+  insight_generation: premium
+  observation_generation: premium
+  quality_assurance: premium
+  semantic_analysis: standard  # Could upgrade to premium if budget allows
+  git_history: standard
+  vibe_history: standard
+  ontology_classification: standard
+  content_validation: standard
+  batch_scheduler: fast        # No LLM needed
+  batch_checkpoint_manager: fast  # No LLM needed
+  kg_operators: standard       # Default, operators override individually
+
+# Tree-KG Operator-specific tier assignments
+# Used by kg_operators agent for per-operator model selection
+operator_tiers:
+  conv: premium      # Context convolution needs quality reasoning
+  aggr: standard     # Entity aggregation is straightforward
+  embed: fast        # Just embedding API calls
+  dedup: standard    # Similarity comparison with role check
+  pred: premium      # Edge prediction needs reasoning about relationships
+  merge: standard    # Structure fusion is mostly algorithmic
+
+# Batch workflow task mappings
+batch_task_tiers:
+  # Initialization phase
+  plan_batches: fast
+
+  # Per-batch extraction
+  extract_batch_commits: fast
+  extract_batch_sessions: fast
+
+  # Per-batch analysis
+  batch_semantic_analysis: premium
+
+  # Tree-KG operators (uses operator_tiers above)
+  operator_conv: premium
+  operator_aggr: standard
+  operator_embed: fast
+  operator_dedup: standard
+  operator_pred: premium
+  operator_merge: standard
+
+  # Per-batch QA
+  batch_qa: premium
+
+  # Checkpoint
+  save_batch_checkpoint: fast
+
+  # Finalization
+  final_persist: fast
+  final_dedup: standard
+  final_validation: standard
+
+# Environment variable overrides
+# Set these to force specific tiers:
+#   SEMANTIC_ANALYSIS_TIER=premium  - All tasks use premium
+#   SEMANTIC_ANALYSIS_PROVIDER=anthropic - Force specific provider
+#   SEMANTIC_ANALYSIS_COST_MODE=budget - Use fast tier everywhere
+
+# Cost tracking thresholds (per workflow run)
+cost_limits:
+  budget_mode: 0.05   # Max $0.05/run - uses fast tier
+  standard_mode: 0.50 # Max $0.50/run - mixed tiers
+  quality_mode: 2.00  # Max $2.00/run - premium for key tasks
+
+# Batch-specific cost limits
+batch_cost_limits:
+  max_tokens_per_batch: 500000  # Safety limit per batch
+  max_cost_per_batch_usd: 1.00  # Max $1.00 per batch
+  fallback_on_quota: true       # Fall back to lower tier if quota exceeded
+  total_budget_usd: 50.00       # Total budget for complete batch run
+
+# Edge prediction configuration
+edge_prediction:
+  weights:
+    alpha: 0.6   # Semantic similarity (cosine)
+    beta: 0.2    # Adamic-Adar index
+    gamma: 0.2   # Common ancestors
+  threshold: 0.5  # Minimum score for edge creation
+
+# Batch processing configuration
+batch_defaults:
+  commit_count: 50              # Commits per batch
+  parallel_operators: false     # Run operators sequentially (safer)
+  checkpoint_after_each: true   # Save checkpoint after each batch

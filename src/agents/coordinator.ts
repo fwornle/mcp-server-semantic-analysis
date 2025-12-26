@@ -17,6 +17,10 @@ import { DocumentationLinkerAgent } from "./documentation-linker-agent.js";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 import { WorkflowReportAgent, type StepReport } from "./workflow-report-agent.js";
 import { loadAllWorkflows, loadWorkflowFromYAML, getConfigDir } from "../utils/workflow-loader.js";
+import { BatchScheduler, getBatchScheduler, type BatchWindow, type BatchStats } from "./batch-scheduler.js";
+import { KGOperators, createKGOperators, type KGEntity, type KGRelation, type BatchContext } from "./kg-operators.js";
+import { getBatchCheckpointManager } from "../utils/batch-checkpoint-manager.js";
+import { SemanticAnalyzer } from "./semantic-analyzer.js";
 
 export interface WorkflowDefinition {
   name: string;
@@ -24,6 +28,7 @@ export interface WorkflowDefinition {
   agents: string[];
   steps: WorkflowStep[];
   config: Record<string, any>;
+  type?: 'standard' | 'iterative';  // iterative = batch processing
 }
 
 export interface WorkflowStep {
@@ -35,6 +40,9 @@ export interface WorkflowStep {
   timeout?: number;
   condition?: string; // Optional condition for conditional execution (e.g., "{{params.autoRefresh}} === true")
   preferredModel?: 'groq' | 'anthropic' | 'openai' | 'gemini' | 'auto'; // Optional model preference for LLM-intensive steps
+  phase?: 'initialization' | 'batch' | 'finalization'; // For iterative workflows
+  operator?: string; // Tree-KG operator name (conv, aggr, embed, dedup, pred, merge)
+  tier?: 'fast' | 'standard' | 'premium'; // Model tier override
 }
 
 export interface WorkflowExecution {
@@ -1444,6 +1452,252 @@ export class CoordinatorAgent {
 
       // Write final progress file with failed status for external monitoring
       this.writeProgressFile(execution, workflow);
+    }
+
+    return execution;
+  }
+
+  /**
+   * Execute an iterative batch workflow
+   * Processes data in chronological batches using Tree-KG operators
+   */
+  async executeBatchWorkflow(
+    workflowName: string,
+    parameters: Record<string, any> = {}
+  ): Promise<WorkflowExecution> {
+    // Ensure agents are initialized
+    if (this.agents.size === 0 || this.isInitializing) {
+      await this.initializeAgents();
+    }
+
+    const workflow = this.workflows.get(workflowName);
+    if (!workflow) {
+      throw new Error(`Unknown workflow: ${workflowName}`);
+    }
+
+    const executionId = `${workflowName}-batch-${Date.now()}`;
+    const execution: WorkflowExecution = {
+      id: executionId,
+      workflow: workflowName,
+      status: 'pending',
+      startTime: new Date(),
+      results: {},
+      errors: [],
+      currentStep: 0,
+      totalSteps: workflow.steps.length
+    };
+
+    this.executions.set(executionId, execution);
+
+    log(`Starting batch workflow: ${executionId}`, 'info', {
+      workflow: workflowName,
+      parameters,
+      type: 'iterative'
+    });
+
+    try {
+      execution.status = 'running';
+
+      // Initialize batch scheduler
+      const batchScheduler = getBatchScheduler(
+        parameters.repositoryPath || this.repositoryPath,
+        parameters.team || this.team
+      );
+
+      // Initialize KG operators with a fresh SemanticAnalyzer
+      const semanticAnalyzer = new SemanticAnalyzer();
+      const kgOperators = createKGOperators(semanticAnalyzer);
+
+      // Initialize checkpoint manager
+      const checkpointManager = getBatchCheckpointManager(
+        parameters.repositoryPath || this.repositoryPath,
+        parameters.team || this.team
+      );
+
+      // Separate steps by phase
+      const initSteps = workflow.steps.filter(s => s.phase === 'initialization' || !s.phase);
+      const batchSteps = workflow.steps.filter(s => s.phase === 'batch');
+      const finalSteps = workflow.steps.filter(s => s.phase === 'finalization');
+
+      // PHASE 0: Run initialization steps (plan_batches)
+      log('Batch workflow: Running initialization phase', 'info');
+      for (const step of initSteps) {
+        if (step.name === 'plan_batches') {
+          const batchPlan = await batchScheduler.planBatches({
+            batchSize: parameters.batchSize || 50,
+            maxBatches: parameters.maxBatches || 0,
+            resumeFromCheckpoint: parameters.resumeFromCheckpoint !== false
+          });
+          execution.results['plan_batches'] = { result: batchPlan };
+          log('Batch plan created', 'info', {
+            totalBatches: batchPlan.totalBatches,
+            totalCommits: batchPlan.totalCommits
+          });
+        }
+      }
+
+      // Accumulated KG state (grows across batches)
+      let accumulatedKG: { entities: KGEntity[]; relations: KGRelation[] } = {
+        entities: [],
+        relations: []
+      };
+
+      // PHASE 1: Iterate through batches
+      let batchCount = 0;
+      let batch: BatchWindow | null;
+
+      while ((batch = batchScheduler.getNextBatch()) !== null) {
+        batchCount++;
+        const batchStartTime = Date.now();
+
+        log(`Processing batch ${batch.id}`, 'info', {
+          batchNumber: batch.batchNumber,
+          commitCount: batch.commitCount,
+          dateRange: `${batch.startDate.toISOString()} - ${batch.endDate.toISOString()}`
+        });
+
+        // Update operator status for dashboard
+        batchScheduler.updateOperatorStatus(batch.id, 'conv', 'pending');
+        batchScheduler.updateOperatorStatus(batch.id, 'aggr', 'pending');
+        batchScheduler.updateOperatorStatus(batch.id, 'embed', 'pending');
+        batchScheduler.updateOperatorStatus(batch.id, 'dedup', 'pending');
+        batchScheduler.updateOperatorStatus(batch.id, 'pred', 'pending');
+        batchScheduler.updateOperatorStatus(batch.id, 'merge', 'pending');
+
+        try {
+          // Extract commits for this batch
+          const gitAgent = this.agents.get('git_history') as GitHistoryAgent;
+          const commits = await gitAgent.extractCommitsForBatch(
+            batch.startCommit,
+            batch.endCommit
+          );
+
+          // Extract sessions for this batch
+          const vibeAgent = this.agents.get('vibe_history') as VibeHistoryAgent;
+          const sessionResult = await vibeAgent.extractSessionsForCommits(
+            commits.commits.map(c => ({
+              date: c.date,
+              hash: c.hash,
+              message: c.message
+            }))
+          );
+
+          // Build batch context for operators
+          const batchContext: BatchContext = {
+            batchId: batch.id,
+            startDate: batch.startDate,
+            endDate: batch.endDate,
+            commits: commits.commits.map(c => ({
+              hash: c.hash,
+              message: c.message,
+              date: c.date
+            })),
+            sessions: sessionResult.sessions.map(s => ({
+              filename: s.filename,
+              timestamp: s.timestamp
+            }))
+          };
+
+          // Analyze batch data (simplified - real implementation would use semantic analysis agent)
+          const batchEntities: KGEntity[] = [];
+          const batchRelations: KGRelation[] = [];
+
+          // Apply Tree-KG operators
+          const operatorResult = await kgOperators.applyAll(
+            batchEntities,
+            batchRelations,
+            batchContext,
+            accumulatedKG
+          );
+
+          // Update accumulated KG
+          accumulatedKG = {
+            entities: operatorResult.entities,
+            relations: operatorResult.relations
+          };
+
+          // Calculate batch stats
+          const batchDuration = Date.now() - batchStartTime;
+          const stats: BatchStats = {
+            commits: commits.commits.length,
+            sessions: sessionResult.sessions.length,
+            tokensUsed: 0, // Would be tracked from LLM calls
+            entitiesCreated: operatorResult.operatorResults.merge.entitiesAdded,
+            entitiesUpdated: 0,
+            relationsAdded: operatorResult.operatorResults.pred.edgesAdded,
+            operatorResults: operatorResult.operatorResults,
+            duration: batchDuration
+          };
+
+          // Mark batch complete
+          batchScheduler.completeBatch(batch.id, stats);
+
+          // Save checkpoint
+          checkpointManager.saveBatchCheckpoint(
+            batch.id,
+            batch.batchNumber,
+            { start: batch.startCommit, end: batch.endCommit },
+            { start: batch.startDate, end: batch.endDate },
+            stats
+          );
+
+          log(`Batch ${batch.id} completed`, 'info', {
+            duration: `${(batchDuration / 1000).toFixed(1)}s`,
+            entities: accumulatedKG.entities.length,
+            relations: accumulatedKG.relations.length
+          });
+
+        } catch (error) {
+          batchScheduler.failBatch(batch.id, error instanceof Error ? error.message : String(error));
+          log(`Batch ${batch.id} failed`, 'error', { error });
+          // Continue with next batch or fail depending on config
+          if (workflow.config?.stopOnBatchFailure !== false) {
+            throw error;
+          }
+        }
+      }
+
+      // Store accumulated KG for finalization steps
+      execution.results['accumulatedKG'] = accumulatedKG;
+
+      // PHASE 2: Run finalization steps
+      log('Batch workflow: Running finalization phase', 'info');
+      for (const step of finalSteps) {
+        try {
+          const stepResult = await this.executeStepWithTimeout(execution, step, {
+            ...parameters,
+            accumulatedKG
+          });
+          execution.results[step.name] = stepResult;
+        } catch (error) {
+          log(`Finalization step ${step.name} failed`, 'error', { error });
+          execution.errors.push(`Step ${step.name} failed: ${error}`);
+        }
+      }
+
+      execution.status = 'completed';
+      execution.endTime = new Date();
+
+      const progress = batchScheduler.getProgress();
+      log(`Batch workflow completed: ${executionId}`, 'info', {
+        duration: execution.endTime.getTime() - execution.startTime.getTime(),
+        batchesProcessed: progress.completedBatches,
+        totalBatches: progress.totalBatches,
+        accumulatedStats: progress.accumulatedStats
+      });
+
+    } catch (error) {
+      execution.status = 'failed';
+      execution.endTime = new Date();
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const stackTrace = error instanceof Error ? error.stack : 'No stack trace available';
+      execution.errors.push(`${errorMessage}\n\nStack trace:\n${stackTrace}`);
+
+      log(`Batch workflow failed: ${executionId}`, 'error', {
+        error: errorMessage,
+        stack: stackTrace,
+        duration: execution.endTime.getTime() - execution.startTime.getTime()
+      });
     }
 
     return execution;

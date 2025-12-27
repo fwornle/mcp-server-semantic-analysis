@@ -1,11 +1,11 @@
 # Incremental Analysis Workflow - Single Source of Truth
-# 14-agent analysis since last checkpoint with code graph and ontology
-# Version: 1.0
+# 12-agent analysis since last checkpoint with code graph and ontology
+# Version: 1.1
 
 workflow:
   name: incremental-analysis
-  version: "1.0"
-  description: "14-agent incremental analysis since last checkpoint with code graph, code intelligence, and ontology"
+  version: "1.1"
+  description: "12-agent incremental analysis since last checkpoint with code graph and ontology classification"
 
 config:
   max_concurrent_steps: 3
@@ -54,24 +54,7 @@ steps:
     timeout: 120
     dependencies: []
 
-  # PHASE 1.5: Code Intelligence (depends on Phase 1)
-  - name: query_code_intelligence
-    agent: code_intelligence
-    action: queryIntelligently
-    parameters:
-      context:
-        changedFiles: "{{analyze_recent_changes.result.changedFiles}}"
-        recentCommits: "{{analyze_recent_changes.result.significantCommits}}"
-        vibePatterns: "{{analyze_recent_vibes.result.problemPatterns}}"
-      options:
-        maxQueries: 8
-    timeout: 180
-    dependencies:
-      - index_recent_code
-      - analyze_recent_changes
-      - analyze_recent_vibes
-
-  # PHASE 2: Semantic Analysis (depends on Phase 1 + 1.5)
+  # PHASE 2: Semantic Analysis (depends on Phase 1)
   - name: analyze_semantics
     agent: semantic_analysis
     action: analyzeSemantics
@@ -80,14 +63,12 @@ steps:
       vibe_analysis: "{{analyze_recent_vibes.result}}"
       code_graph: "{{index_recent_code.result}}"
       doc_analysis: "{{link_documentation.result}}"
-      code_intelligence: "{{query_code_intelligence.result}}"
     timeout: 180
     dependencies:
       - analyze_recent_changes
       - analyze_recent_vibes
       - index_recent_code
       - link_documentation
-      - query_code_intelligence
 
   # PHASE 2.5: Web Search (depends on Semantic)
   - name: web_search
@@ -99,19 +80,17 @@ steps:
     dependencies:
       - analyze_semantics
 
-  # PHASE 3: Insight Generation (depends on Semantic + Web + Intel)
+  # PHASE 3: Insight Generation (depends on Semantic + Web)
   - name: generate_insights
     agent: insight_generation
     action: generateInsights
     parameters:
       semantic_analysis: "{{analyze_semantics.result}}"
       web_search_results: "{{web_search.result}}"
-      code_intelligence: "{{query_code_intelligence.result}}"
     timeout: 240
     dependencies:
       - analyze_semantics
       - web_search
-      - query_code_intelligence
 
   # PHASE 3.5: Observation Generation
   - name: generate_observations
@@ -143,28 +122,17 @@ steps:
     dependencies:
       - index_recent_code
 
-  - name: analyze_documentation_semantics_incremental
-    agent: documentation_semantics
-    action: analyzeDocSemantics
-    parameters:
-      code_entities: "{{transform_code_entities_incremental.result}}"
-      doc_links: "{{link_documentation.result}}"
-    timeout: 120
-    dependencies:
-      - transform_code_entities_incremental
-      - link_documentation
-
   # PHASE 5: Quality Assurance
   - name: validate_incremental_qa
     agent: quality_assurance
     action: validateAll
     parameters:
       ontology_results: "{{classify_with_ontology.result}}"
-      doc_semantics: "{{analyze_documentation_semantics_incremental.result}}"
+      code_entities: "{{transform_code_entities_incremental.result}}"
     timeout: 120
     dependencies:
       - classify_with_ontology
-      - analyze_documentation_semantics_incremental
+      - transform_code_entities_incremental
 
   # PHASE 6: Persistence -> Dedup -> Validation
   - name: persist_incremental
@@ -213,18 +181,7 @@ edges:
     to: documentation_linker
     type: dataflow
 
-  # Phase 1 -> Code Intelligence
-  - from: git_history
-    to: code_intelligence
-    type: dependency
-  - from: vibe_history
-    to: code_intelligence
-    type: dependency
-  - from: code_graph
-    to: code_intelligence
-    type: dependency
-
-  # Phase 1 + Code Intel -> Semantic Analysis
+  # Phase 1 -> Semantic Analysis
   - from: git_history
     to: semantic_analysis
     type: dependency
@@ -232,9 +189,6 @@ edges:
     to: semantic_analysis
     type: dependency
   - from: code_graph
-    to: semantic_analysis
-    type: dependency
-  - from: code_intelligence
     to: semantic_analysis
     type: dependency
   - from: documentation_linker
@@ -246,14 +200,11 @@ edges:
     to: web_search
     type: dependency
 
-  # Semantic + Web + Intel -> Insights
+  # Semantic + Web -> Insights
   - from: semantic_analysis
     to: insight_generation
     type: dependency
   - from: web_search
-    to: insight_generation
-    type: dependency
-  - from: code_intelligence
     to: insight_generation
     type: dependency
 
@@ -267,19 +218,11 @@ edges:
     to: ontology_classification
     type: dependency
 
-  # Code Graph -> Doc Semantics
-  - from: code_graph
-    to: documentation_semantics
-    type: dependency
-  - from: documentation_linker
-    to: documentation_semantics
-    type: dependency
-
-  # Ontology + Doc Semantics -> QA
+  # Ontology + Code Entities -> QA
   - from: ontology_classification
     to: quality_assurance
     type: dependency
-  - from: documentation_semantics
+  - from: code_graph
     to: quality_assurance
     type: dependency
 

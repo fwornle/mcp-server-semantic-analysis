@@ -21,7 +21,7 @@ orchestrator:
   row: -1
   col: 0.6         # Centered (aligned with single-agent column)
 
-# 18 Workflow Agents (15 original + 3 batch processing)
+# 16 Workflow Agents (13 original + 3 batch processing)
 agents:
   # --- Batch Processing Agents ---
   # Layout for batch-analysis workflow (phased swimlane approach):
@@ -115,19 +115,6 @@ agents:
     row: 0
     col: 1.5
 
-  - id: code_intelligence
-    name: Code Intelligence
-    shortName: Intel
-    icon: Zap
-    description: "Generates context-aware questions about the codebase based on git changes, commit themes, and session patterns. Queries the code graph via NL->Cypher to discover hotspots, circular dependencies, inheritance structures, and change impact."
-    usesLLM: true
-    llmModel: "Groq: llama-3.3-70b-versatile"
-    tier: standard
-    techStack: "NL->Cypher + Memgraph + SemanticAnalyzer"
-    phase: 1.5
-    row: 1
-    col: 1.5
-
   - id: documentation_linker
     name: Documentation Linker
     shortName: Docs
@@ -205,19 +192,6 @@ agents:
     phase: 4
     row: 5
     col: 0.75
-
-  - id: documentation_semantics
-    name: Documentation Semantics
-    shortName: DocSem
-    icon: FileText
-    description: "LLM-powered semantic analysis of docstrings and documentation prose. Extracts purpose, parameters, usage patterns, warnings, and related entities from code documentation."
-    usesLLM: true
-    llmModel: "Groq: llama-3.3-70b-versatile"
-    tier: standard
-    techStack: "SemanticAnalyzer + Batch Processing"
-    phase: 4
-    row: 5.5
-    col: 1.875
 
   - id: quality_assurance
     name: Quality Assurance
@@ -306,10 +280,7 @@ step_mappings:
   index_recent_code: code_graph
   transform_code_entities: code_graph
   transform_code_entities_incremental: code_graph
-  query_code_intelligence: code_intelligence
   link_documentation: documentation_linker
-  analyze_documentation_semantics: documentation_semantics
-  analyze_documentation_semantics_incremental: documentation_semantics
   quality_assurance: quality_assurance
   validate_incremental_qa: quality_assurance
   persist_results: persistence

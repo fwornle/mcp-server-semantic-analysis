@@ -1,11 +1,11 @@
 # Complete Analysis Workflow - Single Source of Truth
-# 13-agent full analysis of entire codebase with ontology classification
-# Version: 1.0
+# 12-agent full analysis of entire codebase with ontology classification
+# Version: 1.1
 
 workflow:
   name: complete-analysis
-  version: "1.0"
-  description: "13-agent comprehensive analysis of entire codebase with code graph and ontology classification"
+  version: "1.1"
+  description: "12-agent comprehensive analysis of entire codebase with code graph and ontology classification"
 
 config:
   max_concurrent_steps: 3
@@ -128,28 +128,17 @@ steps:
     dependencies:
       - index_codebase
 
-  - name: analyze_documentation_semantics
-    agent: documentation_semantics
-    action: analyzeDocSemantics
-    parameters:
-      code_entities: "{{transform_code_entities.result}}"
-      doc_links: "{{link_documentation.result}}"
-    timeout: 300
-    dependencies:
-      - transform_code_entities
-      - link_documentation
-
   # PHASE 5: Quality Assurance
   - name: quality_assurance
     agent: quality_assurance
     action: validateAllResults
     parameters:
       ontology_results: "{{classify_with_ontology.result}}"
-      doc_semantics_results: "{{analyze_documentation_semantics.result}}"
+      code_entities: "{{transform_code_entities.result}}"
     timeout: 120
     dependencies:
       - classify_with_ontology
-      - analyze_documentation_semantics
+      - transform_code_entities
 
   # PHASE 6: Persistence -> Dedup -> Validation
   - name: persist_results
@@ -235,19 +224,11 @@ edges:
     to: ontology_classification
     type: dependency
 
-  # Code Graph -> Doc Semantics
-  - from: code_graph
-    to: documentation_semantics
-    type: dependency
-  - from: documentation_linker
-    to: documentation_semantics
-    type: dependency
-
-  # Ontology + Doc Semantics -> QA
+  # Ontology + Code Entities -> QA
   - from: ontology_classification
     to: quality_assurance
     type: dependency
-  - from: documentation_semantics
+  - from: code_graph
     to: quality_assurance
     type: dependency
 

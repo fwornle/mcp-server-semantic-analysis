@@ -19,11 +19,16 @@ orchestrator:
   techStack: "TypeScript DAG executor"
   phase: 0
   row: -1
-  col: 1.125
+  col: 0.6         # Centered (aligned with single-agent column)
 
 # 18 Workflow Agents (15 original + 3 batch processing)
 agents:
-  # --- Batch Processing Agents (new) ---
+  # --- Batch Processing Agents ---
+  # Layout for batch-analysis workflow (phased swimlane approach):
+  # - Phase 0 (Initialization): Batch Scheduler plans all batches
+  # - Phase 1-4 (Batch Loop): Git/Vibe → Semantic → KG Ops → QA → Checkpoint (repeats)
+  # - Phase 5+ (Finalization): Persist → Dedup → Validate
+
   - id: batch_scheduler
     name: Batch Scheduler
     shortName: Batch
@@ -34,8 +39,8 @@ agents:
     tier: fast
     techStack: "Git CLI + Checkpoint Manager"
     phase: 0
-    row: -0.5
-    col: 0.5
+    row: -0.5       # Between orchestrator and main flow
+    col: 0.6        # Centered in column
 
   - id: kg_operators
     name: KG Operators
@@ -54,21 +59,21 @@ agents:
       merge: standard  # Structure fusion is algorithmic
     techStack: "SemanticAnalyzer + Embeddings"
     phase: 3
-    row: 3.5
-    col: 0.375
+    row: 4          # After semantic analysis
+    col: 0.6        # Centered in column
 
   - id: batch_checkpoint_manager
     name: Batch Checkpoint
     shortName: Checkpoint
     icon: Save
-    description: "Per-batch checkpoint state management. Tracks completed batches, operator results, and supports resumption from any batch."
+    description: "Per-batch checkpoint state management. Tracks completed batches, operator results, and supports resumption from any batch. Loops back to Git for next batch."
     usesLLM: false
     llmModel: null
     tier: fast
     techStack: "JSON file persistence"
     phase: 4
-    row: 4.5
-    col: 0.375
+    row: 6.5        # Between QA (row 6) and Persistence (row 7)
+    col: 0.6        # Centered in column
 
   # --- Original Agents with tier annotations ---
   - id: git_history
@@ -82,7 +87,7 @@ agents:
     techStack: "Git CLI + SemanticAnalyzer"
     phase: 1
     row: 0
-    col: 0
+    col: 0.25       # Left of center, adjacent to Vibe
 
   - id: vibe_history
     name: Vibe History
@@ -95,7 +100,7 @@ agents:
     techStack: SemanticAnalyzer
     phase: 1
     row: 0
-    col: 0.75
+    col: 0.95       # Right of center, adjacent to Git
 
   - id: code_graph
     name: Code Graph
@@ -147,7 +152,7 @@ agents:
     techStack: "Direct LLM clients"
     phase: 2
     row: 1
-    col: 0.375
+    col: 0.6        # Centered in column
 
   - id: web_search
     name: Web Search
@@ -225,7 +230,7 @@ agents:
     techStack: "SemanticAnalyzer + Semantic Value Filter"
     phase: 5
     row: 6
-    col: 1.125
+    col: 0.6        # Centered in column
 
   - id: persistence
     name: Persistence
@@ -238,7 +243,7 @@ agents:
     techStack: "LevelDB + Graphology"
     phase: 6
     row: 7
-    col: 1.125
+    col: 0.6        # Centered in column
 
   - id: deduplication
     name: Deduplication
@@ -251,7 +256,7 @@ agents:
     techStack: "OpenAI Embeddings API"
     phase: 6
     row: 8
-    col: 1.125
+    col: 0.6        # Centered in column
 
   - id: content_validation
     name: Content Validation
@@ -264,7 +269,7 @@ agents:
     techStack: SemanticAnalyzer
     phase: 6
     row: 9
-    col: 1.125
+    col: 0.6        # Centered in column
 
 # Step name to agent ID mapping
 # Used to map workflow step names to their executing agents

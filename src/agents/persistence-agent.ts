@@ -3024,17 +3024,35 @@ ${entityData.insights}
     try {
       // Try GraphDB first
       if (this.graphDB) {
+        // Use searchTerm for VKB API compatibility (namePattern not supported by VKB API)
         const entities = await this.graphDB.queryEntities({
-          namePattern: `^${entityName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
+          searchTerm: entityName,
+          team
         });
-        if (entities && entities.length > 0) {
-          return entities[0] as SharedMemoryEntity;
+
+        // DEBUG: Log what we received to diagnose the update vs create issue
+        log(`getEntity: searching for '${entityName}'`, 'info', {
+          resultsCount: entities?.length || 0,
+          resultNames: entities?.slice(0, 5).map((e: any) => e.name || e.entity_name) || []
+        });
+
+        // CRITICAL: Find exact match - searchTerm returns partial matches
+        // VKB API ignores namePattern and returns all entities without proper filtering
+        const exactMatch = entities?.find((e: any) =>
+          (e.name || e.entity_name) === entityName
+        );
+        if (exactMatch) {
+          log(`getEntity: exact match FOUND for '${entityName}'`, 'info');
+          return exactMatch as SharedMemoryEntity;
         }
+        log(`getEntity: NO exact match for '${entityName}' - will CREATE`, 'info');
       }
 
       // Fallback to shared memory
       const sharedMemory = await this.loadSharedMemory();
-      return sharedMemory.entities.find(e => e.name === entityName) || null;
+      const found = sharedMemory.entities.find(e => e.name === entityName) || null;
+      log(`getEntity: shared memory lookup for '${entityName}': ${found ? 'FOUND' : 'not found'}`, 'info');
+      return found;
 
     } catch (error) {
       log(`Failed to get entity: ${entityName}`, 'error', error);
@@ -3094,6 +3112,32 @@ ${entityData.insights}
 
     try {
       const { entities, team } = params;
+
+      // DEBUG: Log what we received
+      log('persistEntities called', 'info', {
+        paramsKeys: Object.keys(params),
+        hasEntities: !!entities,
+        entitiesType: typeof entities,
+        isArray: Array.isArray(entities),
+        entitiesLength: Array.isArray(entities) ? entities.length : 'N/A',
+        team
+      });
+
+      // TRACE: Write to file for debugging
+      const fs = await import('fs');
+      const traceFile = `${process.cwd()}/logs/persist-trace-${Date.now()}.json`;
+      await fs.promises.mkdir(`${process.cwd()}/logs`, { recursive: true });
+      await fs.promises.writeFile(traceFile, JSON.stringify({
+        timestamp: new Date().toISOString(),
+        paramsKeys: Object.keys(params),
+        hasEntities: !!entities,
+        entitiesType: typeof entities,
+        isArray: Array.isArray(entities),
+        entitiesLength: Array.isArray(entities) ? entities.length : 'N/A',
+        entitiesSample: Array.isArray(entities) ? entities.slice(0, 2) : null,
+        team
+      }, null, 2));
+      log(`TRACE: persistEntities params written to ${traceFile}`, 'info');
 
       // Handle empty/null/undefined input gracefully
       if (!entities || !Array.isArray(entities) || entities.length === 0) {

@@ -1032,6 +1032,19 @@ export class CoordinatorAgent {
       const documentationLinkerAgent = new DocumentationLinkerAgent(this.repositoryPath);
       this.agents.set("documentation_linker", documentationLinkerAgent);
 
+      // Batch Processing Agents (for batch-analysis workflow)
+      // BatchScheduler - plans and tracks chronological batch windows
+      const batchSchedulerAgent = getBatchScheduler(this.repositoryPath, this.team);
+      this.agents.set("batch_scheduler", batchSchedulerAgent);
+
+      // KG Operators - Tree-KG inspired operators for incremental KG expansion
+      const kgOperatorsAgent = createKGOperators(new SemanticAnalyzer());
+      this.agents.set("kg_operators", kgOperatorsAgent);
+
+      // Batch Checkpoint Manager - per-batch checkpoint state management
+      const batchCheckpointAgent = getBatchCheckpointManager(this.repositoryPath, this.team);
+      this.agents.set("batch_checkpoint_manager", batchCheckpointAgent);
+
       log(`Initialized ${this.agents.size} agents`, "info", {
         agents: Array.from(this.agents.keys())
       });
@@ -1570,10 +1583,39 @@ export class CoordinatorAgent {
         try {
           // Extract commits for this batch
           const gitAgent = this.agents.get('git_history') as GitHistoryAgent;
+
+          // DEBUG: Log batch info before extraction
+          log(`DEBUG: Extracting commits for batch`, 'info', {
+            batchId: batch.id,
+            startCommit: batch.startCommit,
+            endCommit: batch.endCommit,
+            hasGitAgent: !!gitAgent
+          });
+
           const commits = await gitAgent.extractCommitsForBatch(
             batch.startCommit,
             batch.endCommit
           );
+
+          // DEBUG: Log extraction result
+          log(`DEBUG: Git extraction result`, 'info', {
+            batchId: batch.id,
+            commitsCount: commits?.commits?.length || 0,
+            filteredCount: commits?.filteredCount || 0,
+            firstCommit: commits?.commits?.[0]?.hash?.substring(0, 7) || 'none'
+          });
+
+          // DEBUG: Write to file for inspection
+          const debugPath = path.join(parameters.repositoryPath || this.repositoryPath, '.data', 'batch-debug.json');
+          fs.writeFileSync(debugPath, JSON.stringify({
+            timestamp: new Date().toISOString(),
+            batchId: batch.id,
+            startCommit: batch.startCommit,
+            endCommit: batch.endCommit,
+            commitsExtracted: commits?.commits?.length || 0,
+            filteredCount: commits?.filteredCount || 0,
+            sampleCommits: commits?.commits?.slice(0, 3).map((c: any) => ({ hash: c.hash, message: c.message })) || []
+          }, null, 2));
 
           // Extract sessions for this batch
           const vibeAgent = this.agents.get('vibe_history') as VibeHistoryAgent;
@@ -1601,9 +1643,170 @@ export class CoordinatorAgent {
             }))
           };
 
-          // Analyze batch data (simplified - real implementation would use semantic analysis agent)
-          const batchEntities: KGEntity[] = [];
-          const batchRelations: KGRelation[] = [];
+          // Analyze batch data using semantic analysis pipeline
+          let batchEntities: KGEntity[] = [];
+          let batchRelations: KGRelation[] = [];
+
+          try {
+            // Get agents for analysis
+            const semanticAgent = this.agents.get('semantic_analysis') as SemanticAnalysisAgent;
+            const observationAgent = this.agents.get('observation_generation') as ObservationGenerationAgent;
+
+            // Debug: Check why semantic analysis might be skipped
+            log(`Batch ${batch.id}: Agent availability check`, 'info', {
+              hasSemanticAgent: !!semanticAgent,
+              hasObservationAgent: !!observationAgent,
+              commitsCount: commits.commits.length,
+              agentMapSize: this.agents.size,
+              agentKeys: Array.from(this.agents.keys())
+            });
+
+            if (semanticAgent && observationAgent && commits.commits.length > 0) {
+              // Transform extracted data to analysis format
+              const gitAnalysis = {
+                commits: commits.commits.map(c => ({
+                  hash: c.hash,
+                  message: c.message,
+                  date: c.date,
+                  files: c.files || [],
+                  stats: c.stats || { additions: 0, deletions: 0, totalChanges: 0 }
+                })),
+                architecturalDecisions: [],
+                codeEvolution: []
+              };
+
+              const vibeAnalysis = {
+                sessions: sessionResult.sessions.map(s => ({
+                  content: s.exchanges?.map((e: any) => e.content || '').join('\n') || '',
+                  timestamp: s.timestamp
+                })),
+                problemSolutionPairs: [],
+                patterns: { developmentThemes: [] }
+              };
+
+              // Call semantic analysis (surface depth for batch efficiency)
+              log(`Batch ${batch.id}: Running semantic analysis`, 'info', {
+                commits: commits.commits.length,
+                sessions: sessionResult.sessions.length
+              });
+
+              const semanticResult = await semanticAgent.analyzeGitAndVibeData(
+                gitAnalysis,
+                vibeAnalysis,
+                { analysisDepth: 'surface' }
+              );
+
+              // DEBUG: Log what the semantic analysis returned
+              log(`Batch ${batch.id}: Semantic analysis result`, 'info', {
+                hasCodeAnalysis: !!semanticResult?.codeAnalysis,
+                architecturalPatternsCount: semanticResult?.codeAnalysis?.architecturalPatterns?.length || 0,
+                hasSemanticInsights: !!semanticResult?.semanticInsights,
+                keyPatternsCount: semanticResult?.semanticInsights?.keyPatterns?.length || 0,
+                architecturalDecisionsCount: semanticResult?.semanticInsights?.architecturalDecisions?.length || 0,
+                confidence: semanticResult?.confidence || 0
+              });
+
+              // Enrich gitAnalysis with semantic results for observation generation
+              // The observation agent expects architecturalDecisions and codeEvolution
+              const enrichedGitAnalysis = {
+                ...gitAnalysis,
+                architecturalDecisions: (semanticResult?.codeAnalysis?.architecturalPatterns || []).map((p: any) => ({
+                  type: p.name || 'Pattern',
+                  description: p.description || '',
+                  files: p.files || [],
+                  impact: p.confidence > 0.7 ? 'high' : p.confidence > 0.4 ? 'medium' : 'low',
+                  commit: gitAnalysis.commits[0]?.hash || 'unknown'
+                })),
+                codeEvolution: (semanticResult?.semanticInsights?.keyPatterns || []).map((pattern: string) => ({
+                  pattern,
+                  frequency: 1,
+                  files: [],
+                  trend: 'stable'
+                }))
+              };
+
+              // Create insights structure from semantic analysis for observation agent
+              const insightsForObservation = {
+                insights: [
+                  ...(semanticResult?.codeAnalysis?.architecturalPatterns || []).map((p: any) => ({
+                    description: `${p.name}: ${p.description}`,
+                    type: 'architectural',
+                    confidence: p.confidence || 0.5
+                  })),
+                  ...(semanticResult?.semanticInsights?.architecturalDecisions || []).map((decision: string) => ({
+                    description: decision,
+                    type: 'decision',
+                    confidence: 0.7
+                  })),
+                  ...(semanticResult?.semanticInsights?.keyPatterns || []).map((pattern: string) => ({
+                    description: pattern,
+                    type: 'pattern',
+                    confidence: 0.6
+                  }))
+                ]
+              };
+
+              // Generate observations from analysis
+              log(`Batch ${batch.id}: Generating observations`, 'info', {
+                architecturalDecisions: enrichedGitAnalysis.architecturalDecisions.length,
+                codeEvolution: enrichedGitAnalysis.codeEvolution.length,
+                insights: insightsForObservation.insights.length
+              });
+
+              const obsResult = await observationAgent.generateStructuredObservations(
+                enrichedGitAnalysis,
+                vibeAnalysis,
+                insightsForObservation  // Pass insights instead of raw semantic result
+              );
+
+              // Transform to KGEntity format
+              // Note: persistence agent expects 'entityType', not 'type'
+              if (obsResult?.observations && obsResult.observations.length > 0) {
+                const currentBatchId = batch!.id;
+                batchEntities = obsResult.observations.map((obs: any) => ({
+                  id: `${currentBatchId}-${(obs.name || 'unnamed').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}`,
+                  name: obs.name || 'Unnamed Entity',
+                  entityType: obs.entityType || 'Unknown',  // Use entityType for persistence compatibility
+                  type: obs.entityType || 'Unknown',  // Keep type for other consumers
+                  observations: Array.isArray(obs.observations)
+                    ? obs.observations.map((o: any) => typeof o === 'string' ? o : (o?.content || String(o)))
+                    : [],
+                  significance: obs.significance || 5,
+                  batchId: currentBatchId,
+                  timestamp: new Date().toISOString()
+                }));
+
+                batchRelations = obsResult.observations.flatMap((obs: any) =>
+                  (obs.relationships || []).map((rel: any) => ({
+                    from: rel.from,
+                    to: rel.to,
+                    type: rel.relationType || 'related_to',
+                    weight: 0.8,
+                    source: 'explicit' as const,
+                    batchId: currentBatchId
+                  }))
+                );
+
+                log(`Batch ${currentBatchId}: Analysis complete`, 'info', {
+                  entities: batchEntities.length,
+                  relations: batchRelations.length
+                });
+              } else {
+                log(`Batch ${batch!.id}: No observations generated`, 'warning');
+              }
+            } else {
+              log(`Batch ${batch!.id}: Skipping analysis - missing agents or no commits`, 'warning', {
+                hasSemanticAgent: !!semanticAgent,
+                hasObservationAgent: !!observationAgent,
+                commitCount: commits.commits.length
+              });
+            }
+          } catch (analysisError) {
+            // Log analysis failure but continue with empty entities
+            log(`Batch ${batch.id}: Semantic analysis failed, continuing with empty entities`, 'error', {
+              error: analysisError instanceof Error ? analysisError.message : String(analysisError)
+            });
+          }
 
           // Apply Tree-KG operators
           const operatorResult = await kgOperators.applyAll(
@@ -1668,14 +1871,37 @@ export class CoordinatorAgent {
       execution.results['accumulatedKG'] = accumulatedKG;
 
       // PHASE 2: Run finalization steps
-      log('Batch workflow: Running finalization phase', 'info');
+      log('Batch workflow: Running finalization phase', 'info', {
+        accumulatedEntities: accumulatedKG.entities.length,
+        accumulatedRelations: accumulatedKG.relations.length,
+        finalStepsCount: finalSteps.length,
+        finalStepNames: finalSteps.map(s => s.name)
+      });
       for (const step of finalSteps) {
         try {
+          log(`Running finalization step: ${step.name}`, 'info', {
+            agent: step.agent,
+            action: step.action,
+            parameterKeys: Object.keys(step.parameters || {}),
+            rawParameters: step.parameters
+          });
+
+          // Debug: Check what accumulatedKG looks like in execution.results
+          log('Finalization context check', 'info', {
+            executionResultsKeys: Object.keys(execution.results),
+            hasAccumulatedKG: !!execution.results['accumulatedKG'],
+            accumulatedKGEntitiesCount: execution.results['accumulatedKG']?.entities?.length || 0
+          });
+
           const stepResult = await this.executeStepWithTimeout(execution, step, {
             ...parameters,
             accumulatedKG
           });
           execution.results[step.name] = stepResult;
+          log(`Finalization step ${step.name} completed`, 'info', {
+            resultType: typeof stepResult,
+            resultKeys: stepResult ? Object.keys(stepResult) : []
+          });
         } catch (error) {
           log(`Finalization step ${step.name} failed`, 'error', { error });
           execution.errors.push(`Step ${step.name} failed: ${error}`);
@@ -1906,7 +2132,7 @@ export class CoordinatorAgent {
           }
           parameters[key] = resolvedValue;
 
-          log(`Resolved template: ${value} -> ${typeof resolvedValue}`, "debug", {
+          log(`Resolved template: ${value} -> ${typeof resolvedValue}`, "info", {
             template: value,
             stepName,
             propertyPath,

@@ -229,7 +229,7 @@ steps:
     agent: persistence
     action: persistEntities
     parameters:
-      accumulatedKG: "{{accumulatedKG}}"
+      entities: "{{accumulatedKG.entities}}"
       team: "{{params.team}}"
     timeout: 120
     dependencies:
@@ -265,15 +265,22 @@ edges:
     to: batch_scheduler
     type: control
 
-  # Batch extraction
+  # Batch extraction (parallel: both git and vibe receive batch info)
   - from: batch_scheduler
     to: git_history
     type: dataflow
     label: "per batch"
 
+  - from: batch_scheduler
+    to: vibe_history
+    type: dataflow
+    label: "per batch"
+
+  # Data flow: vibe uses commits from git (but visually parallel)
   - from: git_history
     to: vibe_history
-    type: dependency
+    type: dataflow
+    label: "commits"
 
   # Semantic analysis
   - from: git_history

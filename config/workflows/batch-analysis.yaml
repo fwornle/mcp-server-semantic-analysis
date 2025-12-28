@@ -109,11 +109,12 @@ steps:
   # PHASE 2.5: Ontology Classification (newly added)
   - name: classify_with_ontology
     agent: ontology_classification
-    action: classifyEntities
+    action: classifyObservations
     tier: standard
     parameters:
       observations: "{{batch_semantic_analysis.result.entities}}"
-      team: "{{params.team}}"
+      autoExtend: true
+      minConfidence: 0.6
     timeout: 120
     dependencies:
       - batch_semantic_analysis

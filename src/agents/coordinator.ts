@@ -105,7 +105,7 @@ export class CoordinatorAgent {
    * Write workflow progress to a file for external monitoring
    * File location: .data/workflow-progress.json
    */
-  private writeProgressFile(execution: WorkflowExecution, workflow: WorkflowDefinition, currentStep?: string, runningSteps?: string[]): void {
+  private writeProgressFile(execution: WorkflowExecution, workflow: WorkflowDefinition, currentStep?: string, runningSteps?: string[], batchProgress?: { currentBatch: number; totalBatches: number; batchId?: string }): void {
     try {
       const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
 
@@ -217,7 +217,7 @@ export class CoordinatorAgent {
       // Get all currently running steps
       const currentlyRunning = stepsDetail.filter(s => s.status === 'running').map(s => s.name);
 
-      const progress = {
+      const progress: Record<string, any> = {
         workflowName: workflow.name,
         executionId: execution.id,
         status: execution.status,
@@ -239,6 +239,11 @@ export class CoordinatorAgent {
         lastUpdate: new Date().toISOString(),
         elapsedSeconds: Math.round((Date.now() - execution.startTime.getTime()) / 1000),
       };
+
+      // Add batch progress info if available (for batch workflows)
+      if (batchProgress) {
+        progress.batchProgress = batchProgress;
+      }
 
       fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
     } catch (error) {
@@ -1582,10 +1587,12 @@ export class CoordinatorAgent {
       // PHASE 1: Iterate through batches
       let batchCount = 0;
       let batch: BatchWindow | null;
+      const totalBatchCount = batchScheduler.getProgress().totalBatches;
 
       while ((batch = batchScheduler.getNextBatch()) !== null) {
         batchCount++;
         const batchStartTime = Date.now();
+        const currentBatchProgress = { currentBatch: batchCount, totalBatches: totalBatchCount, batchId: batch.id };
 
         log(`Processing batch ${batch.id}`, 'info', {
           batchNumber: batch.batchNumber,
@@ -1621,7 +1628,7 @@ export class CoordinatorAgent {
           // Track step completion for dashboard visibility
           // Flatten commits structure so summarizeStepResult can find commits array
           execution.results['extract_batch_commits'] = { ...commits, batchId: batch.id };
-          this.writeProgressFile(execution, workflow, 'extract_batch_commits', []);
+          this.writeProgressFile(execution, workflow, 'extract_batch_commits', [], currentBatchProgress);
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
           if (batch.id === 'batch-001') {
@@ -1675,7 +1682,7 @@ export class CoordinatorAgent {
           // Track step completion for dashboard visibility
           // Flatten sessions structure so summarizeStepResult can find sessions array
           execution.results['extract_batch_sessions'] = { ...sessionResult, batchId: batch.id };
-          this.writeProgressFile(execution, workflow, 'extract_batch_sessions', []);
+          this.writeProgressFile(execution, workflow, 'extract_batch_sessions', [], currentBatchProgress);
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
           if (batch.id === 'batch-001') {
@@ -1882,7 +1889,7 @@ export class CoordinatorAgent {
             result: { entities: batchEntities.length, relations: batchRelations.length },
             batchId: batch.id
           };
-          this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', []);
+          this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', [], currentBatchProgress);
 
           // Record semantic analysis step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -1925,7 +1932,7 @@ export class CoordinatorAgent {
           execution.results['operator_dedup'] = { result: opResults.dedup, batchId: batch.id };
           execution.results['operator_pred'] = { result: opResults.pred, batchId: batch.id };
           execution.results['operator_merge'] = { result: opResults.merge, batchId: batch.id };
-          this.writeProgressFile(execution, workflow, 'operator_merge', []);
+          this.writeProgressFile(execution, workflow, 'operator_merge', [], currentBatchProgress);
 
           // Record KG operator steps for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -1968,7 +1975,7 @@ export class CoordinatorAgent {
 
           // Track batch_qa step (QA validation via stats calculation)
           execution.results['batch_qa'] = { result: { stats, validated: true }, batchId: batch.id };
-          this.writeProgressFile(execution, workflow, 'batch_qa', []);
+          this.writeProgressFile(execution, workflow, 'batch_qa', [], currentBatchProgress);
 
           // Record batch_qa step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -2000,7 +2007,7 @@ export class CoordinatorAgent {
 
           // Track save_batch_checkpoint step completion for dashboard visibility
           execution.results['save_batch_checkpoint'] = { result: { saved: true }, batchId: batch.id };
-          this.writeProgressFile(execution, workflow, 'save_batch_checkpoint', []);
+          this.writeProgressFile(execution, workflow, 'save_batch_checkpoint', [], currentBatchProgress);
 
           // Record save_batch_checkpoint step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -2029,7 +2036,7 @@ export class CoordinatorAgent {
 
           // Update progress file after each batch for dashboard visibility
           execution.currentStep = batchCount;
-          this.writeProgressFile(execution, workflow, `batch_${batchCount}`, []);
+          this.writeProgressFile(execution, workflow, `batch_${batchCount}`, [], currentBatchProgress);
 
         } catch (error) {
           batchScheduler.failBatch(batch.id, error instanceof Error ? error.message : String(error));

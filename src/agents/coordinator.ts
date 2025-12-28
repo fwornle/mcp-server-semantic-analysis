@@ -257,6 +257,30 @@ export class CoordinatorAgent {
     }
   }
 
+  /**
+   * Check if the workflow has been cancelled externally (via dashboard)
+   * Reads the progress file and checks for 'cancelled' status
+   */
+  private isWorkflowCancelled(): boolean {
+    try {
+      const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
+      if (fs.existsSync(progressPath)) {
+        const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+        if (progress.status === 'cancelled') {
+          log('Workflow cancellation detected from progress file', 'info', {
+            cancelledAt: progress.cancelledAt,
+            previousStatus: progress.previousStatus
+          });
+          return true;
+        }
+      }
+      return false;
+    } catch (error) {
+      // If we can't read the file, assume not cancelled
+      return false;
+    }
+  }
+
   private initializeWorkflows(): void {
     // Try to load workflows from YAML (single source of truth)
     try {
@@ -1595,6 +1619,19 @@ export class CoordinatorAgent {
       const totalBatchCount = batchScheduler.getProgress().totalBatches;
 
       while ((batch = batchScheduler.getNextBatch()) !== null) {
+        // Check for external cancellation BEFORE processing each batch
+        if (this.isWorkflowCancelled()) {
+          log('Workflow cancelled - stopping batch processing', 'warning', {
+            currentBatch: batchCount,
+            totalBatches: totalBatchCount,
+            lastBatchId: batch?.id
+          });
+          execution.status = 'cancelled';
+          execution.endTime = new Date();
+          execution.errors.push('Workflow cancelled by user');
+          break; // Exit the batch loop entirely
+        }
+
         batchCount++;
         const batchStartTime = Date.now();
         const currentBatchProgress = { currentBatch: batchCount, totalBatches: totalBatchCount, batchId: batch.id };

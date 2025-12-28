@@ -63,6 +63,7 @@ export interface BatchSchedulerOptions {
   maxBatches?: number;                  // Limit batches to process (0 = all)
   fromCommit?: string;                  // Start from specific commit
   resumeFromCheckpoint?: boolean;       // Resume from last completed batch
+  fullAnalysis?: boolean;               // When true, clear checkpoints and start from first commit
 }
 
 interface CommitInfo {
@@ -111,9 +112,14 @@ export class BatchScheduler {
       };
     }
 
-    // Check for existing checkpoints if resuming
+    // Handle full analysis mode vs incremental
     let startFromBatch = 0;
-    if (options.resumeFromCheckpoint) {
+    if (options.fullAnalysis) {
+      // Full analysis: clear all checkpoints and start from first commit
+      log('Full analysis mode: clearing checkpoints, starting from first commit', 'info');
+      this.clearCheckpoints();
+    } else if (options.resumeFromCheckpoint) {
+      // Incremental: resume from last completed batch
       const checkpoints = this.loadCheckpoints();
       if (checkpoints.lastCompletedBatch) {
         startFromBatch = checkpoints.lastCompletedBatch + 1;
@@ -400,6 +406,26 @@ export class BatchScheduler {
       fs.writeFileSync(this.checkpointPath, JSON.stringify(checkpoints, null, 2));
     } catch (error) {
       log('Could not save batch checkpoints', 'error', { error });
+    }
+  }
+
+  /**
+   * Clear all batch checkpoints (for full analysis mode)
+   * Resets checkpoint state so processing starts from the beginning
+   */
+  private clearCheckpoints(): void {
+    try {
+      if (fs.existsSync(this.checkpointPath)) {
+        fs.unlinkSync(this.checkpointPath);
+        log('Cleared batch checkpoints', 'info', { path: this.checkpointPath });
+      }
+      // Also clear progress file
+      if (fs.existsSync(this.progressPath)) {
+        fs.unlinkSync(this.progressPath);
+        log('Cleared batch progress', 'info', { path: this.progressPath });
+      }
+    } catch (error) {
+      log('Could not clear batch checkpoints', 'error', { error });
     }
   }
 

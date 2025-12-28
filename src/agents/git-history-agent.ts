@@ -291,9 +291,10 @@ export class GitHistoryAgent {
           { cwd: this.repositoryPath, encoding: 'utf8', shell: '/bin/bash' }
         ).trim().split('\n').filter(Boolean);
 
-        const rangeSet = new Set(rangeOutput);
+        // Truncate hashes to 8 chars to match parseGitLogOutput format
+        const rangeSet = new Set(rangeOutput.map(h => h.substring(0, 8)));
         // Always include startCommit for initial commit case
-        rangeSet.add(startCommit);
+        rangeSet.add(startCommit.substring(0, 8));
 
         result.commits = result.commits.filter(c => rangeSet.has(c.hash));
       }

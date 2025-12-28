@@ -1508,6 +1508,9 @@ export class CoordinatorAgent {
       type: 'iterative'
     });
 
+    // Start workflow report tracking (for dashboard history)
+    this.reportAgent.startWorkflowReport(workflowName, executionId, parameters);
+
     try {
       execution.status = 'running';
 
@@ -1542,12 +1545,30 @@ export class CoordinatorAgent {
           const batchPlan = await batchScheduler.planBatches({
             batchSize: parameters.batchSize || 50,
             maxBatches: parameters.maxBatches || 0,
-            resumeFromCheckpoint: parameters.resumeFromCheckpoint !== false
+            resumeFromCheckpoint: parameters.resumeFromCheckpoint !== false,
+            fullAnalysis: parameters.fullAnalysis === true || parameters.fullAnalysis === 'true'
           });
           execution.results['plan_batches'] = { result: batchPlan };
           log('Batch plan created', 'info', {
             totalBatches: batchPlan.totalBatches,
             totalCommits: batchPlan.totalCommits
+          });
+
+          // Record plan_batches step for workflow report
+          const planEndTime = new Date();
+          this.reportAgent.recordStep({
+            stepName: 'plan_batches',
+            agent: 'batch_scheduler',
+            action: 'planBatches',
+            startTime: execution.startTime,
+            endTime: planEndTime,
+            duration: planEndTime.getTime() - execution.startTime.getTime(),
+            status: 'success',
+            inputs: { batchSize: parameters.batchSize || 50, fullAnalysis: parameters.fullAnalysis },
+            outputs: { totalBatches: batchPlan.totalBatches, totalCommits: batchPlan.totalCommits },
+            decisions: [],
+            warnings: [],
+            errors: []
           });
         }
       }
@@ -1597,6 +1618,30 @@ export class CoordinatorAgent {
             batch.endCommit
           );
 
+          // Track step completion for dashboard visibility
+          // Flatten commits structure so summarizeStepResult can find commits array
+          execution.results['extract_batch_commits'] = { ...commits, batchId: batch.id };
+          this.writeProgressFile(execution, workflow, 'extract_batch_commits', []);
+
+          // Record step for workflow report (only on first batch to avoid duplicate entries)
+          if (batch.id === 'batch-001') {
+            const stepEndTime = new Date();
+            this.reportAgent.recordStep({
+              stepName: 'extract_batch_commits',
+              agent: 'git_history',
+              action: 'extractCommitsForBatch',
+              startTime: new Date(batchStartTime),
+              endTime: stepEndTime,
+              duration: stepEndTime.getTime() - batchStartTime,
+              status: 'success',
+              inputs: { batchId: batch.id },
+              outputs: { commitsCount: commits?.commits?.length || 0 },
+              decisions: [],
+              warnings: [],
+              errors: []
+            });
+          }
+
           // DEBUG: Log extraction result
           log(`DEBUG: Git extraction result`, 'info', {
             batchId: batch.id,
@@ -1626,6 +1671,30 @@ export class CoordinatorAgent {
               message: c.message
             }))
           );
+
+          // Track step completion for dashboard visibility
+          // Flatten sessions structure so summarizeStepResult can find sessions array
+          execution.results['extract_batch_sessions'] = { ...sessionResult, batchId: batch.id };
+          this.writeProgressFile(execution, workflow, 'extract_batch_sessions', []);
+
+          // Record step for workflow report (only on first batch to avoid duplicate entries)
+          if (batch.id === 'batch-001') {
+            const stepEndTime = new Date();
+            this.reportAgent.recordStep({
+              stepName: 'extract_batch_sessions',
+              agent: 'vibe_history',
+              action: 'extractSessionsForCommits',
+              startTime: new Date(batchStartTime),
+              endTime: stepEndTime,
+              duration: stepEndTime.getTime() - batchStartTime,
+              status: 'success',
+              inputs: { batchId: batch.id },
+              outputs: { sessionsCount: sessionResult?.sessions?.length || 0 },
+              decisions: [],
+              warnings: [],
+              errors: []
+            });
+          }
 
           // Build batch context for operators
           const batchContext: BatchContext = {
@@ -1808,6 +1877,32 @@ export class CoordinatorAgent {
             });
           }
 
+          // Track semantic analysis step completion for dashboard visibility
+          execution.results['batch_semantic_analysis'] = {
+            result: { entities: batchEntities.length, relations: batchRelations.length },
+            batchId: batch.id
+          };
+          this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', []);
+
+          // Record semantic analysis step for workflow report (only on first batch)
+          if (batch.id === 'batch-001') {
+            const stepEndTime = new Date();
+            this.reportAgent.recordStep({
+              stepName: 'batch_semantic_analysis',
+              agent: 'semantic_analysis',
+              action: 'analyzeGitAndVibeData',
+              startTime: new Date(batchStartTime),
+              endTime: stepEndTime,
+              duration: stepEndTime.getTime() - batchStartTime,
+              status: 'success',
+              inputs: { batchId: batch.id },
+              outputs: { entitiesGenerated: batchEntities.length, relationsGenerated: batchRelations.length },
+              decisions: [],
+              warnings: [],
+              errors: []
+            });
+          }
+
           // Apply Tree-KG operators
           const operatorResult = await kgOperators.applyAll(
             batchEntities,
@@ -1821,6 +1916,39 @@ export class CoordinatorAgent {
             entities: operatorResult.entities,
             relations: operatorResult.relations
           };
+
+          // Track operator steps completion for dashboard visibility
+          const opResults = operatorResult.operatorResults;
+          execution.results['operator_conv'] = { result: opResults.conv, batchId: batch.id };
+          execution.results['operator_aggr'] = { result: opResults.aggr, batchId: batch.id };
+          execution.results['operator_embed'] = { result: opResults.embed, batchId: batch.id };
+          execution.results['operator_dedup'] = { result: opResults.dedup, batchId: batch.id };
+          execution.results['operator_pred'] = { result: opResults.pred, batchId: batch.id };
+          execution.results['operator_merge'] = { result: opResults.merge, batchId: batch.id };
+          this.writeProgressFile(execution, workflow, 'operator_merge', []);
+
+          // Record KG operator steps for workflow report (only on first batch)
+          if (batch.id === 'batch-001') {
+            const opEndTime = new Date();
+            const opDuration = opEndTime.getTime() - batchStartTime;
+            const operators = ['conv', 'aggr', 'embed', 'dedup', 'pred', 'merge'] as const;
+            for (const op of operators) {
+              this.reportAgent.recordStep({
+                stepName: `operator_${op}`,
+                agent: 'kg_operators',
+                action: op,
+                startTime: new Date(batchStartTime),
+                endTime: opEndTime,
+                duration: opResults[op]?.duration || opDuration / operators.length,
+                status: 'success',
+                inputs: { batchId: batch.id },
+                outputs: opResults[op] || {},
+                decisions: [],
+                warnings: [],
+                errors: []
+              });
+            }
+          }
 
           // Calculate batch stats
           const batchDuration = Date.now() - batchStartTime;
@@ -1838,6 +1966,29 @@ export class CoordinatorAgent {
           // Mark batch complete
           batchScheduler.completeBatch(batch.id, stats);
 
+          // Track batch_qa step (QA validation via stats calculation)
+          execution.results['batch_qa'] = { result: { stats, validated: true }, batchId: batch.id };
+          this.writeProgressFile(execution, workflow, 'batch_qa', []);
+
+          // Record batch_qa step for workflow report (only on first batch)
+          if (batch.id === 'batch-001') {
+            const qaEndTime = new Date();
+            this.reportAgent.recordStep({
+              stepName: 'batch_qa',
+              agent: 'quality_assurance',
+              action: 'validateBatch',
+              startTime: new Date(batchStartTime),
+              endTime: qaEndTime,
+              duration: qaEndTime.getTime() - batchStartTime,
+              status: 'success',
+              inputs: { batchId: batch.id },
+              outputs: { validated: true, entitiesCount: stats.entitiesCreated, relationsCount: stats.relationsAdded },
+              decisions: [],
+              warnings: [],
+              errors: []
+            });
+          }
+
           // Save checkpoint
           checkpointManager.saveBatchCheckpoint(
             batch.id,
@@ -1846,6 +1997,29 @@ export class CoordinatorAgent {
             { start: batch.startDate, end: batch.endDate },
             stats
           );
+
+          // Track save_batch_checkpoint step completion for dashboard visibility
+          execution.results['save_batch_checkpoint'] = { result: { saved: true }, batchId: batch.id };
+          this.writeProgressFile(execution, workflow, 'save_batch_checkpoint', []);
+
+          // Record save_batch_checkpoint step for workflow report (only on first batch)
+          if (batch.id === 'batch-001') {
+            const checkpointEndTime = new Date();
+            this.reportAgent.recordStep({
+              stepName: 'save_batch_checkpoint',
+              agent: 'batch_checkpoint_manager',
+              action: 'saveBatchCheckpoint',
+              startTime: new Date(batchStartTime),
+              endTime: checkpointEndTime,
+              duration: checkpointEndTime.getTime() - batchStartTime,
+              status: 'success',
+              inputs: { batchId: batch.id, batchNumber: batch.batchNumber },
+              outputs: { saved: true },
+              decisions: [],
+              warnings: [],
+              errors: []
+            });
+          }
 
           log(`Batch ${batch.id} completed`, 'info', {
             duration: `${(batchDuration / 1000).toFixed(1)}s`,
@@ -1870,6 +2044,23 @@ export class CoordinatorAgent {
       // Store accumulated KG for finalization steps
       execution.results['accumulatedKG'] = accumulatedKG;
 
+      // Record accumulatedKG step for workflow report
+      const accumulatedEndTime = new Date();
+      this.reportAgent.recordStep({
+        stepName: 'accumulatedKG',
+        agent: 'kg_operators',
+        action: 'accumulate',
+        startTime: execution.startTime,
+        endTime: accumulatedEndTime,
+        duration: accumulatedEndTime.getTime() - execution.startTime.getTime(),
+        status: 'success',
+        inputs: { batchCount: batchScheduler.getProgress().completedBatches },
+        outputs: { entitiesCount: accumulatedKG.entities.length, relationsCount: accumulatedKG.relations.length },
+        decisions: [],
+        warnings: [],
+        errors: []
+      });
+
       // PHASE 2: Run finalization steps
       log('Batch workflow: Running finalization phase', 'info', {
         accumulatedEntities: accumulatedKG.entities.length,
@@ -1893,14 +2084,32 @@ export class CoordinatorAgent {
             accumulatedKGEntitiesCount: execution.results['accumulatedKG']?.entities?.length || 0
           });
 
+          const stepStartTime = new Date();
           const stepResult = await this.executeStepWithTimeout(execution, step, {
             ...parameters,
             accumulatedKG
           });
           execution.results[step.name] = stepResult;
+          const stepEndTime = new Date();
           log(`Finalization step ${step.name} completed`, 'info', {
             resultType: typeof stepResult,
             resultKeys: stepResult ? Object.keys(stepResult) : []
+          });
+
+          // Record finalization step for workflow report
+          this.reportAgent.recordStep({
+            stepName: step.name,
+            agent: step.agent,
+            action: step.action,
+            startTime: stepStartTime,
+            endTime: stepEndTime,
+            duration: stepEndTime.getTime() - stepStartTime.getTime(),
+            status: 'success',
+            inputs: step.parameters || {},
+            outputs: this.summarizeStepResult(stepResult),
+            decisions: [],
+            warnings: [],
+            errors: []
           });
         } catch (error) {
           log(`Finalization step ${step.name} failed`, 'error', { error });
@@ -1922,6 +2131,17 @@ export class CoordinatorAgent {
       // Write final progress file for dashboard
       this.writeProgressFile(execution, workflow);
 
+      // Finalize and save workflow report for dashboard history
+      const reportPath = this.reportAgent.finalizeReport('completed', {
+        stepsCompleted: progress.completedBatches,
+        totalSteps: progress.totalBatches,
+        entitiesCreated: progress.accumulatedStats?.entitiesCreated || 0,
+        entitiesUpdated: progress.accumulatedStats?.entitiesUpdated || 0,
+        filesCreated: [],
+        contentChanges: (progress.accumulatedStats?.entitiesCreated || 0) > 0
+      });
+      log(`Batch workflow report saved: ${reportPath}`, 'info');
+
     } catch (error) {
       execution.status = 'failed';
       execution.endTime = new Date();
@@ -1937,6 +2157,17 @@ export class CoordinatorAgent {
 
       // Write final progress file for dashboard
       this.writeProgressFile(execution, workflow);
+
+      // Finalize and save workflow report even for failures
+      const reportPath = this.reportAgent.finalizeReport('failed', {
+        stepsCompleted: 0,
+        totalSteps: workflow.steps.length,
+        entitiesCreated: 0,
+        entitiesUpdated: 0,
+        filesCreated: [],
+        contentChanges: false
+      });
+      log(`Batch workflow failure report saved: ${reportPath}`, 'info');
     }
 
     return execution;

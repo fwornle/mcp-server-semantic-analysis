@@ -127,7 +127,10 @@ export class WorkflowReportAgent {
     this.currentReport.totalDuration = this.currentReport.endTime.getTime() - this.currentReport.startTime.getTime();
     this.currentReport.status = status;
     this.currentReport.summary = { ...this.currentReport.summary, ...summary };
-    this.currentReport.summary.totalSteps = this.currentReport.steps.length;
+    // Use provided totalSteps if available (for batch workflows), otherwise fall back to steps.length
+    if (!this.currentReport.summary.totalSteps) {
+      this.currentReport.summary.totalSteps = this.currentReport.steps.length;
+    }
 
     // Generate recommendations based on analysis
     this.currentReport.recommendations = this.generateRecommendations();

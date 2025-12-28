@@ -782,14 +782,36 @@ async function handleCreateUkbEntity(args: any): Promise<any> {
 }
 
 async function handleExecuteWorkflow(args: any): Promise<any> {
-  const { workflow_name, parameters } = args;
+  const { workflow_name, parameters = {} } = args;
 
-  log(`Executing workflow: ${workflow_name}`, "info", { parameters });
+  // Map legacy workflow names to batch-analysis with appropriate defaults
+  // This ensures all analysis workflows use the unified batch processing infrastructure
+  const workflowMapping: Record<string, { target: string; defaults: Record<string, any> }> = {
+    'complete-analysis': {
+      target: 'batch-analysis',
+      defaults: { fullAnalysis: true, resumeFromCheckpoint: false }
+    },
+    'incremental-analysis': {
+      target: 'batch-analysis',
+      defaults: { fullAnalysis: false, resumeFromCheckpoint: true }
+    },
+    'batch-analysis': { target: 'batch-analysis', defaults: {} }
+  };
+
+  const mapping = workflowMapping[workflow_name];
+  const resolvedWorkflowName = mapping?.target || workflow_name;
+  const resolvedParameters = mapping ? { ...mapping.defaults, ...parameters } : parameters;
+
+  log(`Executing workflow: ${workflow_name}${mapping ? ` (mapped to ${resolvedWorkflowName})` : ''}`, "info", {
+    originalWorkflow: workflow_name,
+    resolvedWorkflow: resolvedWorkflowName,
+    parameters: resolvedParameters
+  });
 
   // Initialize coordinator and execute real workflow
   // Use repository_path from parameters or default to current directory
   // Accept both snake_case (repository_path) and camelCase (repositoryPath) for robustness
-  let repositoryPath = parameters?.repository_path || parameters?.repositoryPath || '.';
+  let repositoryPath = resolvedParameters?.repository_path || resolvedParameters?.repositoryPath || '.';
 
   // If we're running from the semantic analysis subdirectory, resolve the main repo path
   if (repositoryPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {
@@ -806,24 +828,24 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
   try {
     // Get workflow definition to check if it's iterative/batch type
     const workflows = coordinator.getWorkflows();
-    const workflow = workflows.find(w => w.name === workflow_name);
+    const workflow = workflows.find(w => w.name === resolvedWorkflowName);
 
     // Route to executeBatchWorkflow for iterative/batch workflows
-    const isBatchWorkflow = workflow?.type === 'iterative' || workflow_name === 'batch-analysis';
+    const isBatchWorkflow = workflow?.type === 'iterative' || resolvedWorkflowName === 'batch-analysis';
 
     log(`Workflow type: ${workflow?.type || 'standard'}, isBatchWorkflow: ${isBatchWorkflow}`, "info");
 
     const execution = isBatchWorkflow
-      ? await coordinator.executeBatchWorkflow(workflow_name, parameters)
-      : await coordinator.executeWorkflow(workflow_name, parameters);
-    
+      ? await coordinator.executeBatchWorkflow(resolvedWorkflowName, resolvedParameters)
+      : await coordinator.executeWorkflow(resolvedWorkflowName, resolvedParameters);
+
     // Format execution results
     const statusEmoji = execution.status === "completed" ? "✅" : execution.status === "failed" ? "❌" : "⚡";
-    const duration = execution.endTime ? 
-      `${Math.round((execution.endTime.getTime() - execution.startTime.getTime()) / 1000)}s` : 
+    const duration = execution.endTime ?
+      `${Math.round((execution.endTime.getTime() - execution.startTime.getTime()) / 1000)}s` :
       "ongoing";
-    
-    let resultText = `# Workflow Execution\n\n**Workflow:** ${workflow_name}\n**Status:** ${statusEmoji} ${execution.status}\n**Duration:** ${duration}\n**Steps:** ${execution.currentStep}/${execution.totalSteps}\n\n## Parameters\n${JSON.stringify(parameters || {}, null, 2)}\n\n`;
+
+    let resultText = `# Workflow Execution\n\n**Workflow:** ${workflow_name}\n**Status:** ${statusEmoji} ${execution.status}\n**Duration:** ${duration}\n**Steps:** ${execution.currentStep}/${execution.totalSteps}\n\n## Parameters\n${JSON.stringify(resolvedParameters || {}, null, 2)}\n\n`;
     
     // Add step results
     if (Object.keys(execution.results).length > 0) {

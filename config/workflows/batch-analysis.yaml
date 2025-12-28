@@ -33,6 +33,9 @@ parameters:
   resumeFromCheckpoint:
     default: true
     description: "Resume from last completed batch"
+  fullAnalysis:
+    default: false
+    description: "When true, clear checkpoints and analyze all commits from beginning"
   operatorWeights:
     default:
       alpha: 0.6  # Semantic similarity weight
@@ -52,6 +55,7 @@ steps:
       batchSize: "{{params.batchSize}}"
       maxBatches: "{{params.maxBatches}}"
       resumeFromCheckpoint: "{{params.resumeFromCheckpoint}}"
+      fullAnalysis: "{{params.fullAnalysis}}"
     timeout: 60
     dependencies: []
     phase: initialization
@@ -102,13 +106,27 @@ steps:
     phase: batch
     operator: analyze
 
+  # PHASE 2.5: Ontology Classification (newly added)
+  - name: classify_with_ontology
+    agent: ontology_classification
+    action: classifyEntities
+    tier: standard
+    parameters:
+      observations: "{{batch_semantic_analysis.result.entities}}"
+      team: "{{params.team}}"
+    timeout: 120
+    dependencies:
+      - batch_semantic_analysis
+    phase: batch
+    operator: classify
+
   # PHASE 3: Tree-KG Operators (applied in sequence)
   - name: operator_conv
     agent: kg_operators
     action: contextConvolution
     tier: premium  # Context enrichment needs quality
     parameters:
-      entities: "{{batch_semantic_analysis.result.entities}}"
+      entities: "{{classify_with_ontology.result.classified}}"
       batchContext:
         batchId: "{{currentBatch.id}}"
         startDate: "{{currentBatch.startDate}}"
@@ -117,7 +135,7 @@ steps:
         sessions: "{{extract_batch_sessions.result.sessions}}"
     timeout: 60
     dependencies:
-      - batch_semantic_analysis
+      - classify_with_ontology
     phase: batch
     operator: conv
 
@@ -290,8 +308,14 @@ edges:
     to: semantic_analysis
     type: dependency
 
-  # Tree-KG operator pipeline
+  # Ontology classification
   - from: semantic_analysis
+    to: ontology_classification
+    type: dependency
+    label: "classify"
+
+  # Tree-KG operator pipeline
+  - from: ontology_classification
     to: kg_operators
     type: dependency
     label: "conv"

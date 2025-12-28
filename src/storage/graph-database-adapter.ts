@@ -285,15 +285,25 @@ export class GraphDatabaseAdapter {
 
   /**
    * Export graph data to JSON (for compatibility/backup)
+   * Supports both VKB API and direct GraphDatabaseService access
    */
   async exportToJSON(outputPath: string): Promise<void> {
-    if (!this.isInitialized || !this.graphDB) {
+    if (!this.isInitialized) {
       throw new Error('GraphDatabaseAdapter not initialized. Call initialize() first.');
     }
 
     try {
-      await this.graphDB.exportToJSON(this.team, outputPath);
-      log('Graph data exported to JSON', 'info', { outputPath });
+      if (this.useApi && this.apiClient) {
+        // Use VKB API for export
+        await this.apiClient.exportTeam(this.team, outputPath);
+        log('Graph data exported to JSON via VKB API', 'info', { outputPath, team: this.team });
+      } else if (this.graphDB) {
+        // Use direct GraphDatabaseService access
+        await this.graphDB.exportToJSON(this.team, outputPath);
+        log('Graph data exported to JSON via direct access', 'info', { outputPath, team: this.team });
+      } else {
+        throw new Error('No database access available');
+      }
     } catch (error) {
       log('Failed to export graph data to JSON', 'error', error);
       throw error;

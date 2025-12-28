@@ -1910,6 +1910,112 @@ export class CoordinatorAgent {
             });
           }
 
+          // ONTOLOGY CLASSIFICATION: Classify entities using project ontology
+          const ontologyClassificationStartTime = Date.now();
+          const ontologyAgent = this.agents.get('ontology_classification') as OntologyClassificationAgent;
+
+          if (ontologyAgent && batchEntities.length > 0) {
+            try {
+              log(`Batch ${batch.id}: Running ontology classification`, 'info', {
+                entityCount: batchEntities.length
+              });
+
+              // Transform batch entities to observation format for classification
+              const observationsForClassification = batchEntities.map(entity => ({
+                name: entity.name,
+                entityType: entity.type || 'Unknown',
+                observations: entity.observations || [],
+                significance: entity.significance || 5,
+                tags: [] as string[]
+              }));
+
+              const classificationResult = await ontologyAgent.classifyObservations({
+                observations: observationsForClassification,
+                autoExtend: true,
+                minConfidence: 0.6
+              });
+
+              // Update batch entities with ontology classifications
+              if (classificationResult?.classified && classificationResult.classified.length > 0) {
+                const classifiedMap = new Map<string, any>(
+                  classificationResult.classified.map(c => [c.original?.name || (c as any).classified?.name, c])
+                );
+
+                batchEntities = batchEntities.map(entity => {
+                  const classification = classifiedMap.get(entity.name);
+                  if (classification?.ontologyMetadata) {
+                    return {
+                      ...entity,
+                      type: classification.ontologyMetadata.ontologyClass || entity.type
+                    } as KGEntity;
+                  }
+                  return entity;
+                });
+
+                log(`Batch ${batch.id}: Ontology classification complete`, 'info', {
+                  classified: classificationResult.summary?.classifiedCount || 0,
+                  unclassified: classificationResult.summary?.unclassifiedCount || 0,
+                  byClass: classificationResult.summary?.byClass || {}
+                });
+              }
+
+              // Track ontology classification step completion for dashboard visibility
+              execution.results['classify_with_ontology'] = {
+                result: {
+                  classified: classificationResult?.summary?.classifiedCount || 0,
+                  unclassified: classificationResult?.summary?.unclassifiedCount || 0,
+                  byClass: classificationResult?.summary?.byClass || {}
+                },
+                batchId: batch.id
+              };
+              this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
+
+              // Record ontology classification step for workflow report (only on first batch)
+              if (batch.id === 'batch-001') {
+                const ontologyEndTime = new Date();
+                this.reportAgent.recordStep({
+                  stepName: 'classify_with_ontology',
+                  agent: 'ontology_classification',
+                  action: 'classifyObservations',
+                  startTime: new Date(ontologyClassificationStartTime),
+                  endTime: ontologyEndTime,
+                  duration: ontologyEndTime.getTime() - ontologyClassificationStartTime,
+                  status: 'success',
+                  inputs: { batchId: batch.id, entityCount: batchEntities.length },
+                  outputs: classificationResult?.summary || {},
+                  decisions: [],
+                  warnings: [],
+                  errors: []
+                });
+              }
+            } catch (ontologyError) {
+              log(`Batch ${batch.id}: Ontology classification failed, using original entity types`, 'warning', {
+                error: ontologyError instanceof Error ? ontologyError.message : String(ontologyError)
+              });
+
+              // Track skipped step for dashboard
+              execution.results['classify_with_ontology'] = {
+                skipped: true,
+                skipReason: ontologyError instanceof Error ? ontologyError.message : 'Classification failed',
+                batchId: batch.id
+              };
+              this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
+            }
+          } else {
+            log(`Batch ${batch.id}: Skipping ontology classification - no entities or missing agent`, 'info', {
+              hasOntologyAgent: !!ontologyAgent,
+              entityCount: batchEntities.length
+            });
+
+            // Track skipped step for dashboard
+            execution.results['classify_with_ontology'] = {
+              skipped: true,
+              skipReason: !ontologyAgent ? 'Ontology agent not available' : 'No entities to classify',
+              batchId: batch.id
+            };
+            this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
+          }
+
           // Apply Tree-KG operators
           const operatorResult = await kgOperators.applyAll(
             batchEntities,
@@ -2134,6 +2240,25 @@ export class CoordinatorAgent {
         totalBatches: progress.totalBatches,
         accumulatedStats: progress.accumulatedStats
       });
+
+      // Export knowledge base to JSON for git tracking
+      try {
+        const persistenceAgent = this.agents.get('persistence') as PersistenceAgent;
+        if (persistenceAgent && (persistenceAgent as any).graphDB) {
+          const exportPath = path.join(
+            parameters.repositoryPath || this.repositoryPath,
+            '.data',
+            'knowledge-export',
+            `${parameters.team || this.team}.json`
+          );
+          await (persistenceAgent as any).graphDB.exportToJSON(exportPath);
+          log('Knowledge base exported to JSON', 'info', { exportPath });
+        }
+      } catch (exportError) {
+        log('Failed to export knowledge base to JSON (non-critical)', 'warning', {
+          error: exportError instanceof Error ? exportError.message : String(exportError)
+        });
+      }
 
       // Write final progress file for dashboard
       this.writeProgressFile(execution, workflow);

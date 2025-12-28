@@ -3,6 +3,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createServer } from "./server.js";
 import { setupLogging, log, logError } from "./logging.js";
+import { setServerInstance } from "./tools.js";
 
 // Setup logging FIRST - before anything else
 setupLogging();
@@ -124,6 +125,9 @@ async function runServer() {
     };
 
     await server.connect(transport);
+
+    // Set the server instance for tools to send progress updates
+    setServerInstance(server);
 
     // Set up server-level close and error handlers
     server.onclose = () => {

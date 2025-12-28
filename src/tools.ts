@@ -1,4 +1,5 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { log } from "./logging.js";
 import { SemanticAnalysisAgent } from "./agents/semantic-analysis-agent.js";
 import { SemanticAnalyzer } from "./agents/semantic-analyzer.js";
@@ -17,8 +18,55 @@ import {
 import { OntologyManager } from "./ontology/OntologyManager.js";
 import { OntologyValidator } from "./ontology/OntologyValidator.js";
 import fs from "fs/promises";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
 import path from "path";
+
+// Server reference for sending progress messages
+let serverInstance: Server | null = null;
+
+// Track running async workflows
+interface RunningWorkflow {
+  id: string;
+  workflowName: string;
+  startTime: Date;
+  repositoryPath: string;
+  parameters: Record<string, any>;
+  status: 'running' | 'completed' | 'failed';
+  error?: string;
+  result?: any;
+}
+const runningWorkflows = new Map<string, RunningWorkflow>();
+
+/**
+ * Set the server instance for sending progress messages
+ */
+export function setServerInstance(server: Server): void {
+  serverInstance = server;
+  log("Server instance set for progress updates", "info");
+}
+
+/**
+ * Send a progress update via MCP logging message
+ */
+function sendProgressUpdate(workflowId: string, message: string, data?: Record<string, any>): void {
+  if (serverInstance) {
+    try {
+      serverInstance.sendLoggingMessage({
+        level: "info",
+        data: `📊 [${workflowId}] ${message}${data ? ` | ${JSON.stringify(data)}` : ''}`,
+      });
+    } catch (error) {
+      log(`Failed to send progress update: ${error}`, "warning");
+    }
+  }
+}
+
+/**
+ * Generate a unique workflow ID
+ */
+function generateWorkflowId(): string {
+  return `wf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+}
 
 /**
  * Convert a name to kebab-case (lowercase with hyphens).
@@ -200,7 +248,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "execute_workflow",
-    description: "Execute a predefined analysis workflow through the coordinator",
+    description: "Execute a predefined analysis workflow. Long-running workflows (complete-analysis, incremental-analysis, batch-analysis) automatically use async mode to prevent MCP timeout. Returns immediately with workflow_id - use get_workflow_status to check progress.",
     inputSchema: {
       type: "object",
       properties: {
@@ -213,8 +261,30 @@ export const TOOLS: Tool[] = [
           description: "Optional parameters for the workflow",
           additionalProperties: true,
         },
+        async_mode: {
+          type: "boolean",
+          description: "Run in background (default: true for long workflows like complete-analysis, incremental-analysis). Set to false only for quick workflows.",
+        },
       },
       required: ["workflow_name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_workflow_status",
+    description: "Get the status and progress of a running or completed workflow. Reads from the workflow progress file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workflow_id: {
+          type: "string",
+          description: "The workflow ID returned by execute_workflow in async_mode. If not provided, returns status of most recent workflow.",
+        },
+        repository_path: {
+          type: "string",
+          description: "Path to the repository (defaults to current directory)",
+        },
+      },
       additionalProperties: false,
     },
   },
@@ -540,7 +610,10 @@ export async function handleToolCall(name: string, args: any): Promise<any> {
         
       case "execute_workflow":
         return await handleExecuteWorkflow(args);
-        
+
+      case "get_workflow_status":
+        return await handleGetWorkflowStatus(args);
+
       case "generate_documentation":
         return await handleGenerateDocumentation(args);
         
@@ -784,8 +857,13 @@ async function handleCreateUkbEntity(args: any): Promise<any> {
 async function handleExecuteWorkflow(args: any): Promise<any> {
   const { workflow_name, parameters = {} } = args;
 
+  // CRITICAL: Force async_mode=true for long-running workflows to prevent MCP timeout crashes
+  // These workflows can take 10-20 minutes and will kill the MCP connection if run synchronously
+  const longRunningWorkflows = ['complete-analysis', 'incremental-analysis', 'batch-analysis'];
+  const forceAsync = longRunningWorkflows.includes(workflow_name);
+  const async_mode = args.async_mode ?? forceAsync; // Default to async for long workflows
+
   // Map legacy workflow names to batch-analysis with appropriate defaults
-  // This ensures all analysis workflows use the unified batch processing infrastructure
   const workflowMapping: Record<string, { target: string; defaults: Record<string, any> }> = {
     'complete-analysis': {
       target: 'batch-analysis',
@@ -802,35 +880,110 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
   const resolvedWorkflowName = mapping?.target || workflow_name;
   const resolvedParameters = mapping ? { ...mapping.defaults, ...parameters } : parameters;
 
-  log(`Executing workflow: ${workflow_name}${mapping ? ` (mapped to ${resolvedWorkflowName})` : ''}`, "info", {
-    originalWorkflow: workflow_name,
-    resolvedWorkflow: resolvedWorkflowName,
-    parameters: resolvedParameters
-  });
-
-  // Initialize coordinator and execute real workflow
-  // Use repository_path from parameters or default to current directory
-  // Accept both snake_case (repository_path) and camelCase (repositoryPath) for robustness
+  // Resolve repository path
   let repositoryPath = resolvedParameters?.repository_path || resolvedParameters?.repositoryPath || '.';
-
-  // If we're running from the semantic analysis subdirectory, resolve the main repo path
   if (repositoryPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {
-    // Go up two levels from integrations/mcp-server-semantic-analysis to the main repo
     repositoryPath = path.join(process.cwd(), '../..');
   } else if (repositoryPath && !path.isAbsolute(repositoryPath)) {
-    // Make relative paths absolute
     repositoryPath = path.resolve(repositoryPath);
   }
 
-  log(`Using repository path: ${repositoryPath}`, "info");
+  // Generate workflow ID for tracking
+  const workflowId = generateWorkflowId();
+
+  log(`Executing workflow: ${workflow_name} (id: ${workflowId}, async: ${async_mode})`, "info", {
+    workflowId,
+    originalWorkflow: workflow_name,
+    resolvedWorkflow: resolvedWorkflowName,
+    asyncMode: async_mode,
+    parameters: resolvedParameters
+  });
+
+  // If async_mode, start in background and return immediately
+  if (async_mode) {
+    const coordinator = new CoordinatorAgent(repositoryPath);
+
+    // Store workflow info
+    const workflowInfo: RunningWorkflow = {
+      id: workflowId,
+      workflowName: workflow_name,
+      startTime: new Date(),
+      repositoryPath,
+      parameters: resolvedParameters,
+      status: 'running',
+    };
+    runningWorkflows.set(workflowId, workflowInfo);
+
+    // Start workflow in background (don't await)
+    const executeAsync = async () => {
+      // Start heartbeat interval to keep MCP connection alive during long workflows
+      // This sends periodic progress updates every 30 seconds
+      const heartbeatInterval = setInterval(() => {
+        const elapsed = Math.round((Date.now() - workflowInfo.startTime.getTime()) / 1000);
+        sendProgressUpdate(workflowId, `💓 Workflow running... (${elapsed}s elapsed)`);
+      }, 30000); // 30 second heartbeat
+
+      try {
+        sendProgressUpdate(workflowId, "Starting workflow execution...");
+
+        const workflows = coordinator.getWorkflows();
+        const workflow = workflows.find(w => w.name === resolvedWorkflowName);
+        const isBatchWorkflow = workflow?.type === 'iterative' || resolvedWorkflowName === 'batch-analysis';
+
+        const execution = isBatchWorkflow
+          ? await coordinator.executeBatchWorkflow(resolvedWorkflowName, resolvedParameters)
+          : await coordinator.executeWorkflow(resolvedWorkflowName, resolvedParameters);
+
+        // Update workflow status
+        workflowInfo.status = execution.status === 'completed' ? 'completed' : 'failed';
+        workflowInfo.result = execution;
+
+        sendProgressUpdate(workflowId, `Workflow ${workflowInfo.status}`, {
+          duration: `${Math.round((Date.now() - workflowInfo.startTime.getTime()) / 1000)}s`,
+          steps: `${execution.currentStep}/${execution.totalSteps}`
+        });
+
+        log(`Async workflow completed: ${workflowId}`, "info", { status: workflowInfo.status });
+      } catch (error) {
+        workflowInfo.status = 'failed';
+        workflowInfo.error = error instanceof Error ? error.message : String(error);
+        sendProgressUpdate(workflowId, `Workflow FAILED: ${workflowInfo.error}`);
+        log(`Async workflow failed: ${workflowId}`, "error", error);
+      } finally {
+        // Always clear heartbeat interval
+        clearInterval(heartbeatInterval);
+
+        try {
+          await coordinator.shutdown();
+        } catch (e) {
+          log("Error during async coordinator shutdown", "error", e);
+        }
+      }
+    };
+
+    // Fire and forget - don't await
+    executeAsync().catch(e => log(`Async workflow error: ${e}`, "error"));
+
+    // Return immediately with workflow ID
+    return {
+      content: [
+        {
+          type: "text",
+          text: `# Workflow Started (Async Mode)\n\n**Workflow ID:** \`${workflowId}\`\n**Workflow:** ${workflow_name}\n**Repository:** ${repositoryPath}\n**Started:** ${new Date().toISOString()}\n\n## Next Steps\n\nThe workflow is now running in the background. To check progress:\n\n\`\`\`\nUse get_workflow_status with workflow_id: "${workflowId}"\n\`\`\`\n\nOr check the progress file at: \`.data/workflow-progress.json\`\n\n**Note:** Progress updates will also be sent via MCP logging messages.`,
+        },
+      ],
+    };
+  }
+
+  // Synchronous mode (default) - original behavior with progress updates
   const coordinator = new CoordinatorAgent(repositoryPath);
 
+  // Send initial progress update
+  sendProgressUpdate(workflowId, "Starting synchronous workflow execution...");
+
   try {
-    // Get workflow definition to check if it's iterative/batch type
     const workflows = coordinator.getWorkflows();
     const workflow = workflows.find(w => w.name === resolvedWorkflowName);
-
-    // Route to executeBatchWorkflow for iterative/batch workflows
     const isBatchWorkflow = workflow?.type === 'iterative' || resolvedWorkflowName === 'batch-analysis';
 
     log(`Workflow type: ${workflow?.type || 'standard'}, isBatchWorkflow: ${isBatchWorkflow}`, "info");
@@ -845,15 +998,13 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       `${Math.round((execution.endTime.getTime() - execution.startTime.getTime()) / 1000)}s` :
       "ongoing";
 
-    // Build step/batch progress display
     let progressDisplay = `**Steps:** ${execution.currentStep}/${execution.totalSteps}`;
     if (execution.batchProgress) {
       progressDisplay += ` | **Batches:** ${execution.batchProgress.currentBatch}/${execution.batchProgress.totalBatches}`;
     }
 
-    let resultText = `# Workflow Execution\n\n**Workflow:** ${workflow_name}\n**Status:** ${statusEmoji} ${execution.status}\n**Duration:** ${duration}\n${progressDisplay}\n\n## Parameters\n${JSON.stringify(resolvedParameters || {}, null, 2)}\n\n`;
-    
-    // Add step results
+    let resultText = `# Workflow Execution\n\n**Workflow ID:** \`${workflowId}\`\n**Workflow:** ${workflow_name}\n**Status:** ${statusEmoji} ${execution.status}\n**Duration:** ${duration}\n${progressDisplay}\n\n## Parameters\n${JSON.stringify(resolvedParameters || {}, null, 2)}\n\n`;
+
     if (Object.keys(execution.results).length > 0) {
       resultText += "## Results\n";
       for (const [step, result] of Object.entries(execution.results)) {
@@ -861,13 +1012,12 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       }
       resultText += "\n";
     }
-    
-    // Add QA reports if available
+
     const qaResults = execution.results.quality_assurance;
     if (qaResults && qaResults.validations) {
       resultText += "## Quality Assurance\n";
       for (const [stepName, qa] of Object.entries(qaResults.validations)) {
-        const qaReport = qa as any; // Type assertion for validation result
+        const qaReport = qa as any;
         const qaEmoji = qaReport.passed ? "✅" : "❌";
         resultText += `- **${stepName}**: ${qaEmoji} ${qaReport.passed ? 'Passed' : 'Failed'}\n`;
         if (qaReport.errors && qaReport.errors.length > 0) {
@@ -879,8 +1029,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       }
       resultText += "\n";
     }
-    
-    // Add errors if any
+
     if (execution.errors.length > 0) {
       resultText += "## Errors\n";
       for (const error of execution.errors) {
@@ -888,8 +1037,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       }
       resultText += "\n";
     }
-    
-    // Add artifacts information
+
     if (execution.status === "completed") {
       resultText += "## Generated Artifacts\n";
       resultText += "**IMPORTANT**: Verify actual file modifications with `git status` before trusting this report.\n\n";
@@ -900,34 +1048,141 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       resultText += "- Generated PlantUML diagrams (.puml and .png files)\n\n";
       resultText += "**VERIFY**: Run `git status` to confirm which files were actually modified.\n";
     }
-    
+
+    sendProgressUpdate(workflowId, `Workflow ${execution.status}`, { duration });
+
     return {
-      content: [
-        {
-          type: "text",
-          text: resultText,
-        },
-      ],
+      content: [{ type: "text", text: resultText }],
     };
 
   } catch (error) {
     log(`Workflow execution failed: ${workflow_name}`, "error", error);
+    sendProgressUpdate(workflowId, `Workflow FAILED: ${error instanceof Error ? error.message : String(error)}`);
     return {
       content: [
         {
           type: "text",
-          text: `# Workflow Execution Failed\n\n**Workflow:** ${workflow_name}\n**Error:** ${error instanceof Error ? error.message : String(error)}\n\n## Parameters\n${JSON.stringify(parameters || {}, null, 2)}`,
+          text: `# Workflow Execution Failed\n\n**Workflow ID:** \`${workflowId}\`\n**Workflow:** ${workflow_name}\n**Error:** ${error instanceof Error ? error.message : String(error)}\n\n## Parameters\n${JSON.stringify(parameters || {}, null, 2)}`,
         },
       ],
     };
   } finally {
-    // Always cleanup resources after workflow execution
     try {
       await coordinator.shutdown();
       log("Coordinator shutdown completed after workflow", "info");
     } catch (shutdownError) {
       log("Error during coordinator shutdown", "error", shutdownError);
     }
+  }
+}
+
+/**
+ * Get workflow status from progress file or running workflow state
+ */
+async function handleGetWorkflowStatus(args: any): Promise<any> {
+  const { workflow_id, repository_path } = args;
+
+  // Resolve repository path
+  let repoPath = repository_path || '.';
+  if (repoPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {
+    repoPath = path.join(process.cwd(), '../..');
+  } else if (repoPath && !path.isAbsolute(repoPath)) {
+    repoPath = path.resolve(repoPath);
+  }
+
+  const progressFilePath = path.join(repoPath, '.data', 'workflow-progress.json');
+
+  // Check running workflows first
+  if (workflow_id && runningWorkflows.has(workflow_id)) {
+    const wf = runningWorkflows.get(workflow_id)!;
+    const elapsed = Math.round((Date.now() - wf.startTime.getTime()) / 1000);
+
+    let statusText = `# Workflow Status\n\n**Workflow ID:** \`${wf.id}\`\n**Workflow:** ${wf.workflowName}\n**Status:** ${wf.status === 'running' ? '🔄 Running' : wf.status === 'completed' ? '✅ Completed' : '❌ Failed'}\n**Elapsed:** ${elapsed}s\n**Started:** ${wf.startTime.toISOString()}\n`;
+
+    if (wf.error) {
+      statusText += `\n## Error\n${wf.error}\n`;
+    }
+
+    // Also read progress file for detailed progress
+    try {
+      if (existsSync(progressFilePath)) {
+        const progressData = JSON.parse(readFileSync(progressFilePath, 'utf-8'));
+        statusText += `\n## Progress Details\n`;
+        statusText += `- **Current Step:** ${progressData.currentStep || 'N/A'}\n`;
+        statusText += `- **Steps:** ${progressData.completedSteps || 0}/${progressData.totalSteps || 0}\n`;
+        if (progressData.batchProgress) {
+          statusText += `- **Batch:** ${progressData.batchProgress.currentBatch}/${progressData.batchProgress.totalBatches}\n`;
+        }
+        if (progressData.runningSteps && progressData.runningSteps.length > 0) {
+          statusText += `- **Running Steps:** ${progressData.runningSteps.join(', ')}\n`;
+        }
+      }
+    } catch (e) {
+      // Progress file may not exist yet
+    }
+
+    return { content: [{ type: "text", text: statusText }] };
+  }
+
+  // Read progress file directly
+  try {
+    if (!existsSync(progressFilePath)) {
+      return {
+        content: [{
+          type: "text",
+          text: `# No Workflow Progress Found\n\nNo workflow progress file found at: \`${progressFilePath}\`\n\nEither no workflow has been run, or the progress file has been cleaned up.`,
+        }],
+      };
+    }
+
+    const progressData = JSON.parse(readFileSync(progressFilePath, 'utf-8'));
+    const statusEmoji = progressData.status === 'completed' ? '✅' :
+                        progressData.status === 'failed' ? '❌' :
+                        progressData.status === 'running' ? '🔄' : '⏸️';
+
+    let statusText = `# Workflow Progress\n\n`;
+    statusText += `**Status:** ${statusEmoji} ${progressData.status || 'unknown'}\n`;
+    statusText += `**Workflow:** ${progressData.workflowName || 'N/A'}\n`;
+    statusText += `**Current Step:** ${progressData.currentStep || 'N/A'}\n`;
+    statusText += `**Progress:** ${progressData.completedSteps || 0}/${progressData.totalSteps || 0} steps\n`;
+
+    if (progressData.batchProgress) {
+      statusText += `**Batch Progress:** ${progressData.batchProgress.currentBatch}/${progressData.batchProgress.totalBatches}\n`;
+      if (progressData.batchProgress.batchId) {
+        statusText += `**Current Batch ID:** ${progressData.batchProgress.batchId}\n`;
+      }
+    }
+
+    if (progressData.startTime) {
+      statusText += `**Started:** ${progressData.startTime}\n`;
+    }
+    if (progressData.lastUpdate) {
+      statusText += `**Last Update:** ${progressData.lastUpdate}\n`;
+    }
+
+    if (progressData.runningSteps && progressData.runningSteps.length > 0) {
+      statusText += `\n## Currently Running\n`;
+      for (const step of progressData.runningSteps) {
+        statusText += `- 🔄 ${step}\n`;
+      }
+    }
+
+    if (progressData.errors && progressData.errors.length > 0) {
+      statusText += `\n## Errors\n`;
+      for (const error of progressData.errors) {
+        statusText += `- ❌ ${error}\n`;
+      }
+    }
+
+    return { content: [{ type: "text", text: statusText }] };
+
+  } catch (error) {
+    return {
+      content: [{
+        type: "text",
+        text: `# Error Reading Workflow Status\n\n**Error:** ${error instanceof Error ? error.message : String(error)}\n\n**Path:** ${progressFilePath}`,
+      }],
+    };
   }
 }
 

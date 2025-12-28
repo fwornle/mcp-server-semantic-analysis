@@ -845,7 +845,13 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       `${Math.round((execution.endTime.getTime() - execution.startTime.getTime()) / 1000)}s` :
       "ongoing";
 
-    let resultText = `# Workflow Execution\n\n**Workflow:** ${workflow_name}\n**Status:** ${statusEmoji} ${execution.status}\n**Duration:** ${duration}\n**Steps:** ${execution.currentStep}/${execution.totalSteps}\n\n## Parameters\n${JSON.stringify(resolvedParameters || {}, null, 2)}\n\n`;
+    // Build step/batch progress display
+    let progressDisplay = `**Steps:** ${execution.currentStep}/${execution.totalSteps}`;
+    if (execution.batchProgress) {
+      progressDisplay += ` | **Batches:** ${execution.batchProgress.currentBatch}/${execution.batchProgress.totalBatches}`;
+    }
+
+    let resultText = `# Workflow Execution\n\n**Workflow:** ${workflow_name}\n**Status:** ${statusEmoji} ${execution.status}\n**Duration:** ${duration}\n${progressDisplay}\n\n## Parameters\n${JSON.stringify(resolvedParameters || {}, null, 2)}\n\n`;
     
     // Add step results
     if (Object.keys(execution.results).length > 0) {

@@ -1484,7 +1484,7 @@ Respond with JSON only:
     const semanticFilterResult = await this.filterEntitiesBySemanticValue(
       correctedObservations.map(obs => ({
         name: obs.name,
-        entityType: obs.entityType || 'Entity',
+        entityType: obs.entityType || 'Unclassified',  // Will be classified by ontology - no fallbacks
         observations: obs.observations
       }))
     );

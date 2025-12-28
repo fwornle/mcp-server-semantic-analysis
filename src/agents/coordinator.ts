@@ -55,6 +55,11 @@ export interface WorkflowExecution {
   errors: string[];
   currentStep: number;
   totalSteps: number;
+  // Batch workflow progress (separate from step count)
+  batchProgress?: {
+    currentBatch: number;
+    totalBatches: number;
+  };
   // Rollback tracking for error recovery
   rollbackActions?: RollbackAction[];
   rolledBack?: boolean;
@@ -1842,8 +1847,8 @@ export class CoordinatorAgent {
                 batchEntities = obsResult.observations.map((obs: any) => ({
                   id: `${currentBatchId}-${(obs.name || 'unnamed').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}`,
                   name: obs.name || 'Unnamed Entity',
-                  entityType: obs.entityType || 'Unknown',  // Use entityType for persistence compatibility
-                  type: obs.entityType || 'Unknown',  // Keep type for other consumers
+                  entityType: obs.entityType || 'Unclassified',  // Will be classified by ontology step - NO FALLBACKS
+                  type: obs.entityType || 'Unclassified',  // Will be classified by ontology step - NO FALLBACKS
                   observations: Array.isArray(obs.observations)
                     ? obs.observations.map((o: any) => typeof o === 'string' ? o : (o?.content || String(o)))
                     : [],
@@ -1923,7 +1928,7 @@ export class CoordinatorAgent {
               // Transform batch entities to observation format for classification
               const observationsForClassification = batchEntities.map(entity => ({
                 name: entity.name,
-                entityType: entity.type || 'Unknown',
+                entityType: entity.type || 'Unclassified',  // Must be classified - no fallbacks
                 observations: entity.observations || [],
                 significance: entity.significance || 5,
                 tags: [] as string[]
@@ -2141,7 +2146,11 @@ export class CoordinatorAgent {
           });
 
           // Update progress file after each batch for dashboard visibility
-          execution.currentStep = batchCount;
+          // Note: currentStep tracks DAG steps, batchProgress tracks batch iterations separately
+          execution.batchProgress = {
+            currentBatch: batchCount,
+            totalBatches: currentBatchProgress.totalBatches
+          };
           this.writeProgressFile(execution, workflow, `batch_${batchCount}`, [], currentBatchProgress);
 
         } catch (error) {
@@ -2264,13 +2273,21 @@ export class CoordinatorAgent {
       this.writeProgressFile(execution, workflow);
 
       // Finalize and save workflow report for dashboard history
+      // Calculate actual step count: batch steps executed + final steps
+      const actualStepsCompleted = batchScheduler.getProgress().completedBatches + finalSteps.length;
+      const actualTotalSteps = workflow.steps.length;
+
       const reportPath = this.reportAgent.finalizeReport('completed', {
-        stepsCompleted: progress.completedBatches,
-        totalSteps: progress.totalBatches,
+        stepsCompleted: actualStepsCompleted,
+        totalSteps: actualTotalSteps,
         entitiesCreated: progress.accumulatedStats?.entitiesCreated || 0,
         entitiesUpdated: progress.accumulatedStats?.entitiesUpdated || 0,
         filesCreated: [],
-        contentChanges: (progress.accumulatedStats?.entitiesCreated || 0) > 0
+        contentChanges: (progress.accumulatedStats?.entitiesCreated || 0) > 0,
+        batchProgress: {
+          completedBatches: progress.completedBatches,
+          totalBatches: progress.totalBatches
+        }
       });
       log(`Batch workflow report saved: ${reportPath}`, 'info');
 

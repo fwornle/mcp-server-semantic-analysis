@@ -137,10 +137,13 @@ export class GraphDatabaseAdapter {
     }
 
     try {
-      // Ensure entityType has a default value
+      // Validate entityType is present and classified - NO FALLBACKS
+      if (!entity.entityType || entity.entityType === 'Unclassified') {
+        throw new Error(`Cannot store entity "${entity.name}": entityType is missing or Unclassified. Entity must be classified before persistence. NO FALLBACKS.`);
+      }
       const entityToStore = {
         ...entity,
-        entityType: entity.entityType || 'Unknown'
+        entityType: entity.entityType  // Must be a valid ontology class
       };
 
       let nodeId: string;

@@ -292,17 +292,14 @@ export class PersistenceAgent {
     method: string;
     ontologyMetadata?: any;
   }> {
-    // If ontology is disabled or not initialized, use default type
+    // If ontology is disabled or not initialized, throw error - classification is mandatory
     if (!this.config.enableOntology || !this.ontologySystem) {
-      log('Ontology classification unavailable, using default type', 'debug', {
+      const reason = !this.config.enableOntology ? 'disabled' : 'not initialized';
+      log('Ontology classification unavailable - FAILED (no fallbacks allowed)', 'error', {
         entityName,
-        reason: !this.config.enableOntology ? 'disabled' : 'not initialized'
+        reason
       });
-      return {
-        entityType: 'TransferablePattern',
-        confidence: 0,
-        method: 'fallback'
-      };
+      throw new Error(`Ontology classification required but ${reason} for entity: ${entityName}. NO FALLBACKS - enable ontology or fix initialization.`);
     }
 
     try {
@@ -341,29 +338,25 @@ export class PersistenceAgent {
           }
         };
       } else {
-        log('Classification confidence below threshold, using fallback', 'warning', {
+        // Classification confidence too low - throw error, NO FALLBACKS
+        const confidence = classification?.confidence || 0;
+        log('Classification confidence below threshold - FAILED (no fallbacks allowed)', 'error', {
           entityName,
-          confidence: classification?.confidence || 0,
+          confidence,
           threshold: this.config.ontologyMinConfidence
         });
-
-        return {
-          entityType: 'TransferablePattern',
-          confidence: classification?.confidence || 0,
-          method: 'fallback_low_confidence'
-        };
+        throw new Error(`Ontology classification failed for entity "${entityName}": confidence ${confidence.toFixed(2)} below threshold ${this.config.ontologyMinConfidence}. NO FALLBACKS - improve entity content or adjust ontology.`);
       }
     } catch (error) {
-      log('Entity classification failed, using fallback', 'error', {
+      // Re-throw our own errors, wrap others
+      if (error instanceof Error && error.message.includes('NO FALLBACKS')) {
+        throw error;
+      }
+      log('Entity classification failed - FAILED (no fallbacks allowed)', 'error', {
         entityName,
         error: error instanceof Error ? error.message : String(error)
       });
-
-      return {
-        entityType: 'TransferablePattern',
-        confidence: 0,
-        method: 'fallback_error'
-      };
+      throw new Error(`Ontology classification error for entity "${entityName}": ${error instanceof Error ? error.message : String(error)}. NO FALLBACKS.`);
     }
   }
 
@@ -384,9 +377,10 @@ export class PersistenceAgent {
       return { valid: true, errors: [], warnings: [] };
     }
 
-    // Skip validation for TransferablePattern (generic fallback type)
-    if (entityType === 'TransferablePattern') {
-      return { valid: true, errors: [], warnings: [] };
+    // Skip validation for Unclassified entities (they should be classified first)
+    // Note: This is a transitional state - entities should be classified before persistence
+    if (entityType === 'Unclassified') {
+      return { valid: false, errors: ['Entity must be classified before persistence - Unclassified entities not allowed'], warnings: [] };
     }
 
     try {
@@ -660,11 +654,21 @@ export class PersistenceAgent {
             continue;
           }
           
+          // Validate entity has been classified (no fallbacks)
+          if (!observation.entityType || observation.entityType === 'Unclassified') {
+            log(`VALIDATION FAILED: Entity ${observation.name} has not been classified by ontology`, 'error', {
+              entityName: observation.name,
+              entityType: observation.entityType,
+              preventingUnclassifiedEntity: true
+            });
+            continue;  // Skip unclassified entities
+          }
+
           // Create new entity only after file validation passes
           const newEntity: SharedMemoryEntity = {
             id: this.generateEntityId(observation.name),
             name: observation.name,
-            entityType: observation.entityType || 'TransferablePattern',
+            entityType: observation.entityType,  // Must be classified - no fallbacks
             significance: observation.significance || 5,
             observations: this.formatObservations(observation.observations),
             relationships: observation.relationships || [],
@@ -960,11 +964,7 @@ export class PersistenceAgent {
       };
 
       let entityType: string;
-      let classification: { entityType: string; confidence: number; method: string; ontologyMetadata?: any } = {
-        entityType: 'TransferablePattern',
-        confidence: 0,
-        method: 'fallback'
-      };
+      let classification: { entityType: string; confidence: number; method: string; ontologyMetadata?: any };
 
       // Check if this is a protected entity
       if (PROTECTED_ENTITY_TYPES[entity.name]) {
@@ -981,11 +981,14 @@ export class PersistenceAgent {
           originalType: entity.entityType
         });
       } else {
-        // Classify the entity using the ontology system
+        // Classify the entity using the ontology system - throws on failure (NO FALLBACKS)
         classification = await this.classifyEntity(entity.name, entityContent);
 
-        // Use classified entity type (or fallback to original if not classified)
-        entityType = classification.entityType || entity.entityType || 'TransferablePattern';
+        // Use classified entity type - classification is mandatory, no fallbacks
+        if (!classification.entityType || classification.entityType === 'Unclassified') {
+          throw new Error(`Entity "${entity.name}" classification failed: no valid entityType returned. NO FALLBACKS.`);
+        }
+        entityType = classification.entityType;
       }
 
       // CONTENT VALIDATION: Check if existing entity content is accurate
@@ -1450,13 +1453,19 @@ export class PersistenceAgent {
         // Extract actionable insights from the content in VkbCli format (simple strings)
         const detailedObservations = this.extractSimpleObservations(insight, cleanName, now);
 
-        // Look up ontology classification for this entity
+        // Look up ontology classification for this entity - NO FALLBACKS
         const ontologyMeta = ontologyMap.get(cleanName);
-
-        const entity: SharedMemoryEntity = {
-          id: `analysis_${Date.now()}`,
-          name: cleanName,
-          entityType: ontologyMeta?.ontologyClass || 'TransferablePattern',
+        if (!ontologyMeta?.ontologyClass) {
+          log(`SKIPPING entity ${cleanName}: No ontology classification found. NO FALLBACKS.`, 'error', {
+            entityName: cleanName
+          });
+          // Don't create entity without classification - fall through to additional insights scan
+        } else {
+          // Only create entity if properly classified
+          const entity: SharedMemoryEntity = {
+            id: `analysis_${Date.now()}`,
+            name: cleanName,
+            entityType: ontologyMeta.ontologyClass,  // Must be classified - no fallbacks
           significance: insight.metadata?.significance || 7,
           observations: detailedObservations,
           relationships: [],
@@ -1501,6 +1510,7 @@ export class PersistenceAgent {
             method: 'createEntitiesFromAnalysisResults'
           });
         }
+        }  // Close the else block for ontology classification check
       }
 
       // Process additional insight files that may have been generated
@@ -1533,12 +1543,22 @@ export class PersistenceAgent {
             metadata: { significance: 7 }
           };
           
+          // Additional entities from insight files need ontology classification too
+          const additionalOntologyMeta = ontologyMap.get(patternName);
+          if (!additionalOntologyMeta?.ontologyClass) {
+            log(`SKIPPING additional entity ${patternName}: No ontology classification found. NO FALLBACKS.`, 'warning', {
+              entityName: patternName,
+              file: insightFile.fullPath
+            });
+            continue;  // Skip entities without classification
+          }
+
           const simpleObservations = this.extractSimpleObservations(mockInsight, patternName, now);
-          
+
           const additionalEntity: SharedMemoryEntity = {
             id: `analysis_${Date.now()}_${patternName}`,
             name: patternName,
-            entityType: 'TransferablePattern',
+            entityType: additionalOntologyMeta.ontologyClass,  // Must be classified - no fallbacks
             significance: 7,
             observations: simpleObservations,
             relationships: [],
@@ -1547,16 +1567,27 @@ export class PersistenceAgent {
               last_updated: now,
               source: 'semantic-analysis-workflow-additional',
               context: 'comprehensive-analysis-semantic',
-              tags: ['pattern', 'additional']
+              tags: ['pattern', 'additional'],
+              // Add full ontology classification metadata
+              ontology: additionalOntologyMeta ? {
+                ontologyClass: additionalOntologyMeta.ontologyClass,
+                ontologyVersion: additionalOntologyMeta.ontologyVersion,
+                classificationConfidence: additionalOntologyMeta.classificationConfidence,
+                classificationMethod: additionalOntologyMeta.classificationMethod,
+                ontologySource: additionalOntologyMeta.ontologySource,
+                properties: additionalOntologyMeta.properties,
+                classifiedAt: additionalOntologyMeta.classifiedAt
+              } : undefined
             },
             quick_reference: this.generateQuickReferenceFromContent(insightContent, patternName)
           };
-          
+
           entities.push(additionalEntity);
           sharedMemory.entities.push(additionalEntity);
           log(`Created additional entity from insight file: ${patternName}`, 'info', {
             file: insightFile.fullPath,
-            method: 'createEntitiesFromAnalysisResults-additional'
+            method: 'createEntitiesFromAnalysisResults-additional',
+            entityType: additionalOntologyMeta.ontologyClass
           });
         }
       }
@@ -1727,15 +1758,17 @@ export class PersistenceAgent {
     try {
       const sharedMemory = await this.loadSharedMemory();
 
-      // Check for missing required fields
+      // Check for missing required fields - NO FALLBACKS for entityType
+      const invalidEntities: string[] = [];
       sharedMemory.entities.forEach((entity, index) => {
         if (!entity.name) {
           issues.push(`Entity at index ${index} missing name`);
+          invalidEntities.push(entity.name || `index_${index}`);
         }
-        if (!entity.entityType) {
-          issues.push(`Entity ${entity.name || index} missing entityType`);
-          entity.entityType = 'Unknown';
-          repaired = true;
+        if (!entity.entityType || entity.entityType === 'Unclassified' || entity.entityType === 'Unknown') {
+          // CRITICAL: Do NOT repair entityType with fallback - entities must be classified
+          issues.push(`Entity ${entity.name || index} missing/invalid entityType (${entity.entityType || 'none'}) - WILL BE REMOVED`);
+          invalidEntities.push(entity.name || `index_${index}`);
         }
         if (!entity.metadata) {
           issues.push(`Entity ${entity.name || index} missing metadata`);
@@ -1747,6 +1780,18 @@ export class PersistenceAgent {
           repaired = true;
         }
       });
+
+      // Remove invalid entities (those without proper classification)
+      if (invalidEntities.length > 0) {
+        const originalCount = sharedMemory.entities.length;
+        sharedMemory.entities = sharedMemory.entities.filter(
+          e => !invalidEntities.includes(e.name) && !invalidEntities.includes(`index_${sharedMemory.entities.indexOf(e)}`)
+        );
+        log(`Removed ${originalCount - sharedMemory.entities.length} entities without proper ontology classification`, 'warning', {
+          removedEntities: invalidEntities
+        });
+        repaired = true;
+      }
 
       // Check for orphaned relations
       const entityNames = new Set(sharedMemory.entities.map(e => e.name));

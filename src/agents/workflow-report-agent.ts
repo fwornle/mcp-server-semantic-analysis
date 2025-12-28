@@ -42,6 +42,10 @@ export interface WorkflowReport {
     entitiesUpdated: number;
     filesCreated: string[];
     contentChanges: boolean;
+    batchProgress?: {
+      completedBatches: number;
+      totalBatches: number;
+    };
   };
   recommendations: string[];
 }
@@ -236,6 +240,9 @@ export class WorkflowReportAgent {
     lines.push(`| Metric | Value |`);
     lines.push(`|--------|-------|`);
     lines.push(`| Steps Completed | ${report.summary.stepsCompleted}/${report.summary.totalSteps} |`);
+    if (report.summary.batchProgress) {
+      lines.push(`| Batches Completed | ${report.summary.batchProgress.completedBatches}/${report.summary.batchProgress.totalBatches} |`);
+    }
     lines.push(`| Entities Created | ${report.summary.entitiesCreated} |`);
     lines.push(`| Entities Updated | ${report.summary.entitiesUpdated} |`);
     lines.push(`| Files Created | ${report.summary.filesCreated.length} |`);

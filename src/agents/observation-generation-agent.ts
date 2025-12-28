@@ -313,7 +313,7 @@ export class ObservationGenerationAgent {
 
       return {
         name: entityName,
-        entityType: 'TransferablePattern',
+        entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: this.calculateSignificance(decision.impact, decision.files.length),
         observations,
         relationships: [
@@ -402,7 +402,7 @@ export class ObservationGenerationAgent {
 
       return {
         name: entityName,
-        entityType: 'CodeEvolutionPattern',
+        entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: Math.min(Math.ceil(pattern.occurrences / 2), 10),
         observations,
         tags: [pattern.pattern.replace(/\s+/g, ''), pattern.trend, 'evolution', 'git-analysis'],
@@ -499,7 +499,7 @@ export class ObservationGenerationAgent {
 
       return {
         name: entityName,
-        entityType: 'TransferablePattern',
+        entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: this.calculateSignificanceFromDifficulty(pair.problem.difficulty),
         observations,
         relationships: [
@@ -607,7 +607,7 @@ export class ObservationGenerationAgent {
 
       return {
         name: entityName,
-        entityType: 'DevelopmentContextPattern',
+        entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: Math.min(Math.ceil(totalContexts / 2), 8),
         observations,
         tags: [type.replace(/\s+/g, ''), 'context', 'workflow', 'vibe-analysis'],
@@ -751,7 +751,7 @@ export class ObservationGenerationAgent {
       
       return {
         name: cleanName,
-        entityType: 'TransferablePattern',
+        entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: insightDoc.metadata?.significance || 8,
         observations,
         tags: insightDoc.metadata?.tags || ['pattern', 'insight', 'analysis'],
@@ -819,7 +819,7 @@ export class ObservationGenerationAgent {
       
       return {
         name: patternName,
-        entityType: pattern.category || 'Pattern',
+        entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: pattern.significance || 5,
         observations,
         tags: [pattern.category, 'pattern', ...pattern.relatedComponents || []],
@@ -932,7 +932,7 @@ Provide a JSON response with:
 
       return {
         name: entityName,
-        entityType: 'SemanticInsight',
+        entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: 7, // Default high significance for semantic insights
         observations,
         tags: ['semantic', 'insight', 'analysis', 'cross-source'],
@@ -1027,7 +1027,7 @@ Provide a JSON response with:
 
       return {
         name: entityName,
-        entityType: 'CrossAnalysisPattern',
+        entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: 8,
         observations,
         tags: ['cross-analysis', 'correlation', 'git-vibe', 'pattern'],

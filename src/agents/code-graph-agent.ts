@@ -1101,7 +1101,7 @@ export class CodeGraphAgent {
 
         knowledgeEntities.push({
           name: cls.name,
-          entityType: 'CodeClass',
+          entityType: 'Unclassified',  // Will be classified by ontology - NO HARDCODED TYPES
           observations,
           significance: Math.min(10, 5 + Math.floor(methods.length / 2) + (enrichedObs ? 1 : 0)), // Boost significance if enriched
         });
@@ -1128,7 +1128,7 @@ export class CodeGraphAgent {
 
         knowledgeEntities.push({
           name: fn.name,
-          entityType: 'CodeFunction',
+          entityType: 'Unclassified',  // Will be classified by ontology - NO HARDCODED TYPES
           observations,
           significance: Math.min(8, 3 + Math.floor((fn.complexity || 0) / 3) + (enrichedObs ? 1 : 0)), // Boost significance if enriched
         });

@@ -128,7 +128,13 @@ export class CoordinatorAgent {
       const activeRunningSteps = new Set(runningSteps || []);
       if (currentStep) activeRunningSteps.add(currentStep);
 
+      // Get valid workflow step names to filter out non-step entries like 'accumulatedKG'
+      const validStepNames = new Set(workflow.steps.map(s => s.name));
+
       for (const [stepName, result] of Object.entries(execution.results)) {
+        // Skip non-workflow-step entries (e.g., 'accumulatedKG', internal state)
+        if (!validStepNames.has(stepName)) continue;
+
         const timing = result?._timing as { duration?: number } | undefined;
         const hasError = result?.error && Object.keys(result).filter(k => !k.startsWith('_')).length === 1;
 
@@ -2200,24 +2206,14 @@ export class CoordinatorAgent {
         }
       }
 
-      // Store accumulated KG for finalization steps
+      // Store accumulated KG for finalization steps (internal state, not a workflow step)
       execution.results['accumulatedKG'] = accumulatedKG;
 
-      // Record accumulatedKG step for workflow report
-      const accumulatedEndTime = new Date();
-      this.reportAgent.recordStep({
-        stepName: 'accumulatedKG',
-        agent: 'kg_operators',
-        action: 'accumulate',
-        startTime: execution.startTime,
-        endTime: accumulatedEndTime,
-        duration: accumulatedEndTime.getTime() - execution.startTime.getTime(),
-        status: 'success',
-        inputs: { batchCount: batchScheduler.getProgress().completedBatches },
-        outputs: { entitiesCount: accumulatedKG.entities.length, relationsCount: accumulatedKG.relations.length },
-        decisions: [],
-        warnings: [],
-        errors: []
+      // Log accumulated KG stats (but don't record as a step - it's not in the workflow definition)
+      log('Batch workflow: Accumulated KG ready for finalization', 'info', {
+        entitiesCount: accumulatedKG.entities.length,
+        relationsCount: accumulatedKG.relations.length,
+        batchCount: batchScheduler.getProgress().completedBatches
       });
 
       // PHASE 2: Run finalization steps
@@ -2310,8 +2306,9 @@ export class CoordinatorAgent {
       this.writeProgressFile(execution, workflow);
 
       // Finalize and save workflow report for dashboard history
-      // Calculate actual step count: batch steps executed + final steps
-      const actualStepsCompleted = batchScheduler.getProgress().completedBatches + finalSteps.length;
+      // For batch workflows: stepsCompleted = all workflow steps (they all run per batch)
+      // Batch iteration count is tracked separately in batchProgress
+      const actualStepsCompleted = workflow.steps.length; // All steps executed when workflow completes
       const actualTotalSteps = workflow.steps.length;
 
       const reportPath = this.reportAgent.finalizeReport('completed', {

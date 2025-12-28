@@ -10,6 +10,12 @@ setupLogging();
 // Track server state for graceful shutdown
 let isShuttingDown = false;
 let server: ReturnType<typeof createServer> | null = null;
+let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
+const serverStartTime = Date.now();
+
+// Keepalive interval in ms - sends periodic messages to prevent connection timeout
+// Claude Code may close idle connections; this keeps the connection active
+const KEEPALIVE_INTERVAL_MS = 30000; // 30 seconds
 
 // Graceful shutdown handler
 async function gracefulShutdown(reason: string) {
@@ -19,6 +25,12 @@ async function gracefulShutdown(reason: string) {
   }
   isShuttingDown = true;
   log(`Initiating graceful shutdown: ${reason}`, 'info');
+
+  // Clear keepalive interval
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
 
   // Give pending operations a moment to complete
   await new Promise(resolve => setTimeout(resolve, 100));
@@ -130,6 +142,24 @@ async function runServer() {
     });
 
     log("Server connected and ready", "info");
+
+    // Start keepalive interval to prevent connection timeout during idle periods
+    // This sends periodic logging messages to keep the stdio connection active
+    keepAliveInterval = setInterval(() => {
+      if (server && !isShuttingDown) {
+        try {
+          server.sendLoggingMessage({
+            level: "debug",
+            data: `💗 keepalive (uptime: ${Math.floor((Date.now() - serverStartTime) / 1000)}s)`,
+          });
+        } catch (error) {
+          // If we can't send, the connection is probably dead
+          log(`Keepalive failed: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+        }
+      }
+    }, KEEPALIVE_INTERVAL_MS);
+
+    log(`Keepalive started (interval: ${KEEPALIVE_INTERVAL_MS}ms)`, "info");
 
     // Keep the process alive - the event loop will handle incoming messages
     // We rely on stdin/stdout events to detect disconnection

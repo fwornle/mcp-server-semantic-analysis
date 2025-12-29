@@ -2290,7 +2290,7 @@ async function getOntologyConfigManager(): Promise<OntologyConfigManager> {
         useUpper: true,
         useLower: true,
         minConfidence: 0.7,
-        enableLLM: false,
+        enableLLM: true,  // Enable LLM for proper semantic classification
         enableHeuristics: true,
         llmBudgetPerClassification: 500,
       },

@@ -261,7 +261,7 @@ export class PersistenceAgent {
         lowerOntologyPath: this.config.ontologyLowerPath,
         validation: { mode: 'lenient' },
         classification: {
-          enableLLM: false,  // Start with heuristics only for performance
+          enableLLM: true,  // Enable LLM for proper semantic classification
           enableHeuristics: true,
           minConfidence: this.config.ontologyMinConfidence
         },

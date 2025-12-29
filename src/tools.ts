@@ -18,8 +18,9 @@ import {
 import { OntologyManager } from "./ontology/OntologyManager.js";
 import { OntologyValidator } from "./ontology/OntologyValidator.js";
 import fs from "fs/promises";
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from "fs";
 import path from "path";
+import { spawn } from "child_process";
 
 // Server reference for sending progress messages
 let serverInstance: Server | null = null;
@@ -34,6 +35,7 @@ interface RunningWorkflow {
   status: 'running' | 'completed' | 'failed';
   error?: string;
   result?: any;
+  pid?: number;  // Process ID of detached workflow runner
 }
 const runningWorkflows = new Map<string, RunningWorkflow>();
 
@@ -899,11 +901,10 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     parameters: resolvedParameters
   });
 
-  // If async_mode, start in background and return immediately
+  // If async_mode, spawn a SEPARATE PROCESS to run the workflow
+  // This ensures workflow survives MCP disconnections
   if (async_mode) {
-    const coordinator = new CoordinatorAgent(repositoryPath);
-
-    // Store workflow info
+    // Store workflow info locally (for status queries before child writes progress)
     const workflowInfo: RunningWorkflow = {
       id: workflowId,
       workflowName: workflow_name,
@@ -914,62 +915,79 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     };
     runningWorkflows.set(workflowId, workflowInfo);
 
-    // Start workflow in background (don't await)
-    const executeAsync = async () => {
-      // Start heartbeat interval to keep MCP connection alive during long workflows
-      // This sends periodic progress updates every 30 seconds
-      const heartbeatInterval = setInterval(() => {
-        const elapsed = Math.round((Date.now() - workflowInfo.startTime.getTime()) / 1000);
-        sendProgressUpdate(workflowId, `💓 Workflow running... (${elapsed}s elapsed)`);
-      }, 30000); // 30 second heartbeat
+    // Create config file for the workflow runner
+    const configDir = path.join(repositoryPath, '.data', 'workflow-configs');
+    mkdirSync(configDir, { recursive: true });
 
-      try {
-        sendProgressUpdate(workflowId, "Starting workflow execution...");
+    const configFile = path.join(configDir, `${workflowId}.json`);
+    const progressFile = path.join(repositoryPath, '.data', 'workflow-runner-progress.json');
+    const pidFile = path.join(configDir, `${workflowId}.pid`);
 
-        const workflows = coordinator.getWorkflows();
-        const workflow = workflows.find(w => w.name === resolvedWorkflowName);
-        const isBatchWorkflow = workflow?.type === 'iterative' || resolvedWorkflowName === 'batch-analysis';
-
-        const execution = isBatchWorkflow
-          ? await coordinator.executeBatchWorkflow(resolvedWorkflowName, resolvedParameters)
-          : await coordinator.executeWorkflow(resolvedWorkflowName, resolvedParameters);
-
-        // Update workflow status
-        workflowInfo.status = execution.status === 'completed' ? 'completed' : 'failed';
-        workflowInfo.result = execution;
-
-        sendProgressUpdate(workflowId, `Workflow ${workflowInfo.status}`, {
-          duration: `${Math.round((Date.now() - workflowInfo.startTime.getTime()) / 1000)}s`,
-          steps: `${execution.currentStep}/${execution.totalSteps}`
-        });
-
-        log(`Async workflow completed: ${workflowId}`, "info", { status: workflowInfo.status });
-      } catch (error) {
-        workflowInfo.status = 'failed';
-        workflowInfo.error = error instanceof Error ? error.message : String(error);
-        sendProgressUpdate(workflowId, `Workflow FAILED: ${workflowInfo.error}`);
-        log(`Async workflow failed: ${workflowId}`, "error", error);
-      } finally {
-        // Always clear heartbeat interval
-        clearInterval(heartbeatInterval);
-
-        try {
-          await coordinator.shutdown();
-        } catch (e) {
-          log("Error during async coordinator shutdown", "error", e);
-        }
-      }
+    const config = {
+      workflowId,
+      workflowName: workflow_name,
+      repositoryPath,
+      parameters: resolvedParameters,
+      progressFile,
+      pidFile,
     };
 
-    // Fire and forget - don't await
-    executeAsync().catch(e => log(`Async workflow error: ${e}`, "error"));
+    writeFileSync(configFile, JSON.stringify(config, null, 2));
+
+    // Spawn the workflow runner as a detached process
+    const runnerScript = path.join(__dirname, 'workflow-runner.js');
+
+    log(`Spawning workflow runner: ${runnerScript}`, 'info', {
+      workflowId,
+      configFile,
+      repositoryPath
+    });
+
+    try {
+      const child = spawn('node', [runnerScript, configFile], {
+        cwd: repositoryPath,
+        detached: true,  // Run independently of parent
+        stdio: ['ignore', 'ignore', 'ignore'],  // Don't inherit stdio
+        env: {
+          ...process.env,
+          WORKFLOW_ID: workflowId,
+          NODE_ENV: process.env.NODE_ENV || 'production',
+        }
+      });
+
+      // Unref so parent can exit without waiting for child
+      child.unref();
+
+      log(`Workflow runner spawned with PID: ${child.pid}`, 'info', {
+        workflowId,
+        pid: child.pid
+      });
+
+      // Update workflow info with PID
+      workflowInfo.pid = child.pid;
+
+    } catch (spawnError) {
+      // If spawn fails, clean up and return error
+      try { unlinkSync(configFile); } catch (e) { /* ignore */ }
+      workflowInfo.status = 'failed';
+      workflowInfo.error = spawnError instanceof Error ? spawnError.message : String(spawnError);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `# Workflow Failed to Start\n\n**Error:** ${workflowInfo.error}\n\nFailed to spawn workflow runner process.`,
+          },
+        ],
+      };
+    }
 
     // Return immediately with workflow ID
     return {
       content: [
         {
           type: "text",
-          text: `# Workflow Started (Async Mode)\n\n**Workflow ID:** \`${workflowId}\`\n**Workflow:** ${workflow_name}\n**Repository:** ${repositoryPath}\n**Started:** ${new Date().toISOString()}\n\n## Next Steps\n\nThe workflow is now running in the background. To check progress:\n\n\`\`\`\nUse get_workflow_status with workflow_id: "${workflowId}"\n\`\`\`\n\nOr check the progress file at: \`.data/workflow-progress.json\`\n\n**Note:** Progress updates will also be sent via MCP logging messages.`,
+          text: `# Workflow Started (Async Mode)\n\n**Workflow ID:** \`${workflowId}\`\n**Workflow:** ${workflow_name}\n**Repository:** ${repositoryPath}\n**Started:** ${new Date().toISOString()}\n\n## Next Steps\n\nThe workflow is now running in a **separate process** (survives disconnections). To check progress:\n\n\`\`\`\nUse get_workflow_status with workflow_id: "${workflowId}"\n\`\`\`\n\nOr check the progress file at: \`.data/workflow-progress.json\`\n\n**Note:** Progress updates will also be sent via MCP logging messages.`,
         },
       ],
     };
@@ -1091,13 +1109,80 @@ async function handleGetWorkflowStatus(args: any): Promise<any> {
   }
 
   const progressFilePath = path.join(repoPath, '.data', 'workflow-progress.json');
+  const runnerProgressFilePath = path.join(repoPath, '.data', 'workflow-runner-progress.json');
 
-  // Check running workflows first
+  // Check for detached workflow runner progress first (process-isolated workflows)
+  try {
+    if (existsSync(runnerProgressFilePath)) {
+      const runnerProgress = JSON.parse(readFileSync(runnerProgressFilePath, 'utf-8'));
+
+      // Check if this matches the requested workflow_id (or no specific ID requested)
+      if (!workflow_id || runnerProgress.workflowId === workflow_id) {
+        const statusEmoji = runnerProgress.status === 'completed' ? '✅' :
+                            runnerProgress.status === 'failed' ? '❌' :
+                            runnerProgress.status === 'running' ? '🔄' : '⏸️';
+
+        let statusText = `# Workflow Status (Process-Isolated)\n\n`;
+        statusText += `**Workflow ID:** \`${runnerProgress.workflowId}\`\n`;
+        statusText += `**Status:** ${statusEmoji} ${runnerProgress.status || 'unknown'}\n`;
+        statusText += `**PID:** ${runnerProgress.pid || 'N/A'}\n`;
+        statusText += `**Elapsed:** ${runnerProgress.elapsedSeconds || 0}s\n`;
+        statusText += `**Started:** ${runnerProgress.startTime || 'N/A'}\n`;
+        statusText += `**Last Update:** ${runnerProgress.lastUpdate || 'N/A'}\n`;
+
+        if (runnerProgress.message) {
+          statusText += `**Message:** ${runnerProgress.message}\n`;
+        }
+
+        if (runnerProgress.currentStep) {
+          statusText += `\n## Progress Details\n`;
+          statusText += `- **Current Step:** ${runnerProgress.currentStep}\n`;
+          if (runnerProgress.stepsCompleted !== undefined && runnerProgress.totalSteps !== undefined) {
+            statusText += `- **Steps:** ${runnerProgress.stepsCompleted}/${runnerProgress.totalSteps}\n`;
+          }
+          if (runnerProgress.batchProgress) {
+            statusText += `- **Batch:** ${runnerProgress.batchProgress.currentBatch}/${runnerProgress.batchProgress.totalBatches}\n`;
+          }
+        }
+
+        if (runnerProgress.error) {
+          statusText += `\n## Error\n${runnerProgress.error}\n`;
+        }
+
+        // Also merge with coordinator progress if available
+        if (existsSync(progressFilePath)) {
+          try {
+            const coordProgress = JSON.parse(readFileSync(progressFilePath, 'utf-8'));
+            if (coordProgress.currentStep) {
+              statusText += `\n## Coordinator Progress\n`;
+              statusText += `- **Current Step:** ${coordProgress.currentStep}\n`;
+              statusText += `- **Steps:** ${coordProgress.stepsCompleted || 0}/${coordProgress.totalSteps || 0}\n`;
+              if (coordProgress.batchProgress) {
+                statusText += `- **Batch:** ${coordProgress.batchProgress.currentBatch}/${coordProgress.batchProgress.totalBatches}\n`;
+              }
+            }
+          } catch (e) {
+            // Ignore parsing errors
+          }
+        }
+
+        return { content: [{ type: "text", text: statusText }] };
+      }
+    }
+  } catch (e) {
+    // Runner progress file may not exist or be malformed
+  }
+
+  // Check running workflows in-memory (legacy/non-detached)
   if (workflow_id && runningWorkflows.has(workflow_id)) {
     const wf = runningWorkflows.get(workflow_id)!;
     const elapsed = Math.round((Date.now() - wf.startTime.getTime()) / 1000);
 
     let statusText = `# Workflow Status\n\n**Workflow ID:** \`${wf.id}\`\n**Workflow:** ${wf.workflowName}\n**Status:** ${wf.status === 'running' ? '🔄 Running' : wf.status === 'completed' ? '✅ Completed' : '❌ Failed'}\n**Elapsed:** ${elapsed}s\n**Started:** ${wf.startTime.toISOString()}\n`;
+
+    if (wf.pid) {
+      statusText += `**PID:** ${wf.pid}\n`;
+    }
 
     if (wf.error) {
       statusText += `\n## Error\n${wf.error}\n`;

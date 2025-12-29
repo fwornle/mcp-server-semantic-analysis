@@ -836,26 +836,31 @@ async function handleCreateUkbEntity(args: any): Promise<any> {
     tags,
   });
 
-  // CORRECTED: Import and use GraphDatabaseAdapter so entities persist to LevelDB
+  // Use GraphDatabaseAdapter for direct LevelDB persistence (NO SharedMemory)
   const { GraphDatabaseAdapter } = await import('./storage/graph-database-adapter.js');
   const graphDB = new GraphDatabaseAdapter();
   await graphDB.initialize();
 
   const knowledgeManager = new PersistenceAgent('.', graphDB);
   await knowledgeManager.initializeOntology();
-  const result = await knowledgeManager.createUkbEntity({
-    name: entity_name,
-    type: entity_type,
-    insights,
-    significance: significance || 5,
-    tags: tags || [],
+
+  // Use persistEntities (which uses storeEntityToGraph directly) instead of legacy createUkbEntity
+  const result = await knowledgeManager.persistEntities({
+    entities: [{
+      name: entity_name,
+      entityType: entity_type,
+      observations: [insights, ...(tags?.map((t: string) => `Tag: ${t}`) || [])],
+      significance: significance || 5,
+    }],
+    team: 'coding',
   });
-  
+
+  const success = result.created > 0;
   return {
     content: [
       {
         type: "text",
-        text: `# UKB Entity Created\n\n**Name:** ${entity_name}\n**Type:** ${entity_type}\n**Significance:** ${significance || 5}/10\n\n## Status\n${result.success ? '✅ Successfully created' : '❌ Failed to create'}\n\n## Details\n${result.details}`,
+        text: `# UKB Entity Created\n\n**Name:** ${entity_name}\n**Type:** ${entity_type}\n**Significance:** ${significance || 5}/10\n\n## Status\n${success ? '✅ Successfully created' : '❌ Failed to create'}\n\n## Details\n${result.details}`,
       },
     ],
   };

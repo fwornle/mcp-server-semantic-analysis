@@ -905,36 +905,35 @@ export class PersistenceAgent {
     }
   }
 
+  /**
+   * @deprecated Legacy method - now returns data from GraphDB instead of file
+   * All entity storage now goes through GraphDB (Graphology → LevelDB → JSON export)
+   */
   private async loadSharedMemory(): Promise<SharedMemoryStructure> {
     try {
-      if (!fs.existsSync(this.sharedMemoryPath)) {
-        log('Creating new shared memory structure', 'info');
-        return this.createEmptySharedMemory();
+      // REFACTORED: Load from GraphDB instead of file
+      const entities: SharedMemoryEntity[] = [];
+      const relations: EntityRelationship[] = [];
+
+      if (this.graphDB) {
+        const graphEntities = await this.graphDB.queryEntities({ team: this.config.ontologyTeam });
+        if (graphEntities) {
+          entities.push(...(graphEntities as SharedMemoryEntity[]));
+        }
       }
 
-      const content = await fs.promises.readFile(this.sharedMemoryPath, 'utf8');
-      const data = JSON.parse(content);
-
-      // Ensure proper structure
-      if (!data.entities) data.entities = [];
-      if (!data.relations) data.relations = [];
-      if (!data.metadata) data.metadata = {};
-
-      // Ensure metadata has required fields
-      if (!data.metadata.last_updated) data.metadata.last_updated = new Date().toISOString();
-      if (!data.metadata.total_entities) data.metadata.total_entities = data.entities.length;
-      if (!data.metadata.total_relations) data.metadata.total_relations = data.relations.length;
-      if (!data.metadata.team) data.metadata.team = this.config.ontologyTeam;
-
-      // Strip volatile checkpoint fields that now belong in CheckpointManager (workflow-checkpoints.json)
-      // These should NOT be persisted in the git-tracked JSON file
-      delete data.metadata.lastVibeAnalysis;
-      delete data.metadata.lastGitAnalysis;
-      delete data.metadata.lastSemanticAnalysis;
-
-      return data as SharedMemoryStructure;
+      return {
+        entities,
+        relations,
+        metadata: {
+          last_updated: new Date().toISOString(),
+          total_entities: entities.length,
+          total_relations: relations.length,
+          team: this.config.ontologyTeam || 'coding'
+        }
+      };
     } catch (error) {
-      log('Failed to load shared memory, creating new structure', 'warning', error);
+      log('Failed to load from GraphDB, returning empty structure', 'warning', error);
       return this.createEmptySharedMemory();
     }
   }
@@ -1169,54 +1168,16 @@ export class PersistenceAgent {
    * FAIL-FAST: GraphDB MUST be available. Health monitor handles restart if unavailable.
    * No fallback to JSON - GraphKnowledgeExporter handles JSON export via events.
    */
-  private async saveSharedMemory(sharedMemory: SharedMemoryStructure): Promise<void> {
-    try {
-      // Update counts
-      sharedMemory.metadata.total_entities = sharedMemory.entities.length;
-      sharedMemory.metadata.total_relations = sharedMemory.relations.length;
-      sharedMemory.metadata.last_updated = new Date().toISOString();
-
-      // FAIL-FAST: GraphDB MUST be available
-      if (!this.graphDB) {
-        throw new Error('GraphDB not available. Health monitor should detect and restart services.');
-      }
-
-      // Store each entity to the graph database
-      log('Storing entities to GraphDB (Graphology+LevelDB)', 'info', {
-        entitiesCount: sharedMemory.entities.length
-      });
-
-      for (const entity of sharedMemory.entities) {
-        await this.storeEntityToGraph(entity);
-      }
-
-      // Store relationships (using adapter's object signature)
-      for (const relation of sharedMemory.relations) {
-        try {
-          await this.graphDB.storeRelationship(relation);
-        } catch (error: unknown) {
-          // Skip if entities don't exist (e.g., orphan relations)
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          if (errorMessage.includes('not found')) {
-            log('Skipping relation to non-existent entity', 'debug', {
-              from: relation.from,
-              to: relation.to,
-              relationType: relation.relationType
-            });
-          } else {
-            throw error;
-          }
-        }
-      }
-
-      log('Shared memory persisted to GraphDB successfully', 'info', {
-        entitiesCount: sharedMemory.entities.length,
-        relationsCount: sharedMemory.relations.length
-      });
-    } catch (error) {
-      log('Failed to save shared memory', 'error', error);
-      throw error;
-    }
+  /**
+   * @deprecated Legacy method - now a no-op
+   * Entity storage now goes through storeEntityToGraph directly.
+   * This method is kept for backward compatibility but does nothing.
+   * Use persistEntities() or storeEntityToGraph() instead.
+   */
+  private async saveSharedMemory(_sharedMemory: SharedMemoryStructure): Promise<void> {
+    // NO-OP: Entity storage now handled by storeEntityToGraph directly
+    // This method is deprecated and kept only for backward compatibility
+    log('saveSharedMemory called (deprecated no-op) - entities are stored via storeEntityToGraph', 'debug');
   }
 
   private createEmptySharedMemory(): SharedMemoryStructure {
@@ -1845,141 +1806,8 @@ export class PersistenceAgent {
     }
   }
 
-  async createUkbEntity(entityData: {
-    name: string;
-    type: string;
-    insights: string;
-    significance?: number;
-    tags?: string[];
-  }): Promise<{ success: boolean; details: string }> {
-    try {
-      log(`Creating UKB entity: ${entityData.name}`, 'info', {
-        type: entityData.type,
-        significance: entityData.significance
-      });
-
-      const currentDate = new Date().toISOString();
-      
-      // Create structured observation from insights
-      const observations: any[] = [
-        {
-          type: 'insight',
-          content: entityData.insights,
-          date: currentDate,
-          metadata: {
-            source: 'manual_creation',
-            significance: entityData.significance || 5
-          }
-        }
-      ];
-
-      // Only add Details link if the insight file actually exists
-      if (this.insightFileExists(entityData.name)) {
-        observations.push({
-          type: 'link',
-          content: `Details: http://localhost:8080/knowledge-management/insights/${entityData.name}.md`,
-          date: currentDate,
-          metadata: {
-            source: 'ukb_tool',
-            fileValidated: true
-          }
-        });
-      }
-
-      // Create entity structure
-      const entity: SharedMemoryEntity = {
-        id: `entity_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        name: entityData.name,
-        entityType: entityData.type,
-        significance: entityData.significance || 5,
-        observations,
-        relationships: [],
-        metadata: {
-          created_at: currentDate,
-          last_updated: currentDate,
-          created_by: 'ukb_tool',
-          version: '1.0'
-        }
-      };
-
-      // Load shared memory
-      const sharedMemory = await this.loadSharedMemory();
-      
-      // Check if entity already exists
-      const existingEntity = sharedMemory.entities.find(e => e.name === entityData.name);
-      if (existingEntity) {
-        return {
-          success: false,
-          details: `Entity '${entityData.name}' already exists`
-        };
-      }
-
-      // CRITICAL: Validate insight file exists before creating UKB entity
-      const ukbInsightPath = path.join(this.repositoryPath, 'knowledge-management', 'insights', `${entity.name}.md`);
-      const ukbFileExists = fs.existsSync(ukbInsightPath);
-      
-      if (!ukbFileExists) {
-        log(`VALIDATION FAILED: UKB insight file missing for ${entity.name} at ${ukbInsightPath}`, 'error', {
-          entityName: entity.name,
-          expectedPath: ukbInsightPath,
-          preventingPhantomNode: true,
-          method: 'createUkbEntity'
-        });
-        return {
-          success: false,
-          details: `Insight file validation failed: ${ukbInsightPath} not found`
-        };
-      }
-      
-      // Add validated entity
-      entity.metadata.validated_file_path = ukbInsightPath;
-      sharedMemory.entities.push(entity);
-      sharedMemory.metadata.total_entities = sharedMemory.entities.length;
-      sharedMemory.metadata.last_updated = currentDate;
-
-      // Save updated shared memory
-      await this.saveSharedMemory(sharedMemory);
-
-      // Create insight document
-      const insightPath = path.join(this.insightsDir, `${entityData.name}.md`);
-      const insightContent = `# ${entityData.name}
-
-**Type:** ${entityData.type}
-**Significance:** ${entityData.significance || 5}/10
-**Created:** ${currentDate}
-**Tags:** ${entityData.tags?.join(', ') || 'None'}
-
-## Insights
-
-${entityData.insights}
-
-## Metadata
-
-- **Entity ID:** ${entity.id}
-- **Created By:** ukb_tool
-- **Version:** 1.0
-`;
-
-      await fs.promises.writeFile(insightPath, insightContent, 'utf8');
-
-      log(`UKB entity created successfully: ${entityData.name}`, 'info', {
-        entityId: entity.id,
-        insightPath
-      });
-
-      return {
-        success: true,
-        details: `Entity '${entityData.name}' created with insight document at ${insightPath}`
-      };
-
-    } catch (error) {
-      log(`Failed to create UKB entity: ${entityData.name}`, 'error', error);
-      return {
-        success: false,
-        details: `Failed to create entity: ${error instanceof Error ? error.message : String(error)}`
-      };
-    }
-  }
+  // REMOVED: createUkbEntity - Legacy method that used SharedMemory
+  // Entity creation now goes through persistEntities → storeEntityToGraph → GraphDB (LevelDB)
 
   // Utility method for external access to shared memory path
   get sharedMemoryFilePath(): string {
@@ -2726,38 +2554,18 @@ ${entityData.insights}
     try {
       log(`Deleting entity: ${entityName}`, 'info', { team });
 
-      // Delete from GraphDB
-      if (this.graphDB) {
-        try {
-          await this.graphDB.deleteEntity(entityName);
-        } catch (error) {
-          log('Entity not found in GraphDB or delete failed', 'warning', error);
-        }
+      // Use GraphDB (single source of truth - no SharedMemory)
+      if (!this.graphDB) {
+        throw new Error('GraphDB not available');
       }
 
-      // Also remove from shared memory file
-      const sharedMemory = await this.loadSharedMemory();
-      const initialCount = sharedMemory.entities.length;
-      sharedMemory.entities = sharedMemory.entities.filter(e => e.name !== entityName);
+      await this.graphDB.deleteEntity(entityName);
+      log(`Entity deleted: ${entityName}`, 'info');
 
-      // Remove relations involving this entity
-      sharedMemory.relations = sharedMemory.relations.filter(
-        r => r.from !== entityName && r.to !== entityName
-      );
-
-      if (sharedMemory.entities.length < initialCount) {
-        await this.saveSharedMemory(sharedMemory);
-        log(`Entity deleted: ${entityName}`, 'info');
-        return {
-          success: true,
-          details: `Entity '${entityName}' deleted from team '${team}'`
-        };
-      } else {
-        return {
-          success: false,
-          details: `Entity '${entityName}' not found in team '${team}'`
-        };
-      }
+      return {
+        success: true,
+        details: `Entity '${entityName}' deleted from team '${team}'`
+      };
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -2809,7 +2617,12 @@ ${entityData.insights}
     try {
       log(`Renaming entity: ${params.oldName} -> ${params.newName}`, 'info', { team: params.team });
 
-      // Step 1: Load existing entity
+      // Use GraphDB (single source of truth - no SharedMemory)
+      if (!this.graphDB) {
+        throw new Error('GraphDB not available');
+      }
+
+      // Step 1: Load existing entity from GraphDB
       const existingEntity = await this.getEntity(params.oldName, params.team);
       if (!existingEntity) {
         result.details = `Entity '${params.oldName}' not found`;
@@ -2834,30 +2647,11 @@ ${entityData.insights}
         result.deletedFiles = fileResults.deleted;
       }
 
-      // Step 4: Update shared memory - change relations and entities
-      const sharedMemory = await this.loadSharedMemory();
+      // Step 4: Delete old entity from GraphDB
+      await this.graphDB.deleteEntity(params.oldName);
 
-      // Update relations - change all references from oldName to newName
-      sharedMemory.relations = sharedMemory.relations.map(r => ({
-        ...r,
-        from: r.from === params.oldName ? params.newName : r.from,
-        to: r.to === params.oldName ? params.newName : r.to
-      }));
-
-      // Remove old entity and add new
-      sharedMemory.entities = sharedMemory.entities.filter(e => e.name !== params.oldName);
-      sharedMemory.entities.push(newEntity);
-      await this.saveSharedMemory(sharedMemory);
-
-      // Step 5: Update GraphDB
-      if (this.graphDB) {
-        try {
-          await this.graphDB.deleteEntity(params.oldName);
-          // Re-add with new name through normal persistence flow
-        } catch (error) {
-          log('GraphDB delete during rename failed', 'warning', error);
-        }
-      }
+      // Step 5: Store new entity to GraphDB
+      await this.storeEntityToGraph(newEntity);
 
       result.success = true;
       result.details = `Successfully renamed '${params.oldName}' to '${params.newName}'`;
@@ -3067,37 +2861,33 @@ ${entityData.insights}
    */
   async getEntity(entityName: string, team: string): Promise<SharedMemoryEntity | null> {
     try {
-      // Try GraphDB first
-      if (this.graphDB) {
-        // Use searchTerm for VKB API compatibility (namePattern not supported by VKB API)
-        const entities = await this.graphDB.queryEntities({
-          searchTerm: entityName,
-          team
-        });
-
-        // DEBUG: Log what we received to diagnose the update vs create issue
-        log(`getEntity: searching for '${entityName}'`, 'info', {
-          resultsCount: entities?.length || 0,
-          resultNames: entities?.slice(0, 5).map((e: any) => e.name || e.entity_name) || []
-        });
-
-        // CRITICAL: Find exact match - searchTerm returns partial matches
-        // VKB API ignores namePattern and returns all entities without proper filtering
-        const exactMatch = entities?.find((e: any) =>
-          (e.name || e.entity_name) === entityName
-        );
-        if (exactMatch) {
-          log(`getEntity: exact match FOUND for '${entityName}'`, 'info');
-          return exactMatch as SharedMemoryEntity;
-        }
-        log(`getEntity: NO exact match for '${entityName}' - will CREATE`, 'info');
+      // Use GraphDB (single source of truth - no SharedMemory fallback)
+      if (!this.graphDB) {
+        throw new Error('GraphDB not available');
       }
 
-      // Fallback to shared memory
-      const sharedMemory = await this.loadSharedMemory();
-      const found = sharedMemory.entities.find(e => e.name === entityName) || null;
-      log(`getEntity: shared memory lookup for '${entityName}': ${found ? 'FOUND' : 'not found'}`, 'info');
-      return found;
+      // Use searchTerm for VKB API compatibility (namePattern not supported by VKB API)
+      const entities = await this.graphDB.queryEntities({
+        searchTerm: entityName,
+        team
+      });
+
+      // DEBUG: Log what we received
+      log(`getEntity: searching for '${entityName}'`, 'info', {
+        resultsCount: entities?.length || 0,
+        resultNames: entities?.slice(0, 5).map((e: any) => e.name || e.entity_name) || []
+      });
+
+      // CRITICAL: Find exact match - searchTerm returns partial matches
+      const exactMatch = entities?.find((e: any) =>
+        (e.name || e.entity_name) === entityName
+      );
+      if (exactMatch) {
+        log(`getEntity: exact match FOUND for '${entityName}'`, 'info');
+        return exactMatch as SharedMemoryEntity;
+      }
+      log(`getEntity: NO exact match for '${entityName}' - will CREATE`, 'info');
+      return null;
 
     } catch (error) {
       log(`Failed to get entity: ${entityName}`, 'error', error);
@@ -3110,17 +2900,13 @@ ${entityData.insights}
    */
   async getAllEntities(team: string): Promise<SharedMemoryEntity[]> {
     try {
-      // Try GraphDB first
-      if (this.graphDB) {
-        const entities = await this.graphDB.queryEntities({});
-        if (entities && entities.length > 0) {
-          return entities as SharedMemoryEntity[];
-        }
+      // Use GraphDB (single source of truth - no SharedMemory fallback)
+      if (!this.graphDB) {
+        throw new Error('GraphDB not available');
       }
 
-      // Fallback to shared memory
-      const sharedMemory = await this.loadSharedMemory();
-      return sharedMemory.entities;
+      const entities = await this.graphDB.queryEntities({ team });
+      return (entities || []) as SharedMemoryEntity[];
 
     } catch (error) {
       log(`Failed to get all entities for team: ${team}`, 'error', error);

@@ -3234,20 +3234,37 @@ ${entityData.insights}
               result.updated++;
             }
           } else {
-            // Create new entity using createUkbEntity
-            const createResult = await this.createUkbEntity({
+            // Create new entity using storeEntityToGraph (direct GraphDB storage)
+            // Convert to SharedMemoryEntity format
+            const currentDate = new Date().toISOString();
+            const sharedMemoryEntity: SharedMemoryEntity = {
+              id: `entity_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
               name: entity.name,
-              type: entity.entityType,
-              insights: this.serializeObservationsToString(entity.observations),
-              significance: entity.significance
-            });
+              entityType: entity.entityType,  // Will be re-classified by storeEntityToGraph
+              significance: entity.significance || 5,
+              observations: entity.observations.map(obs => ({
+                type: 'insight',
+                content: obs,
+                date: currentDate,
+                metadata: { source: 'workflow_persist' }
+              })),
+              relationships: [],
+              metadata: {
+                created_at: currentDate,
+                last_updated: currentDate,
+                created_by: 'workflow_persist',
+                version: '1.0'
+              }
+            };
 
-            if (createResult.success) {
+            try {
+              const nodeId = await this.storeEntityToGraph(sharedMemoryEntity);
               result.created++;
-              log(`Created entity: ${entity.name}`, 'info');
-            } else {
+              log(`Created entity: ${entity.name} (nodeId: ${nodeId})`, 'info');
+            } catch (createError) {
               result.failed++;
-              log(`Failed to create entity: ${entity.name} - ${createResult.details}`, 'warning');
+              const errorMsg = createError instanceof Error ? createError.message : String(createError);
+              log(`Failed to create entity: ${entity.name} - ${errorMsg}`, 'warning');
             }
           }
         } catch (entityError) {

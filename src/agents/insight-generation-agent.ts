@@ -2597,7 +2597,82 @@ SemanticAnalysisAgent --> InsightGenerationAgent
       const entityName = topPattern.name || title;
       const entityType = topPattern.category || 'Pattern';
 
-      // Build content directly from patterns and analysis (NOT observations - they don't exist yet)
+      // Build pseudo-observations from pattern data for deep insight generation
+      const patternObservations: string[] = [];
+      if (topPattern.description) {
+        patternObservations.push(topPattern.description);
+      }
+      if (topPattern.evidence && topPattern.evidence.length > 0) {
+        patternObservations.push(...topPattern.evidence);
+      }
+      // Add git analysis insights as observations
+      if (gitAnalysis?.architecturalDecisions?.length > 0) {
+        gitAnalysis.architecturalDecisions.slice(0, 5).forEach((dec: any) => {
+          const decisionText = typeof dec === 'string' ? dec
+            : dec?.decision || dec?.summary || dec?.description || null;
+          if (decisionText && typeof decisionText === 'string') {
+            patternObservations.push(`Architectural decision: ${decisionText}`);
+          }
+        });
+      }
+      // Add vibe analysis insights
+      if (vibeAnalysis?.problemSolutionPairs?.length > 0) {
+        vibeAnalysis.problemSolutionPairs.slice(0, 3).forEach((pair: any) => {
+          const problem = typeof pair.problem === 'string' ? pair.problem : pair.problem?.description || null;
+          const solution = typeof pair.solution === 'string' ? pair.solution : pair.solution?.description || null;
+          if (problem && solution) {
+            patternObservations.push(`Problem-solution: ${problem} → ${solution}`);
+          }
+        });
+      }
+
+      // TRY DEEP INSIGHT GENERATION FIRST (LLM-powered rich content)
+      let deepInsightContent: string | null = null;
+      if (this.semanticAnalyzer && patternObservations.length > 0) {
+        try {
+          log(`Attempting LLM deep insight generation for ${entityName} with ${patternObservations.length} observations`, 'info');
+          deepInsightContent = await this.generateDeepInsight({
+            entityName,
+            entityType,
+            observations: patternObservations,
+            relations: [],
+            serenaAnalysis: null
+          });
+          if (deepInsightContent && deepInsightContent.length > 200) {
+            log(`LLM deep insight generation successful: ${deepInsightContent.length} chars`, 'info');
+          } else {
+            log(`LLM deep insight too short (${deepInsightContent?.length || 0} chars), using template`, 'warning');
+            deepInsightContent = null;
+          }
+        } catch (error) {
+          log(`LLM deep insight generation failed: ${error}, falling back to template`, 'warning');
+          deepInsightContent = null;
+        }
+      }
+
+      // If deep insight succeeded, use it with proper formatting
+      if (deepInsightContent) {
+        const sections: string[] = [];
+        sections.push(`# ${entityName}\n`);
+        sections.push(`**Type:** ${entityType}\n`);
+        sections.push(`**Generated:** ${timestamp}\n\n`);
+        sections.push(deepInsightContent);
+
+        // Add diagrams section
+        const successfulDiagrams = diagrams?.filter((d: PlantUMLDiagram) => d.success) || [];
+        if (successfulDiagrams.length > 0) {
+          sections.push(`\n\n## Diagrams\n`);
+          successfulDiagrams.forEach((d: PlantUMLDiagram) => {
+            sections.push(`\n### ${d.type.charAt(0).toUpperCase() + d.type.slice(1)}\n`);
+            sections.push(`![${entityName} ${d.type}](images/${d.name}.png)\n`);
+          });
+        }
+
+        return sections.join('');
+      }
+
+      // FALLBACK: Build content directly from patterns and analysis (template approach)
+      log(`Using template-based content generation for ${entityName}`, 'info');
       const sections: string[] = [];
       sections.push(`# ${entityName}\n`);
       sections.push(`**Type:** ${entityType}\n`);

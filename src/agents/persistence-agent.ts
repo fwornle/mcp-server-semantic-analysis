@@ -75,6 +75,7 @@ export interface EntityMetadata {
   context?: string;
   tags?: string[];
   validated_file_path?: string; // Track validated insight file path
+  has_insight_document?: boolean; // Whether entity has associated insight document
   // Bi-temporal staleness tracking (inspired by Graphiti)
   invalidating_commits?: string[];    // Git commits that may have made this entity stale
   staleness_score?: number;           // 0-100 where 100 = fresh
@@ -953,6 +954,19 @@ export class PersistenceAgent {
         .map(obs => typeof obs === 'string' ? obs : obs.content)
         .join('\n');
       const entityContent = `${observationsText}`;
+
+      // CHECK: Link insight file to entity metadata if it exists
+      const insightsDir = path.join(this.repositoryPath, 'knowledge-management', 'insights');
+      const insightFilePath = path.join(insightsDir, `${entity.name}.md`);
+      try {
+        await fs.promises.access(insightFilePath);
+        entity.metadata = entity.metadata || {};
+        entity.metadata.validated_file_path = insightFilePath;
+        entity.metadata.has_insight_document = true;
+        log(`Linked insight file for ${entity.name}: ${insightFilePath}`, 'debug');
+      } catch {
+        // No insight file exists yet - that's fine
+      }
 
       // PROTECTED INFRASTRUCTURE ENTITIES: These should NEVER be re-classified
       // They have fixed types that determine visualization colors and semantic meaning
@@ -3028,12 +3042,28 @@ export class PersistenceAgent {
               name: entity.name,
               entityType: entity.entityType,  // Will be re-classified by storeEntityToGraph
               significance: entity.significance || 5,
-              observations: entity.observations.map(obs => ({
-                type: 'insight',
-                content: obs,
-                date: currentDate,
-                metadata: { source: 'workflow_persist' }
-              })),
+              observations: entity.observations.map(obs => {
+                // Preserve structured observations (ObservationTemplate objects)
+                if (typeof obs === 'object' && obs !== null && 'type' in obs && 'content' in obs) {
+                  const typedObs = obs as { type: string; content: string; date?: string; metadata?: Record<string, unknown> };
+                  return {
+                    type: typedObs.type || 'insight',
+                    content: typedObs.content,
+                    date: typedObs.date || currentDate,
+                    metadata: {
+                      ...typedObs.metadata,
+                      source: (typedObs.metadata?.source as string) || 'workflow_persist'
+                    }
+                  };
+                }
+                // Convert plain strings to observation objects (fallback)
+                return {
+                  type: 'insight',
+                  content: String(obs),
+                  date: currentDate,
+                  metadata: { source: 'workflow_persist' }
+                };
+              }),
               relationships: [],
               metadata: {
                 created_at: currentDate,

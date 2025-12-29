@@ -1484,20 +1484,79 @@ async function handleGenerateDocumentation(args: any): Promise<any> {
 
 async function handleCreateInsightReport(args: any): Promise<any> {
   const { analysis_result, metadata } = args;
-  
+
   log("Creating insight report", "info", { has_metadata: !!metadata });
-  
+
   const insightName = metadata?.name || "Analysis Insight";
   const insightType = metadata?.type || "General";
-  
-  return {
-    content: [
-      {
-        type: "text",
-        text: `# Insight Report: ${insightName}\n\n**Type:** ${insightType}\n**Generated:** ${new Date().toISOString()}\n\n## Analysis Summary\n${JSON.stringify(analysis_result, null, 2)}\n\n## Key Insights\n- Pattern detection and analysis completed\n- Architecture insights extracted\n- Recommendations generated\n\n## Note\nPlantUML diagram generation pending full implementation.`,
-      },
-    ],
-  };
+  const repositoryPath = metadata?.repositoryPath || process.cwd();
+
+  try {
+    const insightAgent = new InsightGenerationAgent(repositoryPath);
+
+    // Build pattern catalog from analysis result
+    const patternCatalog = analysis_result?.patternCatalog || {
+      patterns: analysis_result?.patterns || [{
+        name: insightName,
+        category: insightType,
+        description: analysis_result?.description || 'Generated insight',
+        significance: metadata?.significance || 7,
+        evidence: analysis_result?.evidence || [],
+        relatedComponents: analysis_result?.relatedComponents || [],
+        implementation: {
+          language: 'typescript',
+          usageNotes: []
+        }
+      }],
+      summary: {
+        totalPatterns: 1,
+        byCategory: { [insightType]: 1 },
+        avgSignificance: metadata?.significance || 7,
+        topPatterns: [insightName]
+      }
+    };
+
+    // Call the real insight generation
+    const result = await insightAgent.generateComprehensiveInsights({
+      patternCatalog,
+      gitAnalysis: analysis_result?.gitAnalysis,
+      vibeAnalysis: analysis_result?.vibeAnalysis,
+      semanticAnalysis: analysis_result?.semanticAnalysis,
+      webResults: analysis_result?.webResults
+    });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            insightName,
+            insightType,
+            insightDocument: result.insightDocument,
+            patternCatalog: result.patternCatalog,
+            metrics: result.generationMetrics,
+            diagrams: result.insightDocument?.diagrams || []
+          }, null, 2)
+        }
+      ]
+    };
+  } catch (error) {
+    log(`Insight report generation failed: ${error}`, 'error');
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+            insightName,
+            insightType
+          }, null, 2)
+        }
+      ]
+    };
+  }
 }
 
 async function handleGeneratePlantUMLDiagrams(args: any): Promise<any> {

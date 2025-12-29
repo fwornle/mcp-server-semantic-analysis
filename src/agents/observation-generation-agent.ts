@@ -626,6 +626,7 @@ export class ObservationGenerationAgent {
           last_updated: currentDate,
           generatedAt: currentDate,
           sourceData: ['vibe-history'],
+          team: this.team,
           confidence: 0.85,
           validationStatus: 'pending'
         }
@@ -748,7 +749,26 @@ export class ObservationGenerationAgent {
           }
         });
       }
-      
+
+      // Add diagram link observations for each generated diagram
+      if (insightDoc.diagrams && Array.isArray(insightDoc.diagrams)) {
+        for (const diagram of insightDoc.diagrams) {
+          if (diagram.success && diagram.pngFile) {
+            observations.push({
+              type: 'link',
+              content: `${diagram.type} diagram: ${diagram.pngFile}`,
+              date: currentDate,
+              metadata: {
+                diagramType: diagram.type,
+                pumlFile: diagram.pumlFile,
+                pngFile: diagram.pngFile,
+                source: 'insight-generation'
+              }
+            });
+          }
+        }
+      }
+
       return {
         name: cleanName,
         entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
@@ -1054,6 +1074,7 @@ Provide a JSON response with:
           last_updated: currentDate,
           generatedAt: currentDate,
           sourceData: ['git-history', 'vibe-history'],
+          team: this.team,
           confidence: 0.75,
           validationStatus: 'pending'
         }

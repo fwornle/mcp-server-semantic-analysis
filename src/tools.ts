@@ -21,6 +21,11 @@ import fs from "fs/promises";
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from "fs";
 import path from "path";
 import { spawn } from "child_process";
+import { fileURLToPath } from "url";
+
+// ES module compatible __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Server reference for sending progress messages
 let serverInstance: Server | null = null;

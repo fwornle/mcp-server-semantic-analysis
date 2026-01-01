@@ -1,11 +1,22 @@
-# Batch Analysis Workflow - Chronological Batch Processing with Tree-KG Operators
+# Batch Analysis Workflow - Chronological Batch Processing with Tree-KG Operators + CGR
 # Processes git history in 50-commit batches, applying 6 operators per batch
-# Version: 1.0
+# Includes Code Graph RAG for AST-based code intelligence and LLM synthesis
+#
+# ARCHITECTURE NOTE: CGR runs AFTER all batches complete because:
+# - CGR indexes the CURRENT state of the codebase (HEAD)
+# - Batch processing analyzes HISTORICAL commits (oldest to newest)
+# - Running CGR per-batch would create temporal mismatch (old commits vs current code)
+# - Solution: Process all batches first, then CGR indexes current state,
+#   then correlate historical findings with current codebase to identify:
+#   - Entities that still exist → enrich with CGR synthesis
+#   - Entities that are historical → mark as superseded/deleted
+#
+# Version: 1.2
 
 workflow:
   name: batch-analysis
-  version: "1.0"
-  description: "Chronological batch processing with Tree-KG operators for incremental KG expansion"
+  version: "1.2"
+  description: "Chronological batch processing with Tree-KG operators and Code Graph RAG for incremental KG expansion"
   type: iterative  # Signals coordinator to use batch iteration
 
 config:
@@ -60,6 +71,9 @@ steps:
     dependencies: []
     phase: initialization
 
+  # NOTE: CGR (Code Graph RAG) steps moved to FINALIZATION phase
+  # See architecture note at top of file for rationale
+
   # --- BATCH LOOP BEGINS (steps with phase: batch are repeated per batch) ---
 
   # PHASE 1: Extract Batch Data
@@ -86,7 +100,8 @@ steps:
     phase: batch
     operator: extract
 
-  # PHASE 2: Semantic Analysis for Batch
+  # PHASE 2: Semantic Analysis for Batch (pure historical analysis - no CGR)
+  # NOTE: CGR correlation happens in finalization phase after all batches complete
   - name: batch_semantic_analysis
     agent: semantic_analysis
     action: analyzeSemantics
@@ -243,16 +258,99 @@ steps:
 
   # --- BATCH LOOP ENDS ---
 
-  # PHASE 6: Final Persistence (runs once after all batches)
+  # ============================================================================
+  # FINALIZATION PHASE: CGR + Correlation + Persistence
+  # CGR runs HERE (after all batches) because it indexes CURRENT state,
+  # which we then correlate with HISTORICAL batch findings
+  # ============================================================================
+
+  # PHASE F1: Code Graph RAG - Index Current Codebase
+  # Indexes the current HEAD state of the repository
+  - name: index_codebase
+    agent: code_graph
+    action: indexRepository
+    parameters:
+      target_path: "{{params.repositoryPath}}"
+      forceReindex: "{{params.fullAnalysis}}"
+      minNodeThreshold: 1000
+    timeout: 600
+    dependencies:
+      - save_batch_checkpoint  # Wait for ALL batches to complete
+    phase: finalization
+
+  # PHASE F2: Code Graph RAG - LLM Synthesis
+  # Generate insights about current codebase structure
+  - name: synthesize_code_insights
+    agent: code_graph
+    action: synthesizeInsights
+    tier: premium
+    parameters:
+      target_entities: ["Class", "Function"]
+      depth: "full"
+      limit: 30
+    timeout: 300
+    dependencies:
+      - index_codebase
+    phase: finalization
+
+  # PHASE F3: Correlate Historical Findings with Current Codebase
+  # This is the KEY step that resolves the temporal mismatch:
+  # - Takes all entities discovered during batch processing (historical)
+  # - Checks which ones still exist in current codebase (via CGR)
+  # - Enriches existing entities with CGR synthesis insights
+  # - Marks historical-only entities as superseded/deleted
+  - name: correlate_with_codebase
+    agent: code_graph
+    action: correlateHistoricalFindings
+    tier: premium
+    parameters:
+      # Historical entities from all batches
+      accumulated_entities: "{{accumulatedKG.entities}}"
+      # Current codebase structure from CGR
+      codebase_index: "{{index_codebase.result}}"
+      # LLM-generated insights about current code
+      synthesis_insights: "{{synthesize_code_insights.result}}"
+      # Correlation settings
+      correlation_config:
+        # Match by qualified name (exact)
+        match_by_name: true
+        # Also try fuzzy matching for renamed entities
+        fuzzy_match_threshold: 0.8
+        # Mark entities not found in current codebase
+        mark_historical: true
+        # Try to identify what replaced deleted entities
+        track_evolution: true
+    timeout: 180
+    dependencies:
+      - synthesize_code_insights
+    phase: finalization
+
+  # PHASE F4: Transform Code Entities (with correlation results)
+  - name: transform_code_entities
+    agent: code_graph
+    action: transformToKnowledgeEntities
+    parameters:
+      codebase_analysis: "{{index_codebase.result}}"
+      synthesis_results: "{{synthesize_code_insights.result}}"
+      correlation_results: "{{correlate_with_codebase.result}}"
+    timeout: 120
+    dependencies:
+      - correlate_with_codebase
+    phase: finalization
+
+  # PHASE F5: Final Persistence (runs once after all batches)
   - name: final_persist
     agent: persistence
     action: persistEntities
     parameters:
       entities: "{{accumulatedKG.entities}}"
+      code_entities: "{{transform_code_entities.result}}"
+      correlated_entities: "{{correlate_with_codebase.result.enriched}}"
+      historical_entities: "{{correlate_with_codebase.result.historical}}"
       team: "{{params.team}}"
     timeout: 120
     dependencies:
-      - save_batch_checkpoint  # Depends on all batches completing
+      - transform_code_entities
     phase: finalization
 
   # PHASE 7: Final Deduplication
@@ -278,12 +376,16 @@ steps:
     phase: finalization
 
 # DAG visualization for batch workflow
+# NOTE: CGR runs in FINALIZATION (after all batches), not initialization
+# This avoids temporal mismatch between historical commits and current codebase
 edges:
-  # Initialization phase
+  # ========== INITIALIZATION PHASE ==========
   - from: orchestrator
     to: batch_scheduler
     type: control
+    label: "plan batches"
 
+  # ========== BATCH LOOP PHASE ==========
   # Batch extraction (parallel: both git and vibe receive batch info)
   - from: batch_scheduler
     to: git_history
@@ -295,13 +397,13 @@ edges:
     type: dataflow
     label: "per batch"
 
-  # Data flow: vibe uses commits from git (but visually parallel)
+  # Data flow: vibe uses commits from git
   - from: git_history
     to: vibe_history
     type: dataflow
     label: "commits"
 
-  # Semantic analysis
+  # Semantic analysis (pure historical - NO CGR here)
   - from: git_history
     to: semantic_analysis
     type: dependency
@@ -341,11 +443,47 @@ edges:
     type: control
     label: "next batch"
 
-  # Finalization
+  # ========== FINALIZATION PHASE ==========
+  # CGR runs AFTER all batches complete (indexes current HEAD)
   - from: batch_checkpoint_manager
+    to: code_graph
+    type: dependency
+    label: "index current"
+
+  # CGR synthesis (LLM analysis of current codebase)
+  - from: code_graph
+    to: code_graph
+    type: self
+    label: "index→synthesize"
+
+  # Correlation: match historical batch entities with current codebase
+  - from: code_graph
+    to: correlation
+    type: dependency
+    label: "correlate"
+
+  # Correlation also needs accumulated batch results
+  - from: batch_checkpoint_manager
+    to: correlation
+    type: dataflow
+    label: "historical entities"
+
+  # Transform code entities (with correlation enrichment)
+  - from: correlation
+    to: code_graph
+    type: dependency
+    label: "transform"
+
+  # Persistence (receives both batch entities and code entities)
+  - from: code_graph
     to: persistence
     type: dependency
-    label: "after all batches"
+    label: "code entities"
+
+  - from: correlation
+    to: persistence
+    type: dependency
+    label: "enriched + historical"
 
   - from: persistence
     to: deduplication

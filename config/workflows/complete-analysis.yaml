@@ -1,11 +1,11 @@
 # Complete Analysis Workflow - Single Source of Truth
-# 12-agent full analysis of entire codebase with ontology classification
-# Version: 1.1
+# 13-agent full analysis of entire codebase with ontology classification + code synthesis
+# Version: 1.2
 
 workflow:
   name: complete-analysis
-  version: "1.1"
-  description: "12-agent comprehensive analysis of entire codebase with code graph and ontology classification"
+  version: "1.2"
+  description: "13-agent comprehensive analysis of entire codebase with code graph, LLM synthesis, and ontology classification"
 
 config:
   max_concurrent_steps: 3
@@ -41,6 +41,17 @@ steps:
       target_path: "{{params.repositoryPath}}"
     timeout: 600
     dependencies: []
+
+  # PHASE 1.5: LLM-powered Code Synthesis (depends on index)
+  - name: synthesize_code_insights
+    agent: code_graph
+    action: synthesizeInsights
+    parameters:
+      target_entities: ["Class", "Function"]
+      depth: "full"
+    timeout: 300
+    dependencies:
+      - index_codebase
 
   - name: link_documentation
     agent: documentation_linker
@@ -78,7 +89,7 @@ steps:
     dependencies:
       - semantic_analysis
 
-  # PHASE 3: Insight Generation (depends on Semantic + Web)
+  # PHASE 3: Insight Generation (depends on Semantic + Web + Code Synthesis)
   - name: generate_insights
     agent: insight_generation
     action: generateComprehensiveInsights
@@ -88,11 +99,13 @@ steps:
       git_analysis_results: "{{analyze_git_history.result}}"
       vibe_analysis_results: "{{analyze_vibe_history.result}}"
       code_graph_results: "{{index_codebase.result}}"
+      code_synthesis_results: "{{synthesize_code_insights.result}}"
     timeout: 300
     dependencies:
       - semantic_analysis
       - web_search
       - index_codebase
+      - synthesize_code_insights
 
   # PHASE 3.5: Observation Generation
   - name: generate_observations
@@ -124,9 +137,11 @@ steps:
     action: transformToKnowledgeEntities
     parameters:
       codebase_analysis: "{{index_codebase.result}}"
+      synthesis_results: "{{synthesize_code_insights.result}}"
     timeout: 60
     dependencies:
       - index_codebase
+      - synthesize_code_insights
 
   # PHASE 5: Quality Assurance
   - name: quality_assurance
@@ -187,6 +202,12 @@ edges:
     to: documentation_linker
     type: dataflow
 
+  # Code Graph -> Synthesis (new in v1.2)
+  - from: code_graph
+    to: code_graph
+    label: synthesize
+    type: dependency
+
   # Phase 1 -> Semantic Analysis (no code_intelligence in complete-analysis)
   - from: git_history
     to: semantic_analysis
@@ -206,12 +227,16 @@ edges:
     to: web_search
     type: dependency
 
-  # Semantic + Web -> Insights
+  # Semantic + Web + Synthesis -> Insights
   - from: semantic_analysis
     to: insight_generation
     type: dependency
   - from: web_search
     to: insight_generation
+    type: dependency
+  - from: code_graph
+    to: insight_generation
+    label: synthesis
     type: dependency
 
   # Insights -> Observations

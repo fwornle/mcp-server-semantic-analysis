@@ -85,6 +85,21 @@ export interface IntelligentQueryContext {
   vibePatterns?: string[];
 }
 
+export interface SynthesisResult {
+  entityName: string;
+  entityType: string;
+  purpose: string;
+  components: string[];
+  patternsIdentified: string[];
+  dependencies: string[];
+  dependents: string[];
+  potentialIssues: string[];
+  sourceFiles: string[];
+  documentation: string;
+  success: boolean;
+  errorMessage?: string;
+}
+
 export interface IntelligentQueryResult {
   hotspots: Array<{ name: string; type: string; connections: number }>;
   circularDeps: Array<{ from: string; to: string }>;
@@ -1014,13 +1029,224 @@ export class CodeGraphAgent {
   }
 
   /**
+   * Synthesize insights for code entities using LLM analysis.
+   * Queries the graph for entity details, relationships, and uses LLM to generate
+   * comprehensive analysis of purpose, patterns, dependencies, and issues.
+   *
+   * @param params - Parameters including target entity types and analysis depth
+   * @returns Array of synthesis results for each analyzed entity
+   */
+  async synthesizeInsights(params: {
+    targetEntities?: string[];  // Entity types to analyze: ['Class', 'Function', 'Module']
+    depth?: string;             // Analysis depth: 'full', 'structure', 'behavior', 'dependencies'
+    limit?: number;             // Max entities to analyze (default: 20)
+  } | { target_entities?: string[]; depth?: string; limit?: number }): Promise<SynthesisResult[]> {
+    // Handle both camelCase and snake_case parameter formats from workflow
+    const targetEntities = ('targetEntities' in params && params.targetEntities)
+      || ('target_entities' in params && params.target_entities)
+      || ['Class', 'Function'];
+    const depth = params.depth || 'full';
+    const limit = params.limit || 20;
+
+    log(`[CodeGraphAgent] Synthesizing insights for ${targetEntities.join(', ')} (depth: ${depth}, limit: ${limit})`, 'info');
+
+    const results: SynthesisResult[] = [];
+
+    // Check Memgraph connection
+    const connectionCheck = await this.checkMemgraphConnection();
+    if (!connectionCheck.connected) {
+      log(`[CodeGraphAgent] Memgraph not connected, skipping synthesis`, 'warning');
+      return results;
+    }
+
+    // Query for significant entities of target types
+    const entityTypesClause = targetEntities.map(t => `n:${t}`).join(' OR ');
+    const entitiesQuery = `
+      MATCH (n)
+      WHERE ${entityTypesClause}
+      OPTIONAL MATCH (n)-[r]-()
+      WITH n, count(r) as relationshipCount
+      ORDER BY relationshipCount DESC
+      LIMIT ${limit}
+      RETURN n.qualified_name as qualifiedName, n.name as name, labels(n)[0] as entityType,
+             n.docstring as docstring, n.comments as comments, relationshipCount
+    `;
+
+    const entities = await this.runCypherQuery(entitiesQuery);
+    if (!Array.isArray(entities) || entities.length === 0) {
+      log(`[CodeGraphAgent] No entities found for synthesis`, 'info');
+      return results;
+    }
+
+    log(`[CodeGraphAgent] Found ${entities.length} entities for synthesis`, 'info');
+
+    // Initialize SemanticAnalyzer for LLM-powered synthesis
+    const semanticAnalyzer = new SemanticAnalyzer();
+
+    // Synthesize insights for each entity
+    for (const entity of entities) {
+      const qualifiedName = entity.qualifiedName || entity.name;
+      const entityType = entity.entityType || 'Unknown';
+
+      try {
+        // Get relationships for this entity
+        const [callsResult, calledByResult, inheritsResult, containsResult] = await Promise.all([
+          this.runCypherQuery(`
+            MATCH (n)-[:CALLS]->(target)
+            WHERE n.qualified_name = '${qualifiedName}'
+            RETURN target.qualified_name as qn, labels(target)[0] as type
+            LIMIT 10
+          `),
+          this.runCypherQuery(`
+            MATCH (caller)-[:CALLS]->(n)
+            WHERE n.qualified_name = '${qualifiedName}'
+            RETURN caller.qualified_name as qn, labels(caller)[0] as type
+            LIMIT 10
+          `),
+          this.runCypherQuery(`
+            MATCH (n)-[:INHERITS]->(parent)
+            WHERE n.qualified_name = '${qualifiedName}'
+            RETURN parent.qualified_name as qn
+          `),
+          this.runCypherQuery(`
+            MATCH (n)-[:DEFINES_METHOD]->(method)
+            WHERE n.qualified_name = '${qualifiedName}'
+            RETURN method.name as name
+            LIMIT 15
+          `)
+        ]);
+
+        const calls = Array.isArray(callsResult) ? callsResult.map(r => r.qn).filter(Boolean) : [];
+        const calledBy = Array.isArray(calledByResult) ? calledByResult.map(r => r.qn).filter(Boolean) : [];
+        const inherits = Array.isArray(inheritsResult) ? inheritsResult.map(r => r.qn).filter(Boolean) : [];
+        const contains = Array.isArray(containsResult) ? containsResult.map(r => r.name).filter(Boolean) : [];
+
+        // Build synthesis prompt
+        const synthesisPrompt = `Analyze this code entity and provide insights:
+
+ENTITY: ${qualifiedName}
+TYPE: ${entityType}
+
+DOCUMENTATION:
+${entity.docstring || entity.comments || 'No documentation available'}
+
+RELATIONSHIPS:
+- Calls: ${calls.length > 0 ? calls.join(', ') : 'None'}
+- Called by: ${calledBy.length > 0 ? calledBy.join(', ') : 'None'}
+- Inherits from: ${inherits.length > 0 ? inherits.join(', ') : 'None'}
+- Contains (methods): ${contains.length > 0 ? contains.join(', ') : 'None'}
+
+ANALYSIS SCOPE: ${depth}
+
+Provide your analysis in this EXACT format:
+PURPOSE: [1-2 sentences describing what this code does]
+COMPONENTS: [comma-separated list of key sub-components or methods]
+PATTERNS: [comma-separated list of design patterns used]
+DEPENDENCIES: [comma-separated list of critical external dependencies]
+ISSUES: [comma-separated list of potential risks or concerns, or "None identified"]`;
+
+        // Use SemanticAnalyzer for LLM synthesis
+        const llmResult = await semanticAnalyzer.analyzeContent(synthesisPrompt, {
+          analysisType: 'code',
+          provider: 'auto'
+        });
+
+        // Parse the LLM response
+        const synthesis = this.parseSynthesisResponse(qualifiedName, entityType, entity.docstring || '', llmResult.insights);
+        synthesis.dependencies = calls;
+        synthesis.dependents = calledBy;
+        synthesis.components = contains.length > 0 ? contains : synthesis.components;
+        results.push(synthesis);
+
+        log(`[CodeGraphAgent] Synthesized insights for ${qualifiedName}`, 'debug');
+
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        log(`[CodeGraphAgent] Synthesis failed for ${qualifiedName}: ${errorMsg}`, 'warning');
+        results.push({
+          entityName: qualifiedName,
+          entityType,
+          purpose: 'Synthesis failed',
+          components: [],
+          patternsIdentified: [],
+          dependencies: [],
+          dependents: [],
+          potentialIssues: [],
+          sourceFiles: [],
+          documentation: '',
+          success: false,
+          errorMessage: errorMsg
+        });
+      }
+    }
+
+    log(`[CodeGraphAgent] Completed synthesis for ${results.length} entities`, 'info');
+    return results;
+  }
+
+  /**
+   * Parse LLM synthesis response into structured result
+   */
+  private parseSynthesisResponse(
+    qualifiedName: string,
+    entityType: string,
+    documentation: string,
+    response: string
+  ): SynthesisResult {
+    const result: SynthesisResult = {
+      entityName: qualifiedName,
+      entityType,
+      purpose: '',
+      components: [],
+      patternsIdentified: [],
+      dependencies: [],
+      dependents: [],
+      potentialIssues: [],
+      sourceFiles: [],
+      documentation,
+      success: true
+    };
+
+    const lines = response.split('\n');
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      if (trimmedLine.startsWith('PURPOSE:')) {
+        result.purpose = trimmedLine.substring(8).trim();
+      } else if (trimmedLine.startsWith('COMPONENTS:')) {
+        const items = trimmedLine.substring(11).trim();
+        result.components = items.split(',').map(c => c.trim()).filter(c => c.length > 0);
+      } else if (trimmedLine.startsWith('PATTERNS:')) {
+        const items = trimmedLine.substring(9).trim();
+        result.patternsIdentified = items.split(',').map(p => p.trim()).filter(p => p.length > 0);
+      } else if (trimmedLine.startsWith('DEPENDENCIES:')) {
+        const items = trimmedLine.substring(13).trim();
+        result.dependencies = items.split(',').map(d => d.trim()).filter(d => d.length > 0);
+      } else if (trimmedLine.startsWith('ISSUES:')) {
+        const items = trimmedLine.substring(7).trim();
+        if (items.toLowerCase() !== 'none identified') {
+          result.potentialIssues = items.split(',').map(i => i.trim()).filter(i => i.length > 0);
+        }
+      }
+    }
+
+    // Fallback if purpose wasn't parsed
+    if (!result.purpose) {
+      result.purpose = response.substring(0, 500);
+    }
+
+    return result;
+  }
+
+  /**
    * Transform code entities to knowledge graph entities for persistence
    * @param params - Either a CodeGraphAnalysisResult directly or a parameters object with code_analysis property
    *                 Optionally includes doc_semantics_enrichments for enhanced observations
+   *                 Optionally includes synthesis_results for LLM-powered insights
    */
   async transformToKnowledgeEntities(params: CodeGraphAnalysisResult | {
     code_analysis?: CodeGraphAnalysisResult;
     doc_semantics_enrichments?: Array<{ entityName: string; observations: string[] }>;
+    synthesis_results?: SynthesisResult[];
     [key: string]: any;
   }): Promise<Array<{
     name: string;
@@ -1038,6 +1264,11 @@ export class CodeGraphAgent {
       ? params.doc_semantics_enrichments
       : undefined;
 
+    // Extract synthesis results if available
+    const synthesisResults = 'synthesis_results' in params
+      ? params.synthesis_results
+      : undefined;
+
     // Build enrichment lookup map for O(1) access
     const enrichmentMap = new Map<string, string[]>();
     if (docSemanticsEnrichments && Array.isArray(docSemanticsEnrichments)) {
@@ -1047,6 +1278,17 @@ export class CodeGraphAgent {
         }
       }
       log(`[CodeGraphAgent] Using ${enrichmentMap.size} doc semantics enrichments`, 'info');
+    }
+
+    // Build synthesis lookup map for O(1) access
+    const synthesisMap = new Map<string, SynthesisResult>();
+    if (synthesisResults && Array.isArray(synthesisResults)) {
+      for (const synthesis of synthesisResults) {
+        if (synthesis.entityName && synthesis.success) {
+          synthesisMap.set(synthesis.entityName.toLowerCase(), synthesis);
+        }
+      }
+      log(`[CodeGraphAgent] Using ${synthesisMap.size} synthesis results`, 'info');
     }
 
     const knowledgeEntities: Array<{
@@ -1085,52 +1327,93 @@ export class CodeGraphAgent {
         // Check for enriched observations from doc semantics
         const enrichedObs = enrichmentMap.get(cls.name.toLowerCase());
 
-        const observations = enrichedObs
-          ? [
-              `Class ${cls.name} defined in ${cls.filePath}:${cls.lineNumber}`,
-              ...enrichedObs, // Use LLM-analyzed documentation instead of raw docstring
-              methods.length > 0 ? `Contains ${methods.length} methods: ${methods.map(m => m.name).join(', ')}` : null,
-              cls.complexity ? `Complexity score: ${cls.complexity}` : null,
-            ].filter(Boolean) as string[]
-          : [
-              `Class ${cls.name} defined in ${cls.filePath}:${cls.lineNumber}`,
-              cls.docstring ? `Documentation: ${cls.docstring}` : null,
-              methods.length > 0 ? `Contains ${methods.length} methods: ${methods.map(m => m.name).join(', ')}` : null,
-              cls.complexity ? `Complexity score: ${cls.complexity}` : null,
-            ].filter(Boolean) as string[];
+        // Check for synthesis results (richer LLM-analyzed insights)
+        const synthesis = synthesisMap.get(cls.name.toLowerCase());
+
+        // Build observations prioritizing synthesis > enriched > raw
+        let observations: string[];
+        if (synthesis) {
+          // Use comprehensive synthesis results
+          observations = [
+            `Class ${cls.name} defined in ${cls.filePath}:${cls.lineNumber}`,
+            synthesis.purpose ? `Purpose: ${synthesis.purpose}` : null,
+            synthesis.patternsIdentified.length > 0 ? `Patterns: ${synthesis.patternsIdentified.join(', ')}` : null,
+            synthesis.dependencies.length > 0 ? `Dependencies: ${synthesis.dependencies.slice(0, 5).join(', ')}` : null,
+            synthesis.potentialIssues.length > 0 ? `Issues: ${synthesis.potentialIssues.join(', ')}` : null,
+            methods.length > 0 ? `Methods: ${methods.map(m => m.name).join(', ')}` : null,
+          ].filter(Boolean) as string[];
+        } else if (enrichedObs) {
+          observations = [
+            `Class ${cls.name} defined in ${cls.filePath}:${cls.lineNumber}`,
+            ...enrichedObs,
+            methods.length > 0 ? `Contains ${methods.length} methods: ${methods.map(m => m.name).join(', ')}` : null,
+            cls.complexity ? `Complexity score: ${cls.complexity}` : null,
+          ].filter(Boolean) as string[];
+        } else {
+          observations = [
+            `Class ${cls.name} defined in ${cls.filePath}:${cls.lineNumber}`,
+            cls.docstring ? `Documentation: ${cls.docstring}` : null,
+            methods.length > 0 ? `Contains ${methods.length} methods: ${methods.map(m => m.name).join(', ')}` : null,
+            cls.complexity ? `Complexity score: ${cls.complexity}` : null,
+          ].filter(Boolean) as string[];
+        }
+
+        // Significance boost: synthesis (+2) > enriched (+1) > none
+        const significanceBoost = synthesis ? 2 : (enrichedObs ? 1 : 0);
 
         knowledgeEntities.push({
           name: cls.name,
           entityType: 'Unclassified',  // Will be classified by ontology - NO HARDCODED TYPES
           observations,
-          significance: Math.min(10, 5 + Math.floor(methods.length / 2) + (enrichedObs ? 1 : 0)), // Boost significance if enriched
+          significance: Math.min(10, 5 + Math.floor(methods.length / 2) + significanceBoost),
         });
       }
 
       // Create entities for standalone functions with significant complexity
       for (const fn of functions.filter(f => (f.complexity || 0) > 5)) {
-        // Check for enriched observations from doc semantics
+        // Check for synthesis results first, then enriched observations
+        const synthesis = synthesisMap.get(fn.name.toLowerCase());
         const enrichedObs = enrichmentMap.get(fn.name.toLowerCase());
 
-        const observations = enrichedObs
-          ? [
-              `Function ${fn.name} defined in ${fn.filePath}:${fn.lineNumber}`,
-              fn.signature ? `Signature: ${fn.signature}` : null,
-              ...enrichedObs, // Use LLM-analyzed documentation instead of raw docstring
-              fn.complexity ? `Complexity score: ${fn.complexity}` : null,
-            ].filter(Boolean) as string[]
-          : [
-              `Function ${fn.name} defined in ${fn.filePath}:${fn.lineNumber}`,
-              fn.signature ? `Signature: ${fn.signature}` : null,
-              fn.docstring ? `Documentation: ${fn.docstring}` : null,
-              fn.complexity ? `Complexity score: ${fn.complexity}` : null,
-            ].filter(Boolean) as string[];
+        // Build observations: synthesis > enriched > raw
+        let observations: string[];
+        if (synthesis && synthesis.success) {
+          // Use synthesis results - richest observations
+          observations = [
+            `Function ${fn.name} defined in ${fn.filePath}:${fn.lineNumber}`,
+            fn.signature ? `Signature: ${fn.signature}` : null,
+            synthesis.purpose ? `Purpose: ${synthesis.purpose}` : null,
+            synthesis.patternsIdentified.length > 0 ? `Patterns: ${synthesis.patternsIdentified.join(', ')}` : null,
+            synthesis.dependencies.length > 0 ? `Dependencies: ${synthesis.dependencies.join(', ')}` : null,
+            synthesis.potentialIssues.length > 0 ? `Potential Issues: ${synthesis.potentialIssues.join(', ')}` : null,
+            fn.complexity ? `Complexity score: ${fn.complexity}` : null,
+          ].filter(Boolean) as string[];
+        } else if (enrichedObs) {
+          // Use enriched observations from doc semantics
+          observations = [
+            `Function ${fn.name} defined in ${fn.filePath}:${fn.lineNumber}`,
+            fn.signature ? `Signature: ${fn.signature}` : null,
+            ...enrichedObs,
+            fn.complexity ? `Complexity score: ${fn.complexity}` : null,
+          ].filter(Boolean) as string[];
+        } else {
+          // Fallback to raw observations
+          observations = [
+            `Function ${fn.name} defined in ${fn.filePath}:${fn.lineNumber}`,
+            fn.signature ? `Signature: ${fn.signature}` : null,
+            fn.docstring ? `Documentation: ${fn.docstring}` : null,
+            fn.complexity ? `Complexity score: ${fn.complexity}` : null,
+          ].filter(Boolean) as string[];
+        }
+
+        // Significance boost: synthesis (+2) > enriched (+1) > none
+        const significanceBoost = synthesis ? 2 : (enrichedObs ? 1 : 0);
 
         knowledgeEntities.push({
           name: fn.name,
           entityType: 'Unclassified',  // Will be classified by ontology - NO HARDCODED TYPES
           observations,
-          significance: Math.min(8, 3 + Math.floor((fn.complexity || 0) / 3) + (enrichedObs ? 1 : 0)), // Boost significance if enriched
+          significance: Math.min(8, 3 + Math.floor((fn.complexity || 0) / 3) + significanceBoost),
         });
       }
     }

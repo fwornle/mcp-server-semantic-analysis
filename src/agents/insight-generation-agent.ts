@@ -11,7 +11,7 @@ import {
   createSerenaAnalyzer,
   type SerenaAnalysisResult
 } from '../utils/serena-code-analyzer.js';
-import type { IntelligentQueryResult } from './code-graph-agent.js';
+import type { IntelligentQueryResult, SynthesisResult } from './code-graph-agent.js';
 import { WebSearchAgent, type SearchResult } from './web-search.js';
 
 export interface InsightDocument {
@@ -504,6 +504,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
     const webResults = params.web_search_results || params.webResults;
     const codeGraphResults = params.code_graph_results || params.codeGraphResults;
     const docSemanticsResults = params.doc_semantics_results || params.docSemanticsResults;
+    const codeSynthesisResults = params.code_synthesis_results || params.codeSynthesisResults;
 
     log('Data availability checked', 'debug', {
       gitAnalysis: !!gitAnalysis,
@@ -511,7 +512,8 @@ Best practices, rules, and conventions for using this correctly. What should dev
       semanticAnalysis: !!semanticAnalysis,
       webResults: !!webResults,
       codeGraphResults: !!codeGraphResults,
-      docSemanticsResults: !!docSemanticsResults
+      docSemanticsResults: !!docSemanticsResults,
+      codeSynthesisResults: !!codeSynthesisResults
     });
 
     log('Starting comprehensive insight generation', 'info', {
@@ -522,9 +524,11 @@ Best practices, rules, and conventions for using this correctly. What should dev
       hasWebResults: !!webResults,
       hasCodeGraphResults: !!codeGraphResults,
       hasDocSemanticsResults: !!docSemanticsResults,
+      hasCodeSynthesisResults: !!codeSynthesisResults,
       codeGraphSkipped: codeGraphResults?.skipped || false,
       codeGraphEntities: codeGraphResults?.statistics?.totalEntities || 0,
       docSemanticsAnalyzed: docSemanticsResults?.statistics?.analyzed || 0,
+      codeSynthesisCount: Array.isArray(codeSynthesisResults) ? codeSynthesisResults.length : 0,
       gitCommitCount: gitAnalysis?.commits?.length || 0
     });
 
@@ -567,9 +571,9 @@ Best practices, rules, and conventions for using this correctly. What should dev
         };
       }
 
-      // Extract patterns from all analyses (including code graph and doc semantics if available)
+      // Extract patterns from all analyses (including code graph, doc semantics, and synthesis if available)
       const patternCatalog = await this.generatePatternCatalog(
-        filteredGitAnalysis, vibeAnalysis, semanticAnalysis, webResults, codeGraphResults, docSemanticsResults
+        filteredGitAnalysis, vibeAnalysis, semanticAnalysis, webResults, codeGraphResults, docSemanticsResults, codeSynthesisResults
       );
 
       // DEBUGGING: Log all pattern significance scores BEFORE filtering
@@ -722,10 +726,11 @@ Best practices, rules, and conventions for using this correctly. What should dev
     semanticAnalysis: any,
     webResults?: any,
     codeGraphResults?: any,
-    docSemanticsResults?: any
+    docSemanticsResults?: any,
+    codeSynthesisResults?: SynthesisResult[]
   ): Promise<PatternCatalog> {
     FilenameTracer.trace('PATTERN_CATALOG_START', 'generatePatternCatalog',
-      { hasGit: !!gitAnalysis, hasVibe: !!vibeAnalysis, hasSemantic: !!semanticAnalysis, hasCodeGraph: !!codeGraphResults, hasDocSemantics: !!docSemanticsResults },
+      { hasGit: !!gitAnalysis, hasVibe: !!vibeAnalysis, hasSemantic: !!semanticAnalysis, hasCodeGraph: !!codeGraphResults, hasDocSemantics: !!docSemanticsResults, hasCodeSynthesis: !!codeSynthesisResults },
       'Starting pattern catalog generation'
     );
 
@@ -806,6 +811,17 @@ Best practices, rules, and conventions for using this correctly. What should dev
       }
     } catch (error) {
       console.error('Error extracting documentation patterns:', error);
+    }
+
+    // Extract patterns from LLM-powered code synthesis (CGR integration)
+    try {
+      if (codeSynthesisResults && Array.isArray(codeSynthesisResults) && codeSynthesisResults.length > 0) {
+        const synthesisPatterns = this.extractPatternsFromSynthesis(codeSynthesisResults);
+        patterns.push(...synthesisPatterns);
+        log(`Extracted ${synthesisPatterns.length} patterns from code synthesis (${codeSynthesisResults.length} entities analyzed)`, 'info');
+      }
+    } catch (error) {
+      console.error('Error extracting synthesis patterns:', error);
     }
 
     // Analyze and summarize patterns
@@ -2346,6 +2362,99 @@ end note
 @enduml`;
   }
 
+  /**
+   * Generate architecture diagram from CGR synthesis results.
+   * Creates a component diagram showing entities and their dependencies.
+   */
+  private generateArchitectureDiagramFromSynthesis(
+    synthesisResults: SynthesisResult[]
+  ): string {
+    const successfulResults = synthesisResults.filter(s => s.success);
+
+    if (successfulResults.length === 0) {
+      return this.generateDefaultArchitectureDiagram({});
+    }
+
+    // Group entities by type for package organization
+    const entitiesByType: Record<string, SynthesisResult[]> = {};
+    for (const result of successfulResults) {
+      const type = result.entityType || 'Unknown';
+      if (!entitiesByType[type]) {
+        entitiesByType[type] = [];
+      }
+      entitiesByType[type].push(result);
+    }
+
+    // Generate components grouped by entity type
+    let components = '';
+    const entityIds: Record<string, string> = {};
+
+    for (const [type, entities] of Object.entries(entitiesByType)) {
+      components += `\n  package "${type}s" {\n`;
+      entities.slice(0, 10).forEach((entity, index) => {
+        const issueCount = entity.potentialIssues.length;
+        const depCount = entity.dependencies.length + entity.dependents.length;
+        const style = issueCount > 0 ? '<<warning>>' : depCount >= 6 ? '<<critical>>' : depCount >= 3 ? '<<important>>' : '<<standard>>';
+
+        const cleanName = entity.entityName.split('.').pop() || entity.entityName;
+        const componentId = `${type}_${index}`;
+        entityIds[entity.entityName] = componentId;
+
+        const purposeNote = entity.purpose.substring(0, 40).replace(/"/g, "'");
+        components += `    component "${cleanName}" as ${componentId} ${style}\n`;
+        components += `    note right of ${componentId}: ${purposeNote}...\n`;
+      });
+      components += `  }\n`;
+    }
+
+    // Generate dependency relationships
+    let relationships = '';
+    for (const result of successfulResults.slice(0, 15)) {
+      const sourceId = entityIds[result.entityName];
+      if (!sourceId) continue;
+
+      for (const dep of result.dependencies.slice(0, 3)) {
+        // Find if this dependency is also in our results
+        const targetEntity = successfulResults.find(e =>
+          e.entityName === dep || e.entityName.endsWith(`.${dep}`) || dep.endsWith(e.entityName.split('.').pop()!)
+        );
+        if (targetEntity && entityIds[targetEntity.entityName]) {
+          relationships += `  ${sourceId} --> ${entityIds[targetEntity.entityName]} : uses\n`;
+        }
+      }
+    }
+
+    const totalEntities = successfulResults.length;
+    const totalIssues = successfulResults.reduce((sum, e) => sum + e.potentialIssues.length, 0);
+    const totalDeps = successfulResults.reduce((sum, e) => sum + e.dependencies.length, 0);
+    const patternsFound = successfulResults.reduce((sum, e) => sum + e.patternsIdentified.length, 0);
+
+    return `@startuml
+${this.getStandardStyle()}
+
+title Code Architecture - From CGR Synthesis Analysis
+
+${components}
+
+${relationships}
+
+note bottom
+  Synthesis Analysis Summary:
+  - Total Entities: ${totalEntities}
+  - Dependencies: ${totalDeps}
+  - Patterns Found: ${patternsFound}
+  - Potential Issues: ${totalIssues}
+
+  Legend:
+  <<critical>> Hub component (6+ connections)
+  <<important>> Connected (3-5 connections)
+  <<warning>> Has potential issues
+  <<standard>> Standard component
+end note
+
+@enduml`;
+  }
+
   private generateSequenceDiagram(data: any): string {
     const patternCount = data.patternCatalog?.patterns?.length || 0;
     const avgSignificance = data.patternCatalog?.summary?.avgSignificance || 0;
@@ -3708,6 +3817,114 @@ Significance: [1-10]`;
     }
 
     return patterns;
+  }
+
+  /**
+   * Extract patterns from LLM-powered code synthesis results (CGR integration).
+   * Converts synthesis insights into IdentifiedPattern objects for the pattern catalog.
+   */
+  private extractPatternsFromSynthesis(synthesisResults: SynthesisResult[]): IdentifiedPattern[] {
+    const patterns: IdentifiedPattern[] = [];
+
+    for (const synthesis of synthesisResults.filter(s => s.success)) {
+      // Convert each identified pattern from synthesis into a catalog entry
+      for (const patternName of synthesis.patternsIdentified) {
+        patterns.push({
+          name: `${synthesis.entityType}: ${patternName}`,
+          category: 'CodeStructure',
+          description: synthesis.purpose,
+          significance: this.calculateSynthesisPatternSignificance(synthesis, patternName),
+          evidence: [
+            `Identified in: ${synthesis.entityName}`,
+            ...synthesis.sourceFiles.slice(0, 3).map(f => `Source: ${f}`)
+          ],
+          relatedComponents: [synthesis.entityName, ...synthesis.dependencies.slice(0, 5)],
+          implementation: {
+            language: 'auto-detected',
+            codeExample: synthesis.documentation?.substring(0, 200),
+            usageNotes: synthesis.components.slice(0, 3).map(c => `Component: ${c}`)
+          }
+        });
+      }
+
+      // Create patterns for potential issues (high value for quality insights)
+      for (const issue of synthesis.potentialIssues) {
+        patterns.push({
+          name: `Code Quality: ${issue.substring(0, 50)}`,
+          category: 'CodeQuality',
+          description: `Identified in ${synthesis.entityName}: ${issue}`,
+          significance: 7, // Issues are always significant
+          evidence: [
+            `Entity: ${synthesis.entityName}`,
+            `Type: ${synthesis.entityType}`,
+            ...synthesis.sourceFiles.slice(0, 2).map(f => `File: ${f}`)
+          ],
+          relatedComponents: [synthesis.entityName],
+          implementation: {
+            language: 'auto-detected',
+            usageNotes: [`Consider addressing: ${issue}`]
+          }
+        });
+      }
+
+      // Create dependency relationship patterns for complex entities
+      if (synthesis.dependencies.length >= 3 || synthesis.dependents.length >= 3) {
+        const depCount = synthesis.dependencies.length;
+        const depndtCount = synthesis.dependents.length;
+        patterns.push({
+          name: `Dependency Hub: ${synthesis.entityName}`,
+          category: 'architectural',
+          description: `${synthesis.entityName} is a key component with ${depCount} dependencies and ${depndtCount} dependents`,
+          significance: Math.min(9, 5 + Math.floor((depCount + depndtCount) / 3)),
+          evidence: [
+            `Dependencies: ${synthesis.dependencies.slice(0, 5).join(', ')}`,
+            `Dependents: ${synthesis.dependents.slice(0, 5).join(', ')}`,
+            `Purpose: ${synthesis.purpose.substring(0, 100)}`
+          ],
+          relatedComponents: [...synthesis.dependencies.slice(0, 5), ...synthesis.dependents.slice(0, 5)],
+          implementation: {
+            language: 'auto-detected',
+            usageNotes: [
+              'Changes to this component may have wide impact',
+              'Consider interface stability and backward compatibility'
+            ]
+          }
+        });
+      }
+    }
+
+    log(`Extracted ${patterns.length} patterns from ${synthesisResults.length} synthesis results`, 'info');
+    return patterns;
+  }
+
+  /**
+   * Calculate significance score for a synthesis-derived pattern.
+   */
+  private calculateSynthesisPatternSignificance(synthesis: SynthesisResult, patternName: string): number {
+    let score = 5; // Base score
+
+    // Boost for well-known design patterns
+    const knownPatterns = ['factory', 'singleton', 'observer', 'decorator', 'adapter', 'facade', 'proxy', 'strategy'];
+    if (knownPatterns.some(p => patternName.toLowerCase().includes(p))) {
+      score += 2;
+    }
+
+    // Boost for entities with more dependencies (central to architecture)
+    if (synthesis.dependencies.length >= 5) {
+      score += 1;
+    }
+
+    // Boost for entities with more dependents (widely used)
+    if (synthesis.dependents.length >= 3) {
+      score += 1;
+    }
+
+    // Boost for Class entities (often more significant)
+    if (synthesis.entityType === 'Class') {
+      score += 1;
+    }
+
+    return Math.min(10, score);
   }
 
   /**

@@ -59,7 +59,7 @@ agents:
       merge: standard  # Structure fusion is algorithmic
     techStack: "SemanticAnalyzer + Embeddings"
     phase: 3
-    row: 4          # After semantic analysis
+    row: 3          # After ontology classification (row 2)
     col: 0.6        # Centered in column
 
   - id: batch_checkpoint_manager
@@ -72,7 +72,7 @@ agents:
     tier: fast
     techStack: "JSON file persistence"
     phase: 4
-    row: 6.5        # Between QA (row 6) and Persistence (row 7)
+    row: 5          # After QA (row 4), before finalization
     col: 0.6        # Centered in column
 
   # --- Original Agents with tier annotations ---
@@ -106,14 +106,14 @@ agents:
     name: Code Graph
     shortName: Code
     icon: Code
-    description: "Builds AST-based knowledge graph using Tree-sitter parsing. Uses external LLM (via code-graph-rag MCP) for Cypher query generation and RAG orchestration. Indexes functions, classes, imports, and call relationships into Memgraph."
+    description: "Builds AST-based knowledge graph using Tree-sitter parsing. Uses external LLM (via code-graph-rag MCP) for Cypher query generation and RAG orchestration. Indexes functions, classes, imports, and call relationships into Memgraph. Runs in FINALIZATION phase after all batches complete."
     usesLLM: true
     llmModel: "External: code-graph-rag (OpenAI/Anthropic/Ollama)"
     tier: standard
     techStack: "Tree-sitter + Memgraph + pydantic_ai"
-    phase: 1
-    row: 0
-    col: 1.5
+    phase: 5       # FINALIZATION phase (after batch loop)
+    row: 6         # After checkpoint (row 5), before persistence (row 7)
+    col: 0.6       # Centered like other finalization nodes
 
   - id: documentation_linker
     name: Documentation Linker
@@ -189,9 +189,9 @@ agents:
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: standard
     techStack: "OntologyClassifier + SemanticAnalyzer"
-    phase: 4
-    row: 5
-    col: 0.75
+    phase: 2         # After semantic (phase 1), before KG-Ops (phase 3)
+    row: 2           # After semantic (row 1), before KG-Ops (row 3)
+    col: 0.6         # Centered in column
 
   - id: quality_assurance
     name: Quality Assurance
@@ -202,9 +202,9 @@ agents:
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: premium
     techStack: "SemanticAnalyzer + Semantic Value Filter"
-    phase: 5
-    row: 6
-    col: 0.6        # Centered in column
+    phase: 4         # After KG-Ops (phase 3), before checkpoint (phase 5)
+    row: 4           # After KG-Ops (row 3), before checkpoint (row 5)
+    col: 0.6         # Centered in column
 
   - id: persistence
     name: Persistence

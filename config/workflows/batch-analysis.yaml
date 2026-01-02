@@ -445,45 +445,29 @@ edges:
 
   # ========== FINALIZATION PHASE ==========
   # CGR runs AFTER all batches complete (indexes current HEAD)
+  # code_graph handles: index → synthesize → correlate → transform internally
   - from: batch_checkpoint_manager
     to: code_graph
     type: dependency
-    label: "index current"
+    label: "finalize"
 
-  # CGR synthesis (LLM analysis of current codebase)
+  # CGR self-loop for internal phases (index, synthesize, correlate, transform)
   - from: code_graph
     to: code_graph
     type: self
-    label: "index→synthesize"
+    label: "index→synth→correlate→transform"
 
-  # Correlation: match historical batch entities with current codebase
-  - from: code_graph
-    to: correlation
-    type: dependency
-    label: "correlate"
-
-  # Correlation also needs accumulated batch results
+  # Code graph also receives accumulated batch entities for correlation
   - from: batch_checkpoint_manager
-    to: correlation
+    to: code_graph
     type: dataflow
     label: "historical entities"
 
-  # Transform code entities (with correlation enrichment)
-  - from: correlation
-    to: code_graph
-    type: dependency
-    label: "transform"
-
-  # Persistence (receives both batch entities and code entities)
+  # Code graph outputs to persistence
   - from: code_graph
     to: persistence
     type: dependency
-    label: "code entities"
-
-  - from: correlation
-    to: persistence
-    type: dependency
-    label: "enriched + historical"
+    label: "code + enriched entities"
 
   - from: persistence
     to: deduplication

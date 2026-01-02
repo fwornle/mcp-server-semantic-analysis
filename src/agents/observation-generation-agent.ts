@@ -1008,6 +1008,29 @@ Provide a JSON response with:
     gitPatterns: any[],
     vibeThemes: any[]
   ): StructuredObservation | null {
+    // DISABLED: This method was generating garbage observations like:
+    // "Correlation identified between git activity (promise) and conversation focus (No theme)"
+    //
+    // The approach of template-filling raw data produces meaningless entities that:
+    // 1. Have broken entity names (e.g., "CrossanalysisGitvibecorrelationPattern")
+    // 2. Contain no actionable insights for developers
+    // 3. Waste storage and attention in the knowledge graph
+    //
+    // TODO: If cross-source correlation is needed, use LLM to:
+    // 1. Actually analyze both sources semantically
+    // 2. Identify real patterns that span git commits AND conversations
+    // 3. Generate specific, actionable observations with code references
+    // 4. Create proper entity names based on the actual correlation found
+    //
+    // Until that's implemented, return null to avoid generating garbage.
+    log('Skipping cross-analysis correlation (disabled - was generating garbage)', 'info', {
+      gitPatternsCount: gitPatterns?.length || 0,
+      vibeThemesCount: vibeThemes?.length || 0
+    });
+    return null;
+
+    // Original garbage-generating code preserved for reference:
+    /*
     try {
       const entityName = this.generateEntityName('CrossAnalysis', 'GitVibeCorrelation');
       const currentDate = new Date().toISOString();
@@ -1084,6 +1107,7 @@ Provide a JSON response with:
       log('Failed to create cross-analysis observation', 'error', error);
       return null;
     }
+    */
   }
 
   private async enhanceWithWebSearch(

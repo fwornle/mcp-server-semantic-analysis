@@ -353,15 +353,35 @@ steps:
       - transform_code_entities
     phase: finalization
 
-  # PHASE 7: Final Deduplication
+  # PHASE F6: Generate Insight Documents
+  # Creates detailed markdown documentation for high-value entities
+  # This ensures entities have rich documentation like StrategyBasedModularRoutingPattern example
+  - name: generate_insights
+    agent: insight_generation
+    action: generateComprehensiveInsights
+    tier: premium
+    parameters:
+      persisted_entities: "{{final_persist.result}}"
+      accumulated_entities: "{{accumulatedKG.entities}}"
+      code_graph_results: "{{index_codebase.result}}"
+      code_synthesis_results: "{{synthesize_code_insights.result}}"
+      team: "{{params.team}}"
+    timeout: 300
+    dependencies:
+      - final_persist
+      - synthesize_code_insights
+    phase: finalization
+
+  # PHASE F7: Final Deduplication
   - name: final_dedup
     agent: deduplication
     action: deduplicateEntities
     parameters:
       persisted_results: "{{final_persist.result}}"
+      insights_results: "{{generate_insights.result}}"
     timeout: 180
     dependencies:
-      - final_persist
+      - generate_insights
     phase: finalization
 
   # PHASE 8: Content Validation
@@ -469,7 +489,14 @@ edges:
     type: dependency
     label: "code + enriched entities"
 
+  # Persistence outputs to insight generation
   - from: persistence
+    to: insight_generation
+    type: dependency
+    label: "generate docs"
+
+  # Insight generation outputs to deduplication
+  - from: insight_generation
     to: deduplication
     type: dependency
 

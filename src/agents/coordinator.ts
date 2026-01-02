@@ -1367,7 +1367,23 @@ export class CoordinatorAgent {
                   throw new Error(`Quality Assurance failed after retry with ${retryResult.remainingFailures.length} critical issues`);
                 }
 
-                log(`QA Enforcement: Quality validation passed after retry`, "info");
+                // Store QA iterations in the step output for dashboard visibility
+                // iterations=0 means initial QA passed, iterations>0 means retries happened
+                // So total iterations = retryResult.iterations + 1 (for initial QA)
+                if (execution.results['quality_assurance']) {
+                  execution.results['quality_assurance'].qaIterations = retryResult.iterations + 1;
+                }
+                // Update progress file to reflect QA iterations immediately
+                this.writeProgressFile(execution, workflow, undefined, Array.from(runningSteps.keys()));
+
+                log(`QA Enforcement: Quality validation passed after retry`, "info", {
+                  qaIterations: retryResult.iterations + 1
+                });
+              } else {
+                // QA passed on first try - set iterations to 1
+                if (execution.results['quality_assurance']) {
+                  execution.results['quality_assurance'].qaIterations = 1;
+                }
               }
             }
 
@@ -3207,6 +3223,8 @@ Expected locations for generated files:
     if (result.totalPatterns !== undefined) summary.totalPatterns = result.totalPatterns;
     if (result.score !== undefined) summary.score = result.score;
     if (result.passed !== undefined) summary.passed = result.passed;
+    // QA iterations count (for retry feedback in DAG visualization)
+    if (result.qaIterations !== undefined) summary.qaIterations = result.qaIterations;
 
     // Handle arrays - summarize counts
     if (Array.isArray(result.patterns)) summary.patternsCount = result.patterns.length;

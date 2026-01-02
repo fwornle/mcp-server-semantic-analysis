@@ -1120,7 +1120,20 @@ Respond with a JSON object:
     // Check for generic "SomethingPattern" without specificity (just adding "Pattern" to a word)
     const isSimplePatternName = /^[A-Z][a-z]+Pattern$/.test(entity.name);  // e.g., "ConfigurationPattern"
 
-    const isGenericName = genericPatterns.some(p => p.test(entity.name)) || isSimplePatternName;
+    // NEW: Check for garbage entity names with broken camelCase (too many concatenated words without proper casing)
+    // e.g., "CrossanalysisGitvibecorrelationPattern" - has lowercase run-on words
+    const hasGarbageName = (name: string): boolean => {
+      // Check for lowercase run-ons like "analysisGitvibe" (should be "AnalysisGitVibe")
+      if (/[a-z]{3,}[A-Z][a-z]+[a-z]{3,}[A-Z]/.test(name)) return true;
+      // Check for 5+ capitalized word segments concatenated (over-compounded names)
+      const segments = name.match(/[A-Z][a-z]+/g) || [];
+      if (segments.length >= 5) return true;
+      // Check for "Crossanalysis" pattern (incorrectly cased compound words)
+      if (/Crossanalysis|Gitanalysis|Vibeanalysis|Semanticinsight/i.test(name)) return true;
+      return false;
+    };
+
+    const isGenericName = genericPatterns.some(p => p.test(entity.name)) || isSimplePatternName || hasGarbageName(entity.name);
 
     // Check observations quality
     const observationContents = entity.observations
@@ -1130,6 +1143,43 @@ Respond with a JSON object:
     const avgObsLength = observationContents.length > 0
       ? observationContents.reduce((sum, o) => sum + o.length, 0) / observationContents.length
       : 0;
+
+    // NEW: Check for garbage observation patterns (template-filled nonsense)
+    const garbageObservationPatterns = [
+      /\(No theme\)/i,
+      /\(No pattern\)/i,
+      /conversation focus \(No/i,
+      /Correlation identified between git activity.*and conversation focus/i,
+      /Cross-source analysis reveals alignment/i,
+      /Pattern applicable to projects with active development/i,
+      /demonstrates? (a |good )?practice/i,  // Generic "demonstrates good practice" template
+      /indicates? (a |good )?practice/i,
+    ];
+
+    const hasGarbageObservations = observationContents.some(obs =>
+      garbageObservationPatterns.some(pattern => pattern.test(obs))
+    );
+
+    // If obviously generic, garbage named, or has garbage observations, reject immediately
+    if (hasGarbageName(entity.name)) {
+      log(`Rejecting garbage entity name: ${entity.name}`, 'info');
+      return {
+        hasSemanticValue: false,
+        score: 0.1,
+        reason: `Entity name "${entity.name}" has malformed naming (broken camelCase or over-compounded)`,
+        recommendation: 'remove'
+      };
+    }
+
+    if (hasGarbageObservations) {
+      log(`Rejecting entity with garbage observations: ${entity.name}`, 'info');
+      return {
+        hasSemanticValue: false,
+        score: 0.15,
+        reason: `Entity "${entity.name}" contains template-filled garbage observations without meaningful content`,
+        recommendation: 'remove'
+      };
+    }
 
     // If obviously generic or low-quality, skip expensive LLM call
     if (isGenericName && avgObsLength < 50) {

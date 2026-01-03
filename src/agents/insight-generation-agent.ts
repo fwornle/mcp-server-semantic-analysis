@@ -485,17 +485,45 @@ Best practices, rules, and conventions for using this correctly. What should dev
     log('generateComprehensiveInsights called', 'info');
     const startTime = Date.now();
 
-    // ULTRA DEBUG: Write input parameters to trace file
+    // ULTRA DEBUG: Write input parameters to trace file (with size limits to prevent Invalid string length errors)
     const insightInputTrace = `${process.cwd()}/logs/insight-generation-input-${Date.now()}.json`;
-    await fs.promises.writeFile(insightInputTrace, JSON.stringify({
-      timestamp: new Date().toISOString(),
-      phase: 'INSIGHT_GENERATION_INPUT',
-      params: {
-        keys: Object.keys(params || {}),
-        fullParams: params
-      }
-    }, null, 2));
-    log(`🔍 TRACE: Insight generation input written to ${insightInputTrace}`, 'info');
+    try {
+      // Helper to truncate large arrays for debug output
+      const truncateForDebug = (obj: any, maxItems = 5): any => {
+        if (!obj) return obj;
+        if (Array.isArray(obj)) {
+          return obj.length > maxItems
+            ? [...obj.slice(0, maxItems), `... and ${obj.length - maxItems} more items`]
+            : obj;
+        }
+        if (typeof obj === 'object') {
+          const result: any = {};
+          for (const [key, value] of Object.entries(obj)) {
+            if (key === 'commits' || key === 'sessions' || key === 'entities' || key === 'relations') {
+              result[key] = truncateForDebug(value, maxItems);
+            } else if (typeof value === 'string' && value.length > 500) {
+              result[key] = value.substring(0, 500) + `... (${value.length} chars total)`;
+            } else {
+              result[key] = value;
+            }
+          }
+          return result;
+        }
+        return obj;
+      };
+
+      await fs.promises.writeFile(insightInputTrace, JSON.stringify({
+        timestamp: new Date().toISOString(),
+        phase: 'INSIGHT_GENERATION_INPUT',
+        params: {
+          keys: Object.keys(params || {}),
+          truncatedParams: truncateForDebug(params)  // Truncated to prevent string overflow
+        }
+      }, null, 2));
+      log(`🔍 TRACE: Insight generation input written to ${insightInputTrace}`, 'info');
+    } catch (traceError) {
+      log(`Warning: Could not write insight trace file: ${traceError instanceof Error ? traceError.message : String(traceError)}`, 'warning');
+    }
 
     // Extract parameters from the params object
     const gitAnalysis = params.git_analysis_results || params.gitAnalysis;

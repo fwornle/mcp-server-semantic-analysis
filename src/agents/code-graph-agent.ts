@@ -443,7 +443,7 @@ export class CodeGraphAgent {
 
   /**
    * Index a repository using code-graph-rag CLI
-   * Uses: uv run graph-code index --repo-path <path> --output-proto-dir <dir>
+   * Uses: uv run python -m codebase_rag.main start --repo-path <path> --update-graph --no-confirm
    *
    * Options:
    * - forceReindex: Force re-indexing even if Memgraph has existing data (default: false)
@@ -882,31 +882,39 @@ export class CodeGraphAgent {
       let targetRepoPath: string = this.repositoryPath;
 
       if (command === 'index') {
-        // For index: graph-code index --repo-path <path> --output-proto-dir <dir>
+        // For index: use `python -m codebase_rag.main start --update-graph --repo-path <path>`
+        // The CLI doesn't have an 'index' command - indexing is done via `start --update-graph`
         targetRepoPath = args[0] || this.repositoryPath;
         cliArgs = [
           'run',
           '--directory', this.codeGraphRagDir,
-          'graph-code', 'index',
+          'python', '-m', 'codebase_rag.main',
+          'start',
           '--repo-path', targetRepoPath,
-          '--output-proto-dir', tmpDir,
+          '--update-graph',
+          '--no-confirm',  // Non-interactive mode
         ];
-      } else if (command === 'query') {
-        // For query: pass through args (query, similar, call-graph)
+      } else if (command === 'export') {
+        // For export: use `python -m codebase_rag.main export --output <path> --json`
+        const outputPath = args[0] || path.join(tmpDir, 'graph-export.json');
         cliArgs = [
           'run',
           '--directory', this.codeGraphRagDir,
-          'graph-code', command,
-          ...args,
+          'python', '-m', 'codebase_rag.main',
+          'export',
+          '--output', outputPath,
+          '--json',
         ];
       } else {
-        // Other commands - pass through
-        cliArgs = [
-          'run',
-          '--directory', this.codeGraphRagDir,
-          'graph-code', command,
-          ...args,
-        ];
+        // Query and other commands - the CLI doesn't support direct queries
+        // Use runCypherQuery() instead for Memgraph queries
+        log(`[CodeGraphAgent] Command '${command}' not supported via CLI - use runCypherQuery() for Memgraph queries`, 'warning');
+        resolve({
+          error: `Command '${command}' is not available in the codebase_rag CLI. Available commands: index (via start --update-graph), export. For queries, use runCypherQuery() directly.`,
+          skipped: true,
+          availableCommands: ['index', 'export']
+        });
+        return;
       }
 
       log(`[CodeGraphAgent] Running: uv ${cliArgs.join(' ')}`, 'info');

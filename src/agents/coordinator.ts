@@ -2473,13 +2473,16 @@ export class CoordinatorAgent {
             errors: []
           });
         } catch (insightError) {
+          const errorMsg = insightError instanceof Error ? insightError.message : String(insightError);
           log('Batch workflow: Insight generation failed (non-critical)', 'warning', {
-            error: insightError instanceof Error ? insightError.message : String(insightError)
+            error: errorMsg,
+            hint: errorMsg.includes('Invalid string length') ? 'Data volume too large - consider reducing batch size or filtering data' : undefined
           });
           execution.results['generate_insights'] = {
-            error: insightError instanceof Error ? insightError.message : String(insightError),
+            error: errorMsg,
             skipped: true,
-            skip_reason: 'Insight generation failed'
+            skipReason: `Insight generation failed: ${errorMsg}`,  // Use consistent field name
+            warning: `Insight generation failed: ${errorMsg}`  // Also set warning for summary extraction
           };
         }
       }

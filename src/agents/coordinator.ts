@@ -2265,20 +2265,22 @@ export class CoordinatorAgent {
         finalStepsCount: finalSteps.length,
         finalStepNames: finalSteps.map(s => s.name)
       });
+      let finalizationStepIndex = 0;
       for (const step of finalSteps) {
+        finalizationStepIndex++;
         try {
           log(`Running finalization step: ${step.name}`, 'info', {
             agent: step.agent,
             action: step.action,
             parameterKeys: Object.keys(step.parameters || {}),
-            rawParameters: step.parameters
+            stepIndex: `${finalizationStepIndex}/${finalSteps.length}`
           });
 
-          // Debug: Check what accumulatedKG looks like in execution.results
-          log('Finalization context check', 'info', {
-            executionResultsKeys: Object.keys(execution.results),
-            hasAccumulatedKG: !!execution.results['accumulatedKG'],
-            accumulatedKGEntitiesCount: execution.results['accumulatedKG']?.entities?.length || 0
+          // Update progress file to show finalization progress
+          this.writeProgressFile(execution, workflow, step.name, [step.name], {
+            currentBatch: batchCount,
+            totalBatches: totalBatchCount,
+            batchId: `finalization-${finalizationStepIndex}`
           });
 
           const stepStartTime = new Date();
@@ -2290,7 +2292,8 @@ export class CoordinatorAgent {
           const stepEndTime = new Date();
           log(`Finalization step ${step.name} completed`, 'info', {
             resultType: typeof stepResult,
-            resultKeys: stepResult ? Object.keys(stepResult) : []
+            resultKeys: stepResult ? Object.keys(stepResult) : [],
+            duration: `${stepEndTime.getTime() - stepStartTime.getTime()}ms`
           });
 
           // Record finalization step for workflow report
@@ -2311,6 +2314,12 @@ export class CoordinatorAgent {
         } catch (error) {
           log(`Finalization step ${step.name} failed`, 'error', { error });
           execution.errors.push(`Step ${step.name} failed: ${error}`);
+          // Update progress to show failure
+          this.writeProgressFile(execution, workflow, `${step.name}-failed`, [], {
+            currentBatch: batchCount,
+            totalBatches: totalBatchCount,
+            batchId: `finalization-${finalizationStepIndex}-failed`
+          });
         }
       }
 

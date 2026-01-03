@@ -15,9 +15,27 @@
 
 workflow:
   name: batch-analysis
-  version: "1.2"
-  description: "Chronological batch processing with Tree-KG operators and Code Graph RAG for incremental KG expansion"
+  version: "1.3"
+  description: "Unified 14-agent workflow with Tree-KG operators and Code Graph RAG (runs in batches when needed)"
   type: iterative  # Signals coordinator to use batch iteration
+
+  # All 14 agents in the unified workflow:
+  # 1. batch_scheduler - Plans chronological batches
+  # 2. git_history - Extracts commits with LLM analysis
+  # 3. vibe_history - Extracts session logs correlated with commits
+  # 4. semantic_analysis - Analyzes semantics with LLM
+  # 5. observation_generation - Generates structured observations
+  # 6. ontology_classification - Classifies using project ontology
+  # 7. kg_operators - Tree-KG operators (conv, aggr, embed, dedup, pred, merge)
+  # 8. quality_assurance - Validates quality with retry
+  # 9. batch_checkpoint_manager - Saves batch checkpoints
+  # 10. code_graph - AST-based code intelligence (via Memgraph)
+  # 11. documentation_linker - Links docs/diagrams to code
+  # 12. web_search - Searches for similar patterns externally
+  # 13. insight_generation - Generates insight documents with diagrams
+  # 14. persistence - Persists to LevelDB knowledge graph
+  # 15. deduplication - Deduplicates entities
+  # 16. content_validation - Validates entity accuracy
 
 config:
   max_concurrent_steps: 2  # Limited concurrency for batch processing
@@ -121,18 +139,38 @@ steps:
     phase: batch
     operator: analyze
 
-  # PHASE 2.5: Ontology Classification (newly added)
+  # PHASE 2.5: Generate Structured Observations
+  # Transforms semantic analysis into structured observations for the knowledge graph
+  - name: generate_batch_observations
+    agent: observation_generation
+    action: generateStructuredObservations
+    tier: premium
+    parameters:
+      semantic_analysis: "{{batch_semantic_analysis.result}}"
+      git_analysis: "{{extract_batch_commits.result}}"
+      vibe_analysis: "{{extract_batch_sessions.result}}"
+      batch_context:
+        batchId: "{{currentBatch.id}}"
+        startDate: "{{currentBatch.startDate}}"
+        endDate: "{{currentBatch.endDate}}"
+    timeout: 90
+    dependencies:
+      - batch_semantic_analysis
+    phase: batch
+    operator: observe
+
+  # PHASE 2.6: Ontology Classification
   - name: classify_with_ontology
     agent: ontology_classification
     action: classifyObservations
     tier: standard
     parameters:
-      observations: "{{batch_semantic_analysis.result.entities}}"
+      observations: "{{generate_batch_observations.result.observations}}"
       autoExtend: true
       minConfidence: 0.6
     timeout: 120
     dependencies:
-      - batch_semantic_analysis
+      - generate_batch_observations
     phase: batch
     operator: classify
 
@@ -278,7 +316,21 @@ steps:
       - save_batch_checkpoint  # Wait for ALL batches to complete
     phase: finalization
 
-  # PHASE F2: Code Graph RAG - LLM Synthesis
+  # PHASE F2a: Link Documentation
+  # Analyze markdown, PlantUML diagrams and link to code entities
+  - name: link_documentation
+    agent: documentation_linker
+    action: analyzeDocumentation
+    parameters:
+      markdown_paths: ["**/*.md"]
+      plantuml_paths: ["**/*.puml", "**/*.plantuml"]
+      exclude_patterns: ["**/node_modules/**", "**/dist/**"]
+    timeout: 180
+    dependencies:
+      - save_batch_checkpoint  # Can run parallel to index_codebase
+    phase: finalization
+
+  # PHASE F2b: Code Graph RAG - LLM Synthesis
   # Generate insights about current codebase structure
   - name: synthesize_code_insights
     agent: code_graph
@@ -325,7 +377,7 @@ steps:
       - synthesize_code_insights
     phase: finalization
 
-  # PHASE F4: Transform Code Entities (with correlation results)
+  # PHASE F4: Transform Code Entities (with correlation + documentation results)
   - name: transform_code_entities
     agent: code_graph
     action: transformToKnowledgeEntities
@@ -333,9 +385,11 @@ steps:
       codebase_analysis: "{{index_codebase.result}}"
       synthesis_results: "{{synthesize_code_insights.result}}"
       correlation_results: "{{correlate_with_codebase.result}}"
+      documentation_results: "{{link_documentation.result}}"
     timeout: 120
     dependencies:
       - correlate_with_codebase
+      - link_documentation
     phase: finalization
 
   # PHASE F5: Final Persistence (runs once after all batches)
@@ -372,16 +426,32 @@ steps:
       - synthesize_code_insights
     phase: finalization
 
-  # PHASE F7: Final Deduplication
+  # PHASE F7: Web Search for Similar Patterns
+  # Searches external resources for similar patterns, best practices, and related work
+  - name: web_search
+    agent: web_search
+    action: searchSimilarPatterns
+    tier: standard
+    parameters:
+      insights: "{{generate_insights.result.insights}}"
+      patterns: "{{accumulatedKG.entities}}"
+      maxSearches: 10
+    timeout: 120
+    dependencies:
+      - generate_insights
+    phase: finalization
+
+  # PHASE F8: Final Deduplication
   - name: final_dedup
     agent: deduplication
     action: deduplicateEntities
     parameters:
       persisted_results: "{{final_persist.result}}"
       insights_results: "{{generate_insights.result}}"
+      web_search_results: "{{web_search.result}}"
     timeout: 180
     dependencies:
-      - generate_insights
+      - web_search
     phase: finalization
 
   # PHASE 8: Content Validation
@@ -431,8 +501,14 @@ edges:
     to: semantic_analysis
     type: dependency
 
-  # Ontology classification
+  # Observation generation (transforms semantics into structured observations)
   - from: semantic_analysis
+    to: observation_generation
+    type: dependency
+    label: "observe"
+
+  # Ontology classification (classifies observations using project ontology)
+  - from: observation_generation
     to: ontology_classification
     type: dependency
     label: "classify"
@@ -475,12 +551,16 @@ edges:
     label: "next batch"
 
   # ========== FINALIZATION PHASE ==========
-  # CGR runs AFTER all batches complete (indexes current HEAD)
-  # code_graph handles: index → synthesize → correlate → transform internally
+  # CGR and Documentation Linker run in parallel after all batches complete
   - from: batch_checkpoint_manager
     to: code_graph
     type: dependency
     label: "finalize"
+
+  - from: batch_checkpoint_manager
+    to: documentation_linker
+    type: dependency
+    label: "link docs"
 
   # CGR self-loop for internal phases (index, synthesize, correlate, transform)
   - from: code_graph
@@ -494,6 +574,12 @@ edges:
     type: dataflow
     label: "historical entities"
 
+  # Documentation linker feeds into code graph for entity enrichment
+  - from: documentation_linker
+    to: code_graph
+    type: dataflow
+    label: "doc links"
+
   # Code graph outputs to persistence
   - from: code_graph
     to: persistence
@@ -506,8 +592,14 @@ edges:
     type: dependency
     label: "generate docs"
 
-  # Insight generation outputs to deduplication
+  # Insight generation outputs to web search
   - from: insight_generation
+    to: web_search
+    type: dependency
+    label: "find patterns"
+
+  # Web search outputs to deduplication
+  - from: web_search
     to: deduplication
     type: dependency
 

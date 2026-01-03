@@ -912,6 +912,9 @@ export class CodeGraphAgent {
       log(`[CodeGraphAgent] Running: uv ${cliArgs.join(' ')}`, 'info');
       log(`[CodeGraphAgent] Working directory: ${this.codeGraphRagDir}`, 'debug');
 
+      const TIMEOUT_MS = 300000; // 5 minute timeout for large codebases
+      let timedOut = false;
+
       const uvProcess = spawn('uv', cliArgs, {
         cwd: this.codeGraphRagDir, // Set working directory to code-graph-rag
         env: {
@@ -921,8 +924,20 @@ export class CodeGraphAgent {
           TARGET_REPO_PATH: targetRepoPath, // Pass target repo as env var too
           CODING_REPO: process.env.CODING_REPO || '', // Pass through CODING_REPO if set
         },
-        timeout: 300000, // 5 minute timeout for large codebases
       });
+
+      // Manual timeout implementation (spawn doesn't support timeout option)
+      const timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        log(`[CodeGraphAgent] Process timeout after ${TIMEOUT_MS}ms - killing`, 'warning');
+        uvProcess.kill('SIGTERM');
+        // Force kill after 5 seconds if SIGTERM didn't work
+        setTimeout(() => {
+          if (!uvProcess.killed) {
+            uvProcess.kill('SIGKILL');
+          }
+        }, 5000);
+      }, TIMEOUT_MS);
 
       let stdout = '';
       let stderr = '';
@@ -943,6 +958,15 @@ export class CodeGraphAgent {
       });
 
       uvProcess.on('close', (code) => {
+        clearTimeout(timeoutHandle); // Clear timeout on process completion
+
+        // Handle timeout case
+        if (timedOut) {
+          log(`[CodeGraphAgent] Process was killed due to timeout`, 'warning');
+          reject(new Error(`Process timeout after ${TIMEOUT_MS}ms - code-graph indexing took too long`));
+          return;
+        }
+
         if (code === 0) {
           try {
             // For index command, read protobuf output files and parse stats
@@ -999,6 +1023,7 @@ export class CodeGraphAgent {
       });
 
       uvProcess.on('error', (error) => {
+        clearTimeout(timeoutHandle); // Clear timeout on error
         log(`[CodeGraphAgent] Process spawn error: ${error.message}`, 'error');
         reject(new Error(`Failed to spawn uv process: ${error.message}`));
       });
@@ -1316,7 +1341,7 @@ ISSUES: [comma-separated list of potential risks or concerns, or "None identifie
     }
 
     // Create knowledge entities for significant code structures
-    for (const [modulePath, moduleEntities] of moduleGroups) {
+    for (const [_modulePath, moduleEntities] of moduleGroups) {
       const classes = moduleEntities.filter(e => e.type === 'class');
       const functions = moduleEntities.filter(e => e.type === 'function');
 

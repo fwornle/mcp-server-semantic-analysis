@@ -3369,6 +3369,37 @@ Expected locations for generated files:
 
     const summary: Record<string, any> = {};
 
+    // Handle batch workflow format: { result: { ... }, batchId }
+    // Unwrap nested result structure for batch steps
+    if (result.result && typeof result.result === 'object' && result.batchId) {
+      const innerResult = result.result;
+      summary.batchId = result.batchId;
+
+      // Batch semantic analysis: { entities, relations }
+      if (innerResult.entities !== undefined) {
+        summary.batchEntities = innerResult.entities;
+      }
+      if (innerResult.relations !== undefined) {
+        summary.batchRelations = innerResult.relations;
+      }
+
+      // Batch QA: { stats, validated }
+      if (innerResult.stats) {
+        const stats = innerResult.stats;
+        if (stats.entitiesCreated !== undefined) summary.entitiesCreated = stats.entitiesCreated;
+        if (stats.relationsAdded !== undefined) summary.relationsAdded = stats.relationsAdded;
+        if (stats.commits !== undefined) summary.commitsProcessed = stats.commits;
+        if (stats.sessions !== undefined) summary.sessionsProcessed = stats.sessions;
+        if (stats.duration !== undefined) summary.batchDuration = stats.duration;
+        summary.validated = innerResult.validated || false;
+      }
+
+      // If we extracted batch-specific data, return early
+      if (Object.keys(summary).length > 1) {
+        return summary;
+      }
+    }
+
     // Extract common metrics from results
     if (result.entitiesCreated !== undefined) summary.entitiesCreated = result.entitiesCreated;
     if (result.entitiesUpdated !== undefined) summary.entitiesUpdated = result.entitiesUpdated;

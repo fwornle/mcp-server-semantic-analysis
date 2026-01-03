@@ -131,12 +131,34 @@ async function main(): Promise<void> {
       pid: process.pid
     });
 
+    // Start background heartbeat to prevent "stale" status during long-running steps
+    // The dashboard marks workflows as stale after 120s without an update
+    // This sends a heartbeat every 30s regardless of what step is executing
+    const heartbeatInterval = setInterval(() => {
+      writeProgress(progressFile, {
+        workflowId,
+        status: 'running',
+        message: `Executing ${resolvedWorkflowName}... (heartbeat)`,
+        startTime: startTime.toISOString(),
+        lastUpdate: new Date().toISOString(),
+        elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
+        pid: process.pid
+      });
+      log(`[WorkflowRunner] Heartbeat sent`, 'debug');
+    }, 30000); // 30 seconds - well under the 120s stale threshold
+
     // Execute the workflow
     log(`[WorkflowRunner] Executing ${resolvedWorkflowName} (batch: ${isBatchWorkflow})`, 'info');
 
-    const execution = isBatchWorkflow
-      ? await coordinator.executeBatchWorkflow(resolvedWorkflowName, resolvedParameters)
-      : await coordinator.executeWorkflow(resolvedWorkflowName, resolvedParameters);
+    let execution;
+    try {
+      execution = isBatchWorkflow
+        ? await coordinator.executeBatchWorkflow(resolvedWorkflowName, resolvedParameters)
+        : await coordinator.executeWorkflow(resolvedWorkflowName, resolvedParameters);
+    } finally {
+      // Always clear the heartbeat interval
+      clearInterval(heartbeatInterval);
+    }
 
     // Final success update
     writeProgress(progressFile, {

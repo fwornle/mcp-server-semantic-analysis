@@ -21,6 +21,8 @@ import { BatchScheduler, getBatchScheduler, type BatchWindow, type BatchStats } 
 import { KGOperators, createKGOperators, type KGEntity, type KGRelation, type BatchContext } from "./kg-operators.js";
 import { getBatchCheckpointManager } from "../utils/batch-checkpoint-manager.js";
 import { SemanticAnalyzer } from "./semantic-analyzer.js";
+import { SmartOrchestrator, createSmartOrchestrator, type StepResultWithMetadata } from "../orchestrator/smart-orchestrator.js";
+import { AgentResponse, AgentIssue, createIssue, createDefaultMetadata, createDefaultRouting, createAgentResponse } from "../types/agent-response.js";
 
 export interface WorkflowDefinition {
   name: string;
@@ -95,12 +97,21 @@ export class CoordinatorAgent {
   private isInitializing: boolean = false;
   private monitorIntervalId: ReturnType<typeof setInterval> | null = null;
   private reportAgent: WorkflowReportAgent;
+  private smartOrchestrator: SmartOrchestrator;
 
   constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.graphDB = new GraphDatabaseAdapter();
     this.reportAgent = new WorkflowReportAgent(repositoryPath);
+    this.smartOrchestrator = createSmartOrchestrator({
+      maxRetries: 3,
+      retryThreshold: 0.5,
+      skipThreshold: 0.3,
+      useLLMRouting: true,
+      maxConcurrentSteps: 3,
+      defaultStepTimeout: 120000,
+    });
     this.initializeWorkflows();
     // Note: Agents are initialized lazily when executeWorkflow is called
     // This avoids constructor side effects and race conditions
@@ -254,6 +265,17 @@ export class CoordinatorAgent {
       // Add batch progress info if available (for batch workflows)
       if (batchProgress) {
         progress.batchProgress = batchProgress;
+      }
+
+      // Add multi-agent orchestration data for dashboard visualization
+      const multiAgentData = this.smartOrchestrator.getMultiAgentProcessData();
+      if (multiAgentData) {
+        progress.multiAgent = {
+          stepConfidences: multiAgentData.stepConfidences,
+          routingHistory: multiAgentData.routingHistory,
+          workflowModifications: multiAgentData.workflowModifications,
+          retryHistory: multiAgentData.retryHistory,
+        };
       }
 
       fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
@@ -1353,36 +1375,40 @@ export class CoordinatorAgent {
             const remainingRunning = Array.from(runningSteps.keys());
             this.writeProgressFile(execution, workflow, undefined, remainingRunning);
 
-            // QA Enforcement: Check quality assurance results
+            // QA Enforcement: Check quality assurance results using SmartOrchestrator
             if (completedResult.name === 'quality_assurance' && completedResult.result) {
               const qaFailures = this.validateQualityAssuranceResults(completedResult.result);
               if (qaFailures.length > 0) {
-                log(`QA Enforcement: Quality issues detected, attempting intelligent retry`, "warning", {
+                log(`QA Enforcement: Quality issues detected, using SmartOrchestrator for semantic retry`, "warning", {
                   failures: qaFailures
                 });
 
-                const retryResult = await this.attemptQARecovery(qaFailures, execution, workflow);
+                // Use SmartOrchestrator for semantic retry with proper guidance
+                const retryResult = await this.smartOrchestratorRetry(qaFailures, execution, workflow);
 
                 if (!retryResult.success) {
-                  throw new Error(`Quality Assurance failed after retry with ${retryResult.remainingFailures.length} critical issues`);
+                  throw new Error(`Quality Assurance failed after semantic retry with ${retryResult.remainingFailures.length} critical issues`);
                 }
 
-                // Store QA iterations in the step output for dashboard visibility
-                // iterations=0 means initial QA passed, iterations>0 means retries happened
-                // So total iterations = retryResult.iterations + 1 (for initial QA)
+                // Store QA iterations and routing decision in step output for dashboard
                 if (execution.results['quality_assurance']) {
                   execution.results['quality_assurance'].qaIterations = retryResult.iterations + 1;
+                  execution.results['quality_assurance'].routingDecision = 'retry';
+                  execution.results['quality_assurance'].confidence = retryResult.finalConfidence;
                 }
-                // Update progress file to reflect QA iterations immediately
+                // Update progress file with multi-agent data
                 this.writeProgressFile(execution, workflow, undefined, Array.from(runningSteps.keys()));
 
-                log(`QA Enforcement: Quality validation passed after retry`, "info", {
-                  qaIterations: retryResult.iterations + 1
+                log(`QA Enforcement: Quality validation passed after semantic retry`, "info", {
+                  qaIterations: retryResult.iterations + 1,
+                  finalConfidence: retryResult.finalConfidence
                 });
               } else {
                 // QA passed on first try - set iterations to 1
                 if (execution.results['quality_assurance']) {
                   execution.results['quality_assurance'].qaIterations = 1;
+                  execution.results['quality_assurance'].routingDecision = 'proceed';
+                  execution.results['quality_assurance'].confidence = 0.9; // High confidence on first pass
                 }
               }
             }
@@ -2675,84 +2701,119 @@ export class CoordinatorAgent {
   }
 
   /**
-   * Attempt to recover from QA failures by retrying failed steps with enhanced parameters
+   * Smart Orchestrator-based retry with semantic guidance.
+   *
+   * Uses SmartOrchestrator to:
+   * - Convert failures to structured AgentIssue objects
+   * - Generate semantic guidance for retries (not just threshold tightening)
+   * - Track confidence progression
+   * - Record routing decisions for dashboard visualization
+   *
+   * @see src/orchestrator/smart-orchestrator.ts for core logic
    */
-  /**
-   * Quality-based recovery loop with multiple iterations.
-   * Implements a feedback loop where agents can retry with enhanced parameters
-   * based on QA feedback, up to a configurable maximum iteration count.
-   */
-  private async attemptQARecovery(
+  private async smartOrchestratorRetry(
     failures: string[],
     execution: WorkflowExecution,
     workflow: WorkflowDefinition
-  ): Promise<{ success: boolean; remainingFailures: string[]; iterations: number }> {
-    const MAX_QA_ITERATIONS = 3;  // Maximum retry iterations
+  ): Promise<{ success: boolean; remainingFailures: string[]; iterations: number; finalConfidence: number }> {
+    const MAX_QA_ITERATIONS = 3;
     let currentFailures = [...failures];
     let iteration = 0;
+    let finalConfidence = 0.5;
 
-    log('Starting quality-based recovery loop', 'info', {
+    // Initialize SmartOrchestrator workflow state
+    this.smartOrchestrator.initializeWorkflow(execution.id, workflow.name);
+
+    log('Starting SmartOrchestrator semantic retry loop', 'info', {
       initialFailures: failures.length,
       maxIterations: MAX_QA_ITERATIONS
     });
 
     while (currentFailures.length > 0 && iteration < MAX_QA_ITERATIONS) {
       iteration++;
-      log(`QA Recovery iteration ${iteration}/${MAX_QA_ITERATIONS}`, 'info', {
+      log(`SmartOrchestrator retry iteration ${iteration}/${MAX_QA_ITERATIONS}`, 'info', {
         failuresRemaining: currentFailures.length
       });
 
       const iterationFailures: string[] = [];
       const failedSteps = new Set<string>();
 
-      // Identify which steps need retry based on failures
+      // Identify failed steps
       currentFailures.forEach(failure => {
         const [stepName] = failure.split(':');
-        if (stepName) {
-          failedSteps.add(stepName.trim());
-        }
+        if (stepName) failedSteps.add(stepName.trim());
       });
 
-      // Retry each failed step with enhanced parameters
+      // Retry each failed step with SmartOrchestrator guidance
       for (const stepName of failedSteps) {
         const step = workflow.steps.find(s => s.name === stepName);
         if (!step) continue;
 
         try {
-          log(`Iteration ${iteration}: Retrying step ${stepName}`, 'info', {
-            previousFailures: currentFailures.filter(f => f.startsWith(stepName))
+          // Convert failures to AgentIssue objects for SmartOrchestrator
+          const issues: AgentIssue[] = currentFailures
+            .filter(f => f.startsWith(stepName))
+            .map(f => createIssue(
+              'warning',
+              f.includes('low-value') ? 'data_quality' :
+              f.includes('missing') ? 'missing_data' :
+              f.includes('generic') ? 'semantic_mismatch' : 'validation',
+              'QA_FAILURE',
+              f,
+              { retryable: true, suggestedFix: 'Increase quality requirements' }
+            ));
+
+          // Create step result for SmartOrchestrator
+          const previousResult: StepResultWithMetadata = {
+            stepName,
+            status: 'failed',
+            result: execution.results[stepName],
+            confidence: 0.3 + (iteration * 0.1), // Low confidence for failed step
+            issues,
+            retryCount: iteration - 1,
+            startTime: new Date(),
+          };
+
+          // Get semantic retry guidance from SmartOrchestrator
+          const retryGuidance = await this.smartOrchestrator.smartRetry(
+            stepName,
+            previousResult,
+            execution.results[stepName]?._parameters || {}
+          );
+
+          if (!retryGuidance.shouldRetry) {
+            log(`SmartOrchestrator: No retry recommended for ${stepName}`, 'info', {
+              reason: retryGuidance.reasoning
+            });
+            iterationFailures.push(...currentFailures.filter(f => f.startsWith(stepName)));
+            continue;
+          }
+
+          log(`SmartOrchestrator: Retrying ${stepName} with semantic guidance`, 'info', {
+            guidance: retryGuidance.retryGuidance.instructions
           });
 
-          // Build enhanced parameters based on the failure type and iteration
-          const enhancedParams = this.buildEnhancedParameters(stepName, currentFailures, execution, iteration);
-
-          // Get the agent and retry the action
+          // Get agent and execute with enhanced parameters
           const agent = this.agents.get(step.agent);
-          if (!agent) {
-            throw new Error(`Agent ${step.agent} not found`);
-          }
+          if (!agent) throw new Error(`Agent ${step.agent} not found`);
 
           const action = (agent as any)[step.action];
-          if (!action) {
-            throw new Error(`Action ${step.action} not found on agent ${step.agent}`);
-          }
+          if (!action) throw new Error(`Action ${step.action} not found on agent ${step.agent}`);
 
-          // Retry with enhanced parameters
-          const retryResult = await action.call(agent, enhancedParams);
-
-          // Update execution results
+          // Execute with SmartOrchestrator-enhanced parameters
+          const retryResult = await action.call(agent, retryGuidance.enhancedParameters);
           execution.results[stepName] = retryResult;
 
-          log(`Iteration ${iteration}: Successfully retried step ${stepName}`, 'info');
+          log(`SmartOrchestrator: Successfully retried ${stepName}`, 'info');
 
         } catch (retryError) {
           const errorMsg = retryError instanceof Error ? retryError.message : String(retryError);
           iterationFailures.push(`${stepName}: ${errorMsg} (iteration ${iteration})`);
-          log(`Iteration ${iteration}: Failed to retry step ${stepName}`, 'error', { error: errorMsg });
+          log(`SmartOrchestrator: Failed to retry ${stepName}`, 'error', { error: errorMsg });
         }
       }
 
-      // Re-run QA to check if issues are resolved
+      // Re-run QA validation
       if (iterationFailures.length === 0) {
         try {
           const qaStep = workflow.steps.find(s => s.name === 'quality_assurance');
@@ -2768,142 +2829,69 @@ export class CoordinatorAgent {
                   executionId: execution.id,
                   previousResults: execution.results,
                   step: qaStep.name,
-                  qaIteration: iteration  // Pass iteration info for adaptive QA
+                  qaIteration: iteration,
+                  smartOrchestratorEnabled: true
                 };
                 const newQaResult = await qaAction.call(qaAgent, qaParams);
 
-                // Validate the new QA results
                 const newFailures = this.validateQualityAssuranceResults(newQaResult);
                 if (newFailures.length > 0) {
                   iterationFailures.push(...newFailures);
-                  log(`Iteration ${iteration}: QA validation still failing`, 'warning', {
+                  log(`SmartOrchestrator: QA still failing after iteration ${iteration}`, 'warning', {
                     newFailures: newFailures.length
                   });
                 } else {
-                  log(`Iteration ${iteration}: QA validation passed`, 'info');
+                  finalConfidence = 0.7 + (0.1 * (MAX_QA_ITERATIONS - iteration));
+                  log(`SmartOrchestrator: QA passed after iteration ${iteration}`, 'info', {
+                    finalConfidence
+                  });
                 }
               }
             }
           }
         } catch (qaError) {
-          log(`Iteration ${iteration}: Failed to re-run QA`, 'error', qaError);
+          log(`SmartOrchestrator: Failed to re-run QA`, 'error', qaError);
         }
       }
 
-      // Update failures for next iteration
       currentFailures = iterationFailures;
 
-      // If we fixed everything, break early
       if (currentFailures.length === 0) {
-        log(`Quality issues resolved after ${iteration} iteration(s)`, 'info');
+        log(`SmartOrchestrator: Quality issues resolved after ${iteration} iteration(s)`, 'info');
         break;
       }
     }
 
     const success = currentFailures.length === 0;
-    log('Quality-based recovery loop completed', success ? 'info' : 'warning', {
+    if (success) {
+      finalConfidence = Math.max(finalConfidence, 0.8);
+    }
+
+    // Record routing decision
+    this.smartOrchestrator.recordRoutingDecision({
+      action: success ? 'proceed' : 'terminate',
+      affectedSteps: Array.from(new Set(failures.map(f => f.split(':')[0].trim()))),
+      reason: success
+        ? `Quality issues resolved after ${iteration} semantic retry iteration(s)`
+        : `Failed to resolve ${currentFailures.length} issues after ${iteration} iterations`,
+      confidence: finalConfidence,
+      llmAssisted: true,
+      timestamp: new Date().toISOString(),
+    });
+
+    log('SmartOrchestrator semantic retry completed', success ? 'info' : 'warning', {
       success,
       iterations: iteration,
-      remainingFailures: currentFailures.length
+      remainingFailures: currentFailures.length,
+      finalConfidence
     });
 
     return {
       success,
       remainingFailures: currentFailures,
-      iterations: iteration
+      iterations: iteration,
+      finalConfidence
     };
-  }
-
-  /**
-   * Build enhanced parameters for retry based on failure analysis and iteration number.
-   * Parameters become progressively stricter with each iteration.
-   */
-  private buildEnhancedParameters(
-    stepName: string,
-    failures: string[],
-    execution: WorkflowExecution,
-    iteration: number = 1
-  ): any {
-    const baseParams = execution.results[stepName]?._parameters || {};
-    const enhancedParams = { ...baseParams };
-
-    // Analyze failures to determine enhancement strategy
-    const stepFailures = failures.filter(f => f.startsWith(`${stepName}:`));
-
-    // Progressive enhancement based on iteration
-    const progressiveFactor = iteration;  // Gets stricter with each iteration
-
-    if (stepName === 'semantic_analysis') {
-      // If semantic analysis failed due to missing insights, enhance the analysis depth
-      if (stepFailures.some(f => f.includes('Missing insights'))) {
-        enhancedParams.analysisDepth = 'comprehensive';
-        enhancedParams.includeDetailedInsights = true;
-        enhancedParams.minInsightLength = 200 + (progressiveFactor * 100);  // 200, 300, 400
-      }
-      // Progressive: increase analysis depth with each iteration
-      enhancedParams.semanticValueThreshold = 0.5 + (progressiveFactor * 0.1);  // 0.6, 0.7, 0.8
-    } else if (stepName === 'insight_generation') {
-      // If insight generation failed, request more detailed insights
-      enhancedParams.generateDetailedInsights = true;
-      enhancedParams.includeCodeExamples = true;
-      enhancedParams.minPatternSignificance = 5 + progressiveFactor;  // 6, 7, 8
-      // Progressive: stricter quality requirements
-      enhancedParams.rejectGenericPatterns = progressiveFactor >= 2;  // Reject generic after 2nd iteration
-      enhancedParams.requireConcreteEvidence = progressiveFactor >= 2;
-    } else if (stepName === 'generate_observations') {
-      // For observation generation, increase semantic value requirements
-      enhancedParams.semanticValueThreshold = 0.6 + (progressiveFactor * 0.1);  // 0.7, 0.8, 0.9
-      enhancedParams.minObservationsPerEntity = 2 + progressiveFactor;  // 3, 4, 5
-    } else if (stepName === 'web_search') {
-      // If web search failed, try with broader search parameters
-      enhancedParams.searchDepth = 'comprehensive';
-      enhancedParams.includeAlternativePatterns = true;
-    }
-
-    // Add retry context to help agents understand they're in a retry
-    enhancedParams._retryContext = {
-      isRetry: true,
-      iteration,
-      previousFailures: stepFailures,
-      enhancementReason: 'QA validation failure',
-      progressiveFactor,
-      // Provide feedback about what needs improvement
-      feedback: this.generateRetryFeedback(stepFailures, iteration)
-    };
-
-    return enhancedParams;
-  }
-
-  /**
-   * Generate human-readable feedback for retry attempts
-   */
-  private generateRetryFeedback(failures: string[], iteration: number): string {
-    const feedbackParts: string[] = [];
-
-    if (iteration === 1) {
-      feedbackParts.push('Initial quality check failed. Retrying with enhanced parameters.');
-    } else if (iteration === 2) {
-      feedbackParts.push('Quality still insufficient. Applying stricter requirements.');
-    } else {
-      feedbackParts.push(`Iteration ${iteration}: Final attempt with maximum quality requirements.`);
-    }
-
-    // Analyze failure patterns
-    const hasLowQuality = failures.some(f => f.includes('low-value') || f.includes('meaningless'));
-    const hasMissingContent = failures.some(f => f.includes('missing') || f.includes('insufficient'));
-    const hasGenericContent = failures.some(f => f.includes('generic') || f.includes('vague'));
-
-    if (hasLowQuality) {
-      feedbackParts.push('Previous output contained low-value content. Focus on actionable insights.');
-    }
-    if (hasMissingContent) {
-      feedbackParts.push('Previous output was incomplete. Ensure comprehensive coverage.');
-    }
-    if (hasGenericContent) {
-      feedbackParts.push('Previous output was too generic. Provide specific, concrete examples.');
-    }
-
-    return feedbackParts.join(' ');
   }
 
   /**
@@ -3225,6 +3213,10 @@ Expected locations for generated files:
     if (result.passed !== undefined) summary.passed = result.passed;
     // QA iterations count (for retry feedback in DAG visualization)
     if (result.qaIterations !== undefined) summary.qaIterations = result.qaIterations;
+    // Multi-agent routing decision (proceed/retry/skip/escalate)
+    if (result.routingDecision !== undefined) summary.routingDecision = result.routingDecision;
+    // Retry count for semantic retry visualization
+    if (result.retryCount !== undefined) summary.retryCount = result.retryCount;
 
     // Handle arrays - summarize counts
     if (Array.isArray(result.patterns)) summary.patternsCount = result.patterns.length;

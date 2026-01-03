@@ -2,11 +2,11 @@
 
 Guide to integrating the MCP semantic analysis server with various AI assistants and development environments.
 
-## Claude Code Integration
+## Coding Agent Integration
 
 ### MCP Configuration
 
-Add to your Claude Code MCP settings (`~/.config/claude-code/mcp.json`):
+Add to your coding agent MCP settings (e.g., `~/.config/claude-code/mcp.json`):
 
 ```json
 {
@@ -22,7 +22,7 @@ Add to your Claude Code MCP settings (`~/.config/claude-code/mcp.json`):
 }
 ```
 
-### Usage in Claude Code
+### Usage in Coding Agent
 
 ```
 # Repository analysis

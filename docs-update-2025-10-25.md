@@ -13,7 +13,7 @@ Updated documentation to accurately reflect the actual implementation based on c
 - Agents call each other directly in sequence
 
 **Now Corrected:**
-- `CoordinatorAgent` orchestrates **ALL 10 agents** (9 worker agents) through workflow definitions
+- `CoordinatorAgent` orchestrates **ALL 14 agents** (13 worker agents) through workflow definitions
 - Workflows define step-by-step execution with explicit dependencies
 - Data flows through templating: `{{step_name.result}}`
 - Example "complete-analysis" workflow:
@@ -92,7 +92,7 @@ Updated documentation to accurately reflect the actual implementation based on c
 
 3. **`docs/puml/unified-semantic-architecture.puml`** (Regular docs diagram)
    - ✅ Vertical layout for documentation
-   - ✅ Shows coordinator connecting to ALL 10 agents (9 workers)
+   - ✅ Shows coordinator connecting to ALL 14 agents (13 workers)
    - ✅ Color-coded packages by agent type
    - ✅ Includes explanatory notes
 

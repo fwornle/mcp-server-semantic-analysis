@@ -30,7 +30,7 @@ npm run build
 
 ### MCP Server Not Connecting
 
-**Problem**: Claude Code cannot connect to semantic analysis server
+**Problem**: Coding agent cannot connect to semantic analysis server
 
 **Diagnosis**:
 ```bash
@@ -45,7 +45,7 @@ cat ~/.config/claude-code/mcp.json
 1. Verify build artifacts exist: `ls build/`
 2. Check API keys are set: `echo $ANTHROPIC_API_KEY`
 3. Review MCP config path in `mcp.json`
-4. Restart Claude Code
+4. Restart coding agent
 
 ### API Rate Limiting
 

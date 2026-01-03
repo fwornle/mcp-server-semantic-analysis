@@ -453,6 +453,17 @@ edges:
     to: quality_assurance
     type: dependency
 
+  # QA RETRY LOOP - Self-loop representing internal retry mechanism
+  # When QA fails, coordinator's attemptQARecovery() re-runs FAILED STEPS
+  # (could be semantic, insight, observation, etc.) with enhanced parameters:
+  # - Progressive tightening: semanticValueThreshold 0.6→0.7→0.8
+  # - Stricter requirements: rejectGenericPatterns, requireConcreteEvidence
+  # - Up to 3 iterations, then accepts partial results
+  - from: quality_assurance
+    to: quality_assurance
+    type: self
+    label: "retry failed steps (3x)"
+
   - from: quality_assurance
     to: batch_checkpoint_manager
     type: dependency

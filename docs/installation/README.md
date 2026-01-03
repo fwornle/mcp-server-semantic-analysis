@@ -111,8 +111,8 @@ UKB_INTEGRATION=true
 VKB_INTEGRATION=true
 ```
 
-### Claude Code Integration
-The server automatically integrates with Claude Code through MCP configuration:
+### Coding Agent Integration
+The server automatically integrates with MCP-compatible coding agents through configuration:
 
 1. **Automatic Configuration**: When using the main system's `./install.sh`
 2. **Manual Configuration**: Update `~/.claude.json`
@@ -151,7 +151,7 @@ claude-mcp
 Check that all 12 tools are available:
 
 ```typescript
-// In Claude Code session
+// In coding agent session
 heartbeat()                    // ✅ Connection health
 test_connection()              // ✅ Server status
 determine_insights(content)    // ✅ AI analysis
@@ -167,7 +167,7 @@ generate_lessons_learned(...)  // ✅ Lessons learned
 ```
 
 ### Verify Agents
-Check that all 7 agents are operational:
+Check that all 14 agents are operational:
 
 - ✅ **CoordinatorAgent**: Workflow orchestration
 - ✅ **SemanticAnalyzer**: LLM-powered analysis

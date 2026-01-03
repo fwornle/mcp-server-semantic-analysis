@@ -1,7 +1,7 @@
 @startuml agent-coordination-flow
 !include /Users/q284340/Agentic/coding/docs/puml/_standard-style.puml
 
-title 13-Agent Coordination Flow
+title 14-Agent Coordination Flow
 
 participant "Claude Code" as CLAUDE
 participant "MCP Handler" as MCP
@@ -17,6 +17,9 @@ participant "Content Validation Agent" as CONTENT #FFE6E6
 participant "Git Staleness Detector" as STALE #E6FFE6
 participant "Persistence Agent" as PERSIST #E6FFE6
 participant "Deduplication Agent" as DEDUP #E6FFE6
+participant "Ontology Classification Agent" as ONTOLOGY #E6F3FF
+participant "Code Graph Agent" as CODEGRAPH #E6F3FF
+participant "Documentation Linker Agent" as DOCLINK #E6F3FF
 database "GraphDB" as GRAPHDB #D4EDDA
 
 CLAUDE ->> MCP : tool_call(execute_workflow)
@@ -26,7 +29,7 @@ MCP ->> COORD : execute_workflow(complete-analysis)
 activate COORD
 
 note over COORD
-  Orchestrate 12-worker-agent workflow
+  Orchestrate 13-worker-agent workflow
   Initialize GraphDB adapter
   Manage task dependencies
 end note
@@ -78,6 +81,26 @@ activate OBS
 note right of OBS: Uses LLM
 OBS -->> COORD : structured_observations
 deactivate OBS
+
+== Classification Phase ==
+
+COORD ->> ONTOLOGY : classify_entities(observations)
+activate ONTOLOGY
+note right of ONTOLOGY: Uses LLM
+ONTOLOGY -->> COORD : classified_entities
+deactivate ONTOLOGY
+
+COORD ->> CODEGRAPH : analyze_code_graph()
+activate CODEGRAPH
+note right of CODEGRAPH: Uses LLM
+CODEGRAPH -->> COORD : code_graph_analysis
+deactivate CODEGRAPH
+
+COORD ->> DOCLINK : link_documentation()
+activate DOCLINK
+note right of DOCLINK: Uses LLM
+DOCLINK -->> COORD : linked_docs
+deactivate DOCLINK
 
 == Validation Phase ==
 

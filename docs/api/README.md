@@ -27,7 +27,7 @@ The MCP Server provides **12 specialized tools** accessible through the Model Co
 
 **Example**:
 ```typescript
-// Usage in Claude Code
+// Usage in coding agent
 heartbeat()
 
 // Response

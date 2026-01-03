@@ -1,7 +1,7 @@
 @startuml tool-overview
 !include _standard-style.puml
 
-title MCP Server Tools - Complete Overview (10-Agent System)
+title MCP Server Tools - Complete Overview (14-Agent System)
 
 package "Connection & Health Tools" <<api>> {
   component [heartbeat] as HEARTBEAT <<api>>
@@ -27,7 +27,7 @@ package "Documentation & Reporting Tools" <<util>> {
   component [generate_lessons_learned] as LESSONS <<util>>
 }
 
-package "10-Agent Support Layer" <<agent>> {
+package "14-Agent Support Layer" <<agent>> {
   package "Orchestration (1)" {
     component [Coordinator Agent] as COORD_AGENT <<agent>> #FFE6CC
   }
@@ -99,10 +99,10 @@ note top of UKB
 end note
 
 note top of WORKFLOW
-  10-agent orchestration
+  14-agent orchestration
   Sequential workflow execution
   Quality assurance coordination
-  GraphDB persistence (no sync agent)
+  GraphDB persistence
 end note
 
 note top of DIAGRAMS

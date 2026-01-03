@@ -896,4 +896,371 @@ Respond with JSON:
       summary: 'Analysis failed',
     };
   }
+
+  // ============================================================================
+  // MULTI-AGENT SYSTEM: AgentResponse Envelope Method
+  // Returns standard AgentResponse envelope for multi-agent routing
+  // ============================================================================
+
+  /**
+   * Analyze git history and return result wrapped in AgentResponse envelope
+   * This is the primary method for the multi-agent system
+   */
+  async analyzeGitHistoryWithEnvelope(
+    params: Record<string, any> & {
+      stepName?: string;
+      upstreamConfidence?: number;
+      upstreamIssues?: Array<{ severity: string; message: string }>;
+    } = {}
+  ): Promise<{
+    data: GitHistoryAnalysisResult;
+    metadata: {
+      confidence: number;
+      confidenceBreakdown: {
+        dataCompleteness: number;
+        semanticCoherence: number;
+        upstreamInfluence: number;
+        processingQuality: number;
+      };
+      qualityScore: number;
+      issues: Array<{
+        severity: 'critical' | 'warning' | 'info';
+        category: string;
+        code: string;
+        message: string;
+        retryable: boolean;
+        suggestedFix?: string;
+      }>;
+      warnings: string[];
+      processingTimeMs: number;
+    };
+    routing: {
+      suggestedNextSteps: string[];
+      skipRecommendations: string[];
+      escalationNeeded: boolean;
+      escalationReason?: string;
+      retryRecommendation?: {
+        shouldRetry: boolean;
+        reason: string;
+        suggestedChanges: string;
+      };
+    };
+    timestamp: string;
+    agentId: string;
+    stepName: string;
+  }> {
+    const startTime = Date.now();
+    const issues: Array<{
+      severity: 'critical' | 'warning' | 'info';
+      category: string;
+      code: string;
+      message: string;
+      retryable: boolean;
+      suggestedFix?: string;
+    }> = [];
+    const warnings: string[] = [];
+
+    try {
+      // Check upstream context
+      if (params.upstreamConfidence !== undefined && params.upstreamConfidence < 0.5) {
+        warnings.push(`Upstream confidence is low (${params.upstreamConfidence.toFixed(2)})`);
+      }
+
+      // Perform git history analysis
+      const result = await this.analyzeGitHistory(params);
+
+      // Calculate confidence based on results
+      const confidenceBreakdown = this.calculateGitConfidence(result, params);
+      const overallConfidence = this.computeGitOverallConfidence(confidenceBreakdown);
+
+      // Detect issues in result
+      const resultIssues = this.detectGitIssues(result, confidenceBreakdown);
+      issues.push(...resultIssues);
+
+      // Generate routing suggestions
+      const routing = this.generateGitRoutingSuggestions(overallConfidence, issues, result);
+
+      const processingTimeMs = Date.now() - startTime;
+
+      return {
+        data: result,
+        metadata: {
+          confidence: overallConfidence,
+          confidenceBreakdown,
+          qualityScore: Math.round(overallConfidence * 100),
+          issues,
+          warnings,
+          processingTimeMs,
+        },
+        routing,
+        timestamp: new Date().toISOString(),
+        agentId: 'git_history',
+        stepName: params.stepName || 'analyze_git_history',
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const processingTimeMs = Date.now() - startTime;
+
+      issues.push({
+        severity: 'critical',
+        category: 'processing_error',
+        code: 'GIT_ANALYSIS_FAILED',
+        message: `Git history analysis failed: ${errorMessage}`,
+        retryable: !errorMessage.includes('not a git repository'),
+        suggestedFix: errorMessage.includes('not a git repository')
+          ? 'Ensure repository path is valid'
+          : 'Check git access and retry',
+      });
+
+      const emptyResult: GitHistoryAnalysisResult = {
+        checkpointInfo: {
+          fromTimestamp: null,
+          toTimestamp: new Date(),
+          commitsAnalyzed: 0,
+        },
+        commits: [],
+        architecturalDecisions: [],
+        codeEvolution: [],
+        summary: {
+          majorChanges: [],
+          activeDevelopmentAreas: [],
+          refactoringPatterns: [],
+          insights: 'Analysis failed',
+        },
+      };
+
+      return {
+        data: emptyResult,
+        metadata: {
+          confidence: 0,
+          confidenceBreakdown: {
+            dataCompleteness: 0,
+            semanticCoherence: 0,
+            upstreamInfluence: params.upstreamConfidence ?? 1,
+            processingQuality: 0,
+          },
+          qualityScore: 0,
+          issues,
+          warnings,
+          processingTimeMs,
+        },
+        routing: {
+          suggestedNextSteps: [],
+          skipRecommendations: ['semantic_analysis', 'vibe_history'], // Skip if git failed
+          escalationNeeded: false,
+          retryRecommendation: {
+            shouldRetry: !errorMessage.includes('not a git repository'),
+            reason: 'Git history analysis failed',
+            suggestedChanges: 'Check repository path and git configuration',
+          },
+        },
+        timestamp: new Date().toISOString(),
+        agentId: 'git_history',
+        stepName: params.stepName || 'analyze_git_history',
+      };
+    }
+  }
+
+  /**
+   * Calculate confidence breakdown for git history analysis
+   */
+  private calculateGitConfidence(
+    result: GitHistoryAnalysisResult,
+    params: { upstreamConfidence?: number }
+  ): {
+    dataCompleteness: number;
+    semanticCoherence: number;
+    upstreamInfluence: number;
+    processingQuality: number;
+  } {
+    // Data completeness: based on commits found
+    let dataCompleteness = 0.5;
+    if (result.commits.length > 0) dataCompleteness = 0.7;
+    if (result.commits.length >= 10) dataCompleteness = 0.85;
+    if (result.commits.length >= 50) dataCompleteness = 1.0;
+
+    // Semantic coherence: based on detected patterns and decisions
+    let semanticCoherence = 0.6;
+    if (result.architecturalDecisions.length > 0) semanticCoherence += 0.15;
+    if (result.codeEvolution.length > 0) semanticCoherence += 0.15;
+    if (result.summary.majorChanges.length > 0) semanticCoherence += 0.1;
+    semanticCoherence = Math.min(1, semanticCoherence);
+
+    // Upstream influence
+    const upstreamInfluence = params.upstreamConfidence ?? 1.0;
+
+    // Processing quality: based on analysis completeness
+    let processingQuality = 0.8;
+    if (result.summary.insights && result.summary.insights.length > 100) {
+      processingQuality = 0.9;
+    }
+    if (result.commits.every(c => c.files.length > 0)) {
+      processingQuality = Math.min(1, processingQuality + 0.1);
+    }
+
+    return {
+      dataCompleteness: Math.min(1, Math.max(0, dataCompleteness)),
+      semanticCoherence: Math.min(1, Math.max(0, semanticCoherence)),
+      upstreamInfluence: Math.min(1, Math.max(0, upstreamInfluence)),
+      processingQuality: Math.min(1, Math.max(0, processingQuality)),
+    };
+  }
+
+  /**
+   * Compute overall confidence from breakdown
+   */
+  private computeGitOverallConfidence(breakdown: {
+    dataCompleteness: number;
+    semanticCoherence: number;
+    upstreamInfluence: number;
+    processingQuality: number;
+  }): number {
+    const weights = {
+      dataCompleteness: 0.35,
+      semanticCoherence: 0.25,
+      upstreamInfluence: 0.15,
+      processingQuality: 0.25,
+    };
+
+    return (
+      breakdown.dataCompleteness * weights.dataCompleteness +
+      breakdown.semanticCoherence * weights.semanticCoherence +
+      breakdown.upstreamInfluence * weights.upstreamInfluence +
+      breakdown.processingQuality * weights.processingQuality
+    );
+  }
+
+  /**
+   * Detect issues in the git analysis result
+   */
+  private detectGitIssues(
+    result: GitHistoryAnalysisResult,
+    confidence: { dataCompleteness: number; semanticCoherence: number }
+  ): Array<{
+    severity: 'critical' | 'warning' | 'info';
+    category: string;
+    code: string;
+    message: string;
+    retryable: boolean;
+    suggestedFix?: string;
+  }> {
+    const issues: Array<{
+      severity: 'critical' | 'warning' | 'info';
+      category: string;
+      code: string;
+      message: string;
+      retryable: boolean;
+      suggestedFix?: string;
+    }> = [];
+
+    // Check for no commits
+    if (result.commits.length === 0) {
+      issues.push({
+        severity: 'warning',
+        category: 'missing_data',
+        code: 'NO_COMMITS_FOUND',
+        message: 'No commits found in the analyzed time range',
+        retryable: true,
+        suggestedFix: 'Extend time range or check repository path',
+      });
+    }
+
+    // Check for low architectural decisions
+    if (result.commits.length > 10 && result.architecturalDecisions.length === 0) {
+      issues.push({
+        severity: 'info',
+        category: 'data_quality',
+        code: 'NO_ARCH_DECISIONS',
+        message: 'No architectural decisions detected despite having commits',
+        retryable: false,
+      });
+    }
+
+    // Check for low semantic coherence
+    if (confidence.semanticCoherence < 0.5) {
+      issues.push({
+        severity: 'warning',
+        category: 'low_confidence',
+        code: 'LOW_SEMANTIC_VALUE',
+        message: `Low semantic value detected (${confidence.semanticCoherence.toFixed(2)})`,
+        retryable: true,
+        suggestedFix: 'Enable LLM-enhanced analysis for richer patterns',
+      });
+    }
+
+    // Check for very short insights
+    if (result.summary.insights && result.summary.insights.length < 50) {
+      issues.push({
+        severity: 'info',
+        category: 'data_quality',
+        code: 'SHORT_INSIGHTS',
+        message: 'Generated insights are brief',
+        retryable: false,
+      });
+    }
+
+    return issues;
+  }
+
+  /**
+   * Generate routing suggestions based on git analysis results
+   */
+  private generateGitRoutingSuggestions(
+    confidence: number,
+    issues: Array<{ severity: string; retryable: boolean }>,
+    result: GitHistoryAnalysisResult
+  ): {
+    suggestedNextSteps: string[];
+    skipRecommendations: string[];
+    escalationNeeded: boolean;
+    escalationReason?: string;
+    retryRecommendation?: {
+      shouldRetry: boolean;
+      reason: string;
+      suggestedChanges: string;
+    };
+  } {
+    const routing: {
+      suggestedNextSteps: string[];
+      skipRecommendations: string[];
+      escalationNeeded: boolean;
+      escalationReason?: string;
+      retryRecommendation?: {
+        shouldRetry: boolean;
+        reason: string;
+        suggestedChanges: string;
+      };
+    } = {
+      suggestedNextSteps: [],
+      skipRecommendations: [],
+      escalationNeeded: false,
+    };
+
+    // Suggest next steps based on confidence
+    if (confidence > 0.6) {
+      routing.suggestedNextSteps.push('semantic_analysis');
+      if (result.commits.length > 20) {
+        routing.suggestedNextSteps.push('vibe_history'); // Rich data, worth correlating
+      }
+    }
+
+    // If very low confidence, suggest retry
+    if (confidence < 0.4) {
+      const retryableIssues = issues.filter(i => i.retryable);
+      if (retryableIssues.length > 0) {
+        routing.retryRecommendation = {
+          shouldRetry: true,
+          reason: `Low confidence (${confidence.toFixed(2)})`,
+          suggestedChanges: 'Extend time range or enable LLM analysis',
+        };
+      }
+    }
+
+    // Skip recommendations for very low data
+    if (result.commits.length === 0) {
+      routing.skipRecommendations.push('semantic_analysis'); // No data to analyze
+    }
+
+    return routing;
+  }
 }

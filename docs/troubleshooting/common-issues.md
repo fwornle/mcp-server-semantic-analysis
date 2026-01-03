@@ -6,7 +6,7 @@ Frequently encountered problems and their solutions.
 
 ### Issue: MCP Server Not Found in Claude Code
 
-**Symptoms**: Claude Code shows "No MCP servers configured" or doesn't list semantic-analysis
+**Symptoms**: Coding agent shows "No MCP servers configured" or doesn't list semantic-analysis
 
 **Causes**:
 - MCP configuration file not in correct location

@@ -1779,27 +1779,558 @@ Respond with JSON only:
   // Public method for external validation
   async validateInsightFilename(filename: string): Promise<{ valid: boolean; issues: string[] }> {
     const issues: string[] = [];
-    
+
     if (!filename.endsWith('.md')) {
       issues.push('Insight filename must end with .md');
     }
-    
+
     const nameWithoutExt = filename.replace('.md', '');
     if (!this.isValidEntityName(nameWithoutExt)) {
       issues.push('Insight filename must follow camelCase naming convention');
     }
-    
+
     if (nameWithoutExt.length < 3) {
       issues.push('Insight filename is too short (minimum 3 characters)');
     }
-    
+
     if (nameWithoutExt.length > 50) {
       issues.push('Insight filename is too long (maximum 50 characters)');
     }
-    
+
     return {
       valid: issues.length === 0,
       issues
     };
+  }
+
+  // ============================================================================
+  // MULTI-AGENT SYSTEM: Semantic Routing Decision Methods
+  // Transforms QA from pass/fail gate to intelligent semantic router
+  // ============================================================================
+
+  /**
+   * Routing decision types
+   */
+  private readonly ROUTING_ACTIONS = {
+    PROCEED: 'proceed',           // Continue to next step
+    RETRY: 'retry',               // Retry the failed step with guidance
+    SKIP_DOWNSTREAM: 'skip_downstream', // Skip dependent steps
+    ESCALATE: 'escalate',         // Needs human review
+    TERMINATE: 'terminate',       // Stop workflow
+  } as const;
+
+  /**
+   * Generate a routing decision based on step results
+   * This is the core method that transforms QA into a semantic router
+   *
+   * Uses hybrid approach: rule-based first, LLM for complex cases
+   */
+  async generateRoutingDecision(
+    stepResults: {
+      stepName: string;
+      result: any;
+      qaReport?: QualityAssuranceReport;
+      confidence?: number;
+      issues?: Array<{
+        severity: 'critical' | 'warning' | 'info';
+        category: string;
+        code: string;
+        message: string;
+        retryable: boolean;
+        suggestedFix?: string;
+      }>;
+    },
+    context: {
+      workflowId: string;
+      retryAttempt: number;
+      upstreamConfidences?: Record<string, number>;
+      previousRoutingDecisions?: Array<{
+        timestamp: string;
+        stepName: string;
+        action: string;
+        reason: string;
+      }>;
+    }
+  ): Promise<{
+    action: 'proceed' | 'retry' | 'skip_downstream' | 'escalate' | 'terminate';
+    affectedSteps: string[];
+    reason: string;
+    confidence: number;
+    llmAssisted: boolean;
+    retryGuidance?: {
+      issues: Array<{
+        severity: string;
+        category: string;
+        message: string;
+      }>;
+      instructions: string;
+      examples?: string[];
+      parameterOverrides?: Record<string, unknown>;
+    };
+    timestamp: string;
+  }> {
+    const startTime = Date.now();
+
+    log('Generating routing decision', 'info', {
+      stepName: stepResults.stepName,
+      hasQAReport: !!stepResults.qaReport,
+      confidence: stepResults.confidence,
+      issueCount: stepResults.issues?.length || 0,
+      retryAttempt: context.retryAttempt,
+    });
+
+    // First, try rule-based routing (fast, no LLM)
+    const ruleBasedDecision = this.tryRuleBasedRouting(stepResults, context);
+    if (ruleBasedDecision) {
+      log('Rule-based routing decision made', 'info', {
+        action: ruleBasedDecision.action,
+        reason: ruleBasedDecision.reason,
+        processingTimeMs: Date.now() - startTime,
+      });
+      return {
+        ...ruleBasedDecision,
+        llmAssisted: false,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    // Complex case: use LLM for semantic routing
+    log('Using LLM for complex routing decision', 'info');
+    const llmDecision = await this.generateLLMRoutingDecision(stepResults, context);
+
+    log('LLM routing decision made', 'info', {
+      action: llmDecision.action,
+      reason: llmDecision.reason,
+      processingTimeMs: Date.now() - startTime,
+    });
+
+    return {
+      ...llmDecision,
+      llmAssisted: true,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Try to make a routing decision using rules (fast path)
+   * Returns null if case is too complex for rules
+   */
+  private tryRuleBasedRouting(
+    stepResults: {
+      stepName: string;
+      result: any;
+      qaReport?: QualityAssuranceReport;
+      confidence?: number;
+      issues?: Array<{
+        severity: 'critical' | 'warning' | 'info';
+        category: string;
+        code: string;
+        message: string;
+        retryable: boolean;
+        suggestedFix?: string;
+      }>;
+    },
+    context: {
+      retryAttempt: number;
+      upstreamConfidences?: Record<string, number>;
+    }
+  ): {
+    action: 'proceed' | 'retry' | 'skip_downstream' | 'escalate' | 'terminate';
+    affectedSteps: string[];
+    reason: string;
+    confidence: number;
+    retryGuidance?: {
+      issues: Array<{ severity: string; category: string; message: string }>;
+      instructions: string;
+      parameterOverrides?: Record<string, unknown>;
+    };
+  } | null {
+    const issues = stepResults.issues || [];
+    const qaReport = stepResults.qaReport;
+    const confidence = stepResults.confidence ?? (qaReport?.score ?? 0) / 100;
+
+    // Critical issues with no retry option → terminate
+    const criticalNonRetryable = issues.filter(
+      i => i.severity === 'critical' && !i.retryable
+    );
+    if (criticalNonRetryable.length > 0) {
+      return {
+        action: 'terminate',
+        affectedSteps: [stepResults.stepName],
+        reason: `Critical non-retryable issue: ${criticalNonRetryable[0].message}`,
+        confidence: 0.95,
+      };
+    }
+
+    // High confidence + no errors → proceed
+    if (confidence > 0.8 && issues.filter(i => i.severity !== 'info').length === 0) {
+      return {
+        action: 'proceed',
+        affectedSteps: [],
+        reason: `High confidence (${confidence.toFixed(2)}) with no significant issues`,
+        confidence: 0.95,
+      };
+    }
+
+    // QA passed with good score → proceed
+    if (qaReport?.passed && qaReport.score >= 75) {
+      return {
+        action: 'proceed',
+        affectedSteps: [],
+        reason: `QA passed with score ${qaReport.score}`,
+        confidence: 0.9,
+      };
+    }
+
+    // 1-2 retryable issues with clear fixes and retries available → retry
+    const retryableIssues = issues.filter(i => i.retryable && i.suggestedFix);
+    if (retryableIssues.length <= 2 && retryableIssues.length > 0 && context.retryAttempt < 3) {
+      return {
+        action: 'retry',
+        affectedSteps: [stepResults.stepName],
+        reason: `${retryableIssues.length} retryable issue(s) with clear fixes`,
+        confidence: 0.85,
+        retryGuidance: {
+          issues: retryableIssues.map(i => ({
+            severity: i.severity,
+            category: i.category,
+            message: i.message,
+          })),
+          instructions: retryableIssues.map(i => i.suggestedFix).filter(Boolean).join('; '),
+          parameterOverrides: this.getRetryParameterOverrides(stepResults.stepName, context.retryAttempt),
+        },
+      };
+    }
+
+    // Max retries exhausted → skip downstream or terminate
+    if (context.retryAttempt >= 3) {
+      const hasPartialResults = stepResults.result && Object.keys(stepResults.result).length > 0;
+      if (hasPartialResults && confidence > 0.3) {
+        return {
+          action: 'proceed',
+          affectedSteps: [],
+          reason: 'Max retries exhausted, proceeding with partial results',
+          confidence: 0.6,
+        };
+      }
+      return {
+        action: 'skip_downstream',
+        affectedSteps: this.getDependentSteps(stepResults.stepName),
+        reason: 'Max retries exhausted with insufficient results',
+        confidence: 0.8,
+      };
+    }
+
+    // Very low confidence → skip downstream
+    if (confidence < 0.3) {
+      return {
+        action: 'skip_downstream',
+        affectedSteps: this.getDependentSteps(stepResults.stepName),
+        reason: `Confidence too low (${confidence.toFixed(2)}) to continue`,
+        confidence: 0.75,
+      };
+    }
+
+    // Complex case: multiple conflicting issues, unclear confidence
+    // Fall through to LLM routing
+    return null;
+  }
+
+  /**
+   * Generate routing decision using LLM for complex cases
+   */
+  private async generateLLMRoutingDecision(
+    stepResults: {
+      stepName: string;
+      result: any;
+      qaReport?: QualityAssuranceReport;
+      confidence?: number;
+      issues?: Array<{
+        severity: string;
+        category: string;
+        code: string;
+        message: string;
+        retryable: boolean;
+        suggestedFix?: string;
+      }>;
+    },
+    context: {
+      workflowId: string;
+      retryAttempt: number;
+      upstreamConfidences?: Record<string, number>;
+      previousRoutingDecisions?: Array<{
+        timestamp: string;
+        stepName: string;
+        action: string;
+        reason: string;
+      }>;
+    }
+  ): Promise<{
+    action: 'proceed' | 'retry' | 'skip_downstream' | 'escalate' | 'terminate';
+    affectedSteps: string[];
+    reason: string;
+    confidence: number;
+    retryGuidance?: {
+      issues: Array<{ severity: string; category: string; message: string }>;
+      instructions: string;
+      examples?: string[];
+      parameterOverrides?: Record<string, unknown>;
+    };
+  }> {
+    const prompt = `You are a workflow routing decision maker for a multi-agent knowledge extraction system.
+
+Analyze the following step result and decide the best course of action.
+
+Step: ${stepResults.stepName}
+Current retry attempt: ${context.retryAttempt}/3
+Overall confidence: ${stepResults.confidence?.toFixed(2) || 'unknown'}
+QA Score: ${stepResults.qaReport?.score || 'not available'}
+QA Passed: ${stepResults.qaReport?.passed ?? 'unknown'}
+
+Issues detected:
+${JSON.stringify(stepResults.issues || [], null, 2)}
+
+Previous routing decisions in this workflow:
+${JSON.stringify(context.previousRoutingDecisions?.slice(-3) || [], null, 2)}
+
+Upstream confidences:
+${JSON.stringify(context.upstreamConfidences || {}, null, 2)}
+
+Available actions:
+- proceed: Continue to next step (use when quality is acceptable)
+- retry: Retry this step with adjusted parameters (use when issues are fixable)
+- skip_downstream: Skip steps that depend on this one (use when quality is too low to continue)
+- escalate: Request human review (use for novel/unclear issues)
+- terminate: Stop workflow (use only for critical failures)
+
+Respond with JSON:
+{
+  "action": "proceed|retry|skip_downstream|escalate|terminate",
+  "affectedSteps": ["step1", "step2"],
+  "reason": "Clear explanation of why this action was chosen",
+  "confidence": 0.0-1.0,
+  "retryGuidance": {
+    "issues": [{"severity": "warning", "category": "data_quality", "message": "..."}],
+    "instructions": "Specific guidance for retry",
+    "parameterOverrides": {"key": "value"}
+  }
+}
+
+Consider:
+1. Is the quality acceptable for downstream processing?
+2. Are the issues retryable with clear fixes?
+3. Have we exhausted retries?
+4. Would human review help?
+5. Is there enough partial data to continue?`;
+
+    try {
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: 'general',
+        tier: 'premium',
+      });
+
+      const jsonMatch = result.insights.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          action: parsed.action || 'proceed',
+          affectedSteps: parsed.affectedSteps || [],
+          reason: parsed.reason || 'LLM decision',
+          confidence: parsed.confidence || 0.7,
+          retryGuidance: parsed.retryGuidance,
+        };
+      }
+    } catch (error) {
+      log('LLM routing decision failed, falling back to conservative approach', 'warning', error);
+    }
+
+    // Fallback if LLM fails
+    return {
+      action: 'proceed',
+      affectedSteps: [],
+      reason: 'LLM routing failed, proceeding with caution',
+      confidence: 0.5,
+    };
+  }
+
+  /**
+   * Get parameter overrides for retry based on step and attempt
+   */
+  private getRetryParameterOverrides(
+    stepName: string,
+    retryAttempt: number
+  ): Record<string, unknown> {
+    // Progressive tightening strategy
+    const overrides: Record<string, unknown> = {};
+
+    // Step-specific adjustments
+    switch (stepName) {
+      case 'semantic_analysis':
+      case 'batch_semantic_analysis':
+        overrides.semanticValueThreshold = 0.6 + (retryAttempt * 0.1);
+        overrides.rejectGenericPatterns = retryAttempt >= 2;
+        overrides.requireConcreteEvidence = retryAttempt >= 2;
+        break;
+
+      case 'insight_generation':
+      case 'generate_insights':
+        overrides.minInsightLength = 100 + (retryAttempt * 50);
+        overrides.requireSpecificExamples = retryAttempt >= 1;
+        overrides.validateAgainstCode = retryAttempt >= 2;
+        break;
+
+      case 'observation_generation':
+      case 'generate_observations':
+        overrides.minObservationsPerEntity = 2 + retryAttempt;
+        overrides.rejectVagueObservations = retryAttempt >= 1;
+        overrides.requireActionableInsights = retryAttempt >= 2;
+        break;
+
+      case 'ontology_classification':
+      case 'classify_with_ontology':
+        overrides.minConfidence = 0.6 + (retryAttempt * 0.1);
+        overrides.strictMatching = retryAttempt >= 2;
+        break;
+
+      case 'quality_assurance':
+      case 'batch_qa':
+        // QA doesn't retry itself with different params
+        break;
+
+      default:
+        overrides.strictMode = retryAttempt >= 2;
+        break;
+    }
+
+    return overrides;
+  }
+
+  /**
+   * Get steps that depend on a given step
+   */
+  private getDependentSteps(stepName: string): string[] {
+    // Step dependency map (simplified - in production, read from workflow YAML)
+    const dependencyMap: Record<string, string[]> = {
+      analyze_git_history: ['semantic_analysis', 'vibe_history'],
+      extract_batch_commits: ['extract_batch_sessions', 'batch_semantic_analysis'],
+      batch_semantic_analysis: ['classify_with_ontology', 'operator_conv'],
+      semantic_analysis: ['ontology_classification', 'insight_generation'],
+      ontology_classification: ['insight_generation', 'observation_generation'],
+      insight_generation: ['persistence', 'quality_assurance'],
+      observation_generation: ['persistence'],
+      quality_assurance: ['persistence'],
+      index_codebase: ['synthesize_code_insights', 'correlate_with_codebase'],
+    };
+
+    return dependencyMap[stepName] || [];
+  }
+
+  /**
+   * Validate step result with routing decision integration
+   * Enhanced version that returns both QA report and routing decision
+   */
+  async validateStepWithRouting(
+    stepName: string,
+    result: any,
+    context: {
+      workflowId: string;
+      retryAttempt: number;
+      upstreamConfidences?: Record<string, number>;
+      timing?: { startTime: Date; endTime: Date; timeout: number };
+    }
+  ): Promise<{
+    qaReport: QualityAssuranceReport;
+    routingDecision: {
+      action: 'proceed' | 'retry' | 'skip_downstream' | 'escalate' | 'terminate';
+      affectedSteps: string[];
+      reason: string;
+      confidence: number;
+      llmAssisted: boolean;
+      retryGuidance?: {
+        issues: Array<{ severity: string; category: string; message: string }>;
+        instructions: string;
+        parameterOverrides?: Record<string, unknown>;
+      };
+      timestamp: string;
+    };
+  }> {
+    // First, run standard QA validation
+    const qaReport = await this.performComprehensiveQA(stepName, result, undefined, context.timing);
+
+    // Convert QA errors/warnings to issues format
+    const issues: Array<{
+      severity: 'critical' | 'warning' | 'info';
+      category: string;
+      code: string;
+      message: string;
+      retryable: boolean;
+      suggestedFix?: string;
+    }> = [
+      ...qaReport.errors.map((e: string) => ({
+        severity: 'critical' as const,
+        category: 'validation',
+        code: 'QA_ERROR',
+        message: e,
+        retryable: !e.includes('not a git repository') && !e.includes('critical'),
+        suggestedFix: this.getSuggestedFixForError(e),
+      })),
+      ...qaReport.warnings.map((w: string) => ({
+        severity: 'warning' as const,
+        category: 'validation',
+        code: 'QA_WARNING',
+        message: w,
+        retryable: true,
+        suggestedFix: this.getSuggestedFixForWarning(w),
+      })),
+    ];
+
+    // Generate routing decision
+    const routingDecision = await this.generateRoutingDecision(
+      {
+        stepName,
+        result,
+        qaReport,
+        confidence: qaReport.score / 100,
+        issues,
+      },
+      context
+    );
+
+    return { qaReport, routingDecision };
+  }
+
+  /**
+   * Get suggested fix for common errors
+   */
+  private getSuggestedFixForError(error: string): string {
+    if (error.includes('empty') || error.includes('missing')) {
+      return 'Ensure input data is complete';
+    }
+    if (error.includes('naming')) {
+      return 'Use CamelCase naming convention';
+    }
+    if (error.includes('observation')) {
+      return 'Increase minimum observations per entity';
+    }
+    if (error.includes('insight')) {
+      return 'Generate more detailed insights';
+    }
+    return 'Review step parameters and retry';
+  }
+
+  /**
+   * Get suggested fix for common warnings
+   */
+  private getSuggestedFixForWarning(warning: string): string {
+    if (warning.includes('brief') || warning.includes('short')) {
+      return 'Increase content length requirements';
+    }
+    if (warning.includes('quality')) {
+      return 'Tighten quality thresholds';
+    }
+    if (warning.includes('confidence')) {
+      return 'Use premium tier for better accuracy';
+    }
+    return 'Consider adjusting parameters';
   }
 }

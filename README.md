@@ -4,9 +4,9 @@
 
 ## Overview
 
-This MCP server integrates seamlessly with Claude Code to provide advanced semantic analysis capabilities. Built entirely in Node.js with TypeScript, it offers **12 specialized tools** and **11 intelligent agents** with **Graphology+LevelDB graph database** persistence for comprehensive code and knowledge analysis.
+This MCP server integrates seamlessly with Coding Agent to provide advanced semantic analysis capabilities. Built entirely in Node.js with TypeScript, it offers **12 specialized tools** and **14 intelligent agents** with **Graphology+LevelDB graph database** persistence for comprehensive code and knowledge analysis.
 
-### 🤖 Intelligent Agents (11 Total)
+### 🤖 Intelligent Agents (14 Total)
 
 #### Core Analysis Agents (8 Agents) - 🧠 LLM-Enhanced
 1. **`GitHistoryAgent`** - Analyzes git commits from checkpoint with architectural decisions
@@ -35,14 +35,14 @@ This MCP server integrates seamlessly with Claude Code to provide advanced seman
 - **`analyze_repository`** - Repository-wide architecture analysis
 - **`extract_patterns`** - Reusable design pattern identification
 - **`create_ukb_entity_with_insight`** - Knowledge base entity creation
-- **`execute_workflow`** - Coordinated 11-agent workflows
+- **`execute_workflow`** - Coordinated 14-agent workflows
 - **`generate_documentation`** - Automated documentation generation
 - **`create_insight_report`** - Detailed analysis reports
 - **`generate_plantuml_diagrams`** - Architecture diagram generation
 - **`generate_lessons_learned`** - Lessons learned document creation
 
 ### 🔗 Integration Capabilities
-- **Claude Code Integration** - Full MCP compatibility
+- **Coding Agent Integration** - Full MCP compatibility
 - **4-Tier LLM Provider Chain** - Groq (1st) → Gemini (2nd) → Custom LLM (3rd) → Anthropic Claude (4th) → OpenAI GPT (fallback)
 - **OpenAI Embeddings** - text-embedding-3-small for semantic similarity and deduplication
 - **Graph Database Persistence** - Graphology (in-memory) + LevelDB (persistent storage) at `.data/knowledge-graph/`
@@ -524,4 +524,4 @@ For issues and support:
 - [UKB Documentation](../../docs/ukb/README.md) - Universal Knowledge Base
 - [VKB Documentation](../../docs/vkb/README.md) - Knowledge Visualization
 
-**🏷️ Tags:** MCP, Semantic Analysis, Claude Code, Node.js, TypeScript, AI, Knowledge Management, 10-Agent System
+**🏷️ Tags:** MCP, Semantic Analysis, Coding Agent, Node.js, TypeScript, AI, Knowledge Management, 14-Agent System

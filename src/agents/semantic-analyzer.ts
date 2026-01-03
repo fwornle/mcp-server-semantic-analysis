@@ -1039,14 +1039,411 @@ Identify:
 3. Key differences between the contents`;
 
     const result = await this.analyzeContent(prompt, { analysisType: "general" });
-    
+
     // Parse the response to determine if there's unique value
-    const hasUniqueValue = result.insights.toLowerCase().includes("unique") || 
+    const hasUniqueValue = result.insights.toLowerCase().includes("unique") ||
                           result.insights.toLowerCase().includes("new information");
-    
+
     return {
       hasUniqueValue,
       differences: [result.insights],
     };
+  }
+
+  // ============================================================================
+  // MULTI-AGENT SYSTEM: AgentResponse Envelope Methods
+  // These methods return the standard AgentResponse envelope for the new
+  // multi-agent routing system. Existing methods are preserved for compatibility.
+  // ============================================================================
+
+  /**
+   * Analyze content and return result wrapped in AgentResponse envelope
+   * This is the primary method for the multi-agent system
+   */
+  async analyzeContentWithEnvelope(
+    content: string,
+    options: AnalysisOptions & {
+      stepName?: string;
+      upstreamConfidence?: number;
+      upstreamIssues?: Array<{ severity: string; message: string }>;
+    } = {}
+  ): Promise<{
+    data: AnalysisResult;
+    metadata: {
+      confidence: number;
+      confidenceBreakdown: {
+        dataCompleteness: number;
+        semanticCoherence: number;
+        upstreamInfluence: number;
+        processingQuality: number;
+      };
+      qualityScore: number;
+      issues: Array<{
+        severity: 'critical' | 'warning' | 'info';
+        category: string;
+        code: string;
+        message: string;
+        retryable: boolean;
+        suggestedFix?: string;
+      }>;
+      warnings: string[];
+      processingTimeMs: number;
+      modelUsed?: string;
+      tokenUsage?: { input: number; output: number; total: number };
+    };
+    routing: {
+      suggestedNextSteps: string[];
+      skipRecommendations: string[];
+      escalationNeeded: boolean;
+      escalationReason?: string;
+      retryRecommendation?: {
+        shouldRetry: boolean;
+        reason: string;
+        suggestedChanges: string;
+      };
+    };
+    timestamp: string;
+    agentId: string;
+    stepName: string;
+  }> {
+    const startTime = Date.now();
+    const issues: Array<{
+      severity: 'critical' | 'warning' | 'info';
+      category: string;
+      code: string;
+      message: string;
+      retryable: boolean;
+      suggestedFix?: string;
+    }> = [];
+    const warnings: string[] = [];
+    let modelUsed: string | undefined;
+
+    try {
+      // Validate input
+      const inputValidation = this.validateInput(content, options);
+      if (!inputValidation.valid) {
+        issues.push({
+          severity: 'warning',
+          category: 'data_quality',
+          code: 'INPUT_VALIDATION_WARNING',
+          message: inputValidation.message || 'Input validation issue',
+          retryable: false,
+        });
+      }
+
+      // Check upstream context
+      if (options.upstreamConfidence !== undefined && options.upstreamConfidence < 0.5) {
+        warnings.push(`Upstream confidence is low (${options.upstreamConfidence.toFixed(2)}), results may be affected`);
+      }
+
+      // Perform analysis
+      const result = await this.analyzeContent(content, options);
+      modelUsed = result.provider;
+
+      // Calculate confidence
+      const confidenceBreakdown = this.calculateSemanticConfidence(content, result, options);
+      const overallConfidence = this.computeOverallConfidence(confidenceBreakdown);
+
+      // Detect issues in result
+      const resultIssues = this.detectResultIssues(result, confidenceBreakdown);
+      issues.push(...resultIssues);
+
+      // Generate routing suggestions
+      const routing = this.generateRoutingSuggestions(overallConfidence, issues, options);
+
+      const processingTimeMs = Date.now() - startTime;
+
+      return {
+        data: result,
+        metadata: {
+          confidence: overallConfidence,
+          confidenceBreakdown,
+          qualityScore: Math.round(overallConfidence * 100),
+          issues,
+          warnings,
+          processingTimeMs,
+          modelUsed,
+        },
+        routing,
+        timestamp: new Date().toISOString(),
+        agentId: 'semantic_analyzer',
+        stepName: options.stepName || 'semantic_analysis',
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const processingTimeMs = Date.now() - startTime;
+
+      issues.push({
+        severity: 'critical',
+        category: 'processing_error',
+        code: 'SEMANTIC_ANALYSIS_FAILED',
+        message: `Analysis failed: ${errorMessage}`,
+        retryable: true,
+        suggestedFix: 'Retry with smaller content or different provider',
+      });
+
+      return {
+        data: { insights: '', provider: 'error', confidence: 0 },
+        metadata: {
+          confidence: 0,
+          confidenceBreakdown: {
+            dataCompleteness: 0,
+            semanticCoherence: 0,
+            upstreamInfluence: options.upstreamConfidence ?? 1,
+            processingQuality: 0,
+          },
+          qualityScore: 0,
+          issues,
+          warnings,
+          processingTimeMs,
+        },
+        routing: {
+          suggestedNextSteps: [],
+          skipRecommendations: [],
+          escalationNeeded: false,
+          retryRecommendation: {
+            shouldRetry: true,
+            reason: 'Analysis failed due to error',
+            suggestedChanges: 'Check content length and format, retry with different parameters',
+          },
+        },
+        timestamp: new Date().toISOString(),
+        agentId: 'semantic_analyzer',
+        stepName: options.stepName || 'semantic_analysis',
+      };
+    }
+  }
+
+  /**
+   * Validate input content and options
+   */
+  private validateInput(content: string, options: AnalysisOptions): { valid: boolean; message?: string } {
+    if (!content || content.trim().length === 0) {
+      return { valid: false, message: 'Content is empty' };
+    }
+
+    if (content.length > 100000) {
+      return { valid: false, message: 'Content exceeds maximum length (100KB)' };
+    }
+
+    if (content.length < 10) {
+      return { valid: false, message: 'Content is too short for meaningful analysis' };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Calculate confidence breakdown for semantic analysis
+   */
+  private calculateSemanticConfidence(
+    content: string,
+    result: AnalysisResult,
+    options: AnalysisOptions & { upstreamConfidence?: number }
+  ): {
+    dataCompleteness: number;
+    semanticCoherence: number;
+    upstreamInfluence: number;
+    processingQuality: number;
+  } {
+    // Data completeness: based on input quality
+    let dataCompleteness = 0.8;
+    if (content.length > 1000) dataCompleteness = 0.9;
+    if (content.length > 5000) dataCompleteness = 1.0;
+    if (content.length < 100) dataCompleteness = 0.5;
+
+    // Semantic coherence: based on result quality
+    let semanticCoherence = result.confidence; // Use existing confidence
+    if (result.insights.length < 50) semanticCoherence *= 0.7; // Short response
+    if (result.insights.toLowerCase().includes('error')) semanticCoherence *= 0.8;
+    if (result.insights.toLowerCase().includes('unable to')) semanticCoherence *= 0.7;
+
+    // Upstream influence: from context
+    const upstreamInfluence = options.upstreamConfidence ?? 1.0;
+
+    // Processing quality: based on provider reliability
+    let processingQuality = 0.85;
+    if (result.provider === 'groq') processingQuality = 0.9;
+    if (result.provider === 'anthropic') processingQuality = 0.95;
+    if (result.provider === 'openai') processingQuality = 0.92;
+    if (result.provider === 'error') processingQuality = 0;
+
+    return {
+      dataCompleteness: Math.min(1, Math.max(0, dataCompleteness)),
+      semanticCoherence: Math.min(1, Math.max(0, semanticCoherence)),
+      upstreamInfluence: Math.min(1, Math.max(0, upstreamInfluence)),
+      processingQuality: Math.min(1, Math.max(0, processingQuality)),
+    };
+  }
+
+  /**
+   * Compute overall confidence from breakdown
+   */
+  private computeOverallConfidence(breakdown: {
+    dataCompleteness: number;
+    semanticCoherence: number;
+    upstreamInfluence: number;
+    processingQuality: number;
+  }): number {
+    const weights = {
+      dataCompleteness: 0.2,
+      semanticCoherence: 0.35,
+      upstreamInfluence: 0.2,
+      processingQuality: 0.25,
+    };
+
+    return (
+      breakdown.dataCompleteness * weights.dataCompleteness +
+      breakdown.semanticCoherence * weights.semanticCoherence +
+      breakdown.upstreamInfluence * weights.upstreamInfluence +
+      breakdown.processingQuality * weights.processingQuality
+    );
+  }
+
+  /**
+   * Detect issues in the analysis result
+   */
+  private detectResultIssues(
+    result: AnalysisResult,
+    confidence: { dataCompleteness: number; semanticCoherence: number; processingQuality: number }
+  ): Array<{
+    severity: 'critical' | 'warning' | 'info';
+    category: string;
+    code: string;
+    message: string;
+    retryable: boolean;
+    suggestedFix?: string;
+  }> {
+    const issues: Array<{
+      severity: 'critical' | 'warning' | 'info';
+      category: string;
+      code: string;
+      message: string;
+      retryable: boolean;
+      suggestedFix?: string;
+    }> = [];
+
+    // Check for empty or very short insights
+    if (!result.insights || result.insights.length < 20) {
+      issues.push({
+        severity: 'warning',
+        category: 'data_quality',
+        code: 'SHORT_INSIGHTS',
+        message: 'Analysis returned very short or empty insights',
+        retryable: true,
+        suggestedFix: 'Increase content detail or use premium tier',
+      });
+    }
+
+    // Check for low confidence
+    if (result.confidence < 0.5) {
+      issues.push({
+        severity: 'warning',
+        category: 'low_confidence',
+        code: 'LOW_RESULT_CONFIDENCE',
+        message: `Analysis confidence is low (${result.confidence.toFixed(2)})`,
+        retryable: true,
+        suggestedFix: 'Review input quality and retry with premium tier',
+      });
+    }
+
+    // Check semantic coherence
+    if (confidence.semanticCoherence < 0.5) {
+      issues.push({
+        severity: 'warning',
+        category: 'semantic_mismatch',
+        code: 'LOW_SEMANTIC_COHERENCE',
+        message: 'Analysis result has low semantic coherence',
+        retryable: true,
+        suggestedFix: 'Provide more context or clearer input',
+      });
+    }
+
+    // Check for error indicators in response
+    const errorPhrases = ['unable to analyze', 'cannot determine', 'insufficient information', 'error occurred'];
+    for (const phrase of errorPhrases) {
+      if (result.insights.toLowerCase().includes(phrase)) {
+        issues.push({
+          severity: 'info',
+          category: 'data_quality',
+          code: 'ANALYSIS_UNCERTAINTY',
+          message: `Analysis indicates uncertainty: "${phrase}"`,
+          retryable: false,
+        });
+        break;
+      }
+    }
+
+    return issues;
+  }
+
+  /**
+   * Generate routing suggestions based on analysis results
+   */
+  private generateRoutingSuggestions(
+    confidence: number,
+    issues: Array<{ severity: string; retryable: boolean; message: string }>,
+    options: AnalysisOptions
+  ): {
+    suggestedNextSteps: string[];
+    skipRecommendations: string[];
+    escalationNeeded: boolean;
+    escalationReason?: string;
+    retryRecommendation?: {
+      shouldRetry: boolean;
+      reason: string;
+      suggestedChanges: string;
+    };
+  } {
+    const routing: {
+      suggestedNextSteps: string[];
+      skipRecommendations: string[];
+      escalationNeeded: boolean;
+      escalationReason?: string;
+      retryRecommendation?: {
+        shouldRetry: boolean;
+        reason: string;
+        suggestedChanges: string;
+      };
+    } = {
+      suggestedNextSteps: [],
+      skipRecommendations: [],
+      escalationNeeded: false,
+    };
+
+    // If confidence is very low, suggest retry
+    if (confidence < 0.4) {
+      const retryableIssues = issues.filter(i => i.retryable);
+      if (retryableIssues.length > 0) {
+        routing.retryRecommendation = {
+          shouldRetry: true,
+          reason: `Low confidence (${confidence.toFixed(2)}) with ${retryableIssues.length} retryable issue(s)`,
+          suggestedChanges: retryableIssues.map(i => i.message).join('; '),
+        };
+      }
+    }
+
+    // Check for critical issues needing escalation
+    const criticalNonRetryable = issues.filter(i => i.severity === 'critical' && !i.retryable);
+    if (criticalNonRetryable.length > 0) {
+      routing.escalationNeeded = true;
+      routing.escalationReason = criticalNonRetryable.map(i => i.message).join('; ');
+    }
+
+    // Suggest next steps based on analysis type
+    if (confidence > 0.7) {
+      if (options.analysisType === 'code') {
+        routing.suggestedNextSteps.push('ontology_classification', 'insight_generation');
+      } else if (options.analysisType === 'patterns') {
+        routing.suggestedNextSteps.push('quality_assurance');
+      }
+    }
+
+    // Skip recommendations for low confidence
+    if (confidence < 0.3) {
+      routing.skipRecommendations.push('insight_generation'); // Skip if base analysis failed
+    }
+
+    return routing;
   }
 }

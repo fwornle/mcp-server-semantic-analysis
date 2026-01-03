@@ -4,7 +4,7 @@ This document provides a comprehensive overview of the MCP Semantic Analysis Ser
 
 ## System Overview
 
-The MCP Semantic Analysis Server is a sophisticated Node.js application built with TypeScript that implements the Model Context Protocol (MCP) to provide AI-powered semantic analysis capabilities to Claude Code and other MCP-compatible clients.
+The MCP Semantic Analysis Server is a sophisticated Node.js application built with TypeScript that implements the Model Context Protocol (MCP) to provide AI-powered semantic analysis capabilities to any MCP-compatible coding agent.
 
 ![MCP Server Architecture](../images/mcp-server-architecture.png)
 
@@ -19,7 +19,7 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 ## Architecture Layers
 
 ### 1. MCP Protocol Layer
-**Purpose**: Handles Model Context Protocol communication with Claude Code
+**Purpose**: Handles Model Context Protocol communication with coding agents
 
 **Components**:
 - `MCP Protocol Handler`: Core MCP server implementation
@@ -57,12 +57,12 @@ The MCP Semantic Analysis Server is a sophisticated Node.js application built wi
 - **`generate_plantuml_diagrams`**: Architecture diagram generation
 - **`generate_lessons_learned`**: Lessons learned document creation
 
-### 3. Agent Layer (13 Specialized Agents)
+### 3. Agent Layer (14 Specialized Agents)
 **Purpose**: Implements the core business logic and intelligence organized into orchestration, analysis, quality, infrastructure, and support layers.
 
 ![Agent Coordination Flow](../images/agent-coordination-flow.png)
 
-For detailed documentation of all 13 agents, see **[Agent Architecture](agents.md)**.
+For detailed documentation of all 14 agents, see **[Agent Architecture](agents.md)**.
 
 | Category | Count | Agents |
 |----------|-------|--------|
@@ -252,7 +252,7 @@ For detailed documentation of all 13 agents, see **[Agent Architecture](agents.m
 
 ### Request Processing Flow
 ```
-Claude Code → MCP Handler → Tool Registry → Coordinator Agent → Specialized Agents → External Services → Response
+Coding Agent → MCP Handler → Tool Registry → Coordinator Agent → Specialized Agents → External Services → Response
 ```
 
 ### Workflow Execution
@@ -294,7 +294,7 @@ src/
 ├── server.ts                       # Core MCP server implementation
 ├── tools.ts                        # Tool definitions and handlers
 ├── logging.ts                      # Logging utilities
-└── agents/                         # Agent implementations (13 agents)
+└── agents/                         # Agent implementations (14 agents)
     ├── coordinator.ts              # Orchestration layer (1)
     ├── git-history-agent.ts        # Core analysis layer (5)
     ├── vibe-history-agent.ts

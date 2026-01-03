@@ -59,8 +59,8 @@ agents:
       merge: standard  # Structure fusion is algorithmic
     techStack: "SemanticAnalyzer + Embeddings"
     phase: 3
-    row: 3          # After ontology classification (row 2)
-    col: 0.6        # Centered in column
+    row: 3          # After ontology (row 2), before QA (row 4)
+    col: 0.6        # Centered in main flow column
 
   - id: batch_checkpoint_manager
     name: Batch Checkpoint
@@ -71,8 +71,8 @@ agents:
     llmModel: null
     tier: fast
     techStack: "JSON file persistence"
-    phase: 4
-    row: 5          # After QA (row 4), before finalization
+    phase: 5
+    row: 5          # After QA (row 4), before code_graph (row 6)
     col: 0.6        # Centered in column
 
   # --- Original Agents with tier annotations ---
@@ -111,7 +111,7 @@ agents:
     llmModel: "External: code-graph-rag (OpenAI/Anthropic/Ollama)"
     tier: standard
     techStack: "Tree-sitter + Memgraph + pydantic_ai"
-    phase: 5       # FINALIZATION phase (after batch loop)
+    phase: 6       # FINALIZATION phase (after batch loop)
     row: 6         # After checkpoint (row 5), before persistence (row 7)
     col: 0.6       # Centered like other finalization nodes
 
@@ -163,9 +163,9 @@ agents:
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: premium
     techStack: SemanticAnalyzer
-    phase: 3
-    row: 3
-    col: 0.75
+    phase: 8        # FINALIZATION: After persistence (phase 7)
+    row: 8          # After persistence (row 7)
+    col: 0.6        # Centered in main flow
 
   - id: observation_generation
     name: Observation Generation
@@ -176,9 +176,9 @@ agents:
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: premium
     techStack: SemanticAnalyzer
-    phase: 3.5
-    row: 4
-    col: 0.75
+    phase: 8.5      # FINALIZATION: After insight (phase 8) - used in incremental workflow
+    row: 8.5        # After insight (row 8) - used in incremental workflow
+    col: 0.6        # Centered in main flow
 
   - id: ontology_classification
     name: Ontology Classification
@@ -189,9 +189,9 @@ agents:
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: standard
     techStack: "OntologyClassifier + SemanticAnalyzer"
-    phase: 2         # After semantic (phase 1), before KG-Ops (phase 3)
+    phase: 2.5       # After semantic (phase 2), before KG-Ops (phase 3)
     row: 2           # After semantic (row 1), before KG-Ops (row 3)
-    col: 0.6         # Centered in column
+    col: 0.6         # Centered in main flow column
 
   - id: quality_assurance
     name: Quality Assurance
@@ -215,8 +215,8 @@ agents:
     llmModel: null
     tier: fast
     techStack: "LevelDB + Graphology"
-    phase: 6
-    row: 7
+    phase: 7
+    row: 7          # After code_graph (row 6)
     col: 0.6        # Centered in column
 
   - id: deduplication
@@ -228,8 +228,8 @@ agents:
     llmModel: "Embeddings: text-embedding-3-small"
     tier: standard
     techStack: "OpenAI Embeddings API"
-    phase: 6
-    row: 8
+    phase: 9
+    row: 9          # After insight (row 8)
     col: 0.6        # Centered in column
 
   - id: content_validation
@@ -241,8 +241,8 @@ agents:
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: standard
     techStack: SemanticAnalyzer
-    phase: 6
-    row: 9
+    phase: 10
+    row: 10         # After deduplication (row 9)
     col: 0.6        # Centered in column
 
 # Step name to agent ID mapping

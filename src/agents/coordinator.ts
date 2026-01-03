@@ -6,7 +6,7 @@ import { VibeHistoryAgent } from "./vibe-history-agent.js";
 import { SemanticAnalysisAgent } from "./semantic-analysis-agent.js";
 import { WebSearchAgent } from "./web-search.js";
 import { InsightGenerationAgent } from "./insight-generation-agent.js";
-import { ObservationGenerationAgent } from "./observation-generation-agent.js";
+import { ObservationGenerationAgent, StructuredObservation } from "./observation-generation-agent.js";
 import { QualityAssuranceAgent } from "./quality-assurance-agent.js";
 import { PersistenceAgent } from "./persistence-agent.js";
 import { DeduplicationAgent } from "./deduplication.js";
@@ -2000,6 +2000,80 @@ export class CoordinatorAgent {
             });
           }
 
+          // GENERATE BATCH OBSERVATIONS: Transform semantic analysis into structured observations
+          const observationStartTime = Date.now();
+          const observationAgent = this.agents.get('observation_generation') as ObservationGenerationAgent;
+          let batchObservations: StructuredObservation[] = [];
+
+          if (observationAgent) {
+            try {
+              log(`Batch ${batch.id}: Generating structured observations`, 'info', {
+                entityCount: batchEntities.length
+              });
+
+              const observationResult = await observationAgent.generateStructuredObservations(
+                commits,  // git analysis
+                sessionResult,  // vibe analysis
+                { entities: batchEntities, relations: batchRelations }  // semantic analysis
+              );
+
+              batchObservations = observationResult?.observations || [];
+
+              log(`Batch ${batch.id}: Observation generation complete`, 'info', {
+                observationsCount: batchObservations.length,
+                averageSignificance: observationResult?.summary?.averageSignificance || 0
+              });
+
+              // Track observation generation step for dashboard visibility
+              execution.results['generate_batch_observations'] = {
+                observations: batchObservations,
+                observationsCount: batchObservations.length,
+                summary: observationResult?.summary,
+                batchId: batch.id
+              };
+              this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
+
+              // Record step for workflow report (only on first batch)
+              if (batch.id === 'batch-001') {
+                const obsEndTime = new Date();
+                this.reportAgent.recordStep({
+                  stepName: 'generate_batch_observations',
+                  agent: 'observation_generation',
+                  action: 'generateStructuredObservations',
+                  startTime: new Date(observationStartTime),
+                  endTime: obsEndTime,
+                  duration: obsEndTime.getTime() - observationStartTime,
+                  status: 'success',
+                  inputs: { batchId: batch.id, entityCount: batchEntities.length },
+                  outputs: { observationsCount: batchObservations.length },
+                  decisions: [],
+                  warnings: [],
+                  errors: []
+                });
+              }
+            } catch (obsError) {
+              log(`Batch ${batch.id}: Observation generation failed`, 'warning', {
+                error: obsError instanceof Error ? obsError.message : String(obsError)
+              });
+
+              // Track skipped step for dashboard
+              execution.results['generate_batch_observations'] = {
+                skipped: true,
+                skipReason: obsError instanceof Error ? obsError.message : 'Observation generation failed',
+                batchId: batch.id
+              };
+              this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
+            }
+          } else {
+            log(`Batch ${batch.id}: Skipping observation generation - agent not available`, 'info');
+            execution.results['generate_batch_observations'] = {
+              skipped: true,
+              skipReason: 'Observation agent not available',
+              batchId: batch.id
+            };
+            this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
+          }
+
           // ONTOLOGY CLASSIFICATION: Classify entities using project ontology
           const ontologyClassificationStartTime = Date.now();
           const ontologyAgent = this.agents.get('ontology_classification') as OntologyClassificationAgent;
@@ -2320,6 +2394,93 @@ export class CoordinatorAgent {
             totalBatches: totalBatchCount,
             batchId: `finalization-${finalizationStepIndex}-failed`
           });
+        }
+      }
+
+      // EXPLICIT INSIGHT GENERATION: The YAML step may not have the right parameters for batch context
+      // Generate insights from accumulated batch data
+      const insightStartTime = Date.now();
+      const insightAgent = this.agents.get('insight_generation') as InsightGenerationAgent;
+
+      if (insightAgent && !execution.results['generate_insights']?.insightDocuments?.length) {
+        try {
+          log('Batch workflow: Generating insights from accumulated data', 'info', {
+            accumulatedEntities: accumulatedKG.entities.length,
+            hasCodeGraph: !!execution.results['index_codebase'],
+            hasCodeSynthesis: !!execution.results['synthesize_code_insights']
+          });
+
+          // Collect all batch results for insight generation
+          const allCommits: any[] = [];
+          const allSessions: any[] = [];
+          const allSemanticEntities: any[] = [];
+
+          // Extract data from each batch's results
+          for (const [key, value] of Object.entries(execution.results)) {
+            if (key.startsWith('extract_batch_commits') && (value as any)?.commits) {
+              allCommits.push(...((value as any).commits || []));
+            }
+            if (key.startsWith('extract_batch_sessions') && (value as any)?.sessions) {
+              allSessions.push(...((value as any).sessions || []));
+            }
+            if (key.startsWith('batch_semantic_analysis') && (value as any)?.entities) {
+              allSemanticEntities.push(...((value as any).entities || []));
+            }
+          }
+
+          // Also get from accumulatedKG if batch results not found
+          if (allSemanticEntities.length === 0 && accumulatedKG.entities.length > 0) {
+            allSemanticEntities.push(...accumulatedKG.entities);
+          }
+
+          const insightResult = await insightAgent.generateComprehensiveInsights({
+            git_analysis_results: { commits: allCommits },
+            vibe_analysis_results: { sessions: allSessions },
+            semantic_analysis_results: { entities: allSemanticEntities, relations: accumulatedKG.relations },
+            code_graph_results: execution.results['index_codebase'] || execution.results['synthesize_code_insights'],
+            code_synthesis_results: execution.results['synthesize_code_insights'],
+            team: parameters.team || this.team
+          });
+
+          // Store result for summary tracking
+          execution.results['generate_insights'] = insightResult;
+          this.writeProgressFile(execution, workflow, 'generate_insights', [], {
+            currentBatch: batchCount,
+            totalBatches: totalBatchCount,
+            batchId: 'finalization-insights'
+          });
+
+          const insightEndTime = Date.now();
+          log('Batch workflow: Insight generation completed', 'info', {
+            documentsGenerated: insightResult.insightDocuments?.length || 0,
+            patternsIdentified: insightResult.patternCatalog?.patterns?.length || 0,
+            duration: `${insightEndTime - insightStartTime}ms`
+          });
+
+          // Record step for workflow report
+          this.reportAgent.recordStep({
+            stepName: 'generate_insights',
+            agent: 'insight_generation',
+            action: 'generateComprehensiveInsights',
+            startTime: new Date(insightStartTime),
+            endTime: new Date(insightEndTime),
+            duration: insightEndTime - insightStartTime,
+            status: 'success',
+            inputs: { accumulatedEntities: accumulatedKG.entities.length },
+            outputs: this.summarizeStepResult(insightResult),
+            decisions: [],
+            warnings: [],
+            errors: []
+          });
+        } catch (insightError) {
+          log('Batch workflow: Insight generation failed (non-critical)', 'warning', {
+            error: insightError instanceof Error ? insightError.message : String(insightError)
+          });
+          execution.results['generate_insights'] = {
+            error: insightError instanceof Error ? insightError.message : String(insightError),
+            skipped: true,
+            skip_reason: 'Insight generation failed'
+          };
         }
       }
 

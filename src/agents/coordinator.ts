@@ -125,7 +125,7 @@ export class CoordinatorAgent {
     try {
       const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
 
-      // Build detailed step info with timing data and result summaries
+      // Build detailed step info with timing data, LLM metrics, and result summaries
       const stepsDetail: Array<{
         name: string;
         status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
@@ -133,6 +133,9 @@ export class CoordinatorAgent {
         duration?: number;
         error?: string;
         outputs?: Record<string, any>;
+        tokensUsed?: number;
+        llmProvider?: string;
+        llmCalls?: number;
       }> = [];
 
       // Track which steps are currently running (from DAG executor)
@@ -147,6 +150,7 @@ export class CoordinatorAgent {
         if (!validStepNames.has(stepName)) continue;
 
         const timing = result?._timing as { duration?: number } | undefined;
+        const llmMetrics = result?._llmMetrics as { totalCalls?: number; totalTokens?: number; providers?: string[] } | undefined;
         const hasError = result?.error && Object.keys(result).filter(k => !k.startsWith('_')).length === 1;
 
         stepsDetail.push({
@@ -155,6 +159,12 @@ export class CoordinatorAgent {
           duration: timing?.duration,
           error: hasError ? result.error : undefined,
           outputs: this.summarizeStepResult(result),
+          // Include LLM metrics if available
+          ...(llmMetrics?.totalTokens ? {
+            tokensUsed: llmMetrics.totalTokens,
+            llmProvider: llmMetrics.providers?.join(', ') || undefined,
+            llmCalls: llmMetrics.totalCalls,
+          } : {})
         });
       }
 
@@ -1196,6 +1206,9 @@ export class CoordinatorAgent {
       const executeStepAsync = async (step: WorkflowStep): Promise<{ step: WorkflowStep; result: any; error?: Error }> => {
         const stepStartTime = new Date();
 
+        // Reset LLM metrics tracking before each step
+        SemanticAnalyzer.resetStepMetrics();
+
         // Check condition if present
         if (step.condition) {
           const conditionResult = this.evaluateCondition(step.condition, parameters, execution.results);
@@ -1213,6 +1226,10 @@ export class CoordinatorAgent {
           const stepEndTime = new Date();
           const stepDuration = stepEndTime.getTime() - stepStartTime.getTime();
 
+          // Capture LLM metrics accumulated during this step
+          const llmMetrics = SemanticAnalyzer.getStepMetrics();
+          const hasLLMUsage = llmMetrics.totalCalls > 0;
+
           const resultWithTiming = {
             ...stepResult,
             _timing: {
@@ -1220,7 +1237,15 @@ export class CoordinatorAgent {
               endTime: stepEndTime,
               duration: stepDuration,
               timeout: step.timeout || 60
-            }
+            },
+            // Only include LLM metrics if there was actual usage
+            ...(hasLLMUsage ? {
+              _llmMetrics: {
+                totalCalls: llmMetrics.totalCalls,
+                totalTokens: llmMetrics.totalTokens,
+                providers: llmMetrics.providers,
+              }
+            } : {})
           };
 
           // Record step in workflow report
@@ -3633,17 +3658,29 @@ Expected locations for generated files:
   }
 
   /**
-   * Wrap a step result with timing information.
+   * Wrap a step result with timing information and LLM metrics.
    * This ensures all step results (including batch workflow steps) have consistent metrics.
    */
-  private wrapWithTiming<T>(result: T, startTime: Date, endTime: Date = new Date()): T & { _timing: { startTime: Date; endTime: Date; duration: number } } {
+  private wrapWithTiming<T>(result: T, startTime: Date, endTime: Date = new Date()): T & { _timing: { startTime: Date; endTime: Date; duration: number }; _llmMetrics?: { totalCalls: number; totalTokens: number; providers: string[] } } {
+    // Capture LLM metrics accumulated during this step
+    const llmMetrics = SemanticAnalyzer.getStepMetrics();
+    const hasLLMUsage = llmMetrics.totalCalls > 0;
+
     return {
       ...result as any,
       _timing: {
         startTime,
         endTime,
         duration: endTime.getTime() - startTime.getTime()
-      }
+      },
+      // Only include LLM metrics if there was actual usage
+      ...(hasLLMUsage ? {
+        _llmMetrics: {
+          totalCalls: llmMetrics.totalCalls,
+          totalTokens: llmMetrics.totalTokens,
+          providers: llmMetrics.providers,
+        }
+      } : {})
     };
   }
 

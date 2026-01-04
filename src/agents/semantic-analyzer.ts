@@ -48,6 +48,12 @@ export interface AnalysisResult {
   insights: string;
   provider: string;
   confidence: number;
+  tokenUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
+  model?: string;
 }
 
 export interface CodeAnalysisResult {
@@ -94,7 +100,83 @@ interface TierConfig {
   };
 }
 
+// Global LLM call metrics tracking (shared across all SemanticAnalyzer instances)
+export interface LLMCallMetrics {
+  provider: string;
+  model?: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  timestamp: number;
+}
+
+export interface StepLLMMetrics {
+  totalCalls: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalTokens: number;
+  providers: string[];
+  calls: LLMCallMetrics[];
+}
+
 export class SemanticAnalyzer {
+  // Static metrics tracking for workflow step aggregation
+  private static currentStepMetrics: StepLLMMetrics = {
+    totalCalls: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalTokens: 0,
+    providers: [],
+    calls: [],
+  };
+
+  /**
+   * Reset metrics tracking (call at start of each workflow step)
+   */
+  static resetStepMetrics(): void {
+    SemanticAnalyzer.currentStepMetrics = {
+      totalCalls: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalTokens: 0,
+      providers: [],
+      calls: [],
+    };
+  }
+
+  /**
+   * Get accumulated metrics for current step (call at end of each workflow step)
+   */
+  static getStepMetrics(): StepLLMMetrics {
+    return { ...SemanticAnalyzer.currentStepMetrics };
+  }
+
+  /**
+   * Record an LLM call's metrics
+   */
+  private static recordCallMetrics(result: AnalysisResult): void {
+    if (result.tokenUsage) {
+      const metrics: LLMCallMetrics = {
+        provider: result.provider,
+        model: result.model,
+        inputTokens: result.tokenUsage.inputTokens,
+        outputTokens: result.tokenUsage.outputTokens,
+        totalTokens: result.tokenUsage.totalTokens,
+        timestamp: Date.now(),
+      };
+
+      SemanticAnalyzer.currentStepMetrics.calls.push(metrics);
+      SemanticAnalyzer.currentStepMetrics.totalCalls++;
+      SemanticAnalyzer.currentStepMetrics.totalInputTokens += metrics.inputTokens;
+      SemanticAnalyzer.currentStepMetrics.totalOutputTokens += metrics.outputTokens;
+      SemanticAnalyzer.currentStepMetrics.totalTokens += metrics.totalTokens;
+
+      if (!SemanticAnalyzer.currentStepMetrics.providers.includes(result.provider)) {
+        SemanticAnalyzer.currentStepMetrics.providers.push(result.provider);
+      }
+    }
+  }
+
   private groqClient: Groq | null = null;
   private geminiClient: GoogleGenerativeAI | null = null;
   private customClient: OpenAI | null = null;
@@ -415,6 +497,8 @@ export class SemanticAnalyzer {
               failedProviders: errors.map(e => e.provider)
             });
           }
+          // Record metrics for step-level aggregation
+          SemanticAnalyzer.recordCallMetrics(result);
           return result;
         } catch (error: any) {
           const isRateLimit = error?.status === 429 || error?.message?.includes('rate limit');
@@ -574,6 +658,9 @@ export class SemanticAnalyzer {
       resultType: typeof result,
       resultKeys: result ? Object.keys(result) : null
     });
+
+    // Record metrics for step-level aggregation
+    SemanticAnalyzer.recordCallMetrics(result);
 
     return result;
   }
@@ -759,16 +846,25 @@ For each pattern found, provide:
         throw new Error("No content in Groq response");
       }
 
-      const result = {
+      // Capture token usage from response
+      const usage = response.usage;
+      const result: AnalysisResult = {
         insights: content,
         provider: "groq",
         confidence: 0.85,
+        model: selectedModel,
+        tokenUsage: usage ? {
+          inputTokens: usage.prompt_tokens || 0,
+          outputTokens: usage.completion_tokens || 0,
+          totalTokens: usage.total_tokens || 0,
+        } : undefined,
       };
 
       log("analyzeWithGroq returning result", "info", {
         hasInsights: !!result.insights,
         insightsLength: result.insights?.length,
-        provider: result.provider
+        provider: result.provider,
+        tokenUsage: result.tokenUsage,
       });
 
       return result;
@@ -803,16 +899,25 @@ For each pattern found, provide:
         throw new Error("No content in Gemini response");
       }
 
-      const result = {
+      // Capture token usage from response if available (Gemini uses usageMetadata)
+      const usageMetadata = response.response.usageMetadata;
+      const result: AnalysisResult = {
         insights: text,
         provider: "gemini",
         confidence: 0.88,
+        model: "gemini-2.0-flash-exp",
+        tokenUsage: usageMetadata ? {
+          inputTokens: usageMetadata.promptTokenCount || 0,
+          outputTokens: usageMetadata.candidatesTokenCount || 0,
+          totalTokens: usageMetadata.totalTokenCount || 0,
+        } : undefined,
       };
 
       log("analyzeWithGemini returning result", "info", {
         hasInsights: !!result.insights,
         insightsLength: result.insights?.length,
-        provider: result.provider
+        provider: result.provider,
+        tokenUsage: result.tokenUsage,
       });
 
       return result;
@@ -853,16 +958,25 @@ For each pattern found, provide:
         throw new Error("Unexpected response type from Anthropic");
       }
 
-      const result = {
+      // Capture token usage from response
+      const usage = response.usage;
+      const result: AnalysisResult = {
         insights: content.text,
         provider: "anthropic",
         confidence: 0.9,
+        model: selectedModel,
+        tokenUsage: usage ? {
+          inputTokens: usage.input_tokens || 0,
+          outputTokens: usage.output_tokens || 0,
+          totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+        } : undefined,
       };
-      
+
       log("analyzeWithAnthropic returning result", "info", {
         hasInsights: !!result.insights,
         insightsLength: result.insights?.length,
-        provider: result.provider
+        provider: result.provider,
+        tokenUsage: result.tokenUsage,
       });
 
       return result;
@@ -891,10 +1005,18 @@ For each pattern found, provide:
         throw new Error("No content in OpenAI response");
       }
 
+      // Capture token usage from response
+      const usage = response.usage;
       return {
         insights: content,
         provider: "openai",
         confidence: 0.85,
+        model: selectedModel,
+        tokenUsage: usage ? {
+          inputTokens: usage.prompt_tokens || 0,
+          outputTokens: usage.completion_tokens || 0,
+          totalTokens: usage.total_tokens || 0,
+        } : undefined,
       };
     } catch (error) {
       log("OpenAI analysis failed", "error", error);
@@ -919,10 +1041,18 @@ For each pattern found, provide:
         throw new Error("No content in custom provider response");
       }
 
+      // Capture token usage from response
+      const usage = response.usage;
       return {
         insights: content,
         provider: "custom",
         confidence: 0.9,
+        model: "gpt-4",
+        tokenUsage: usage ? {
+          inputTokens: usage.prompt_tokens || 0,
+          outputTokens: usage.completion_tokens || 0,
+          totalTokens: usage.total_tokens || 0,
+        } : undefined,
       };
     } catch (error) {
       log("Custom provider analysis failed", "error", error);

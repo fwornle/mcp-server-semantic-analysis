@@ -62,8 +62,9 @@ export interface BatchSchedulerOptions {
   batchSize?: number;                   // Commits per batch (default: 50)
   maxBatches?: number;                  // Limit batches to process (0 = all)
   fromCommit?: string;                  // Start from specific commit
-  resumeFromCheckpoint?: boolean;       // Resume from last completed batch
-  fullAnalysis?: boolean;               // When true, clear checkpoints and start from first commit
+  resumeFromCheckpoint?: boolean;       // Resume from last completed batch (default: true)
+  fullAnalysis?: boolean;               // When true, analyze all commits (not just since last checkpoint)
+  forceCleanStart?: boolean;            // When true, clear all batch checkpoints before starting (use for fresh start)
 }
 
 interface CommitInfo {
@@ -114,16 +115,27 @@ export class BatchScheduler {
 
     // Handle full analysis mode vs incremental
     let startFromBatch = 0;
-    if (options.fullAnalysis) {
-      // Full analysis: clear all checkpoints and start from first commit
-      log('Full analysis mode: clearing checkpoints, starting from first commit', 'info');
+
+    // Only clear checkpoints if explicitly requested via forceCleanStart
+    if (options.forceCleanStart) {
+      log('Force clean start: clearing all batch checkpoints', 'info');
       this.clearCheckpoints();
-    } else if (options.resumeFromCheckpoint) {
-      // Incremental: resume from last completed batch
+    }
+
+    // fullAnalysis means "process all commits" but still resume from last completed batch
+    // This allows complete-analysis to resume after crashes without losing progress
+    if (options.resumeFromCheckpoint !== false) {
+      // Resume from last completed batch (default behavior)
       const checkpoints = this.loadCheckpoints();
       if (checkpoints.lastCompletedBatch) {
         startFromBatch = checkpoints.lastCompletedBatch + 1;
-        log('Resuming from batch', 'info', { batchNumber: startFromBatch });
+        log('Resuming from batch', 'info', {
+          batchNumber: startFromBatch,
+          lastCompletedAt: checkpoints.lastCompletedAt,
+          fullAnalysis: options.fullAnalysis
+        });
+      } else if (options.fullAnalysis) {
+        log('Full analysis mode: starting from first batch (no prior checkpoints)', 'info');
       }
     }
 

@@ -1654,7 +1654,10 @@ export class CoordinatorAgent {
             batchSize: parameters.batchSize || 50,
             maxBatches: parameters.maxBatches || 0,
             resumeFromCheckpoint: parameters.resumeFromCheckpoint !== false,
-            fullAnalysis: parameters.fullAnalysis === true || parameters.fullAnalysis === 'true'
+            fullAnalysis: parameters.fullAnalysis === true || parameters.fullAnalysis === 'true',
+            // forceCleanStart clears all checkpoints - use only when explicitly requested
+            // This allows complete-analysis to resume from crashes without losing progress
+            forceCleanStart: parameters.forceCleanStart === true || parameters.forceCleanStart === 'true'
           });
           const planEndTime = new Date();
           execution.results['plan_batches'] = this.wrapWithTiming({ result: batchPlan }, planStartTime, planEndTime);
@@ -2182,8 +2185,14 @@ export class CoordinatorAgent {
                 });
               }
             } catch (ontologyError) {
+              const ontologyErrorMessage = ontologyError instanceof Error ? ontologyError.message : String(ontologyError);
+              const ontologyErrorStack = ontologyError instanceof Error ? ontologyError.stack : undefined;
+
               log(`Batch ${batch.id}: Ontology classification failed, using original entity types`, 'warning', {
-                error: ontologyError instanceof Error ? ontologyError.message : String(ontologyError)
+                error: ontologyErrorMessage,
+                stack: ontologyErrorStack,
+                entityCount: batchEntities.length,
+                sampleEntities: batchEntities.slice(0, 3).map(e => ({ name: e.name, type: e.type }))
               });
 
               // Track skipped step for dashboard
@@ -2352,8 +2361,26 @@ export class CoordinatorAgent {
           this.writeProgressFile(execution, workflow, `batch_${batchCount}`, [], currentBatchProgress);
 
         } catch (error) {
-          batchScheduler.failBatch(batch.id, error instanceof Error ? error.message : String(error));
-          log(`Batch ${batch.id} failed`, 'error', { error });
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorStack = error instanceof Error ? error.stack : undefined;
+
+          batchScheduler.failBatch(batch.id, errorMessage);
+
+          // Enhanced error logging with full context for debugging crashes
+          log(`Batch ${batch.id} FAILED - Critical Error`, 'error', {
+            error: errorMessage,
+            stack: errorStack,
+            batchNumber: batch.batchNumber,
+            currentStep: execution.results ? Object.keys(execution.results).pop() : 'unknown'
+          });
+
+          // Write failure to progress file so dashboard shows what failed
+          // Note: currentBatchProgress may not be fully initialized if error is early
+          this.writeProgressFile(execution, workflow, 'batch_error', []);
+
+          // Record the error in execution for persistence
+          execution.errors.push(`Batch ${batch.id}: ${errorMessage}`);
+
           // Continue with next batch or fail depending on config
           if (workflow.config?.stopOnBatchFailure !== false) {
             throw error;

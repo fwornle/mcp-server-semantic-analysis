@@ -177,6 +177,39 @@ export class SemanticAnalyzer {
     }
   }
 
+  /**
+   * Record LLM metrics from external agents (e.g., SemanticAnalysisAgent)
+   * This allows other agents to contribute to the step-level metrics tracking
+   */
+  static recordMetricsFromExternal(metrics: {
+    provider: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  }): void {
+    const callMetrics: LLMCallMetrics = {
+      provider: metrics.provider,
+      model: metrics.model,
+      inputTokens: metrics.inputTokens,
+      outputTokens: metrics.outputTokens,
+      totalTokens: metrics.totalTokens,
+      timestamp: Date.now(),
+    };
+
+    SemanticAnalyzer.currentStepMetrics.calls.push(callMetrics);
+    SemanticAnalyzer.currentStepMetrics.totalCalls++;
+    SemanticAnalyzer.currentStepMetrics.totalInputTokens += metrics.inputTokens;
+    SemanticAnalyzer.currentStepMetrics.totalOutputTokens += metrics.outputTokens;
+    SemanticAnalyzer.currentStepMetrics.totalTokens += metrics.totalTokens;
+
+    if (!SemanticAnalyzer.currentStepMetrics.providers.includes(metrics.provider)) {
+      SemanticAnalyzer.currentStepMetrics.providers.push(metrics.provider);
+    }
+
+    log(`Recorded external LLM call: ${metrics.provider}/${metrics.model} - ${metrics.totalTokens} tokens`, 'debug');
+  }
+
   private groqClient: Groq | null = null;
   private geminiClient: GoogleGenerativeAI | null = null;
   private customClient: OpenAI | null = null;

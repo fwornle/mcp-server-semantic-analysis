@@ -6,6 +6,7 @@ import Groq from "groq-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { log } from '../logging.js';
 import type { IntelligentQueryResult } from './code-graph-agent.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface CodeFile {
   path: string;
@@ -978,10 +979,24 @@ export class SemanticAnalysisAgent {
         });
 
         const response = result.choices[0]?.message?.content || '';
+        const usage = result.usage;
+
+        // Record LLM metrics for workflow tracking
+        if (usage) {
+          SemanticAnalyzer.recordMetricsFromExternal({
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            inputTokens: usage.prompt_tokens || 0,
+            outputTokens: usage.completion_tokens || 0,
+            totalTokens: usage.total_tokens || 0,
+          });
+        }
+
         log(`Groq API call successful`, 'info', {
           responseLength: response.length,
           attempt: attempt + 1,
-          model: "llama-3.3-70b-versatile"
+          model: "llama-3.3-70b-versatile",
+          tokens: usage?.total_tokens
         });
 
         return response;
@@ -1040,11 +1055,24 @@ export class SemanticAnalysisAgent {
           timeoutPromise
         ]);
         const response = result.response.text();
+        const usageMetadata = result.response.usageMetadata;
+
+        // Record LLM metrics for workflow tracking
+        if (usageMetadata) {
+          SemanticAnalyzer.recordMetricsFromExternal({
+            provider: 'gemini',
+            model: 'gemini-2.0-flash-exp',
+            inputTokens: usageMetadata.promptTokenCount || 0,
+            outputTokens: usageMetadata.candidatesTokenCount || 0,
+            totalTokens: usageMetadata.totalTokenCount || 0,
+          });
+        }
 
         log(`Gemini API call successful`, 'info', {
           responseLength: response.length,
           attempt: attempt + 1,
-          model: "gemini-2.0-flash-exp"
+          model: "gemini-2.0-flash-exp",
+          tokens: usageMetadata?.totalTokenCount
         });
 
         return response;
@@ -1097,16 +1125,30 @@ export class SemanticAnalysisAgent {
         });
         
         const response = result.content[0].type === 'text' ? result.content[0].text : '';
+        const usage = result.usage;
+
+        // Record LLM metrics for workflow tracking
+        if (usage) {
+          SemanticAnalyzer.recordMetricsFromExternal({
+            provider: 'anthropic',
+            model: 'claude-sonnet-4-20250514',
+            inputTokens: usage.input_tokens || 0,
+            outputTokens: usage.output_tokens || 0,
+            totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+          });
+        }
+
         log(`Anthropic API call successful`, 'info', {
           responseLength: response.length,
-          attempt: attempt + 1
+          attempt: attempt + 1,
+          tokens: usage ? usage.input_tokens + usage.output_tokens : undefined
         });
-        
+
         return response;
-        
+
       } catch (error: any) {
         lastError = error;
-        
+
         if (this.isRateLimitError(error)) {
           const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
           log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
@@ -1115,7 +1157,7 @@ export class SemanticAnalysisAgent {
             status: error.status,
             backoffMs
           });
-          
+
           if (attempt < maxRetries - 1) {
             await this.sleep(backoffMs);
             continue;
@@ -1152,16 +1194,30 @@ export class SemanticAnalysisAgent {
         });
         
         const response = result.choices[0]?.message?.content || '';
+        const usage = result.usage;
+
+        // Record LLM metrics for workflow tracking
+        if (usage) {
+          SemanticAnalyzer.recordMetricsFromExternal({
+            provider: 'openai',
+            model: 'gpt-4',
+            inputTokens: usage.prompt_tokens || 0,
+            outputTokens: usage.completion_tokens || 0,
+            totalTokens: usage.total_tokens || 0,
+          });
+        }
+
         log(`OpenAI API call successful`, 'info', {
           responseLength: response.length,
-          attempt: attempt + 1
+          attempt: attempt + 1,
+          tokens: usage?.total_tokens
         });
-        
+
         return response;
-        
+
       } catch (error: any) {
         lastError = error;
-        
+
         if (this.isRateLimitError(error)) {
           const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
           log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
@@ -1170,7 +1226,7 @@ export class SemanticAnalysisAgent {
             status: error.status,
             backoffMs
           });
-          
+
           if (attempt < maxRetries - 1) {
             await this.sleep(backoffMs);
             continue;

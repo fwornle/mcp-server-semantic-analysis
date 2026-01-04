@@ -718,12 +718,9 @@ export class PersistenceAgent {
     });
 
     for (const entity of recentEntities) {
-      // Relationship to CollectiveKnowledge (use underscore for consistency)
-      const collectiveKnowledgeRelation: EntityRelationship = {
-        from: entity.name,
-        to: 'CollectiveKnowledge',
-        relationType: 'contributes_to'
-      };
+      // HIERARCHICAL STRUCTURE: Topics link to Projects, not directly to CollectiveKnowledge
+      // CollectiveKnowledge -> includes -> Projects (handled by GraphDatabaseService)
+      // Topics -> implemented_in -> Projects
 
       // Relationship to Coding project (use underscore for consistency)
       const codingRelation: EntityRelationship = {
@@ -732,19 +729,11 @@ export class PersistenceAgent {
         relationType: 'implemented_in'
       };
 
-      // Check if relationships already exist
+      // Check if relationship already exists
       const existingRelations = sharedMemory.relations || [];
-      const hasCollectiveKnowledgeRel = existingRelations.some(r => 
-        r.from === entity.name && r.to === 'CollectiveKnowledge'
-      );
-      const hasCodingRel = existingRelations.some(r => 
+      const hasCodingRel = existingRelations.some(r =>
         r.from === entity.name && r.to === 'Coding'
       );
-
-      if (!hasCollectiveKnowledgeRel) {
-        sharedMemory.relations.push(collectiveKnowledgeRelation);
-        newRelations.push(collectiveKnowledgeRelation);
-      }
 
       if (!hasCodingRel) {
         sharedMemory.relations.push(codingRelation);
@@ -1113,19 +1102,9 @@ export class PersistenceAgent {
       };
 
       // Create automatic relationships for graph connectivity
+      // HIERARCHICAL STRUCTURE: CollectiveKnowledge -> Projects -> Topics
+      // Topics should connect to Projects (not directly to CollectiveKnowledge)
       const autoRelationships = [...(entity.relationships || [])];
-
-      // Add relationship to CollectiveKnowledge if not already present
-      const hasCollectiveKnowledgeRel = autoRelationships.some(r =>
-        r.to === 'CollectiveKnowledge'
-      );
-      if (!hasCollectiveKnowledgeRel) {
-        autoRelationships.push({
-          from: entity.name,
-          to: 'CollectiveKnowledge',
-          relationType: 'contributes_to'
-        });
-      }
 
       // Add project relationship if team metadata exists
       // Use capitalized team name (e.g., "coding" -> "Coding") as Project entity name

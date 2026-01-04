@@ -1618,12 +1618,13 @@ Respond with JSON only:
       warnings.push('Analysis checkpoints may not have been updated');
     }
 
-    // CRITICAL: Check for orphaned nodes (entities not connected to CollectiveKnowledge)
+    // CRITICAL: Check for orphaned nodes (entities not connected to the hierarchical graph)
     await this.validateNoOrphanedNodes(errors, warnings);
   }
 
   /**
-   * Validate that all entities are connected to CollectiveKnowledge
+   * Validate that all entities are connected to the knowledge graph hierarchy
+   * HIERARCHICAL STRUCTURE: CollectiveKnowledge -> Projects -> Topics
    * This prevents phantom/orphaned nodes in the knowledge graph
    */
   private async validateNoOrphanedNodes(errors: string[], warnings: string[]): Promise<void> {
@@ -1647,8 +1648,8 @@ Respond with JSON only:
         if (relation.to_name) entitiesInRelations.add(relation.to_name);
       }
 
-      // Project nodes and central nodes don't need to be connected
-      const exemptNodes = new Set(['CollectiveKnowledge', 'Coding', 'DynArch', 'Timeline', 'Normalisa']);
+      // Project nodes, System nodes, and central nodes don't need to be connected
+      const exemptNodes = new Set(['CollectiveKnowledge', 'Coding', 'DynArch', 'Timeline', 'Normalisa', 'Ui', 'Resi', 'Raas']);
 
       // Find orphaned entities
       const orphanedEntities: string[] = [];
@@ -1658,7 +1659,7 @@ Respond with JSON only:
 
         // Skip exempt nodes
         if (exemptNodes.has(entityName)) continue;
-        if (entity.entityType === 'Project' || entity.entityType === 'CentralKnowledge') continue;
+        if (entity.entityType === 'Project' || entity.entityType === 'System' || entity.entityType === 'CentralKnowledge') continue;
 
         // Check if entity participates in any relation
         if (!entitiesInRelations.has(entityName)) {

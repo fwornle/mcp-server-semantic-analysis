@@ -316,12 +316,9 @@ export class ObservationGenerationAgent {
         entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: this.calculateSignificance(decision.impact, decision.files.length),
         observations,
+        // HIERARCHICAL STRUCTURE: Topics link to Projects only
+        // CollectiveKnowledge -> includes -> Projects (handled by GraphDatabaseService)
         relationships: [
-          {
-            from: entityName,
-            to: 'CollectiveKnowledge',
-            relationType: 'contributes to'
-          },
           {
             from: entityName,
             to: 'Coding',
@@ -502,12 +499,8 @@ export class ObservationGenerationAgent {
         entityType: 'Unclassified',  // Will be classified by ontology-classification-agent
         significance: this.calculateSignificanceFromDifficulty(pair.problem.difficulty),
         observations,
+        // HIERARCHICAL STRUCTURE: Topics link to Projects only
         relationships: [
-          {
-            from: entityName,
-            to: 'CollectiveKnowledge',
-            relationType: 'contributes to'
-          },
           {
             from: entityName,
             to: 'Coding',

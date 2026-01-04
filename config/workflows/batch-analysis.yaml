@@ -346,49 +346,44 @@ steps:
     phase: finalization
 
   # PHASE F3: Correlate Historical Findings with Current Codebase
-  # This is the KEY step that resolves the temporal mismatch:
-  # - Takes all entities discovered during batch processing (historical)
-  # - Checks which ones still exist in current codebase (via CGR)
-  # - Enriches existing entities with CGR synthesis insights
-  # - Marks historical-only entities as superseded/deleted
-  - name: correlate_with_codebase
-    agent: code_graph
-    action: correlateHistoricalFindings
-    tier: premium
-    parameters:
-      # Historical entities from all batches
-      accumulated_entities: "{{accumulatedKG.entities}}"
-      # Current codebase structure from CGR
-      codebase_index: "{{index_codebase.result}}"
-      # LLM-generated insights about current code
-      synthesis_insights: "{{synthesize_code_insights.result}}"
-      # Correlation settings
-      correlation_config:
-        # Match by qualified name (exact)
-        match_by_name: true
-        # Also try fuzzy matching for renamed entities
-        fuzzy_match_threshold: 0.8
-        # Mark entities not found in current codebase
-        mark_historical: true
-        # Try to identify what replaced deleted entities
-        track_evolution: true
-    timeout: 180
-    dependencies:
-      - synthesize_code_insights
-    phase: finalization
+  # TODO: This feature is planned but not yet implemented in CodeGraphAgent
+  # The correlateHistoricalFindings method needs to be added to enable:
+  # - Checking which historical entities still exist in current codebase
+  # - Enriching existing entities with CGR synthesis insights
+  # - Marking historical-only entities as superseded/deleted
+  # For now, this step is skipped and transform_code_entities works without correlation
+  #
+  # - name: correlate_with_codebase
+  #   agent: code_graph
+  #   action: correlateHistoricalFindings
+  #   tier: premium
+  #   parameters:
+  #     accumulated_entities: "{{accumulatedKG.entities}}"
+  #     codebase_index: "{{index_codebase.result}}"
+  #     synthesis_insights: "{{synthesize_code_insights.result}}"
+  #     correlation_config:
+  #       match_by_name: true
+  #       fuzzy_match_threshold: 0.8
+  #       mark_historical: true
+  #       track_evolution: true
+  #   timeout: 180
+  #   dependencies:
+  #     - synthesize_code_insights
+  #   phase: finalization
 
-  # PHASE F4: Transform Code Entities (with correlation + documentation results)
+  # PHASE F4: Transform Code Entities (with documentation results)
+  # Note: correlation_results disabled until correlate_with_codebase is implemented
   - name: transform_code_entities
     agent: code_graph
     action: transformToKnowledgeEntities
     parameters:
       codebase_analysis: "{{index_codebase.result}}"
       synthesis_results: "{{synthesize_code_insights.result}}"
-      correlation_results: "{{correlate_with_codebase.result}}"
+      # correlation_results: "{{correlate_with_codebase.result}}"  # Disabled - method not implemented
       documentation_results: "{{link_documentation.result}}"
     timeout: 120
     dependencies:
-      - correlate_with_codebase
+      - synthesize_code_insights
       - link_documentation
     phase: finalization
 
@@ -399,8 +394,8 @@ steps:
     parameters:
       entities: "{{accumulatedKG.entities}}"
       code_entities: "{{transform_code_entities.result}}"
-      correlated_entities: "{{correlate_with_codebase.result.enriched}}"
-      historical_entities: "{{correlate_with_codebase.result.historical}}"
+      # correlated_entities: "{{correlate_with_codebase.result.enriched}}"  # Disabled - correlation not implemented
+      # historical_entities: "{{correlate_with_codebase.result.historical}}"  # Disabled - correlation not implemented
       team: "{{params.team}}"
     timeout: 120
     dependencies:

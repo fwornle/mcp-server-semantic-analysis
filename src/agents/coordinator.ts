@@ -2356,6 +2356,7 @@ export class CoordinatorAgent {
       let finalizationStepIndex = 0;
       for (const step of finalSteps) {
         finalizationStepIndex++;
+        const stepStartTime = new Date();  // Track start time for both success and failure cases
         try {
           log(`Running finalization step: ${step.name}`, 'info', {
             agent: step.agent,
@@ -2370,8 +2371,6 @@ export class CoordinatorAgent {
             totalBatches: totalBatchCount,
             batchId: `finalization-${finalizationStepIndex}`
           });
-
-          const stepStartTime = new Date();
           const stepResult = await this.executeStepWithTimeout(execution, step, {
             ...parameters,
             accumulatedKG
@@ -2400,8 +2399,33 @@ export class CoordinatorAgent {
             errors: []
           });
         } catch (error) {
-          log(`Finalization step ${step.name} failed`, 'error', { error });
-          execution.errors.push(`Step ${step.name} failed: ${error}`);
+          const stepEndTime = new Date();
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          log(`Finalization step ${step.name} failed`, 'error', { error: errorMessage });
+          execution.errors.push(`Step ${step.name} failed: ${errorMessage}`);
+
+          // Record failed step in results so it appears in progress file
+          execution.results[step.name] = this.wrapWithTiming({
+            error: errorMessage,
+            failed: true
+          }, stepStartTime, stepEndTime);
+
+          // Record step failure for workflow report
+          this.reportAgent.recordStep({
+            stepName: step.name,
+            agent: step.agent,
+            action: step.action,
+            startTime: stepStartTime,
+            endTime: stepEndTime,
+            duration: stepEndTime.getTime() - stepStartTime.getTime(),
+            status: 'failed',
+            inputs: step.parameters || {},
+            outputs: {},
+            decisions: [],
+            warnings: [],
+            errors: [errorMessage]
+          });
+
           // Update progress to show failure
           this.writeProgressFile(execution, workflow, `${step.name}-failed`, [], {
             currentBatch: batchCount,

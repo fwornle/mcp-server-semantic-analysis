@@ -2254,11 +2254,20 @@ export class CoordinatorAgent {
           if (batch.id === 'batch-001') {
             const opEndTime = new Date();
             const opDuration = opEndTime.getTime() - batchStartTime;
+            // Map operator short names to descriptive agent names
+            const operatorAgentMap: Record<string, string> = {
+              'conv': 'context_convolution',
+              'aggr': 'entity_aggregation',
+              'embed': 'node_embedding',
+              'dedup': 'deduplication_operator',
+              'pred': 'edge_prediction',
+              'merge': 'structure_merge'
+            };
             const operators = ['conv', 'aggr', 'embed', 'dedup', 'pred', 'merge'] as const;
             for (const op of operators) {
               this.reportAgent.recordStep({
                 stepName: `operator_${op}`,
-                agent: 'kg_operators',
+                agent: operatorAgentMap[op],
                 action: op,
                 startTime: new Date(batchStartTime),
                 endTime: opEndTime,

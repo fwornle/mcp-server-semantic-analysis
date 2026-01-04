@@ -879,8 +879,9 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
   const workflowMapping: Record<string, { target: string; defaults: Record<string, any> }> = {
     'complete-analysis': {
       target: 'batch-analysis',
-      // fullAnalysis: process ALL commits; resumeFromCheckpoint: resume after crash
-      defaults: { fullAnalysis: true, resumeFromCheckpoint: true }
+      // fullAnalysis: process ALL commits; forceCleanStart: clear old checkpoints
+      // resumeFromCheckpoint: resume if crashes mid-run (new checkpoints created per batch)
+      defaults: { fullAnalysis: true, forceCleanStart: true, resumeFromCheckpoint: true }
     },
     'incremental-analysis': {
       target: 'batch-analysis',

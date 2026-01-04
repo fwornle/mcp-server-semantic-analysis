@@ -455,7 +455,9 @@ steps:
     action: validateAllEntities
     parameters:
       deduplicated_results: "{{final_dedup.result}}"
-    timeout: 120
+      maxEntitiesPerProject: 50  # Limit to prevent timeout on large KBs
+      skipHealthyEntities: true  # Only report problematic entities
+    timeout: 300  # 5 minutes (increased from 120s for large KBs)
     dependencies:
       - final_dedup
     phase: finalization

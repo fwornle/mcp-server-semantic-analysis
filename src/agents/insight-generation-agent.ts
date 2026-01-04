@@ -651,8 +651,35 @@ Best practices, rules, and conventions for using this correctly. What should dev
 
       // Solution 1: Skip insight generation when no real patterns found
       // LOWERED THRESHOLD: Changed from ≥5 to ≥3 to capture more patterns from semantic analysis
+
+      // QUALITY FILTER: Skip "thin" patterns derived only from code-graph statistics
+      // These patterns have no rich context (git/vibe analysis) and produce low-quality insights
+      const THIN_PATTERN_NAMES = [
+        'Large-Scale Codebase Pattern',
+        'Medium-Scale Codebase Pattern',
+        'Small-Scale Codebase Pattern',
+        'Functional Programming Pattern',
+        'Object-Oriented Programming Pattern',
+        'Mixed Programming Pattern',
+      ];
+
       const significantPatterns = patternCatalog.patterns
         .filter(p => p.significance >= 3) // Include patterns with moderate significance (was >=5)
+        .filter(p => !THIN_PATTERN_NAMES.includes(p.name)) // Skip thin patterns from code-graph stats
+        .filter(p => {
+          // Also filter out patterns with only statistical evidence (no rich context)
+          const evidence = p.evidence || [];
+          const hasOnlyStats = evidence.every((e: string) =>
+            /^(Total|Functions|Classes|Modules|Relationships|entities):/i.test(e) ||
+            /^\d+(\.\d+)?$/.test(e) ||
+            /ratio:/i.test(e)
+          );
+          if (hasOnlyStats && evidence.length > 0) {
+            log(`Skipping thin pattern "${p.name}" with only statistical evidence`, 'info');
+            return false;
+          }
+          return true;
+        })
         .sort((a, b) => b.significance - a.significance);
 
       // If no significant patterns found, return a minimal result instead of failing

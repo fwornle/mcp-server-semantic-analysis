@@ -102,7 +102,8 @@ async function main(): Promise<void> {
     const workflowMapping: Record<string, { target: string; defaults: Record<string, any> }> = {
       'complete-analysis': {
         target: 'batch-analysis',
-        defaults: { fullAnalysis: true, resumeFromCheckpoint: false }
+        // fullAnalysis: process ALL commits; resumeFromCheckpoint: resume after crash
+        defaults: { fullAnalysis: true, resumeFromCheckpoint: true }
       },
       'incremental-analysis': {
         target: 'batch-analysis',

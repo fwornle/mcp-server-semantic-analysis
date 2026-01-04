@@ -1624,27 +1624,28 @@ export class CoordinatorAgent {
       log('Batch workflow: Running initialization phase', 'info');
       for (const step of initSteps) {
         if (step.name === 'plan_batches') {
+          const planStartTime = new Date();
           const batchPlan = await batchScheduler.planBatches({
             batchSize: parameters.batchSize || 50,
             maxBatches: parameters.maxBatches || 0,
             resumeFromCheckpoint: parameters.resumeFromCheckpoint !== false,
             fullAnalysis: parameters.fullAnalysis === true || parameters.fullAnalysis === 'true'
           });
-          execution.results['plan_batches'] = { result: batchPlan };
+          const planEndTime = new Date();
+          execution.results['plan_batches'] = this.wrapWithTiming({ result: batchPlan }, planStartTime, planEndTime);
           log('Batch plan created', 'info', {
             totalBatches: batchPlan.totalBatches,
             totalCommits: batchPlan.totalCommits
           });
 
           // Record plan_batches step for workflow report
-          const planEndTime = new Date();
           this.reportAgent.recordStep({
             stepName: 'plan_batches',
             agent: 'batch_scheduler',
             action: 'planBatches',
-            startTime: execution.startTime,
+            startTime: planStartTime,
             endTime: planEndTime,
-            duration: planEndTime.getTime() - execution.startTime.getTime(),
+            duration: planEndTime.getTime() - planStartTime.getTime(),
             status: 'success',
             inputs: { batchSize: parameters.batchSize || 50, fullAnalysis: parameters.fullAnalysis },
             outputs: { totalBatches: batchPlan.totalBatches, totalCommits: batchPlan.totalCommits },
@@ -1701,6 +1702,7 @@ export class CoordinatorAgent {
         try {
           // Extract commits for this batch
           const gitAgent = this.agents.get('git_history') as GitHistoryAgent;
+          const extractCommitsStart = new Date();
 
           // DEBUG: Log batch info before extraction
           log(`DEBUG: Extracting commits for batch`, 'info', {
@@ -1717,7 +1719,7 @@ export class CoordinatorAgent {
 
           // Track step completion for dashboard visibility
           // Flatten commits structure so summarizeStepResult can find commits array
-          execution.results['extract_batch_commits'] = { ...commits, batchId: batch.id };
+          execution.results['extract_batch_commits'] = this.wrapWithTiming({ ...commits, batchId: batch.id }, extractCommitsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_commits', [], currentBatchProgress);
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
@@ -1761,6 +1763,7 @@ export class CoordinatorAgent {
 
           // Extract sessions for this batch
           const vibeAgent = this.agents.get('vibe_history') as VibeHistoryAgent;
+          const extractSessionsStart = new Date();
           const sessionResult = await vibeAgent.extractSessionsForCommits(
             commits.commits.map(c => ({
               date: c.date,
@@ -1771,7 +1774,7 @@ export class CoordinatorAgent {
 
           // Track step completion for dashboard visibility
           // Flatten sessions structure so summarizeStepResult can find sessions array
-          execution.results['extract_batch_sessions'] = { ...sessionResult, batchId: batch.id };
+          execution.results['extract_batch_sessions'] = this.wrapWithTiming({ ...sessionResult, batchId: batch.id }, extractSessionsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_sessions', [], currentBatchProgress);
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
@@ -1812,6 +1815,7 @@ export class CoordinatorAgent {
           // Analyze batch data using semantic analysis pipeline
           let batchEntities: KGEntity[] = [];
           let batchRelations: KGRelation[] = [];
+          const semanticAnalysisStart = new Date();
 
           try {
             // Get agents for analysis
@@ -1975,10 +1979,10 @@ export class CoordinatorAgent {
           }
 
           // Track semantic analysis step completion for dashboard visibility
-          execution.results['batch_semantic_analysis'] = {
+          execution.results['batch_semantic_analysis'] = this.wrapWithTiming({
             result: { entities: batchEntities.length, relations: batchRelations.length },
             batchId: batch.id
-          };
+          }, semanticAnalysisStart);
           this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', [], currentBatchProgress);
 
           // Record semantic analysis step for workflow report (only on first batch)
@@ -2001,7 +2005,7 @@ export class CoordinatorAgent {
           }
 
           // GENERATE BATCH OBSERVATIONS: Transform semantic analysis into structured observations
-          const observationStartTime = Date.now();
+          const observationStartTime = new Date();
           const observationAgent = this.agents.get('observation_generation') as ObservationGenerationAgent;
           let batchObservations: StructuredObservation[] = [];
 
@@ -2025,12 +2029,12 @@ export class CoordinatorAgent {
               });
 
               // Track observation generation step for dashboard visibility
-              execution.results['generate_batch_observations'] = {
+              execution.results['generate_batch_observations'] = this.wrapWithTiming({
                 observations: batchObservations,
                 observationsCount: batchObservations.length,
                 summary: observationResult?.summary,
                 batchId: batch.id
-              };
+              }, observationStartTime);
               this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
 
               // Record step for workflow report (only on first batch)
@@ -2040,9 +2044,9 @@ export class CoordinatorAgent {
                   stepName: 'generate_batch_observations',
                   agent: 'observation_generation',
                   action: 'generateStructuredObservations',
-                  startTime: new Date(observationStartTime),
+                  startTime: observationStartTime,
                   endTime: obsEndTime,
-                  duration: obsEndTime.getTime() - observationStartTime,
+                  duration: obsEndTime.getTime() - observationStartTime.getTime(),
                   status: 'success',
                   inputs: { batchId: batch.id, entityCount: batchEntities.length },
                   outputs: { observationsCount: batchObservations.length },
@@ -2057,25 +2061,25 @@ export class CoordinatorAgent {
               });
 
               // Track skipped step for dashboard
-              execution.results['generate_batch_observations'] = {
+              execution.results['generate_batch_observations'] = this.wrapWithTiming({
                 skipped: true,
                 skipReason: obsError instanceof Error ? obsError.message : 'Observation generation failed',
                 batchId: batch.id
-              };
+              }, observationStartTime);
               this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
             }
           } else {
             log(`Batch ${batch.id}: Skipping observation generation - agent not available`, 'info');
-            execution.results['generate_batch_observations'] = {
+            execution.results['generate_batch_observations'] = this.wrapWithTiming({
               skipped: true,
               skipReason: 'Observation agent not available',
               batchId: batch.id
-            };
+            }, observationStartTime);
             this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
           }
 
           // ONTOLOGY CLASSIFICATION: Classify entities using project ontology
-          const ontologyClassificationStartTime = Date.now();
+          const ontologyClassificationStartTime = new Date();
           const ontologyAgent = this.agents.get('ontology_classification') as OntologyClassificationAgent;
 
           if (ontologyAgent && batchEntities.length > 0) {
@@ -2124,14 +2128,14 @@ export class CoordinatorAgent {
               }
 
               // Track ontology classification step completion for dashboard visibility
-              execution.results['classify_with_ontology'] = {
+              execution.results['classify_with_ontology'] = this.wrapWithTiming({
                 result: {
                   classified: classificationResult?.summary?.classifiedCount || 0,
                   unclassified: classificationResult?.summary?.unclassifiedCount || 0,
                   byClass: classificationResult?.summary?.byClass || {}
                 },
                 batchId: batch.id
-              };
+              }, ontologyClassificationStartTime);
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
 
               // Record ontology classification step for workflow report (only on first batch)
@@ -2141,9 +2145,9 @@ export class CoordinatorAgent {
                   stepName: 'classify_with_ontology',
                   agent: 'ontology_classification',
                   action: 'classifyObservations',
-                  startTime: new Date(ontologyClassificationStartTime),
+                  startTime: ontologyClassificationStartTime,
                   endTime: ontologyEndTime,
-                  duration: ontologyEndTime.getTime() - ontologyClassificationStartTime,
+                  duration: ontologyEndTime.getTime() - ontologyClassificationStartTime.getTime(),
                   status: 'success',
                   inputs: { batchId: batch.id, entityCount: batchEntities.length },
                   outputs: classificationResult?.summary || {},
@@ -2158,11 +2162,11 @@ export class CoordinatorAgent {
               });
 
               // Track skipped step for dashboard
-              execution.results['classify_with_ontology'] = {
+              execution.results['classify_with_ontology'] = this.wrapWithTiming({
                 skipped: true,
                 skipReason: ontologyError instanceof Error ? ontologyError.message : 'Classification failed',
                 batchId: batch.id
-              };
+              }, ontologyClassificationStartTime);
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
             }
           } else {
@@ -2172,21 +2176,23 @@ export class CoordinatorAgent {
             });
 
             // Track skipped step for dashboard
-            execution.results['classify_with_ontology'] = {
+            execution.results['classify_with_ontology'] = this.wrapWithTiming({
               skipped: true,
               skipReason: !ontologyAgent ? 'Ontology agent not available' : 'No entities to classify',
               batchId: batch.id
-            };
+            }, ontologyClassificationStartTime);
             this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
           }
 
           // Apply Tree-KG operators
+          const operatorsStartTime = new Date();
           const operatorResult = await kgOperators.applyAll(
             batchEntities,
             batchRelations,
             batchContext,
             accumulatedKG
           );
+          const operatorsEndTime = new Date();
 
           // Update accumulated KG
           accumulatedKG = {
@@ -2195,13 +2201,19 @@ export class CoordinatorAgent {
           };
 
           // Track operator steps completion for dashboard visibility
+          // Each operator gets individual timing based on the overall duration divided by operator count
           const opResults = operatorResult.operatorResults;
-          execution.results['operator_conv'] = { result: opResults.conv, batchId: batch.id };
-          execution.results['operator_aggr'] = { result: opResults.aggr, batchId: batch.id };
-          execution.results['operator_embed'] = { result: opResults.embed, batchId: batch.id };
-          execution.results['operator_dedup'] = { result: opResults.dedup, batchId: batch.id };
-          execution.results['operator_pred'] = { result: opResults.pred, batchId: batch.id };
-          execution.results['operator_merge'] = { result: opResults.merge, batchId: batch.id };
+          const totalOperatorDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();
+          const operatorNames = ['conv', 'aggr', 'embed', 'dedup', 'pred', 'merge'] as const;
+          const avgOpDuration = totalOperatorDuration / operatorNames.length;
+
+          // Create timing for each operator (use reported duration if available, otherwise estimate)
+          execution.results['operator_conv'] = this.wrapWithTiming({ result: opResults.conv, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.conv?.duration || avgOpDuration)));
+          execution.results['operator_aggr'] = this.wrapWithTiming({ result: opResults.aggr, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.aggr?.duration || avgOpDuration)));
+          execution.results['operator_embed'] = this.wrapWithTiming({ result: opResults.embed, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.embed?.duration || avgOpDuration)));
+          execution.results['operator_dedup'] = this.wrapWithTiming({ result: opResults.dedup, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.dedup?.duration || avgOpDuration)));
+          execution.results['operator_pred'] = this.wrapWithTiming({ result: opResults.pred, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.pred?.duration || avgOpDuration)));
+          execution.results['operator_merge'] = this.wrapWithTiming({ result: opResults.merge, batchId: batch.id }, operatorsStartTime, operatorsEndTime);
           this.writeProgressFile(execution, workflow, 'operator_merge', [], currentBatchProgress);
 
           // Record KG operator steps for workflow report (only on first batch)
@@ -2228,6 +2240,7 @@ export class CoordinatorAgent {
           }
 
           // Calculate batch stats
+          const qaStartTime = new Date();
           const batchDuration = Date.now() - batchStartTime;
           const stats: BatchStats = {
             commits: commits.commits.length,
@@ -2244,7 +2257,7 @@ export class CoordinatorAgent {
           batchScheduler.completeBatch(batch.id, stats);
 
           // Track batch_qa step (QA validation via stats calculation)
-          execution.results['batch_qa'] = { result: { stats, validated: true }, batchId: batch.id };
+          execution.results['batch_qa'] = this.wrapWithTiming({ result: { stats, validated: true }, batchId: batch.id }, qaStartTime);
           this.writeProgressFile(execution, workflow, 'batch_qa', [], currentBatchProgress);
 
           // Record batch_qa step for workflow report (only on first batch)
@@ -2267,6 +2280,7 @@ export class CoordinatorAgent {
           }
 
           // Save checkpoint
+          const checkpointStartTime = new Date();
           checkpointManager.saveBatchCheckpoint(
             batch.id,
             batch.batchNumber,
@@ -2276,7 +2290,7 @@ export class CoordinatorAgent {
           );
 
           // Track save_batch_checkpoint step completion for dashboard visibility
-          execution.results['save_batch_checkpoint'] = { result: { saved: true }, batchId: batch.id };
+          execution.results['save_batch_checkpoint'] = this.wrapWithTiming({ result: { saved: true }, batchId: batch.id }, checkpointStartTime);
           this.writeProgressFile(execution, workflow, 'save_batch_checkpoint', [], currentBatchProgress);
 
           // Record save_batch_checkpoint step for workflow report (only on first batch)
@@ -2362,8 +2376,8 @@ export class CoordinatorAgent {
             ...parameters,
             accumulatedKG
           });
-          execution.results[step.name] = stepResult;
           const stepEndTime = new Date();
+          execution.results[step.name] = this.wrapWithTiming(stepResult || {}, stepStartTime, stepEndTime);
           log(`Finalization step ${step.name} completed`, 'info', {
             resultType: typeof stepResult,
             resultKeys: stepResult ? Object.keys(stepResult) : [],
@@ -2399,7 +2413,7 @@ export class CoordinatorAgent {
 
       // EXPLICIT INSIGHT GENERATION: The YAML step may not have the right parameters for batch context
       // Generate insights from accumulated batch data
-      const insightStartTime = Date.now();
+      const insightStartTime = new Date();
       const insightAgent = this.agents.get('insight_generation') as InsightGenerationAgent;
 
       if (insightAgent && !execution.results['generate_insights']?.insightDocuments?.length) {
@@ -2443,18 +2457,18 @@ export class CoordinatorAgent {
           });
 
           // Store result for summary tracking
-          execution.results['generate_insights'] = insightResult;
+          const insightEndTime = new Date();
+          execution.results['generate_insights'] = this.wrapWithTiming(insightResult, insightStartTime, insightEndTime);
           this.writeProgressFile(execution, workflow, 'generate_insights', [], {
             currentBatch: batchCount,
             totalBatches: totalBatchCount,
             batchId: 'finalization-insights'
           });
 
-          const insightEndTime = Date.now();
           log('Batch workflow: Insight generation completed', 'info', {
             documentsGenerated: insightResult.insightDocuments?.length || 0,
             patternsIdentified: insightResult.patternCatalog?.patterns?.length || 0,
-            duration: `${insightEndTime - insightStartTime}ms`
+            duration: `${insightEndTime.getTime() - insightStartTime.getTime()}ms`
           });
 
           // Record step for workflow report
@@ -2462,9 +2476,9 @@ export class CoordinatorAgent {
             stepName: 'generate_insights',
             agent: 'insight_generation',
             action: 'generateComprehensiveInsights',
-            startTime: new Date(insightStartTime),
-            endTime: new Date(insightEndTime),
-            duration: insightEndTime - insightStartTime,
+            startTime: insightStartTime,
+            endTime: insightEndTime,
+            duration: insightEndTime.getTime() - insightStartTime.getTime(),
             status: 'success',
             inputs: { accumulatedEntities: accumulatedKG.entities.length },
             outputs: this.summarizeStepResult(insightResult),
@@ -2478,12 +2492,12 @@ export class CoordinatorAgent {
             error: errorMsg,
             hint: errorMsg.includes('Invalid string length') ? 'Data volume too large - consider reducing batch size or filtering data' : undefined
           });
-          execution.results['generate_insights'] = {
+          execution.results['generate_insights'] = this.wrapWithTiming({
             error: errorMsg,
             skipped: true,
             skipReason: `Insight generation failed: ${errorMsg}`,  // Use consistent field name
             warning: `Insight generation failed: ${errorMsg}`  // Also set warning for summary extraction
-          };
+          }, insightStartTime);
         }
       }
 
@@ -3451,6 +3465,18 @@ Expected locations for generated files:
       summary.topTopicNames = result.summary.topTopics;
     }
 
+    // Extract problem/solution pairs count from vibe history analysis (LLM-based task/solution extraction)
+    if (Array.isArray(result.problemSolutionPairs)) {
+      summary.problemSolutionPairsCount = result.problemSolutionPairs.length;
+      // Include sample pairs for display (top 3)
+      if (result.problemSolutionPairs.length > 0) {
+        summary.sampleTaskSolutions = result.problemSolutionPairs.slice(0, 3).map((p: any) => ({
+          task: p.problem?.description || 'Unknown task',
+          outcome: p.solution?.outcome || 'unknown'
+        }));
+      }
+    }
+
     // Extract insight document details (for generate_insights step)
     if (result.insightDocument || result.insightDocuments) {
       const docs = result.insightDocuments || [result.insightDocument];
@@ -3580,6 +3606,21 @@ Expected locations for generated files:
     }
 
     return summary;
+  }
+
+  /**
+   * Wrap a step result with timing information.
+   * This ensures all step results (including batch workflow steps) have consistent metrics.
+   */
+  private wrapWithTiming<T>(result: T, startTime: Date, endTime: Date = new Date()): T & { _timing: { startTime: Date; endTime: Date; duration: number } } {
+    return {
+      ...result as any,
+      _timing: {
+        startTime,
+        endTime,
+        duration: endTime.getTime() - startTime.getTime()
+      }
+    };
   }
 
   /**

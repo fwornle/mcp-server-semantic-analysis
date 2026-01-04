@@ -937,8 +937,19 @@ export class QualityAssuranceAgent {
       warnings.push('No conversation sessions found - may indicate .specstory directory issue');
     }
 
+    // Check for LLM-extracted task/solution pairs (now async LLM-based, may be empty for small sessions)
     if (!result.problemSolutionPairs || !Array.isArray(result.problemSolutionPairs)) {
-      errors.push('Missing problem-solution pairs in vibe analysis');
+      warnings.push('Missing task/solution pairs array in vibe analysis');
+    } else if (result.problemSolutionPairs.length === 0 && result.sessions?.length > 5) {
+      // Only warn if we had significant sessions but found no pairs
+      warnings.push('No task/solution pairs extracted - LLM analysis may need review');
+    }
+
+    // Check for LLM-extracted key topics (primary semantic analysis)
+    if (!result.keyTopics || !Array.isArray(result.keyTopics)) {
+      warnings.push('Missing key topics array in vibe analysis');
+    } else if (result.keyTopics.length === 0 && result.sessions?.length > 3) {
+      warnings.push('No key topics extracted - LLM analysis may need review');
     }
 
     if (!result.patterns || typeof result.patterns !== 'object') {

@@ -93,7 +93,7 @@ agents:
     name: Vibe History
     shortName: Vibe
     icon: MessageSquare
-    description: "Parses LSL session files to identify problem-solution pairs, extract development contexts, and discover workflow patterns from human-AI conversations."
+    description: "Uses LLM semantic analysis to extract key development topics, task/solution pairs, and workflow patterns from human-AI conversation sessions. Processes LSL session logs in parallel batches."
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: standard

@@ -179,10 +179,10 @@ export class VibeHistoryAgent {
       // Extract development contexts
       const developmentContexts = this.extractDevelopmentContexts(sessions);
 
-      // Legacy: Identify problem-solution pairs (keyword-based, kept for backward compatibility)
-      const problemSolutionPairs = this.identifyProblemSolutionPairs(sessions);
+      // Extract problem-solution pairs using LLM semantic analysis (parallelized)
+      const problemSolutionPairs = await this.identifyProblemSolutionPairs(sessions, skipLlmEnhancement);
 
-      // NEW: Extract key topics using semantic LLM analysis (parallelized)
+      // Extract key topics using semantic LLM analysis (parallelized)
       const keyTopics = await this.extractKeyTopics(sessions, skipLlmEnhancement);
 
       // Analyze patterns
@@ -1278,47 +1278,178 @@ Return 3-8 topics per batch. Return ONLY the JSON array, no other text.`;
     return merged;
   }
 
-  private identifyProblemSolutionPairs(sessions: ConversationSession[]): ProblemSolutionPair[] {
-    const pairs: ProblemSolutionPair[] = [];
+  /**
+   * Extract problem/solution pairs using LLM semantic analysis.
+   * This replaces the legacy keyword-based detection with proper semantic understanding.
+   */
+  private async identifyProblemSolutionPairs(sessions: ConversationSession[], skipLlm: boolean = false): Promise<ProblemSolutionPair[]> {
+    if (sessions.length === 0) return [];
 
-    for (const session of sessions) {
-      // Look for clear problem-solution patterns
-      for (let i = 0; i < session.exchanges.length - 1; i++) {
-        const exchange = session.exchanges[i];
-        
-        if (this.isProblemDescription(exchange.userMessage)) {
-          // Find the solution in subsequent exchanges
-          const solutionExchanges = session.exchanges.slice(i, i + 5); // Look ahead 5 exchanges
-          const solution = this.extractSolution(solutionExchanges);
-          
-          if (solution) {
-            const problem = this.buildProblemDescription(exchange);
-            pairs.push({
-              problem,
-              solution,
-              metadata: {
-                session: session.filename,
-                timestamp: exchange.timestamp,
-                exchanges: solutionExchanges.map(e => e.id)
-              }
-            });
-          }
+    // If skipping LLM, return empty array (no fallback to broken keyword matching)
+    if (skipLlm) {
+      log('Skipping LLM problem/solution extraction (skipLlmEnhancement=true)', 'info');
+      return [];
+    }
+
+    const BATCH_SIZE = 10;  // Sessions per batch
+    const PARALLEL_BATCHES = 3;
+    const allPairs: ProblemSolutionPair[] = [];
+
+    // Sort sessions chronologically
+    const sortedSessions = [...sessions].sort((a, b) =>
+      a.timestamp.getTime() - b.timestamp.getTime()
+    );
+
+    // Create batches
+    const batches: ConversationSession[][] = [];
+    for (let i = 0; i < sortedSessions.length; i += BATCH_SIZE) {
+      batches.push(sortedSessions.slice(i, i + BATCH_SIZE));
+    }
+
+    log(`Extracting problem/solution pairs from ${sessions.length} sessions in ${batches.length} batches`, 'info');
+
+    // Process batches in parallel chunks
+    for (let chunkStart = 0; chunkStart < batches.length; chunkStart += PARALLEL_BATCHES) {
+      const chunk = batches.slice(chunkStart, chunkStart + PARALLEL_BATCHES);
+
+      const batchPromises = chunk.map(async (batch, idx) => {
+        try {
+          return await this.extractProblemSolutionPairsFromBatch(batch, chunkStart + idx);
+        } catch (error) {
+          log(`Failed to extract problem/solution pairs from batch ${chunkStart + idx}`, 'warning', error);
+          return [];
         }
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+      for (const pairs of batchResults) {
+        allPairs.push(...pairs);
       }
     }
 
-    return pairs;
+    log(`Extracted ${allPairs.length} problem/solution pairs via LLM`, 'info');
+    return allPairs;
   }
 
-  private isProblemDescription(message: string): boolean {
+  /**
+   * Extract problem/solution pairs from a batch of sessions using LLM semantic analysis.
+   */
+  private async extractProblemSolutionPairsFromBatch(sessions: ConversationSession[], batchIndex: number): Promise<ProblemSolutionPair[]> {
+    // Create condensed representation for LLM
+    const sessionSummaries = sessions.map(session => {
+      const exchanges = session.exchanges.slice(0, 8);  // First 8 exchanges
+      const userMessages = exchanges.map(e => e.userMessage).filter(m => m.length > 20);
+      const assistantMessages = exchanges.map(e => e.assistantMessage).filter(m => m.length > 50);
+      const files = [...new Set(exchanges.flatMap(e => e.context.files))].slice(0, 15);
+      const tools = [...new Set(exchanges.flatMap(e => e.context.tools))].slice(0, 10);
+
+      return {
+        date: session.timestamp.toISOString().split('T')[0],
+        filename: session.filename,
+        userRequests: userMessages.slice(0, 5).map(m => m.substring(0, 300)),
+        assistantResponses: assistantMessages.slice(0, 3).map(m => m.substring(0, 200)),
+        filesModified: files,
+        toolsUsed: tools
+      };
+    });
+
+    const prompt = `Analyze these development sessions and identify TASK/SOLUTION pairs.
+
+A "task" is ANY development work request - not just bugs/errors. This includes:
+- Feature implementations ("add a button", "implement caching")
+- Refactoring ("refactor this code", "clean up")
+- Configuration changes ("update the config", "change settings")
+- Documentation ("update docs", "add comments")
+- Investigation/research ("figure out why", "understand how")
+- Bug fixes ("fix the error", "resolve the issue")
+
+For each task/solution pair found, extract:
+- The task/problem/request (what the user wanted to accomplish)
+- The solution approach taken
+- Key steps or actions performed
+- Technologies/tools involved
+- Outcome (success, partial, blocked)
+- Difficulty (low, medium, high)
+
+Sessions (batch ${batchIndex + 1}):
+${JSON.stringify(sessionSummaries, null, 2)}
+
+Return a JSON array of task/solution pairs:
+[{
+  "task": "Brief description of what was requested/needed",
+  "context": "Additional context about the task",
+  "difficulty": "low|medium|high",
+  "approach": "How the solution was approached",
+  "steps": ["step1", "step2"],
+  "technologies": ["tech1", "tech2"],
+  "outcome": "success|partial|blocked",
+  "sessionFilename": "the session filename where this occurred"
+}]
+
+Focus on SUBSTANTIVE development tasks. Skip trivial commands (sl, help queries).
+Return 2-6 pairs per batch. Return ONLY the JSON array, no other text.`;
+
+    try {
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: "patterns",
+        provider: "auto"
+      });
+
+      // Parse LLM response
+      const jsonMatch = result.insights.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        log(`No JSON array found in problem/solution LLM response for batch ${batchIndex}`, 'warning');
+        return [];
+      }
+
+      const rawPairs = JSON.parse(jsonMatch[0]) as Array<{
+        task: string;
+        context?: string;
+        difficulty: string;
+        approach: string;
+        steps: string[];
+        technologies: string[];
+        outcome: string;
+        sessionFilename?: string;
+      }>;
+
+      // Transform to ProblemSolutionPair format
+      return rawPairs.map(p => ({
+        problem: {
+          description: p.task,
+          context: p.context || p.task,
+          difficulty: (p.difficulty as 'low' | 'medium' | 'high') || 'medium'
+        },
+        solution: {
+          approach: p.approach,
+          steps: p.steps || [],
+          technologies: p.technologies || [],
+          outcome: (p.outcome as 'success' | 'partial' | 'blocked') || 'success'
+        },
+        metadata: {
+          session: p.sessionFilename || sessions[0]?.filename || 'unknown',
+          timestamp: sessions[0]?.timestamp || new Date(),
+          exchanges: []
+        }
+      }));
+
+    } catch (error) {
+      log(`LLM problem/solution extraction failed for batch ${batchIndex}`, 'warning', error);
+      return [];
+    }
+  }
+
+  // DEPRECATED: Legacy keyword-based detection - kept only for reference
+  // This method is no longer used. Use identifyProblemSolutionPairs() which uses LLM.
+  private _legacyIsProblemDescription(message: string): boolean {
     const problemIndicators = [
       'error', 'problem', 'issue', 'bug', 'fail', 'broken',
       'not working', 'help with', 'struggling with', 'stuck on'
     ];
-    
+
     const lowerMessage = message.toLowerCase();
     return problemIndicators.some(indicator => lowerMessage.includes(indicator)) &&
-           message.length > 50; // Substantial description
+           message.length > 50;
   }
 
   private buildProblemDescription(exchange: ConversationExchange): ProblemSolutionPair['problem'] {

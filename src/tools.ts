@@ -69,6 +69,115 @@ function sendProgressUpdate(workflowId: string, message: string, data?: Record<s
 }
 
 /**
+ * Clean up any existing running workflows before starting a new one.
+ * Prevents multiple workflows from conflicting on the progress file.
+ *
+ * @returns Object with cleanup results
+ */
+async function cleanupExistingWorkflows(repositoryPath: string): Promise<{
+  cleaned: boolean;
+  killedPids: number[];
+  staleWorkflowId?: string;
+  error?: string;
+}> {
+  const result = { cleaned: false, killedPids: [] as number[], staleWorkflowId: undefined as string | undefined, error: undefined as string | undefined };
+
+  try {
+    const progressPath = path.join(repositoryPath, '.data', 'workflow-progress.json');
+    const configDir = path.join(repositoryPath, '.data', 'workflow-configs');
+
+    // Check progress file status for logging purposes
+    let progressStatus = 'unknown';
+    if (existsSync(progressPath)) {
+      try {
+        const progressData = JSON.parse(readFileSync(progressPath, 'utf-8'));
+        progressStatus = progressData.status || 'unknown';
+        result.staleWorkflowId = progressData.workflowId;
+
+        if (progressStatus === 'running') {
+          const lastUpdate = new Date(progressData.lastUpdate || progressData.startTime).getTime();
+          const now = Date.now();
+          const ageMs = now - lastUpdate;
+          log(`Found workflow in progress: ${progressData.workflowId || 'unknown'}, age: ${ageMs}ms`, 'info', {
+            workflowId: progressData.workflowId,
+            lastUpdate: progressData.lastUpdate,
+            ageMs,
+          });
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
+    // ALWAYS check for running workflow processes, regardless of progress file status
+    // This catches cases where progress file was corrupted, process crashed, etc.
+    if (existsSync(configDir)) {
+      const files = await fs.readdir(configDir);
+      const pidFiles = files.filter(f => f.endsWith('.pid'));
+
+      log(`Checking ${pidFiles.length} PID files for running workflow processes`, 'info');
+
+      for (const pidFile of pidFiles) {
+        try {
+          const pid = parseInt(readFileSync(path.join(configDir, pidFile), 'utf-8').trim(), 10);
+          if (pid && !isNaN(pid)) {
+            // Check if process is still running
+            try {
+              process.kill(pid, 0); // Signal 0 = check if process exists
+
+              // Process exists - kill it
+              log(`Killing existing workflow process PID ${pid}`, 'warning', { pidFile });
+              process.kill(pid, 'SIGTERM');
+              result.killedPids.push(pid);
+              result.cleaned = true;
+
+              // Wait a moment for process to terminate
+              await new Promise(resolve => setTimeout(resolve, 500));
+
+              // Force kill if still running
+              try {
+                process.kill(pid, 0);
+                log(`Process ${pid} still alive, sending SIGKILL`, 'warning');
+                process.kill(pid, 'SIGKILL');
+              } catch {
+                // Process terminated - good
+              }
+            } catch {
+              // Process doesn't exist - that's fine, we'll clean up the file
+              log(`PID file ${pidFile} references non-existent process ${pid}`, 'info');
+            }
+
+            // Remove pid file (always clean up, process exists or not)
+            try {
+              unlinkSync(path.join(configDir, pidFile));
+              log(`Removed PID file: ${pidFile}`, 'info');
+            } catch { /* ignore */ }
+          }
+        } catch (e) {
+          log(`Error processing pid file ${pidFile}: ${e}`, 'warning');
+        }
+      }
+    }
+
+    // Reset progress file if it shows running (to prevent dashboard showing stale)
+    if (progressStatus === 'running') {
+      const resetProgress = {
+        status: 'cancelled',
+        message: 'Cancelled by new workflow start',
+        cancelledAt: new Date().toISOString(),
+        previousWorkflowId: result.staleWorkflowId,
+      };
+      writeFileSync(progressPath, JSON.stringify(resetProgress, null, 2));
+      result.cleaned = true;
+    }
+
+  } catch (error) {
+    result.error = error instanceof Error ? error.message : String(error);
+    log(`Error during workflow cleanup: ${result.error}`, 'warning');
+  }
+
+  return result;
+}
+
+/**
  * Generate a unique workflow ID
  */
 function generateWorkflowId(): string {
@@ -916,6 +1025,16 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
   // If async_mode, spawn a SEPARATE PROCESS to run the workflow
   // This ensures workflow survives MCP disconnections
   if (async_mode) {
+    // CRITICAL: Clean up any existing running workflows before starting a new one
+    // This prevents multiple workflows from conflicting on the shared progress file
+    const cleanup = await cleanupExistingWorkflows(repositoryPath);
+    if (cleanup.cleaned) {
+      log(`Cleaned up existing workflow before starting new one`, 'info', {
+        killedPids: cleanup.killedPids,
+        previousWorkflowId: cleanup.staleWorkflowId,
+      });
+    }
+
     // Store workflow info locally (for status queries before child writes progress)
     const workflowInfo: RunningWorkflow = {
       id: workflowId,

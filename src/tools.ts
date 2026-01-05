@@ -1051,7 +1051,10 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     mkdirSync(configDir, { recursive: true });
 
     const configFile = path.join(configDir, `${workflowId}.json`);
-    const progressFile = path.join(repositoryPath, '.data', 'workflow-runner-progress.json');
+    // CRITICAL: Use workflow-progress.json (not workflow-runner-progress.json)
+    // The dashboard and Coordinator both read/write workflow-progress.json
+    // The heartbeat must write to the same file for status to stay synchronized
+    const progressFile = path.join(repositoryPath, '.data', 'workflow-progress.json');
     const pidFile = path.join(configDir, `${workflowId}.pid`);
 
     const config = {

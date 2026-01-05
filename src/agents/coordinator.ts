@@ -1740,6 +1740,24 @@ export class CoordinatorAgent {
         const batchStartTime = Date.now();
         const currentBatchProgress = { currentBatch: batchCount, totalBatches: totalBatchCount, batchId: batch.id };
 
+        // Memory monitoring: Log stats and hint GC every 5 batches
+        const COMPACT_EVERY_N_BATCHES = 5;
+        if (batchCount % COMPACT_EVERY_N_BATCHES === 0) {
+          const memUsage = process.memoryUsage();
+          log(`Batch ${batch.id}: Memory usage at batch ${batchCount}`, 'info', {
+            heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
+            heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
+            external: `${Math.round(memUsage.external / 1024 / 1024)}MB`,
+            rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`
+          });
+
+          // Hint garbage collection if exposed (Node.js --expose-gc flag)
+          if ((global as any).gc) {
+            log(`Batch ${batch.id}: Triggering garbage collection`, 'debug');
+            (global as any).gc();
+          }
+        }
+
         // Create batch iteration entry for tracer tracking
         const currentBatchIteration: NonNullable<WorkflowExecution['batchIterations']>[number] = {
           batchId: batch.id,
@@ -3433,7 +3451,12 @@ Expected locations for generated files:
     }
     this.monitorIntervalId = setInterval(() => {
       if (this.running) {
-        this.monitorExecutions();
+        try {
+          this.monitorExecutions();
+        } catch (error) {
+          // Non-fatal: log error but don't crash the interval
+          log('Background monitor execution error (non-fatal)', 'error', error);
+        }
       }
     }, 30000);
   }

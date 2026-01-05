@@ -18,6 +18,14 @@ import * as path from 'path';
 import { CoordinatorAgent } from './agents/coordinator.js';
 import { log } from './logging.js';
 
+// Batch step names for phase separation
+const BATCH_STEPS = new Set([
+  'plan_batches', 'extract_batch_commits', 'extract_batch_sessions',
+  'batch_semantic_analysis', 'generate_batch_observations', 'classify_with_ontology',
+  'operator_conv', 'operator_aggr', 'operator_embed', 'operator_dedup',
+  'operator_pred', 'operator_merge', 'batch_qa', 'save_batch_checkpoint'
+]);
+
 interface WorkflowConfig {
   workflowId: string;
   workflowName: string;
@@ -50,6 +58,84 @@ function writeProgress(progressFile: string, update: ProgressUpdate): void {
     fs.writeFileSync(progressFile, JSON.stringify(update, null, 2));
   } catch (e) {
     console.error('Failed to write progress:', e);
+  }
+}
+
+/**
+ * Update step timing statistics after workflow completion
+ * This enables learned progress estimation for future runs
+ */
+async function updateTimingStatistics(
+  repositoryPath: string,
+  workflowName: string,
+  totalBatches: number
+): Promise<void> {
+  try {
+    const progressPath = path.join(repositoryPath, '.data/workflow-progress.json');
+    if (!fs.existsSync(progressPath)) {
+      log('[WorkflowRunner] Progress file not found for statistics update', 'warn');
+      return;
+    }
+
+    const progressData = JSON.parse(fs.readFileSync(progressPath, 'utf-8'));
+    const stepsDetail = progressData.stepsDetail || [];
+
+    // Calculate batch phase duration (sum of batch step durations)
+    let batchDurationMs = 0;
+    let finalizationDurationMs = 0;
+    const stepDurations: Record<string, number> = {};
+
+    for (const step of stepsDetail) {
+      const duration = step.duration || 0;
+      stepDurations[step.name] = duration;
+
+      if (BATCH_STEPS.has(step.name)) {
+        batchDurationMs += duration;
+      } else {
+        finalizationDurationMs += duration;
+      }
+    }
+
+    // Also process batch iterations if available
+    const batchIterations = progressData.batchIterations || [];
+    if (batchIterations.length > 0) {
+      // Sum up all batch iteration durations
+      batchDurationMs = 0;
+      for (const batch of batchIterations) {
+        for (const step of batch.steps || []) {
+          batchDurationMs += step.duration || 0;
+        }
+      }
+    }
+
+    // Call the statistics update API
+    const apiUrl = 'http://localhost:3033/api/workflows/statistics/update';
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workflowName,
+        batchDurationMs,
+        finalizationDurationMs,
+        totalBatches: totalBatches || batchIterations.length || 1,
+        stepDurations
+      })
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      log('[WorkflowRunner] Timing statistics updated', 'info', {
+        sampleCount: result.data?.sampleCount,
+        avgBatchDurationMs: result.data?.avgBatchDurationMs
+      });
+    } else {
+      log('[WorkflowRunner] Failed to update timing statistics', 'warn', {
+        status: response.status
+      });
+    }
+  } catch (error) {
+    // Non-fatal error - statistics update failure shouldn't break workflow completion
+    log('[WorkflowRunner] Error updating timing statistics', 'warn', error);
   }
 }
 
@@ -180,6 +266,13 @@ async function main(): Promise<void> {
       duration: `${Math.round((Date.now() - startTime.getTime()) / 1000)}s`,
       steps: `${execution.currentStep}/${execution.totalSteps}`
     });
+
+    // Update timing statistics for learned progress estimation
+    if (execution.status === 'completed') {
+      const totalBatches = (execution as any).batchIterations?.length ||
+                          parameters?.totalBatches || 1;
+      await updateTimingStatistics(repositoryPath, resolvedWorkflowName, totalBatches);
+    }
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

@@ -62,6 +62,19 @@ export interface WorkflowExecution {
     currentBatch: number;
     totalBatches: number;
   };
+  // Batch iteration tracking for tracer visualization
+  batchIterations?: Array<{
+    batchId: string;
+    batchNumber: number;
+    startTime: Date;
+    endTime?: Date;
+    steps: Array<{
+      name: string;
+      status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+      duration?: number;
+      outputs?: Record<string, any>;
+    }>;
+  }>;
   // Rollback tracking for error recovery
   rollbackActions?: RollbackAction[];
   rolledBack?: boolean;
@@ -275,6 +288,17 @@ export class CoordinatorAgent {
       // Add batch progress info if available (for batch workflows)
       if (batchProgress) {
         progress.batchProgress = batchProgress;
+      }
+
+      // Add batch iterations for tracer visualization (shows each batch's step history)
+      if (execution.batchIterations && execution.batchIterations.length > 0) {
+        progress.batchIterations = execution.batchIterations.map(bi => ({
+          batchId: bi.batchId,
+          batchNumber: bi.batchNumber,
+          startTime: bi.startTime.toISOString(),
+          endTime: bi.endTime?.toISOString(),
+          steps: bi.steps
+        }));
       }
 
       // Add multi-agent orchestration data for dashboard visualization
@@ -1695,6 +1719,9 @@ export class CoordinatorAgent {
       let batch: BatchWindow | null;
       const totalBatchCount = batchScheduler.getProgress().totalBatches;
 
+      // Initialize batch iterations tracking for tracer visualization
+      execution.batchIterations = [];
+
       while ((batch = batchScheduler.getNextBatch()) !== null) {
         // Check for external cancellation BEFORE processing each batch
         if (this.isWorkflowCancelled()) {
@@ -1712,6 +1739,20 @@ export class CoordinatorAgent {
         batchCount++;
         const batchStartTime = Date.now();
         const currentBatchProgress = { currentBatch: batchCount, totalBatches: totalBatchCount, batchId: batch.id };
+
+        // Create batch iteration entry for tracer tracking
+        const currentBatchIteration: NonNullable<WorkflowExecution['batchIterations']>[number] = {
+          batchId: batch.id,
+          batchNumber: batch.batchNumber,
+          startTime: new Date(),
+          steps: []
+        };
+        execution.batchIterations!.push(currentBatchIteration);
+
+        // Helper to track step completion in this batch iteration
+        const trackBatchStep = (stepName: string, status: 'completed' | 'failed' | 'skipped', duration?: number, outputs?: Record<string, any>) => {
+          currentBatchIteration.steps.push({ name: stepName, status, duration, outputs });
+        };
 
         log(`Processing batch ${batch.id}`, 'info', {
           batchNumber: batch.batchNumber,
@@ -1747,8 +1788,10 @@ export class CoordinatorAgent {
 
           // Track step completion for dashboard visibility
           // Flatten commits structure so summarizeStepResult can find commits array
+          const commitsDuration = Date.now() - extractCommitsStart.getTime();
           execution.results['extract_batch_commits'] = this.wrapWithTiming({ ...commits, batchId: batch.id }, extractCommitsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_commits', [], currentBatchProgress);
+          trackBatchStep('extract_batch_commits', 'completed', commitsDuration, { commitsCount: commits?.commits?.length || 0 });
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
           if (batch.id === 'batch-001') {
@@ -1802,8 +1845,10 @@ export class CoordinatorAgent {
 
           // Track step completion for dashboard visibility
           // Flatten sessions structure so summarizeStepResult can find sessions array
+          const sessionsDuration = Date.now() - extractSessionsStart.getTime();
           execution.results['extract_batch_sessions'] = this.wrapWithTiming({ ...sessionResult, batchId: batch.id }, extractSessionsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_sessions', [], currentBatchProgress);
+          trackBatchStep('extract_batch_sessions', 'completed', sessionsDuration, { sessionsCount: sessionResult?.sessions?.length || 0 });
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
           if (batch.id === 'batch-001') {
@@ -2007,11 +2052,13 @@ export class CoordinatorAgent {
           }
 
           // Track semantic analysis step completion for dashboard visibility
+          const semanticDuration = Date.now() - semanticAnalysisStart.getTime();
           execution.results['batch_semantic_analysis'] = this.wrapWithTiming({
             result: { entities: batchEntities.length, relations: batchRelations.length },
             batchId: batch.id
           }, semanticAnalysisStart);
           this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', [], currentBatchProgress);
+          trackBatchStep('batch_semantic_analysis', 'completed', semanticDuration, { batchEntities: batchEntities.length, batchRelations: batchRelations.length });
 
           // Record semantic analysis step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -2057,6 +2104,7 @@ export class CoordinatorAgent {
               });
 
               // Track observation generation step for dashboard visibility
+              const obsDuration = Date.now() - observationStartTime.getTime();
               execution.results['generate_batch_observations'] = this.wrapWithTiming({
                 observations: batchObservations,
                 observationsCount: batchObservations.length,
@@ -2064,6 +2112,7 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, observationStartTime);
               this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
+              trackBatchStep('generate_batch_observations', 'completed', obsDuration, { observationsCount: batchObservations.length });
 
               // Record step for workflow report (only on first batch)
               if (batch.id === 'batch-001') {
@@ -2089,21 +2138,25 @@ export class CoordinatorAgent {
               });
 
               // Track skipped step for dashboard
+              const obsFailDuration = Date.now() - observationStartTime.getTime();
               execution.results['generate_batch_observations'] = this.wrapWithTiming({
                 skipped: true,
                 skipReason: obsError instanceof Error ? obsError.message : 'Observation generation failed',
                 batchId: batch.id
               }, observationStartTime);
               this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
+              trackBatchStep('generate_batch_observations', 'failed', obsFailDuration);
             }
           } else {
             log(`Batch ${batch.id}: Skipping observation generation - agent not available`, 'info');
+            const obsSkipDuration = Date.now() - observationStartTime.getTime();
             execution.results['generate_batch_observations'] = this.wrapWithTiming({
               skipped: true,
               skipReason: 'Observation agent not available',
               batchId: batch.id
             }, observationStartTime);
             this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
+            trackBatchStep('generate_batch_observations', 'skipped', obsSkipDuration);
           }
 
           // ONTOLOGY CLASSIFICATION: Classify entities using project ontology
@@ -2156,6 +2209,7 @@ export class CoordinatorAgent {
               }
 
               // Track ontology classification step completion for dashboard visibility
+              const ontologyDuration = Date.now() - ontologyClassificationStartTime.getTime();
               execution.results['classify_with_ontology'] = this.wrapWithTiming({
                 result: {
                   classified: classificationResult?.summary?.classifiedCount || 0,
@@ -2165,6 +2219,7 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, ontologyClassificationStartTime);
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
+              trackBatchStep('classify_with_ontology', 'completed', ontologyDuration, { classified: classificationResult?.summary?.classifiedCount || 0 });
 
               // Record ontology classification step for workflow report (only on first batch)
               if (batch.id === 'batch-001') {
@@ -2196,12 +2251,14 @@ export class CoordinatorAgent {
               });
 
               // Track skipped step for dashboard
+              const ontologyFailDuration = Date.now() - ontologyClassificationStartTime.getTime();
               execution.results['classify_with_ontology'] = this.wrapWithTiming({
                 skipped: true,
                 skipReason: ontologyError instanceof Error ? ontologyError.message : 'Classification failed',
                 batchId: batch.id
               }, ontologyClassificationStartTime);
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
+              trackBatchStep('classify_with_ontology', 'failed', ontologyFailDuration);
             }
           } else {
             log(`Batch ${batch.id}: Skipping ontology classification - no entities or missing agent`, 'info', {
@@ -2210,12 +2267,14 @@ export class CoordinatorAgent {
             });
 
             // Track skipped step for dashboard
+            const ontologySkipDuration = Date.now() - ontologyClassificationStartTime.getTime();
             execution.results['classify_with_ontology'] = this.wrapWithTiming({
               skipped: true,
               skipReason: !ontologyAgent ? 'Ontology agent not available' : 'No entities to classify',
               batchId: batch.id
             }, ontologyClassificationStartTime);
             this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
+            trackBatchStep('classify_with_ontology', 'skipped', ontologySkipDuration);
           }
 
           // Apply Tree-KG operators
@@ -2249,6 +2308,13 @@ export class CoordinatorAgent {
           execution.results['operator_pred'] = this.wrapWithTiming({ result: opResults.pred, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.pred?.duration || avgOpDuration)));
           execution.results['operator_merge'] = this.wrapWithTiming({ result: opResults.merge, batchId: batch.id }, operatorsStartTime, operatorsEndTime);
           this.writeProgressFile(execution, workflow, 'operator_merge', [], currentBatchProgress);
+
+          // Track KG operators in batch iteration (aggregate as single step for cleaner visualization)
+          const operatorsTotalDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();
+          trackBatchStep('kg_operators', 'completed', operatorsTotalDuration, {
+            entitiesAfter: operatorResult?.entities?.length || 0,
+            relationsAfter: operatorResult?.relations?.length || 0
+          });
 
           // Record KG operator steps for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -2300,8 +2366,10 @@ export class CoordinatorAgent {
           batchScheduler.completeBatch(batch.id, stats);
 
           // Track batch_qa step (QA validation via stats calculation)
+          const qaDuration = Date.now() - qaStartTime.getTime();
           execution.results['batch_qa'] = this.wrapWithTiming({ result: { stats, validated: true }, batchId: batch.id }, qaStartTime);
           this.writeProgressFile(execution, workflow, 'batch_qa', [], currentBatchProgress);
+          trackBatchStep('batch_qa', 'completed', qaDuration, { entitiesCreated: stats.entitiesCreated, relationsAdded: stats.relationsAdded });
 
           // Record batch_qa step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -2333,8 +2401,13 @@ export class CoordinatorAgent {
           );
 
           // Track save_batch_checkpoint step completion for dashboard visibility
+          const checkpointDuration = Date.now() - checkpointStartTime.getTime();
           execution.results['save_batch_checkpoint'] = this.wrapWithTiming({ result: { saved: true }, batchId: batch.id }, checkpointStartTime);
           this.writeProgressFile(execution, workflow, 'save_batch_checkpoint', [], currentBatchProgress);
+          trackBatchStep('save_batch_checkpoint', 'completed', checkpointDuration);
+
+          // Mark this batch iteration as complete
+          currentBatchIteration.endTime = new Date();
 
           // Record save_batch_checkpoint step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {

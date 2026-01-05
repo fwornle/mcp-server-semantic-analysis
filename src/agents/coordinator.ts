@@ -2684,6 +2684,7 @@ export class CoordinatorAgent {
 
       execution.status = 'completed';
       execution.endTime = new Date();
+      execution.currentStep = workflow.steps.length; // Mark all steps as completed
 
       const progress = batchScheduler.getProgress();
       log(`Batch workflow completed: ${executionId}`, 'info', {

@@ -2232,12 +2232,17 @@ export class CoordinatorAgent {
                 result: {
                   classified: classificationResult?.summary?.classifiedCount || 0,
                   unclassified: classificationResult?.summary?.unclassifiedCount || 0,
-                  byClass: classificationResult?.summary?.byClass || {}
+                  byClass: classificationResult?.summary?.byClass || {},
+                  byMethod: classificationResult?.summary?.byMethod || {},
+                  llmCalls: classificationResult?.summary?.llmCalls || 0
                 },
                 batchId: batch.id
               }, ontologyClassificationStartTime);
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
-              trackBatchStep('classify_with_ontology', 'completed', ontologyDuration, { classified: classificationResult?.summary?.classifiedCount || 0 });
+              trackBatchStep('classify_with_ontology', 'completed', ontologyDuration, {
+                classified: classificationResult?.summary?.classifiedCount || 0,
+                llmCalls: classificationResult?.summary?.llmCalls || 0
+              });
 
               // Record ontology classification step for workflow report (only on first batch)
               if (batch.id === 'batch-001') {
@@ -3587,6 +3592,15 @@ Expected locations for generated files:
         if (stats.sessions !== undefined) summary.sessionsProcessed = stats.sessions;
         if (stats.duration !== undefined) summary.batchDuration = stats.duration;
         summary.validated = innerResult.validated || false;
+      }
+
+      // Ontology classification: { classified, unclassified, byClass, byMethod, llmCalls }
+      if (innerResult.classified !== undefined || innerResult.unclassified !== undefined) {
+        summary.classified = innerResult.classified;
+        summary.unclassified = innerResult.unclassified;
+        if (innerResult.byClass) summary.byClass = innerResult.byClass;
+        if (innerResult.byMethod) summary.byMethod = innerResult.byMethod;
+        if (innerResult.llmCalls !== undefined) summary.llmCalls = innerResult.llmCalls;
       }
 
       // If we extracted batch-specific data, return early

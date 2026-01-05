@@ -663,9 +663,28 @@ Best practices, rules, and conventions for using this correctly. What should dev
         'Mixed Programming Pattern',
       ];
 
+      // Track filter reasons for accurate skip messaging
+      const filterStats = {
+        lowSignificance: 0,
+        thinPatternNames: 0,
+        statisticalOnly: 0,
+      };
+
       const significantPatterns = patternCatalog.patterns
-        .filter(p => p.significance >= 3) // Include patterns with moderate significance (was >=5)
-        .filter(p => !THIN_PATTERN_NAMES.includes(p.name)) // Skip thin patterns from code-graph stats
+        .filter(p => {
+          if (p.significance < 3) {
+            filterStats.lowSignificance++;
+            return false;
+          }
+          return true;
+        })
+        .filter(p => {
+          if (THIN_PATTERN_NAMES.includes(p.name)) {
+            filterStats.thinPatternNames++;
+            return false;
+          }
+          return true;
+        })
         .filter(p => {
           // Also filter out patterns with only statistical evidence (no rich context)
           const evidence = p.evidence || [];
@@ -676,6 +695,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
           );
           if (hasOnlyStats && evidence.length > 0) {
             log(`Skipping thin pattern "${p.name}" with only statistical evidence`, 'info');
+            filterStats.statisticalOnly++;
             return false;
           }
           return true;
@@ -685,8 +705,23 @@ Best practices, rules, and conventions for using this correctly. What should dev
       // If no significant patterns found, return a minimal result instead of failing
       // This allows the workflow to continue with other steps (code-graph, ontology, etc.)
       if (significantPatterns.length === 0) {
+        // Build accurate skip reason based on what filters were applied
+        const skipReasons: string[] = [];
+        if (filterStats.thinPatternNames > 0) {
+          skipReasons.push(`${filterStats.thinPatternNames} thin/statistical patterns filtered`);
+        }
+        if (filterStats.lowSignificance > 0) {
+          skipReasons.push(`${filterStats.lowSignificance} patterns had significance < 3`);
+        }
+        if (filterStats.statisticalOnly > 0) {
+          skipReasons.push(`${filterStats.statisticalOnly} patterns had only statistical evidence`);
+        }
+        const skipReason = skipReasons.length > 0
+          ? `No rich patterns remaining after filtering: ${skipReasons.join(', ')}`
+          : 'No patterns found';
+
         log('No significant patterns found - returning minimal insight result', 'info');
-        log(`NOTE: All ${patternCatalog.patterns.length} patterns had significance < 3`, 'warning');
+        log(`Filter breakdown: thin=${filterStats.thinPatternNames}, lowSig=${filterStats.lowSignificance}, statsOnly=${filterStats.statisticalOnly}`, 'info');
         log(`Workflow will continue - other agents (code-graph, ontology) may still produce valuable results`, 'info');
 
         const processingTime = Date.now() - startTime;
@@ -697,12 +732,15 @@ Best practices, rules, and conventions for using this correctly. What should dev
           significant_patterns: 0,
           processing_time: processingTime,
           skipped: true,
-          skip_reason: 'No patterns with sufficient significance (≥3) found',
+          skip_reason: skipReason,
           diagnostics: {
             totalPatternsFound: patternCatalog.patterns.length,
+            filterStats, // Extended diagnostics: breakdown of why patterns were filtered
             patternsWithSignificance: patternCatalog.patterns.map(p => ({ name: p.name, significance: p.significance || 0 })),
-            recommendation: 'The significance calculation may need adjustment for this repository type'
-          }
+            recommendation: filterStats.thinPatternNames > 0
+              ? 'All patterns were thin/statistical - consider adding richer git/vibe analysis'
+              : 'The significance calculation may need adjustment for this repository type'
+          } as any
         };
       }
 

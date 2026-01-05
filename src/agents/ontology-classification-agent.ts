@@ -82,6 +82,7 @@ export interface ClassificationProcessResult {
     averageConfidence: number;
     byMethod: Record<string, number>;
     byClass: Record<string, number>;
+    llmCalls?: number; // Number of LLM calls made during classification
   };
 
   /** Auto-extension suggestions generated */
@@ -372,6 +373,10 @@ Respond with JSON only:
       ? await this.generateExtensionSuggestions(unclassified)
       : [];
 
+    // Calculate LLM calls based on classification methods used
+    // 'llm' method = 1 LLM call, 'hybrid' method = 1 LLM call (heuristic + LLM fallback)
+    const llmCalls = (byMethod['llm'] || 0) + (byMethod['hybrid'] || 0);
+
     const result: ClassificationProcessResult = {
       classified,
       unclassified,
@@ -382,11 +387,12 @@ Respond with JSON only:
         averageConfidence: classified.length > 0 ? totalConfidence / classified.length : 0,
         byMethod,
         byClass,
+        llmCalls, // Track LLM calls for dashboard visibility
       },
       extensionSuggestions,
     };
 
-    log('Classification complete', 'info', result.summary);
+    log('Classification complete', 'info', { ...result.summary, llmCalls });
 
     return result;
   }

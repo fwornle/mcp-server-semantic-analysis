@@ -27,7 +27,7 @@ export type TaskType =
 
 export interface AnalysisOptions {
   context?: string;
-  analysisType?: "general" | "code" | "patterns" | "architecture" | "diagram";
+  analysisType?: "general" | "code" | "patterns" | "architecture" | "diagram" | "classification" | "raw" | "passthrough";
   provider?: "groq" | "gemini" | "anthropic" | "openai" | "custom" | "auto";
   tier?: ModelTier;      // Explicit tier selection
   taskType?: TaskType;   // Task type for automatic tier selection
@@ -803,6 +803,14 @@ IMPORTANT REQUIREMENTS:
 - The diagram should represent the actual architectural patterns and components found in the analysis
 
 Generate the PlantUML diagram now:`;
+        break;
+
+      case "raw":
+      case "passthrough":
+      case "classification":
+        // Pass through unchanged - caller has already formatted the prompt
+        // Used by OntologyClassifier for structured JSON classification responses
+        prompt = context ? `${context}\n\n${content}` : content;
         break;
 
       default:

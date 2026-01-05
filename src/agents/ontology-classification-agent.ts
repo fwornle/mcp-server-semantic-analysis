@@ -200,7 +200,7 @@ export class OntologyClassificationAgent {
             });
 
             const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-              analysisType: 'general',
+              analysisType: 'classification', // Pass prompt through unchanged for JSON response
             });
 
             // The SemanticAnalyzer returns insights - extract the classification

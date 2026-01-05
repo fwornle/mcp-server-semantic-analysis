@@ -148,6 +148,9 @@ interface WorkflowConfig {
 
 interface ProgressUpdate {
   workflowId: string;
+  workflowName?: string;
+  team?: string;
+  repositoryPath?: string;
   status: 'starting' | 'running' | 'completed' | 'failed';
   currentStep?: string;
   stepsCompleted?: number;
@@ -377,9 +380,12 @@ async function main(): Promise<void> {
       clearTimeout(watchdogTimer);
     }
 
-    // Final success update
+    // Final success update - preserve workflowName, team, repositoryPath for dashboard display
     writeProgress(progressFile, {
       workflowId,
+      workflowName: resolvedWorkflowName,
+      team: parameters?.team || 'unknown',
+      repositoryPath,
       status: execution.status === 'completed' ? 'completed' : 'failed',
       currentStep: String(execution.currentStep),
       stepsCompleted: typeof execution.currentStep === 'number' ? execution.currentStep : parseInt(String(execution.currentStep)) || 0,
@@ -408,6 +414,9 @@ async function main(): Promise<void> {
 
     writeProgress(progressFile, {
       workflowId,
+      workflowName: workflowName, // Use config's workflowName (resolvedWorkflowName not in scope here)
+      team: parameters?.team || 'unknown',
+      repositoryPath,
       status: 'failed',
       error: errorMessage,
       message: `Workflow failed: ${errorMessage}`,

@@ -12,6 +12,18 @@ import * as yaml from "js-yaml";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Debug logging function that writes to file (persists when stdio is discarded)
+const SEMANTIC_DEBUG_LOG_PATH = path.join(process.cwd(), '.data', 'semantic-analyzer-debug.log');
+function semanticDebugLog(message: string, data?: any): void {
+  try {
+    const timestamp = new Date().toISOString();
+    const logLine = `[${timestamp}] ${message}${data ? ' ' + JSON.stringify(data) : ''}\n`;
+    fs.appendFileSync(SEMANTIC_DEBUG_LOG_PATH, logLine);
+  } catch (e) {
+    // Silently fail if we can't write to log
+  }
+}
+
 // Model tier types
 export type ModelTier = "fast" | "standard" | "premium";
 
@@ -393,28 +405,34 @@ export class SemanticAnalyzer {
 
   private initializeClients(): void {
     // Priority order: (1) Groq (default), (2) Gemini, (3) Custom API, (4) Anthropic, (5) OpenAI
+    semanticDebugLog('initializeClients called', { cwd: process.cwd() });
 
     // Initialize Groq client (highest priority - cheap, low-latency)
     const groqKey = process.env.GROQ_API_KEY;
+    semanticDebugLog('Checking Groq API key', { hasKey: !!groqKey, keyLength: groqKey?.length || 0 });
     if (groqKey && groqKey !== "your-groq-api-key") {
       this.groqClient = new Groq({
         apiKey: groqKey,
         timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
       });
       log("Groq client initialized (default provider)", "info");
+      semanticDebugLog('Groq client initialized');
     }
 
     // Initialize Gemini client (second priority - cheap, good quality)
     // Note: Gemini SDK doesn't support timeout in constructor, handled per-request
     const googleKey = process.env.GOOGLE_API_KEY;
+    semanticDebugLog('Checking Google API key', { hasKey: !!googleKey, keyLength: googleKey?.length || 0 });
     if (googleKey && googleKey !== "your-google-api-key") {
       this.geminiClient = new GoogleGenerativeAI(googleKey);
       log("Gemini client initialized (fallback #1)", "info");
+      semanticDebugLog('Gemini client initialized');
     }
 
     // Initialize Custom OpenAI-compatible client (third priority)
     const customBaseUrl = process.env.OPENAI_BASE_URL;
     const customKey = process.env.OPENAI_API_KEY;
+    semanticDebugLog('Checking Custom OpenAI key', { hasBaseUrl: !!customBaseUrl, hasKey: !!customKey });
     if (customBaseUrl && customKey && customKey !== "your-openai-api-key") {
       this.customClient = new OpenAI({
         apiKey: customKey,
@@ -422,30 +440,45 @@ export class SemanticAnalyzer {
         timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
       });
       log("Custom OpenAI-compatible client initialized (fallback #2)", "info", { baseURL: customBaseUrl });
+      semanticDebugLog('Custom OpenAI client initialized', { baseURL: customBaseUrl });
     }
 
     // Initialize Anthropic client (fourth priority)
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    semanticDebugLog('Checking Anthropic API key', { hasKey: !!anthropicKey, keyLength: anthropicKey?.length || 0 });
     if (anthropicKey && anthropicKey !== "your-anthropic-api-key") {
       this.anthropicClient = new Anthropic({
         apiKey: anthropicKey,
         timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
       });
       log("Anthropic client initialized (fallback #3)", "info");
+      semanticDebugLog('Anthropic client initialized');
     }
 
     // Initialize OpenAI client (fifth priority - only if no custom base URL)
     const openaiKey = process.env.OPENAI_API_KEY;
+    semanticDebugLog('Checking OpenAI API key', { hasKey: !!openaiKey, hasCustomUrl: !!customBaseUrl });
     if (openaiKey && openaiKey !== "your-openai-api-key" && !customBaseUrl) {
       this.openaiClient = new OpenAI({
         apiKey: openaiKey,
         timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
       });
       log("OpenAI client initialized (fallback #4)", "info");
+      semanticDebugLog('OpenAI client initialized');
     }
+
+    const clientsAvailable = {
+      groq: !!this.groqClient,
+      gemini: !!this.geminiClient,
+      custom: !!this.customClient,
+      anthropic: !!this.anthropicClient,
+      openai: !!this.openaiClient
+    };
+    semanticDebugLog('Clients initialized', clientsAvailable);
 
     if (!this.groqClient && !this.geminiClient && !this.customClient && !this.anthropicClient && !this.openaiClient) {
       log("No LLM clients available - check API keys", "warning");
+      semanticDebugLog('WARNING: No LLM clients available!');
     }
   }
 

@@ -185,61 +185,41 @@ export class OntologyClassificationAgent {
       const heuristicClassifier = createHeuristicClassifier();
 
       // Create LLM inference engine using SemanticAnalyzer
+      // Interface: generateCompletion({ messages, maxTokens, temperature }) => Promise<{ content, model, usage }>
       const llmInferenceEngine = {
-        generateCompletion: async (prompt: string) => {
+        generateCompletion: async (options: { messages: Array<{ role: string; content: string }>; maxTokens?: number; temperature?: number }) => {
           try {
-            // Get available ontology classes for context
-            const availableClasses = this.ontologyManager?.getAllEntityClasses() || [];
-            const classNames = availableClasses.map((c: any) => typeof c === 'string' ? c : c.name).join(', ');
+            // Extract the user message content (the prompt built by OntologyClassifier)
+            const userMessage = options.messages.find(m => m.role === 'user');
+            const prompt = userMessage?.content || '';
 
-            const classificationPrompt = `You are an ontology classifier. Given the following entity description, classify it into ONE of these ontology classes: ${classNames}
+            log('LLM classification request received', 'debug', {
+              promptLength: prompt.length,
+              maxTokens: options.maxTokens,
+              temperature: options.temperature,
+            });
 
-Entity to classify:
-${prompt}
-
-Respond with JSON only:
-{
-  "entityClass": "<class name from the list above>",
-  "confidence": <0.0-1.0>,
-  "reasoning": "<brief explanation>"
-}`;
-
-            const result = await this.semanticAnalyzer.analyzeContent(classificationPrompt, {
+            const result = await this.semanticAnalyzer.analyzeContent(prompt, {
               analysisType: 'general',
             });
 
-            // Parse LLM response
-            const jsonMatch = result.insights.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              const parsed = JSON.parse(jsonMatch[0]);
-              return {
-                content: JSON.stringify(parsed),
-                model: 'semantic-analyzer',
-                usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-              };
-            }
+            // The SemanticAnalyzer returns insights - extract the classification
+            log('LLM classification completed', 'debug', {
+              insightsLength: result.insights?.length || 0,
+            });
 
-            // Fallback if parsing fails
             return {
-              content: JSON.stringify({
-                entityClass: 'Unknown',
-                confidence: 0.3,
-                reasoning: 'LLM response parsing failed, using fallback',
-              }),
+              content: result.insights || '',
               model: 'semantic-analyzer',
-              usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+              usage: {
+                promptTokens: result.tokenUsage?.inputTokens || 0,
+                completionTokens: result.tokenUsage?.outputTokens || 0,
+                totalTokens: result.tokenUsage?.totalTokens || 0,
+              },
             };
           } catch (error) {
-            log('LLM classification failed, falling back to heuristics', 'warning', error);
-            return {
-              content: JSON.stringify({
-                entityClass: 'Unknown',
-                confidence: 0,
-                reasoning: `LLM error: ${error instanceof Error ? error.message : String(error)}`,
-              }),
-              model: 'fallback',
-              usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-            };
+            log('LLM classification failed', 'warning', error);
+            throw error; // Let OntologyClassifier handle the error and fallback to heuristics
           }
         },
       };

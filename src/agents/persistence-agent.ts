@@ -150,6 +150,18 @@ export interface PersistenceAgentConfig {
   stalenessThresholdDays?: number;
 }
 
+// Classification cache entry with TTL
+interface ClassificationCacheEntry {
+  entityType: string;
+  confidence: number;
+  method: string;
+  ontologyMetadata?: any;
+  timestamp: number;
+}
+
+// Cache TTL: 5 minutes (classification results are valid within a workflow run)
+const CLASSIFICATION_CACHE_TTL_MS = 5 * 60 * 1000;
+
 export class PersistenceAgent {
   private repositoryPath: string;
   private sharedMemoryPath: string;
@@ -159,6 +171,9 @@ export class PersistenceAgent {
   private contentValidationAgent: ContentValidationAgent | null = null;
   private config: PersistenceAgentConfig;
   private checkpointManager: CheckpointManager;
+
+  // Classification cache to avoid redundant LLM calls
+  private classificationCache: Map<string, ClassificationCacheEntry> = new Map();
 
   constructor(repositoryPath: string = '.', graphDB?: GraphDatabaseAdapter, config?: PersistenceAgentConfig) {
     this.repositoryPath = repositoryPath;
@@ -321,6 +336,30 @@ export class PersistenceAgent {
     method: string;
     ontologyMetadata?: any;
   }> {
+    // CHECK CACHE FIRST: Avoid redundant LLM calls for recently classified entities
+    const cacheKey = entityName;
+    const cachedEntry = this.classificationCache.get(cacheKey);
+    if (cachedEntry) {
+      const age = Date.now() - cachedEntry.timestamp;
+      if (age < CLASSIFICATION_CACHE_TTL_MS) {
+        log('Classification cache hit - skipping LLM call', 'info', {
+          entityName,
+          entityType: cachedEntry.entityType,
+          confidence: cachedEntry.confidence,
+          cacheAgeMs: age
+        });
+        return {
+          entityType: cachedEntry.entityType,
+          confidence: cachedEntry.confidence,
+          method: `${cachedEntry.method}-cached`,
+          ontologyMetadata: cachedEntry.ontologyMetadata
+        };
+      } else {
+        // Cache expired, remove it
+        this.classificationCache.delete(cacheKey);
+      }
+    }
+
     // If ontology system not initialized, throw error - classification is mandatory
     if (!this.ontologySystem) {
       log('Ontology classification unavailable - system not initialized', 'error', { entityName });
@@ -352,7 +391,7 @@ export class PersistenceAgent {
           method: classification.method
         });
 
-        return {
+        const result = {
           entityType: classification.entityClass,
           confidence: classification.confidence,
           method: classification.method || 'ontology',
@@ -362,6 +401,14 @@ export class PersistenceAgent {
             confidence: classification.confidence
           }
         };
+
+        // CACHE THE RESULT for future calls
+        this.classificationCache.set(cacheKey, {
+          ...result,
+          timestamp: Date.now()
+        });
+
+        return result;
       } else {
         // Classification confidence too low - throw error, NO FALLBACKS
         const confidence = classification?.confidence || 0;
@@ -383,6 +430,43 @@ export class PersistenceAgent {
       });
       throw new Error(`Ontology classification error for entity "${entityName}": ${error instanceof Error ? error.message : String(error)}. NO FALLBACKS.`);
     }
+  }
+
+  /**
+   * Check if an entity already has a valid pre-classification from an earlier workflow step.
+   * This avoids redundant LLM calls when classify_with_ontology has already classified the entity.
+   *
+   * @param entity - The entity to check
+   * @returns true if the entity has a valid, usable classification
+   */
+  private hasValidPreClassification(entity: SharedMemoryEntity): boolean {
+    // Must have a non-empty, non-generic entityType
+    if (!entity.entityType ||
+        entity.entityType === 'Unclassified' ||
+        entity.entityType === 'Unknown' ||
+        entity.entityType === 'Entity') {
+      return false;
+    }
+
+    // Check for classification metadata that indicates prior classification
+    // The ontology metadata is nested under entity.metadata.ontology
+    const ontologyMeta = entity.metadata?.ontology;
+    const hasClassificationMeta = !!(
+      ontologyMeta?.classificationConfidence ||
+      ontologyMeta?.classificationMethod
+    );
+
+    // If we have classification metadata, use confidence threshold
+    if (hasClassificationMeta) {
+      const confidence = ontologyMeta?.classificationConfidence || 0;
+      // Only skip re-classification if confidence meets threshold
+      return confidence >= (this.config.ontologyMinConfidence || 0.7);
+    }
+
+    // Without metadata, check if entityType looks like a real ontology class
+    // (PascalCase, not a generic placeholder)
+    const looksLikeOntologyClass = /^[A-Z][a-zA-Z]+(?:[A-Z][a-zA-Z]+)*$/.test(entity.entityType);
+    return looksLikeOntologyClass;
   }
 
   /**
@@ -1005,6 +1089,27 @@ export class PersistenceAgent {
           entityName: entity.name,
           protectedType: entityType,
           originalType: entity.entityType
+        });
+      } else if (this.hasValidPreClassification(entity)) {
+        // OPTIMIZATION: Skip re-classification if entity already has valid classification
+        // This happens when classify_with_ontology step already classified the entity
+        entityType = entity.entityType;
+        const ontologyMeta = entity.metadata?.ontology;
+        const existingConfidence = ontologyMeta?.classificationConfidence || 0.8;
+        classification = {
+          entityType,
+          confidence: existingConfidence,
+          method: 'pre-classified-skip',
+          ontologyMetadata: ontologyMeta || {
+            preClassified: true,
+            originalMethod: 'unknown'
+          }
+        };
+        log('Using pre-classified entity type (skipping re-classification)', 'info', {
+          entityName: entity.name,
+          entityType,
+          confidence: existingConfidence,
+          originalMethod: ontologyMeta?.classificationMethod || 'unknown'
         });
       } else {
         // Classify the entity using the ontology system - throws on failure (NO FALLBACKS)

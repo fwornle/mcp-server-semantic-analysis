@@ -176,6 +176,48 @@ function writeProgress(progressFile: string, update: ProgressUpdate): void {
 }
 
 /**
+ * Write progress while preserving detailed data from coordinator
+ * This merges status updates with existing batchIterations, stepsDetail, etc.
+ */
+function writeProgressPreservingDetails(progressFile: string, update: ProgressUpdate): void {
+  try {
+    let existingData: Record<string, any> = {};
+    if (fs.existsSync(progressFile)) {
+      try {
+        existingData = JSON.parse(fs.readFileSync(progressFile, 'utf-8'));
+      } catch (e) {
+        // Ignore parse errors, start fresh
+      }
+    }
+
+    // Merge: new update takes precedence, but preserve detailed coordinator data
+    const merged: Record<string, any> = {
+      ...update,
+      // Preserve detailed trace data from coordinator
+      batchIterations: existingData.batchIterations,
+      stepsDetail: existingData.stepsDetail,
+      summary: existingData.summary,
+      multiAgent: existingData.multiAgent,
+      stepsRunning: existingData.stepsRunning,
+      stepsSkipped: existingData.stepsSkipped,
+      stepsFailed: existingData.stepsFailed,
+      batchProgress: existingData.batchProgress,
+    };
+
+    // Remove undefined/null fields
+    for (const key of Object.keys(merged)) {
+      if (merged[key] === undefined || merged[key] === null) {
+        delete merged[key];
+      }
+    }
+
+    fs.writeFileSync(progressFile, JSON.stringify(merged, null, 2));
+  } catch (e) {
+    console.error('Failed to write progress:', e);
+  }
+}
+
+/**
  * Update step timing statistics after workflow completion
  * This enables learned progress estimation for future runs
  */
@@ -380,8 +422,8 @@ async function main(): Promise<void> {
       clearTimeout(watchdogTimer);
     }
 
-    // Final success update - preserve workflowName, team, repositoryPath for dashboard display
-    writeProgress(progressFile, {
+    // Final success update - preserve workflowName, team, repositoryPath AND detailed trace data for dashboard
+    writeProgressPreservingDetails(progressFile, {
       workflowId,
       workflowName: resolvedWorkflowName,
       team: parameters?.team || 'unknown',
@@ -412,7 +454,7 @@ async function main(): Promise<void> {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
 
-    writeProgress(progressFile, {
+    writeProgressPreservingDetails(progressFile, {
       workflowId,
       workflowName: workflowName, // Use config's workflowName (resolvedWorkflowName not in scope here)
       team: parameters?.team || 'unknown',

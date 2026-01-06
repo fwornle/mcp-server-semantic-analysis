@@ -343,6 +343,17 @@ export class CoordinatorAgent {
     }
   }
 
+  /**
+   * Check for cancellation and throw if cancelled - use this within batch processing
+   * to allow clean abort at any point in the batch
+   */
+  private checkCancellationOrThrow(context: string): void {
+    if (this.isWorkflowCancelled()) {
+      log(`Workflow cancelled during: ${context}`, 'warning');
+      throw new Error(`WORKFLOW_CANCELLED: ${context}`);
+    }
+  }
+
   private initializeWorkflows(): void {
     // Try to load workflows from YAML (single source of truth)
     try {
@@ -1811,6 +1822,9 @@ export class CoordinatorAgent {
           this.writeProgressFile(execution, workflow, 'extract_batch_commits', [], currentBatchProgress);
           trackBatchStep('extract_batch_commits', 'completed', commitsDuration, { commitsCount: commits?.commits?.length || 0 });
 
+          // Check for cancellation after commit extraction
+          this.checkCancellationOrThrow('extract_batch_commits');
+
           // Record step for workflow report (only on first batch to avoid duplicate entries)
           if (batch.id === 'batch-001') {
             const stepEndTime = new Date();
@@ -1867,6 +1881,9 @@ export class CoordinatorAgent {
           execution.results['extract_batch_sessions'] = this.wrapWithTiming({ ...sessionResult, batchId: batch.id }, extractSessionsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_sessions', [], currentBatchProgress);
           trackBatchStep('extract_batch_sessions', 'completed', sessionsDuration, { sessionsCount: sessionResult?.sessions?.length || 0 });
+
+          // Check for cancellation after session extraction
+          this.checkCancellationOrThrow('extract_batch_sessions');
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
           if (batch.id === 'batch-001') {
@@ -2078,6 +2095,9 @@ export class CoordinatorAgent {
           this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', [], currentBatchProgress);
           trackBatchStep('batch_semantic_analysis', 'completed', semanticDuration, { batchEntities: batchEntities.length, batchRelations: batchRelations.length });
 
+          // Check for cancellation after semantic analysis
+          this.checkCancellationOrThrow('batch_semantic_analysis');
+
           // Record semantic analysis step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
             const stepEndTime = new Date();
@@ -2131,6 +2151,9 @@ export class CoordinatorAgent {
               }, observationStartTime);
               this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
               trackBatchStep('generate_batch_observations', 'completed', obsDuration, { observationsCount: batchObservations.length });
+
+              // Check for cancellation after observation generation
+              this.checkCancellationOrThrow('generate_batch_observations');
 
               // Record step for workflow report (only on first batch)
               if (batch.id === 'batch-001') {
@@ -2239,6 +2262,9 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, ontologyClassificationStartTime);
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
+              // Check for cancellation after ontology classification
+              this.checkCancellationOrThrow('classify_with_ontology');
+
               trackBatchStep('classify_with_ontology', 'completed', ontologyDuration, {
                 classified: classificationResult?.summary?.classifiedCount || 0,
                 llmCalls: classificationResult?.summary?.llmCalls || 0
@@ -2334,6 +2360,9 @@ export class CoordinatorAgent {
 
           // Track KG operators in batch iteration (aggregate as single step for cleaner visualization)
           const operatorsTotalDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();
+          // Check for cancellation after KG operators
+          this.checkCancellationOrThrow('kg_operators');
+
           trackBatchStep('kg_operators', 'completed', operatorsTotalDuration, {
             entitiesAfter: operatorResult?.entities?.length || 0,
             relationsAfter: operatorResult?.relations?.length || 0
@@ -2393,6 +2422,9 @@ export class CoordinatorAgent {
           execution.results['batch_qa'] = this.wrapWithTiming({ result: { stats, validated: true }, batchId: batch.id }, qaStartTime);
           this.writeProgressFile(execution, workflow, 'batch_qa', [], currentBatchProgress);
           trackBatchStep('batch_qa', 'completed', qaDuration, { entitiesCreated: stats.entitiesCreated, relationsAdded: stats.relationsAdded });
+
+          // Check for cancellation after batch QA
+          this.checkCancellationOrThrow('batch_qa');
 
           // Record batch_qa step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -2468,6 +2500,19 @@ export class CoordinatorAgent {
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           const errorStack = error instanceof Error ? error.stack : undefined;
+
+          // Check if this is a cancellation - handle cleanly without treating as error
+          if (errorMessage.startsWith('WORKFLOW_CANCELLED:')) {
+            log('Workflow cancelled during batch processing - exiting cleanly', 'warning', {
+              batchId: batch.id,
+              batchNumber: batch.batchNumber,
+              context: errorMessage.replace('WORKFLOW_CANCELLED: ', '')
+            });
+            execution.status = 'cancelled';
+            execution.endTime = new Date();
+            execution.errors.push('Workflow cancelled by user');
+            break; // Exit the batch loop cleanly
+          }
 
           batchScheduler.failBatch(batch.id, errorMessage);
 

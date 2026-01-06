@@ -73,6 +73,10 @@ export interface WorkflowExecution {
       status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
       duration?: number;
       outputs?: Record<string, any>;
+      // LLM metrics for tracer visualization
+      llmCalls?: number;
+      tokensUsed?: number;
+      llmProvider?: string; // Model name or provider for display
     }>;
   }>;
   // Rollback tracking for error recovery
@@ -1315,8 +1319,17 @@ export class CoordinatorAgent {
             ...(hasLLMUsage ? {
               _llmMetrics: {
                 totalCalls: llmMetrics.totalCalls,
+                totalInputTokens: llmMetrics.totalInputTokens,
+                totalOutputTokens: llmMetrics.totalOutputTokens,
                 totalTokens: llmMetrics.totalTokens,
                 providers: llmMetrics.providers,
+                // Include per-call breakdown for detailed trace view
+                calls: llmMetrics.calls?.map(call => ({
+                  provider: call.provider,
+                  model: call.model,
+                  inputTokens: call.inputTokens,
+                  outputTokens: call.outputTokens,
+                })) || [],
               }
             } : {})
           };
@@ -1816,9 +1829,26 @@ export class CoordinatorAgent {
         };
         execution.batchIterations!.push(currentBatchIteration);
 
-        // Helper to track step completion in this batch iteration
-        const trackBatchStep = (stepName: string, status: 'completed' | 'failed' | 'skipped', duration?: number, outputs?: Record<string, any>) => {
-          currentBatchIteration.steps.push({ name: stepName, status, duration, outputs });
+        // Helper to track step completion in this batch iteration with optional LLM metrics
+        const trackBatchStep = (
+          stepName: string,
+          status: 'completed' | 'failed' | 'skipped',
+          duration?: number,
+          outputs?: Record<string, any>,
+          llmMetrics?: { calls?: number; tokens?: number; provider?: string; model?: string }
+        ) => {
+          currentBatchIteration.steps.push({
+            name: stepName,
+            status,
+            duration,
+            outputs,
+            // Include LLM metrics if provided
+            ...(llmMetrics?.calls ? {
+              llmCalls: llmMetrics.calls,
+              tokensUsed: llmMetrics.tokens,
+              llmProvider: llmMetrics.model || llmMetrics.provider, // Prefer model over provider
+            } : {})
+          });
         };
 
         log(`Processing batch ${batch.id}`, 'info', {
@@ -2126,12 +2156,24 @@ export class CoordinatorAgent {
 
           // Track semantic analysis step completion for dashboard visibility
           const semanticDuration = Date.now() - semanticAnalysisStart.getTime();
+          // Capture LLM metrics from SemanticAnalyzer before wrapping
+          const semanticLlmMetrics = SemanticAnalyzer.getStepMetrics();
           execution.results['batch_semantic_analysis'] = this.wrapWithTiming({
             result: { entities: batchEntities.length, relations: batchRelations.length },
             batchId: batch.id
           }, semanticAnalysisStart);
           this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', [], currentBatchProgress);
-          trackBatchStep('batch_semantic_analysis', 'completed', semanticDuration, { batchEntities: batchEntities.length, batchRelations: batchRelations.length });
+          // Pass LLM metrics to batch step tracking for tracer visualization
+          trackBatchStep('batch_semantic_analysis', 'completed', semanticDuration, {
+            batchEntities: batchEntities.length,
+            batchRelations: batchRelations.length
+          }, semanticLlmMetrics.totalCalls > 0 ? {
+            calls: semanticLlmMetrics.totalCalls,
+            tokens: semanticLlmMetrics.totalTokens,
+            // Get first model from calls array for display
+            model: semanticLlmMetrics.calls?.[0]?.model,
+            provider: semanticLlmMetrics.providers?.[0]
+          } : undefined);
 
           // Check for cancellation after semantic analysis
           this.checkCancellationOrThrow('batch_semantic_analysis');
@@ -2313,10 +2355,18 @@ export class CoordinatorAgent {
               // Check for cancellation after ontology classification
               this.checkCancellationOrThrow('classify_with_ontology');
 
+              // Pass LLM metrics to batch step tracking for tracer visualization
+              const ontologyModels = ontologyLlmUsage?.modelsUsed || [];
               trackBatchStep('classify_with_ontology', 'completed', ontologyDuration, {
                 classified: classificationResult?.summary?.classifiedCount || 0,
                 llmCalls: classificationResult?.summary?.llmCalls || 0
-              });
+              }, ontologyLlmUsage ? {
+                calls: classificationResult?.summary?.llmCalls || 0,
+                tokens: ontologyLlmUsage.totalTokens,
+                // Use first model for display (most common case is single model)
+                model: ontologyModels.length > 0 ? ontologyModels[0] : undefined,
+                provider: ontologyLlmUsage.providersUsed?.[0]
+              } : undefined);
 
               // Record ontology classification step for workflow report (only on first batch)
               if (batch.id === 'batch-001') {
@@ -3940,8 +3990,17 @@ Expected locations for generated files:
       ...(hasLLMUsage ? {
         _llmMetrics: {
           totalCalls: llmMetrics.totalCalls,
+          totalInputTokens: llmMetrics.totalInputTokens,
+          totalOutputTokens: llmMetrics.totalOutputTokens,
           totalTokens: llmMetrics.totalTokens,
           providers: llmMetrics.providers,
+          // Include per-call breakdown for detailed trace view
+          calls: llmMetrics.calls?.map(call => ({
+            provider: call.provider,
+            model: call.model,
+            inputTokens: call.inputTokens,
+            outputTokens: call.outputTokens,
+          })) || [],
         }
       } : {})
     };

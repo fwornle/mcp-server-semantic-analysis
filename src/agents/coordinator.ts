@@ -1735,6 +1735,8 @@ export class CoordinatorAgent {
       log('Batch workflow: Running initialization phase', 'info');
       for (const step of initSteps) {
         if (step.name === 'plan_batches') {
+          // Reset LLM metrics before step (batch workflow doesn't use executeStepAsync)
+          SemanticAnalyzer.resetStepMetrics();
           const planStartTime = new Date();
           const batchPlan = await batchScheduler.planBatches({
             batchSize: parameters.batchSize || 50,
@@ -1868,6 +1870,7 @@ export class CoordinatorAgent {
         try {
           // Extract commits for this batch
           const gitAgent = this.agents.get('git_history') as GitHistoryAgent;
+          SemanticAnalyzer.resetStepMetrics();
           const extractCommitsStart = new Date();
 
           // DEBUG: Log batch info before extraction
@@ -1934,6 +1937,7 @@ export class CoordinatorAgent {
 
           // Extract sessions for this batch
           const vibeAgent = this.agents.get('vibe_history') as VibeHistoryAgent;
+          SemanticAnalyzer.resetStepMetrics();
           const extractSessionsStart = new Date();
           const sessionResult = await vibeAgent.extractSessionsForCommits(
             commits.commits.map(c => ({
@@ -1991,6 +1995,7 @@ export class CoordinatorAgent {
           // Analyze batch data using semantic analysis pipeline
           let batchEntities: KGEntity[] = [];
           let batchRelations: KGRelation[] = [];
+          SemanticAnalyzer.resetStepMetrics();
           const semanticAnalysisStart = new Date();
 
           try {
@@ -2198,6 +2203,7 @@ export class CoordinatorAgent {
           }
 
           // GENERATE BATCH OBSERVATIONS: Transform semantic analysis into structured observations
+          SemanticAnalyzer.resetStepMetrics();
           const observationStartTime = new Date();
           const observationAgent = this.agents.get('observation_generation') as ObservationGenerationAgent;
           let batchObservations: StructuredObservation[] = [];
@@ -2281,6 +2287,7 @@ export class CoordinatorAgent {
           }
 
           // ONTOLOGY CLASSIFICATION: Classify entities using project ontology
+          SemanticAnalyzer.resetStepMetrics();
           const ontologyClassificationStartTime = new Date();
           const ontologyAgent = this.agents.get('ontology_classification') as OntologyClassificationAgent;
 
@@ -2425,6 +2432,7 @@ export class CoordinatorAgent {
           }
 
           // Apply Tree-KG operators
+          SemanticAnalyzer.resetStepMetrics();
           const operatorsStartTime = new Date();
           const operatorResult = await kgOperators.applyAll(
             batchEntities,
@@ -2499,6 +2507,7 @@ export class CoordinatorAgent {
           }
 
           // Calculate batch stats
+          SemanticAnalyzer.resetStepMetrics();
           const qaStartTime = new Date();
           const batchDuration = Date.now() - batchStartTime;
           const stats: BatchStats = {
@@ -2544,6 +2553,7 @@ export class CoordinatorAgent {
           }
 
           // Save checkpoint
+          SemanticAnalyzer.resetStepMetrics();
           const checkpointStartTime = new Date();
           checkpointManager.saveBatchCheckpoint(
             batch.id,
@@ -2656,6 +2666,7 @@ export class CoordinatorAgent {
       let finalizationStepIndex = 0;
       for (const step of finalSteps) {
         finalizationStepIndex++;
+        SemanticAnalyzer.resetStepMetrics();  // Reset LLM metrics before each finalization step
         const stepStartTime = new Date();  // Track start time for both success and failure cases
         try {
           log(`Running finalization step: ${step.name}`, 'info', {

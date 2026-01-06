@@ -2289,15 +2289,25 @@ export class CoordinatorAgent {
 
               // Track ontology classification step completion for dashboard visibility
               const ontologyDuration = Date.now() - ontologyClassificationStartTime.getTime();
+              const ontologyLlmUsage = classificationResult?.summary?.llmUsage;
               execution.results['classify_with_ontology'] = this.wrapWithTiming({
                 result: {
                   classified: classificationResult?.summary?.classifiedCount || 0,
                   unclassified: classificationResult?.summary?.unclassifiedCount || 0,
                   byClass: classificationResult?.summary?.byClass || {},
                   byMethod: classificationResult?.summary?.byMethod || {},
-                  llmCalls: classificationResult?.summary?.llmCalls || 0
+                  llmCalls: classificationResult?.summary?.llmCalls || 0,
+                  llmUsage: ontologyLlmUsage
                 },
-                batchId: batch.id
+                batchId: batch.id,
+                // Add _llmMetrics for step-level display (tokensUsed/llmProvider badges)
+                ...(ontologyLlmUsage ? {
+                  _llmMetrics: {
+                    totalCalls: classificationResult?.summary?.llmCalls || 0,
+                    totalTokens: ontologyLlmUsage.totalTokens,
+                    providers: ontologyLlmUsage.providersUsed
+                  }
+                } : {})
               }, ontologyClassificationStartTime);
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
               // Check for cancellation after ontology classification
@@ -3678,13 +3688,22 @@ Expected locations for generated files:
         summary.validated = innerResult.validated || false;
       }
 
-      // Ontology classification: { classified, unclassified, byClass, byMethod, llmCalls }
+      // Ontology classification: { classified, unclassified, summary: { byClass, byMethod, llmCalls, llmUsage } }
       if (innerResult.classified !== undefined || innerResult.unclassified !== undefined) {
-        summary.classified = innerResult.classified;
-        summary.unclassified = innerResult.unclassified;
-        if (innerResult.byClass) summary.byClass = innerResult.byClass;
-        if (innerResult.byMethod) summary.byMethod = innerResult.byMethod;
-        if (innerResult.llmCalls !== undefined) summary.llmCalls = innerResult.llmCalls;
+        // Use count if it's an array, or the value if it's already a number
+        summary.classified = Array.isArray(innerResult.classified)
+          ? innerResult.classified.length
+          : innerResult.classified;
+        summary.unclassified = Array.isArray(innerResult.unclassified)
+          ? innerResult.unclassified.length
+          : innerResult.unclassified;
+
+        // Stats can be at root level or inside summary
+        const statsSource = innerResult.summary || innerResult;
+        if (statsSource.byClass) summary.byClass = statsSource.byClass;
+        if (statsSource.byMethod) summary.byMethod = statsSource.byMethod;
+        if (statsSource.llmCalls !== undefined) summary.llmCalls = statsSource.llmCalls;
+        if (statsSource.llmUsage) summary.llmUsage = statsSource.llmUsage;
       }
 
       // If we extracted batch-specific data, return early
@@ -3892,7 +3911,21 @@ Expected locations for generated files:
    * This ensures all step results (including batch workflow steps) have consistent metrics.
    */
   private wrapWithTiming<T>(result: T, startTime: Date, endTime: Date = new Date()): T & { _timing: { startTime: Date; endTime: Date; duration: number }; _llmMetrics?: { totalCalls: number; totalTokens: number; providers: string[] } } {
-    // Capture LLM metrics accumulated during this step
+    // Check if result already has explicit _llmMetrics (e.g., from ontology classification)
+    const explicitMetrics = (result as any)?._llmMetrics;
+    if (explicitMetrics) {
+      // Preserve explicitly passed LLM metrics (used by steps with their own LLM providers)
+      return {
+        ...result as any,
+        _timing: {
+          startTime,
+          endTime,
+          duration: endTime.getTime() - startTime.getTime()
+        }
+      };
+    }
+
+    // Capture LLM metrics accumulated during this step via SemanticAnalyzer
     const llmMetrics = SemanticAnalyzer.getStepMetrics();
     const hasLLMUsage = llmMetrics.totalCalls > 0;
 

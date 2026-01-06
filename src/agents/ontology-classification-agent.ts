@@ -44,6 +44,15 @@ export interface OntologyMetadata {
 
   /** Timestamp of classification */
   classifiedAt: string;
+
+  /** LLM usage for this classification (when method is 'llm' or 'hybrid') */
+  llmUsage?: {
+    model?: string;
+    provider?: string;
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+  };
 }
 
 /**
@@ -83,6 +92,14 @@ export interface ClassificationProcessResult {
     byMethod: Record<string, number>;
     byClass: Record<string, number>;
     llmCalls?: number; // Number of LLM calls made during classification
+    /** Aggregated LLM usage statistics */
+    llmUsage?: {
+      totalPromptTokens: number;
+      totalCompletionTokens: number;
+      totalTokens: number;
+      modelsUsed: string[];
+      providersUsed: string[];
+    };
   };
 
   /** Auto-extension suggestions generated */
@@ -357,6 +374,30 @@ export class OntologyClassificationAgent {
     // 'llm' method = 1 LLM call, 'hybrid' method = 1 LLM call (heuristic + LLM fallback)
     const llmCalls = (byMethod['llm'] || 0) + (byMethod['hybrid'] || 0);
 
+    // Aggregate LLM usage stats from all classified observations
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+    const modelsUsedSet = new Set<string>();
+    const providersUsedSet = new Set<string>();
+
+    for (const obs of classified) {
+      const usage = obs.ontologyMetadata.llmUsage;
+      if (usage) {
+        totalPromptTokens += usage.promptTokens || 0;
+        totalCompletionTokens += usage.completionTokens || 0;
+        if (usage.model) modelsUsedSet.add(usage.model);
+        if (usage.provider) providersUsedSet.add(usage.provider);
+      }
+    }
+
+    const llmUsage = llmCalls > 0 ? {
+      totalPromptTokens,
+      totalCompletionTokens,
+      totalTokens: totalPromptTokens + totalCompletionTokens,
+      modelsUsed: Array.from(modelsUsedSet),
+      providersUsed: Array.from(providersUsedSet),
+    } : undefined;
+
     const result: ClassificationProcessResult = {
       classified,
       unclassified,
@@ -368,11 +409,12 @@ export class OntologyClassificationAgent {
         byMethod,
         byClass,
         llmCalls, // Track LLM calls for dashboard visibility
+        llmUsage, // Aggregated LLM usage statistics
       },
       extensionSuggestions,
     };
 
-    log('Classification complete', 'info', { ...result.summary, llmCalls });
+    log('Classification complete', 'info', { ...result.summary, llmCalls, llmUsage });
 
     return result;
   }
@@ -428,6 +470,8 @@ export class OntologyClassificationAgent {
       ontologySource: classificationResult.ontology === this.team ? 'lower' : 'upper',
       properties: classificationResult.properties || {},
       classifiedAt: new Date().toISOString(),
+      // Include LLM usage if available (for llm or hybrid classifications)
+      llmUsage: classificationResult.llmUsage,
     };
 
     return {

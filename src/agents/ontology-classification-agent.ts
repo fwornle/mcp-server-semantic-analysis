@@ -227,7 +227,10 @@ export class OntologyClassificationAgent {
 
             return {
               content: result.insights || '',
-              model: 'semantic-analyzer',
+              // Use actual model from SemanticAnalyzer result (e.g., 'llama-3.3-70b-versatile')
+              model: result.model || result.provider || 'unknown',
+              // Include provider for proper tracking
+              provider: result.provider,
               usage: {
                 promptTokens: result.tokenUsage?.inputTokens || 0,
                 completionTokens: result.tokenUsage?.outputTokens || 0,

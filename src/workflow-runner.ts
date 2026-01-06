@@ -333,14 +333,18 @@ async function main(): Promise<void> {
     parameters
   });
 
-  // Initial progress update
+  // Initial progress update - include all metadata from the start
   writeProgress(progressFile, {
     workflowId,
+    workflowName,
+    team: parameters?.team || 'unknown',
+    repositoryPath,
     status: 'starting',
     message: 'Initializing workflow runner...',
     startTime: startTime.toISOString(),
     lastUpdate: new Date().toISOString(),
     elapsedSeconds: 0,
+    totalSteps: 0, // Will be updated by coordinator
     pid: process.pid
   });
 
@@ -386,9 +390,13 @@ async function main(): Promise<void> {
     // Start background heartbeat to prevent "stale" status during long-running steps
     // The dashboard marks workflows as stale after 120s without an update
     // This sends a heartbeat every 30s regardless of what step is executing
+    // IMPORTANT: Use writeProgressPreservingDetails to not overwrite coordinator metadata
     const heartbeatInterval = setInterval(() => {
-      writeProgress(progressFile, {
+      writeProgressPreservingDetails(progressFile, {
         workflowId,
+        workflowName: resolvedWorkflowName,
+        team: parameters?.team || 'unknown',
+        repositoryPath,
         status: 'running',
         message: `Executing ${resolvedWorkflowName}... (heartbeat)`,
         startTime: startTime.toISOString(),

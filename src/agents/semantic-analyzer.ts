@@ -1061,7 +1061,7 @@ For each pattern found, provide:
   }
 
   private async analyzeWithOpenAI(prompt: string, model?: string): Promise<AnalysisResult> {
-    const selectedModel = model || "gpt-4-turbo-preview";
+    const selectedModel = model || "gpt-4o";
     if (!this.openaiClient) {
       throw new Error("OpenAI client not initialized");
     }

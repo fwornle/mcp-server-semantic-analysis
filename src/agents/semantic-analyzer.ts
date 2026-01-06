@@ -779,12 +779,14 @@ export class SemanticAnalyzer {
       result = await this.analyzeWithOpenAI(prompt);
     } else if (provider === "auto") {
       // Auto mode with fallback cascade: try each provider in order until one succeeds
+      // Priority: Groq (cheap/fast) > Gemini > Custom > Anthropic > OpenAI > Ollama (local fallback)
       log("Entering auto mode provider selection with fallback", "info", {
         hasGroq: !!this.groqClient,
         hasGemini: !!this.geminiClient,
         hasCustom: !!this.customClient,
         hasAnthropic: !!this.anthropicClient,
-        hasOpenAI: !!this.openaiClient
+        hasOpenAI: !!this.openaiClient,
+        hasOllama: !!this.ollamaClient
       });
 
       const providers = [
@@ -792,7 +794,8 @@ export class SemanticAnalyzer {
         { name: 'gemini', client: this.geminiClient, method: this.analyzeWithGemini.bind(this) },
         { name: 'custom', client: this.customClient, method: this.analyzeWithCustom.bind(this) },
         { name: 'anthropic', client: this.anthropicClient, method: this.analyzeWithAnthropic.bind(this) },
-        { name: 'openai', client: this.openaiClient, method: this.analyzeWithOpenAI.bind(this) }
+        { name: 'openai', client: this.openaiClient, method: this.analyzeWithOpenAI.bind(this) },
+        { name: 'ollama', client: this.ollamaClient, method: this.analyzeWithOllama.bind(this) }
       ];
 
       const errors: Array<{ provider: string; error: any }> = [];

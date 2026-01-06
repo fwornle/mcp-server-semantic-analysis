@@ -2,9 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
-import { createOntologySystem, type OntologySystem } from '../ontology/index.js';
+import { createOntologySystem, type OntologySystem, type UnifiedInferenceEngine } from '../ontology/index.js';
 import { ContentValidationAgent, type EntityValidationReport } from './content-validation-agent.js';
 import { CheckpointManager } from '../utils/checkpoint-manager.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
 
 export interface PersistenceResult {
   success: boolean;
@@ -126,17 +127,26 @@ export interface SharedMemoryStructure {
   };
 }
 
+/**
+ * PersistenceAgent Configuration
+ *
+ * SIMPLIFIED: No more boolean enable/disable toggles.
+ * - For ontology: If ontologyTeam is provided, ontology is enabled
+ * - For validation: Use validationMode='disabled' to disable
+ * - For content validation: Use contentValidationMode='disabled' to disable
+ */
 export interface PersistenceAgentConfig {
-  enableOntology?: boolean;
-  ontologyTeam?: string;
+  // Ontology configuration - if ontologyTeam is set, ontology is enabled
+  ontologyTeam?: string;  // Required for ontology, e.g., 'coding', 'raas'
   ontologyUpperPath?: string;
   ontologyLowerPath?: string;
   ontologyMinConfidence?: number;
-  enableValidation?: boolean;
+
+  // Schema validation mode ('disabled' | 'lenient' | 'strict')
   validationMode?: 'strict' | 'lenient' | 'disabled';
-  // Content validation (codebase accuracy checking)
-  enableContentValidation?: boolean;
-  contentValidationMode?: 'strict' | 'lenient' | 'report-only';
+
+  // Content validation mode ('disabled' | 'lenient' | 'strict' | 'report-only')
+  contentValidationMode?: 'strict' | 'lenient' | 'report-only' | 'disabled';
   stalenessThresholdDays?: number;
 }
 
@@ -154,40 +164,38 @@ export class PersistenceAgent {
     this.repositoryPath = repositoryPath;
     this.graphDB = graphDB || null;
 
-    // Configure team FIRST so we can use it for paths
+    // SIMPLIFIED configuration - no more boolean toggles
+    // ontologyTeam presence determines if ontology is enabled
+    // Mode values determine if validation features are enabled
+    const ontologyTeam = config?.ontologyTeam || 'coding';
     this.config = {
-      enableOntology: config?.enableOntology ?? true,
-      ontologyTeam: config?.ontologyTeam || 'coding',
+      ontologyTeam,
       ontologyUpperPath: config?.ontologyUpperPath || path.join(repositoryPath, '.data', 'ontologies', 'upper', 'development-knowledge-ontology.json'),
       ontologyLowerPath: config?.ontologyLowerPath || path.join(repositoryPath, '.data', 'ontologies', 'lower', 'coding-ontology.json'),
       ontologyMinConfidence: config?.ontologyMinConfidence || 0.7,
-      enableValidation: config?.enableValidation ?? false,
-      validationMode: config?.validationMode || 'lenient',
-      // Content validation (codebase accuracy checking)
-      enableContentValidation: config?.enableContentValidation ?? true,
+      validationMode: config?.validationMode || 'disabled',
       contentValidationMode: config?.contentValidationMode || 'lenient',
       stalenessThresholdDays: config?.stalenessThresholdDays || 30
     };
 
-    // Initialize content validation agent if enabled
-    if (this.config.enableContentValidation) {
+    // Initialize content validation agent if NOT disabled
+    if (this.config.contentValidationMode !== 'disabled') {
       this.contentValidationAgent = new ContentValidationAgent({
         repositoryPath: this.repositoryPath,
         enableDeepValidation: true,
         stalenessThresholdDays: this.config.stalenessThresholdDays
       });
-      log('PersistenceAgent: Content validation is ENABLED', 'info', {
+      log('PersistenceAgent: Content validation mode', 'info', {
         mode: this.config.contentValidationMode,
         stalenessThresholdDays: this.config.stalenessThresholdDays
       });
     }
 
-    // CORRECTED: Use team-specific export path (e.g., coding.json, resi.coding.json, ui.coding.json)
-    // This matches the actual GraphDB export structure
-    this.sharedMemoryPath = path.join(repositoryPath, '.data', 'knowledge-export', `${this.config.ontologyTeam}.json`);
+    // Use team-specific export path
+    this.sharedMemoryPath = path.join(repositoryPath, '.data', 'knowledge-export', `${ontologyTeam}.json`);
     this.insightsDir = path.join(repositoryPath, 'knowledge-management', 'insights');
 
-    // Initialize checkpoint manager for non-git-tracked checkpoint storage
+    // Initialize checkpoint manager
     this.checkpointManager = new CheckpointManager(repositoryPath);
 
     this.ensureDirectories();
@@ -195,17 +203,14 @@ export class PersistenceAgent {
     if (!this.graphDB) {
       log('PersistenceAgent initialized WITHOUT GraphDB - will fall back to JSON file writes', 'warning');
     } else {
-      log('PersistenceAgent initialized WITH GraphDB - will use Graphology+LevelDB persistence', 'info');
+      log('PersistenceAgent initialized WITH GraphDB', 'info');
     }
 
-    if (this.config.enableOntology) {
-      log('PersistenceAgent: Ontology classification is ENABLED', 'info', {
-        team: this.config.ontologyTeam,
-        minConfidence: this.config.ontologyMinConfidence
-      });
-    } else {
-      log('PersistenceAgent: Ontology classification is DISABLED', 'warning');
-    }
+    // Ontology is enabled if team is set (which it always is with default)
+    log('PersistenceAgent: Ontology classification enabled', 'info', {
+      team: ontologyTeam,
+      minConfidence: this.config.ontologyMinConfidence
+    });
   }
 
   /**
@@ -244,16 +249,39 @@ export class PersistenceAgent {
    * Must be called after construction before using classification
    */
   async initializeOntology(): Promise<void> {
-    if (!this.config.enableOntology) {
-      log('Ontology disabled, skipping initialization', 'info');
-      return;
-    }
-
+    // Ontology is always enabled (team is required and defaults to 'coding')
     try {
       log('Initializing ontology system', 'info', {
         upperPath: this.config.ontologyUpperPath,
         lowerPath: this.config.ontologyLowerPath
       });
+
+      // Create SemanticAnalyzer for LLM inference
+      const semanticAnalyzer = new SemanticAnalyzer();
+
+      // Create an inference engine adapter that wraps SemanticAnalyzer
+      const inferenceEngine: UnifiedInferenceEngine = {
+        async generateCompletion(options) {
+          // Convert LLMCompletionOptions messages to a prompt string
+          const prompt = options.messages
+            .map(msg => `${msg.role}: ${msg.content}`)
+            .join('\n');
+
+          // Use SemanticAnalyzer to process the prompt
+          const result = await semanticAnalyzer.analyzeContent(prompt, {
+            analysisType: 'general',
+            provider: 'auto'
+          });
+
+          return {
+            content: result.insights,
+            usage: result.tokenUsage ? {
+              totalTokens: result.tokenUsage.totalTokens
+            } : undefined,
+            model: result.model
+          };
+        }
+      };
 
       this.ontologySystem = await createOntologySystem({
         enabled: true,
@@ -267,7 +295,7 @@ export class PersistenceAgent {
           minConfidence: this.config.ontologyMinConfidence
         },
         caching: { enabled: true, maxEntries: 100 }
-      });
+      }, inferenceEngine);
 
       log('Ontology system initialized successfully', 'info', {
         team: this.config.ontologyTeam
@@ -293,14 +321,10 @@ export class PersistenceAgent {
     method: string;
     ontologyMetadata?: any;
   }> {
-    // If ontology is disabled or not initialized, throw error - classification is mandatory
-    if (!this.config.enableOntology || !this.ontologySystem) {
-      const reason = !this.config.enableOntology ? 'disabled' : 'not initialized';
-      log('Ontology classification unavailable - FAILED (no fallbacks allowed)', 'error', {
-        entityName,
-        reason
-      });
-      throw new Error(`Ontology classification required but ${reason} for entity: ${entityName}. NO FALLBACKS - enable ontology or fix initialization.`);
+    // If ontology system not initialized, throw error - classification is mandatory
+    if (!this.ontologySystem) {
+      log('Ontology classification unavailable - system not initialized', 'error', { entityName });
+      throw new Error(`Ontology classification required but not initialized for entity: ${entityName}. Call initializeOntology() first.`);
     }
 
     try {
@@ -374,7 +398,7 @@ export class PersistenceAgent {
     warnings: string[];
   } {
     // Validation disabled or ontology not available
-    if (!this.config.enableValidation || !this.ontologySystem || this.config.validationMode === 'disabled') {
+    if (this.config.validationMode === 'disabled' || !this.ontologySystem) {
       return { valid: true, errors: [], warnings: [] };
     }
 
@@ -995,7 +1019,7 @@ export class PersistenceAgent {
 
       // CONTENT VALIDATION: Check if existing entity content is accurate
       let contentValidationReport: EntityValidationReport | null = null;
-      if (this.contentValidationAgent && this.config.enableContentValidation) {
+      if (this.contentValidationAgent && this.config.contentValidationMode !== 'disabled') {
         // Check if entity already exists (this is an update, not a create)
         const existingEntity = await this.graphDB?.queryEntities({ namePattern: entity.name });
 

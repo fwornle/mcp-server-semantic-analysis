@@ -55,10 +55,8 @@ async function testValidationIntegration() {
     log('GraphDB adapter initialized', 'success');
 
     const persistenceAgentLenient = new PersistenceAgent(TEST_REPO_PATH, graphDB, {
-      enableOntology: true,
       ontologyTeam: 'coding',
       ontologyMinConfidence: 0.7,
-      enableValidation: true,
       validationMode: 'lenient'
     });
 
@@ -99,10 +97,8 @@ async function testValidationIntegration() {
     section('Test 2: Validation in Strict Mode (Valid Entity)');
 
     const persistenceAgentStrict = new PersistenceAgent(TEST_REPO_PATH, graphDB, {
-      enableOntology: true,
       ontologyTeam: 'coding',
       ontologyMinConfidence: 0.7,
-      enableValidation: true,
       validationMode: 'strict'
     });
 
@@ -143,10 +139,9 @@ async function testValidationIntegration() {
     section('Test 3: Validation Disabled');
 
     const persistenceAgentDisabled = new PersistenceAgent(TEST_REPO_PATH, graphDB, {
-      enableOntology: true,
       ontologyTeam: 'coding',
       ontologyMinConfidence: 0.7,
-      enableValidation: false
+      validationMode: 'disabled'  // Use mode instead of boolean toggle
     });
 
     await persistenceAgentDisabled.initializeOntology();

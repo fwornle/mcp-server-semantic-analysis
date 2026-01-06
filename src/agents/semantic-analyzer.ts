@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import Groq from "groq-sdk";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import axios, { AxiosInstance } from "axios";
 import { log } from "../logging.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -40,7 +41,7 @@ export type TaskType =
 export interface AnalysisOptions {
   context?: string;
   analysisType?: "general" | "code" | "patterns" | "architecture" | "diagram" | "classification" | "raw" | "passthrough";
-  provider?: "groq" | "gemini" | "anthropic" | "openai" | "custom" | "auto";
+  provider?: "groq" | "gemini" | "anthropic" | "openai" | "ollama" | "custom" | "auto";
   tier?: ModelTier;      // Explicit tier selection
   taskType?: TaskType;   // Task type for automatic tier selection
 }
@@ -227,6 +228,8 @@ export class SemanticAnalyzer {
   private customClient: OpenAI | null = null;
   private anthropicClient: Anthropic | null = null;
   private openaiClient: OpenAI | null = null;
+  private ollamaClient: AxiosInstance | null = null;
+  private ollamaModel: string = 'llama3.2:latest';
 
   // Tier configuration
   private tierConfig: TierConfig | null = null;
@@ -282,6 +285,7 @@ export class SemanticAnalyzer {
 
   /**
    * Get default tier configuration
+   * Provider priority: Groq (cheap/fast) > Anthropic > OpenAI > Ollama (local fallback)
    */
   private getDefaultTierConfig(): TierConfig {
     return {
@@ -298,11 +302,16 @@ export class SemanticAnalyzer {
           standard: 'gpt-4o-mini',
           premium: 'gpt-4o',
         },
+        ollama: {
+          fast: 'llama3.2:latest',
+          standard: 'llama3.2:latest',
+          premium: 'llama3.2:latest',
+        },
       },
       provider_priority: {
-        fast: ['groq'],
-        standard: ['groq', 'anthropic', 'openai'],
-        premium: ['anthropic', 'openai', 'groq'],
+        fast: ['groq', 'ollama'],
+        standard: ['groq', 'anthropic', 'openai', 'ollama'],
+        premium: ['anthropic', 'openai', 'groq', 'ollama'],
       },
       task_tiers: {
         fast: ['git_file_extraction', 'commit_message_parsing', 'file_pattern_matching', 'basic_classification'],
@@ -352,8 +361,8 @@ export class SemanticAnalyzer {
    * Get provider and model for a specific tier
    */
   private getProviderForTier(tier: ModelTier): { provider: string; model: string } | null {
-    // Check task-specific provider override (e.g., INSIGHT_GENERATION_PROVIDER=anthropic)
-    const providerPriority = this.tierConfig?.provider_priority[tier] || ['groq', 'anthropic', 'openai'];
+    // Provider priority for tier, fallback chain: Groq > Anthropic > OpenAI > Ollama
+    const providerPriority = this.tierConfig?.provider_priority[tier] || ['groq', 'anthropic', 'openai', 'ollama'];
 
     for (const providerName of providerPriority) {
       // Check if client is available
@@ -361,7 +370,8 @@ export class SemanticAnalyzer {
         (providerName === 'groq' && this.groqClient) ||
         (providerName === 'anthropic' && this.anthropicClient) ||
         (providerName === 'openai' && this.openaiClient) ||
-        (providerName === 'gemini' && this.geminiClient);
+        (providerName === 'gemini' && this.geminiClient) ||
+        (providerName === 'ollama' && this.ollamaClient);
 
       if (!clientAvailable) continue;
 
@@ -395,6 +405,8 @@ export class SemanticAnalyzer {
         return this.analyzeWithGemini(prompt);
       case 'custom':
         return this.analyzeWithCustom(prompt);
+      case 'ollama':
+        return this.analyzeWithOllama(prompt, model);
       default:
         throw new Error(`Unknown provider for tier: ${provider}`);
     }
@@ -467,18 +479,113 @@ export class SemanticAnalyzer {
       semanticDebugLog('OpenAI client initialized');
     }
 
+    // Initialize Ollama client (last resort fallback - local, no API key needed)
+    // OLLAMA_BASE_URL defaults to http://localhost:11434 if not set
+    const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+    this.ollamaModel = process.env.OLLAMA_MODEL || 'llama3.2:latest';
+    semanticDebugLog('Checking Ollama availability', { baseUrl: ollamaBaseUrl, model: this.ollamaModel });
+
+    // Try to connect to Ollama (async check, but we set up client optimistically)
+    this.ollamaClient = axios.create({
+      baseURL: ollamaBaseUrl,
+      timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    // Verify Ollama is running by checking the API
+    this.verifyOllamaConnection(ollamaBaseUrl);
+
     const clientsAvailable = {
       groq: !!this.groqClient,
       gemini: !!this.geminiClient,
       custom: !!this.customClient,
       anthropic: !!this.anthropicClient,
-      openai: !!this.openaiClient
+      openai: !!this.openaiClient,
+      ollama: !!this.ollamaClient
     };
     semanticDebugLog('Clients initialized', clientsAvailable);
 
-    if (!this.groqClient && !this.geminiClient && !this.customClient && !this.anthropicClient && !this.openaiClient) {
-      log("No LLM clients available - check API keys", "warning");
+    if (!this.groqClient && !this.geminiClient && !this.customClient && !this.anthropicClient && !this.openaiClient && !this.ollamaClient) {
+      log("No LLM clients available - check API keys or install Ollama", "warning");
       semanticDebugLog('WARNING: No LLM clients available!');
+    }
+  }
+
+  /**
+   * Verify Ollama is running and available
+   */
+  private async verifyOllamaConnection(baseUrl: string): Promise<void> {
+    try {
+      const response = await axios.get(`${baseUrl}/api/tags`, { timeout: 5000 });
+      if (response.status === 200) {
+        const models = response.data?.models || [];
+        const modelNames = models.map((m: any) => m.name);
+        log(`Ollama available with ${models.length} models: ${modelNames.join(', ')}`, 'info');
+        semanticDebugLog('Ollama connected', { models: modelNames });
+
+        // Check if desired model is available
+        if (!modelNames.includes(this.ollamaModel)) {
+          log(`Ollama model '${this.ollamaModel}' not found. Available: ${modelNames.join(', ')}`, 'warning');
+        }
+      }
+    } catch (error: any) {
+      log(`Ollama not available at ${baseUrl}: ${error.message}`, 'warning');
+      semanticDebugLog('Ollama connection failed', { error: error.message });
+      // Set client to null if Ollama is not running
+      this.ollamaClient = null;
+    }
+  }
+
+  /**
+   * Analyze content using Ollama (local LLM)
+   */
+  private async analyzeWithOllama(prompt: string, model?: string): Promise<AnalysisResult> {
+    if (!this.ollamaClient) {
+      throw new Error('Ollama client not available - ensure Ollama is running');
+    }
+
+    const useModel = model || this.ollamaModel;
+    log(`Analyzing with Ollama/${useModel}`, 'info', { promptLength: prompt.length });
+
+    const startTime = Date.now();
+    try {
+      const response = await this.ollamaClient.post('/api/generate', {
+        model: useModel,
+        prompt: prompt,
+        stream: false,
+        options: {
+          temperature: 0.7,
+          num_predict: 2048,  // max tokens
+        }
+      });
+
+      const content = response.data?.response || '';
+      const duration = Date.now() - startTime;
+
+      // Ollama provides some metrics
+      const promptTokens = response.data?.prompt_eval_count || 0;
+      const completionTokens = response.data?.eval_count || 0;
+
+      log(`Ollama analysis completed in ${duration}ms`, 'info', {
+        model: useModel,
+        promptTokens,
+        completionTokens
+      });
+
+      return {
+        insights: content,
+        provider: 'ollama',
+        confidence: 0.75,  // Local Ollama models have moderate confidence
+        model: useModel,
+        tokenUsage: {
+          inputTokens: promptTokens,
+          outputTokens: completionTokens,
+          totalTokens: promptTokens + completionTokens
+        }
+      };
+    } catch (error: any) {
+      log(`Ollama analysis failed: ${error.message}`, 'error');
+      throw error;
     }
   }
 
@@ -540,14 +647,17 @@ export class SemanticAnalyzer {
       return await this.analyzeWithAnthropic(prompt);
     } else if (provider === "openai" && this.openaiClient) {
       return await this.analyzeWithOpenAI(prompt);
+    } else if (provider === "ollama" && this.ollamaClient) {
+      return await this.analyzeWithOllama(prompt);
     } else if (provider === "auto") {
-      // Auto mode with fallback cascade: try each provider in order until one succeeds
+      // Auto mode with fallback cascade: Groq > Gemini > Custom > Anthropic > OpenAI > Ollama
       const providers = [
         { name: 'groq', client: this.groqClient, method: this.analyzeWithGroq.bind(this) },
         { name: 'gemini', client: this.geminiClient, method: this.analyzeWithGemini.bind(this) },
         { name: 'custom', client: this.customClient, method: this.analyzeWithCustom.bind(this) },
         { name: 'anthropic', client: this.anthropicClient, method: this.analyzeWithAnthropic.bind(this) },
-        { name: 'openai', client: this.openaiClient, method: this.analyzeWithOpenAI.bind(this) }
+        { name: 'openai', client: this.openaiClient, method: this.analyzeWithOpenAI.bind(this) },
+        { name: 'ollama', client: this.ollamaClient, method: this.analyzeWithOllama.bind(this) }
       ];
 
       const errors: Array<{ provider: string; error: any }> = [];
@@ -577,12 +687,12 @@ export class SemanticAnalyzer {
         }
       }
 
-      // All providers failed
+      // All providers failed - NO MOCK FALLBACK
       log('All LLM providers failed', 'error', { errors });
-      throw new Error(`All LLM providers failed. Errors: ${errors.map(e => `${e.provider}: ${e.error?.message || 'Unknown error'}`).join('; ')}`);
+      throw new Error(`All LLM providers failed (no mock fallback). Install Ollama for local fallback. Errors: ${errors.map(e => `${e.provider}: ${e.error?.message || 'Unknown error'}`).join('; ')}`);
     }
 
-    throw new Error("No available LLM provider");
+    throw new Error("No available LLM provider - specify a valid provider or use 'auto'");
   }
 
   async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {

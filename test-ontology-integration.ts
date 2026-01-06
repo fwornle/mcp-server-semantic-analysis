@@ -58,7 +58,6 @@ async function testOntologyIntegration() {
     log('GraphDB adapter initialized', 'success');
 
     const persistenceAgent = new PersistenceAgent(TEST_REPO_PATH, graphDB, {
-      enableOntology: true,
       ontologyTeam: 'coding',
       ontologyMinConfidence: 0.7
     });

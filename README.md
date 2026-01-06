@@ -43,7 +43,7 @@ This MCP server integrates seamlessly with Coding Agent to provide advanced sema
 
 ### 🔗 Integration Capabilities
 - **Coding Agent Integration** - Full MCP compatibility
-- **4-Tier LLM Provider Chain** - Groq (1st) → Gemini (2nd) → Custom LLM (3rd) → Anthropic Claude (4th) → OpenAI GPT (fallback)
+- **6-Tier LLM Provider Chain** - Groq (1st) → Gemini (2nd) → Custom LLM (3rd) → Anthropic Claude (4th) → OpenAI GPT (5th) → Ollama (local fallback)
 - **OpenAI Embeddings** - text-embedding-3-small for semantic similarity and deduplication
 - **Graph Database Persistence** - Graphology (in-memory) + LevelDB (persistent storage) at `.data/knowledge-graph/`
 - **Knowledge Base Support** - UKB/VKB integration with automatic graph export to .data/knowledge-export/*.json
@@ -74,14 +74,16 @@ The PersistenceAgent now features intelligent entity classification using a 5-la
 - `TransferablePattern` (generic fallback)
 - And 26 more specialized types
 
-**Configuration:**
+**Configuration (Simplified):**
 ```typescript
 const persistenceAgent = new PersistenceAgent(repoPath, graphDB, {
-  enableOntology: true,           // Enable classification (default: true)
-  ontologyTeam: 'coding',          // Team-specific ontology
-  ontologyMinConfidence: 0.7       // Confidence threshold
+  ontologyTeam: 'coding',          // Team-specific ontology (default: 'coding')
+  ontologyMinConfidence: 0.7,      // Confidence threshold (default: 0.7)
+  validationMode: 'lenient',       // 'disabled' | 'lenient' | 'strict'
+  contentValidationMode: 'lenient' // 'disabled' | 'lenient' | 'strict' | 'report-only'
 });
 ```
+**Note:** No more boolean enable/disable toggles. Use `validationMode: 'disabled'` to disable validation.
 
 ### 🧠 LLM Enhancement System
 
@@ -121,12 +123,12 @@ Five core agents now leverage advanced LLM capabilities through the `SemanticAna
 - **Fallback**: Graceful degradation to Jaccard text similarity
 - **Benefit**: Detects semantically similar entities even with different wording
 
-#### 4-Tier LLM Provider Chain
+#### 6-Tier LLM Provider Chain
 
 All LLM-enhanced agents use the `SemanticAnalyzer` with automatic failover:
 
 ```
-Groq → Gemini → Custom LLM → Anthropic → OpenAI
+Groq → Gemini → Custom LLM → Anthropic → OpenAI → Ollama (local)
 ```
 
 **Benefits:**
@@ -134,6 +136,7 @@ Groq → Gemini → Custom LLM → Anthropic → OpenAI
 - 💪 Reliability through multiple fallback providers
 - 💰 Cost optimization by preferring cheaper providers
 - 🔄 Automatic provider switching on failures
+- 🏠 Local Ollama fallback when all cloud APIs fail (no mock/silent failures)
 
 ### 🚀 Performance & Stability
 - **Node.js Advantages** - No Python environment issues, stable connections
@@ -145,12 +148,13 @@ Groq → Gemini → Custom LLM → Anthropic → OpenAI
 
 ### Prerequisites
 - Node.js 18+
-- API keys for LLM providers:
+- API keys for LLM providers (all optional with Ollama fallback):
   - **Groq** (recommended for speed) - GROQ_API_KEY
   - **Gemini** (recommended for reliability) - GEMINI_API_KEY
   - **Anthropic** (high quality) - ANTHROPIC_API_KEY
   - **OpenAI** (embeddings + fallback) - OPENAI_API_KEY
-  - Note: Only OPENAI_API_KEY is required for deduplication embeddings; others are optional with automatic fallback
+  - **Ollama** (local fallback) - Install via `brew install ollama` or https://ollama.com
+  - Note: OPENAI_API_KEY recommended for deduplication embeddings; Ollama is automatic fallback when all cloud APIs fail
 
 ### Installation
 
@@ -172,7 +176,7 @@ npm run dev
 
 1. **API Keys Setup**: Configure in your environment or the parent system
 2. **Claude Code Integration**: The server automatically integrates when started via `claude-mcp`
-3. **LLM Provider Priority**: Groq (1st) → Gemini (2nd) → Custom LLM (3rd) → Anthropic (4th) → OpenAI (fallback)
+3. **LLM Provider Priority**: Groq → Gemini → Custom LLM → Anthropic → OpenAI → Ollama (local fallback)
 
 ### Usage with Claude Code
 

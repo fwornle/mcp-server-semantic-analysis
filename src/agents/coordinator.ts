@@ -133,10 +133,48 @@ export class CoordinatorAgent {
   /**
    * Write workflow progress to a file for external monitoring
    * File location: .data/workflow-progress.json
+   * CRITICAL: Checks for external abort signal before writing to prevent race condition
    */
   private writeProgressFile(execution: WorkflowExecution, workflow: WorkflowDefinition, currentStep?: string, runningSteps?: string[], batchProgress?: { currentBatch: number; totalBatches: number; batchId?: string }): void {
     try {
       const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
+      const abortPath = `${this.repositoryPath}/.data/workflow-abort.json`;
+
+      // CRITICAL: Check for external abort signal FIRST (separate file to avoid race condition)
+      if (fs.existsSync(abortPath)) {
+        try {
+          const abortSignal = JSON.parse(fs.readFileSync(abortPath, 'utf8'));
+          if (abortSignal.abort && abortSignal.workflowId === execution.id) {
+            log('External abort signal detected - stopping progress updates', 'warning', {
+              workflowId: execution.id,
+              abortedAt: abortSignal.timestamp
+            });
+            execution.status = 'cancelled';
+            // Don't write progress - let the abort signal stand
+            return;
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
+      // Also check if progress file was externally set to 'cancelled'
+      if (fs.existsSync(progressPath)) {
+        try {
+          const currentProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+          if (currentProgress.status === 'cancelled' && currentProgress.cancelledAt) {
+            log('External cancellation detected in progress file - honoring it', 'warning', {
+              workflowId: execution.id,
+              cancelledAt: currentProgress.cancelledAt
+            });
+            execution.status = 'cancelled';
+            // Don't overwrite the cancelled status
+            return;
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
 
       // Build detailed step info with timing data, LLM metrics, and result summaries
       const stepsDetail: Array<{

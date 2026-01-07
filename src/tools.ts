@@ -1096,6 +1096,8 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
           WORKFLOW_ID: workflowId,
           WORKFLOW_LOG_FILE: logFilePath,
           NODE_ENV: process.env.NODE_ENV || 'production',
+          // Increase heap size to 4GB to handle large accumulated KG operations
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=4096`.trim(),
         }
       });
 

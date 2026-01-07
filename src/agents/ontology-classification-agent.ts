@@ -309,34 +309,81 @@ export class OntologyClassificationAgent {
     const byClass: Record<string, number> = {};
     let totalConfidence = 0;
 
-    // Process observations in parallel batches for faster classification
-    // Configurable via LLM_BATCH_SIZE env var (default: 20, min: 1, max: 50)
+    // Process observations in sequential batches for memory safety
+    // Reduced default from 20 to 5 to prevent memory accumulation during LLM calls
+    // Configurable via LLM_BATCH_SIZE env var (default: 5, min: 1, max: 20)
     const BATCH_SIZE = Math.min(Math.max(
-      parseInt(process.env.LLM_BATCH_SIZE || '20', 10), 1
-    ), 50);
+      parseInt(process.env.LLM_BATCH_SIZE || '5', 10), 1
+    ), 20);
     const batches: any[][] = [];
     for (let i = 0; i < observationsList.length; i += BATCH_SIZE) {
       batches.push(observationsList.slice(i, i + BATCH_SIZE));
     }
 
-    log(`Processing ${observationsList.length} observations in ${batches.length} batches of ${BATCH_SIZE} (parallel)`, 'info');
+    // Memory monitoring helper
+    const getMemoryMB = () => {
+      const mem = process.memoryUsage();
+      return {
+        heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+        heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+        rss: Math.round(mem.rss / 1024 / 1024),
+        external: Math.round(mem.external / 1024 / 1024)
+      };
+    };
+
+    const startMemory = getMemoryMB();
+    log(`Processing ${observationsList.length} observations in ${batches.length} batches of ${BATCH_SIZE}`, 'info', {
+      startMemory
+    });
 
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const batch = batches[batchIndex];
-      log(`Processing batch ${batchIndex + 1}/${batches.length} (${batch.length} observations)`, 'debug');
+      const batchStartMemory = getMemoryMB();
 
-      // Process batch in parallel
-      const batchResults = await Promise.all(
-        batch.map(async (observation) => {
+      // Log memory every 5 batches or if heap is > 500MB
+      if (batchIndex % 5 === 0 || batchStartMemory.heapUsed > 500) {
+        log(`Batch ${batchIndex + 1}/${batches.length} memory check`, 'info', {
+          memory: batchStartMemory,
+          observations: batch.length
+        });
+      }
+
+      // Process batch - use sequential processing if memory pressure is high
+      const useSequential = batchStartMemory.heapUsed > 400; // 400MB threshold
+      let batchResults: Array<{ success: boolean; result?: ClassifiedObservation; error?: any; observation: any }>;
+
+      if (useSequential) {
+        // Sequential processing to reduce memory pressure
+        log(`High memory (${batchStartMemory.heapUsed}MB), using sequential processing`, 'warning');
+        batchResults = [];
+        for (const observation of batch) {
           try {
             const result = await this.classifySingleObservation(observation, minConfidence);
-            return { success: true, result, observation };
+            batchResults.push({ success: true, result, observation });
           } catch (error) {
             log('Error classifying observation', 'warning', { error, observation: observation.name });
-            return { success: false, error, observation };
+            batchResults.push({ success: false, error, observation });
           }
-        })
-      );
+        }
+      } else {
+        // Parallel processing for speed
+        batchResults = await Promise.all(
+          batch.map(async (observation) => {
+            try {
+              const result = await this.classifySingleObservation(observation, minConfidence);
+              return { success: true, result, observation };
+            } catch (error) {
+              log('Error classifying observation', 'warning', { error, observation: observation.name });
+              return { success: false, error, observation };
+            }
+          })
+        );
+      }
+
+      // Hint garbage collection between batches (if available)
+      if (global.gc && batchIndex % 3 === 0) {
+        global.gc();
+      }
 
       // Collect results from batch
       for (const batchResult of batchResults) {
@@ -417,7 +464,20 @@ export class OntologyClassificationAgent {
       extensionSuggestions,
     };
 
-    log('Classification complete', 'info', { ...result.summary, llmCalls, llmUsage });
+    // Log final memory state and change from start
+    const endMemory = getMemoryMB();
+    const memoryDelta = {
+      heapUsed: endMemory.heapUsed - startMemory.heapUsed,
+      rss: endMemory.rss - startMemory.rss
+    };
+
+    log('Classification complete', 'info', {
+      ...result.summary,
+      llmCalls,
+      llmUsage,
+      memoryEnd: endMemory,
+      memoryDelta
+    });
 
     return result;
   }

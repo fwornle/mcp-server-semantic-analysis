@@ -1071,20 +1071,30 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     // Spawn the workflow runner as a detached process
     const runnerScript = path.join(__dirname, 'workflow-runner.js');
 
+    // Create log file for workflow runner output (captures crashes, errors, debug info)
+    const logsDir = path.join(repositoryPath, '.data', 'workflow-logs');
+    mkdirSync(logsDir, { recursive: true });
+    const logFilePath = path.join(logsDir, `${workflowId}.log`);
+
     log(`Spawning workflow runner: ${runnerScript}`, 'info', {
       workflowId,
       configFile,
-      repositoryPath
+      repositoryPath,
+      logFile: logFilePath
     });
 
     try {
+      // Open log file for stdout/stderr capture
+      const logFd = require('fs').openSync(logFilePath, 'a');
+
       const child = spawn('node', [runnerScript, configFile], {
         cwd: repositoryPath,
         detached: true,  // Run independently of parent
-        stdio: ['ignore', 'ignore', 'ignore'],  // Don't inherit stdio
+        stdio: ['ignore', logFd, logFd],  // Redirect stdout/stderr to log file
         env: {
           ...process.env,
           WORKFLOW_ID: workflowId,
+          WORKFLOW_LOG_FILE: logFilePath,
           NODE_ENV: process.env.NODE_ENV || 'production',
         }
       });
@@ -1092,9 +1102,13 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       // Unref so parent can exit without waiting for child
       child.unref();
 
+      // Close file descriptor in parent (child keeps it open)
+      require('fs').closeSync(logFd);
+
       log(`Workflow runner spawned with PID: ${child.pid}`, 'info', {
         workflowId,
-        pid: child.pid
+        pid: child.pid,
+        logFile: logFilePath
       });
 
       // Update workflow info with PID
@@ -1229,6 +1243,115 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
 }
 
 /**
+ * Check if a process with given PID is still running
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0); // Signal 0 = check if process exists
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if a workflow is stale (no updates for too long)
+ * Returns reason string if stale, null if OK
+ */
+function checkWorkflowStale(progressData: any): string | null {
+  if (!progressData.lastUpdate) return null;
+
+  const lastUpdate = new Date(progressData.lastUpdate).getTime();
+  const now = Date.now();
+  const staleDurationMs = now - lastUpdate;
+
+  // Consider stale if no update for 2 minutes (heartbeat should happen every 30s)
+  const STALE_THRESHOLD_MS = 2 * 60 * 1000;
+
+  if (staleDurationMs > STALE_THRESHOLD_MS) {
+    const staleMinutes = Math.round(staleDurationMs / 60000);
+    return `No heartbeat for ${staleMinutes} minutes (last update: ${progressData.lastUpdate})`;
+  }
+
+  return null;
+}
+
+/**
+ * Detect and mark crashed workflows
+ * Returns updated progress data if crash detected, original otherwise
+ */
+function detectCrashedWorkflow(progressData: any, repositoryPath: string): any {
+  // Only check running workflows
+  if (progressData.status !== 'running') {
+    return progressData;
+  }
+
+  const pid = progressData.pid;
+  const processAlive = pid ? isProcessAlive(pid) : false;
+  const staleReason = checkWorkflowStale(progressData);
+
+  // If process is dead or stale, mark as crashed
+  if (pid && !processAlive) {
+    log('[WorkflowStatus] Detected dead workflow process', 'warning', {
+      workflowId: progressData.workflowId || progressData.executionId,
+      pid,
+      lastStep: progressData.currentStep,
+      lastUpdate: progressData.lastUpdate
+    });
+
+    // Check for log file with crash details
+    let crashDetails = `Process ${pid} is no longer running.`;
+    const logsDir = path.join(repositoryPath, '.data', 'workflow-logs');
+    const workflowId = progressData.workflowId || progressData.executionId;
+
+    if (workflowId) {
+      const logFilePath = path.join(logsDir, `wf_${workflowId.replace(/[^a-zA-Z0-9_-]/g, '_')}.log`);
+      try {
+        // Try to find log file by workflow ID pattern
+        const logFiles = require('fs').readdirSync(logsDir).filter((f: string) => f.includes('wf_'));
+        if (logFiles.length > 0) {
+          const latestLog = path.join(logsDir, logFiles[logFiles.length - 1]);
+          const logContent = require('fs').readFileSync(latestLog, 'utf-8');
+          const lastLines = logContent.split('\n').slice(-20).join('\n');
+          if (lastLines.includes('EXCEPTION') || lastLines.includes('Error') || lastLines.includes('MEMORY')) {
+            crashDetails += `\n\nLast log entries from ${path.basename(latestLog)}:\n${lastLines}`;
+          }
+        }
+      } catch {
+        // Log file may not exist
+      }
+    }
+
+    // Update progress file to mark as crashed
+    const progressFilePath = path.join(repositoryPath, '.data', 'workflow-progress.json');
+    const updatedProgress = {
+      ...progressData,
+      status: 'failed',
+      error: `Workflow process crashed: ${crashDetails}`,
+      crashDetectedAt: new Date().toISOString()
+    };
+
+    try {
+      writeFileSync(progressFilePath, JSON.stringify(updatedProgress, null, 2));
+    } catch (e) {
+      log('[WorkflowStatus] Failed to update crashed workflow status', 'error', e);
+    }
+
+    return updatedProgress;
+  }
+
+  // If stale but process status unknown, add warning
+  if (staleReason && !processAlive) {
+    return {
+      ...progressData,
+      staleWarning: staleReason
+    };
+  }
+
+  return progressData;
+}
+
+/**
  * Get workflow status from progress file or running workflow state
  */
 async function handleGetWorkflowStatus(args: any): Promise<any> {
@@ -1354,7 +1477,12 @@ async function handleGetWorkflowStatus(args: any): Promise<any> {
       };
     }
 
-    const progressData = JSON.parse(readFileSync(progressFilePath, 'utf-8'));
+    let progressData = JSON.parse(readFileSync(progressFilePath, 'utf-8'));
+
+    // CRITICAL: Detect crashed workflows (process dead but status still "running")
+    // This updates the progress file and returns the corrected status
+    progressData = detectCrashedWorkflow(progressData, repoPath);
+
     const statusEmoji = progressData.status === 'completed' ? '✅' :
                         progressData.status === 'failed' ? '❌' :
                         progressData.status === 'running' ? '🔄' : '⏸️';
@@ -1378,12 +1506,30 @@ async function handleGetWorkflowStatus(args: any): Promise<any> {
     if (progressData.lastUpdate) {
       statusText += `**Last Update:** ${progressData.lastUpdate}\n`;
     }
+    if (progressData.pid) {
+      const pidStatus = isProcessAlive(progressData.pid) ? '(alive)' : '(dead)';
+      statusText += `**PID:** ${progressData.pid} ${pidStatus}\n`;
+    }
+
+    // Show crash detection info
+    if (progressData.crashDetectedAt) {
+      statusText += `**Crash Detected:** ${progressData.crashDetectedAt}\n`;
+    }
+
+    // Show stale warning
+    if (progressData.staleWarning) {
+      statusText += `\n## ⚠️ Warning\n${progressData.staleWarning}\n`;
+    }
 
     if (progressData.runningSteps && progressData.runningSteps.length > 0) {
       statusText += `\n## Currently Running\n`;
       for (const step of progressData.runningSteps) {
         statusText += `- 🔄 ${step}\n`;
       }
+    }
+
+    if (progressData.error) {
+      statusText += `\n## Error\n${progressData.error}\n`;
     }
 
     if (progressData.errors && progressData.errors.length > 0) {

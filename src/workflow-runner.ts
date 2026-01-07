@@ -120,11 +120,16 @@ process.on('SIGINT', () => {
 });
 
 process.on('unhandledRejection', (reason, promise) => {
+  // Write to stdout/stderr which now goes to log file
+  console.error(`[${new Date().toISOString()}] UNHANDLED REJECTION:`, reason);
   log('[WorkflowRunner] Unhandled promise rejection', 'error', { reason, promise: String(promise) });
   gracefulCleanup(`Unhandled rejection: ${reason}`, 1);
 });
 
 process.on('uncaughtException', (error) => {
+  // Write to stdout/stderr which now goes to log file
+  console.error(`[${new Date().toISOString()}] UNCAUGHT EXCEPTION:`, error);
+  console.error('Stack:', error.stack);
   log('[WorkflowRunner] Uncaught exception', 'error', error);
   gracefulCleanup(`Uncaught exception: ${error.message}`, 1);
 });
@@ -295,8 +300,26 @@ async function updateTimingStatistics(
   }
 }
 
+/**
+ * Log memory usage to console (goes to log file)
+ */
+function logMemoryUsage(context: string): void {
+  const mem = process.memoryUsage();
+  const formatMB = (bytes: number) => `${Math.round(bytes / 1024 / 1024)}MB`;
+  console.log(`[${new Date().toISOString()}] MEMORY (${context}): heap=${formatMB(mem.heapUsed)}/${formatMB(mem.heapTotal)}, rss=${formatMB(mem.rss)}, external=${formatMB(mem.external)}`);
+}
+
 async function main(): Promise<void> {
   const configPath = process.argv[2];
+
+  // Startup banner to log file
+  console.log(`\n${'='.repeat(80)}`);
+  console.log(`[${new Date().toISOString()}] WORKFLOW RUNNER STARTING`);
+  console.log(`PID: ${process.pid}`);
+  console.log(`Node: ${process.version}`);
+  console.log(`Config: ${configPath}`);
+  logMemoryUsage('startup');
+  console.log(`${'='.repeat(80)}\n`);
 
   if (!configPath) {
     console.error('Usage: workflow-runner <config-file-path>');
@@ -391,7 +414,9 @@ async function main(): Promise<void> {
     // The dashboard marks workflows as stale after 120s without an update
     // This sends a heartbeat every 30s regardless of what step is executing
     // IMPORTANT: Use writeProgressPreservingDetails to not overwrite coordinator metadata
+    let heartbeatCount = 0;
     const heartbeatInterval = setInterval(() => {
+      heartbeatCount++;
       writeProgressPreservingDetails(progressFile, {
         workflowId,
         workflowName: resolvedWorkflowName,
@@ -404,6 +429,10 @@ async function main(): Promise<void> {
         elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
         pid: process.pid
       });
+      // Log memory every 2 minutes (every 4th heartbeat)
+      if (heartbeatCount % 4 === 0) {
+        logMemoryUsage(`heartbeat #${heartbeatCount}`);
+      }
       log(`[WorkflowRunner] Heartbeat sent`, 'debug');
     }, 30000); // 30 seconds - well under the 120s stale threshold
     cleanupState.heartbeatInterval = heartbeatInterval;

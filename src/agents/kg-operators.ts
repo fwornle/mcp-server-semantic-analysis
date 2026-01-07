@@ -340,12 +340,20 @@ export class KGOperators {
     accumulatedKG: { entities: KGEntity[]; relations: KGRelation[] }
   ): Promise<DeduplicatedResult> {
     const mergeLog: Array<{ kept: string; merged: string[] }> = [];
-    const allEntities = [...entities, ...accumulatedKG.entities];
     const seen = new Map<string, KGEntity>();
     const merged: string[] = [];
 
-    for (const entity of allEntities) {
-      // Check for name-based duplicates
+    // Track input count without creating a copy (OOM fix: avoid spread operator)
+    const inputCount = entities.length + accumulatedKG.entities.length;
+
+    // First, add accumulated entities (already deduped from previous batches)
+    for (const entity of accumulatedKG.entities) {
+      const normalizedName = entity.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      seen.set(normalizedName, entity);
+    }
+
+    // Then process new batch entities, merging with existing
+    for (const entity of entities) {
       const normalizedName = entity.name.toLowerCase().replace(/[^a-z0-9]/g, '');
       const existing = seen.get(normalizedName);
 
@@ -370,7 +378,7 @@ export class KGOperators {
     const dedupedEntities = Array.from(seen.values());
 
     log('Deduplication completed', 'info', {
-      input: allEntities.length,
+      input: inputCount,
       output: dedupedEntities.length,
       merged: merged.length
     });
@@ -431,9 +439,7 @@ export class KGOperators {
     const edges: KGRelation[] = [];
     const scores: PredictedEdges['scores'] = [];
 
-    // Get all entities (current + accumulated)
-    const allEntities = [...entities, ...accumulatedKG.entities];
-    const entityMap = new Map(allEntities.map(e => [e.id, e]));
+    // OOM fix: removed unused allEntities and entityMap (dead code that wasted memory)
 
     // Build neighbor map for Adamic-Adar
     const neighbors = new Map<string, Set<string>>();

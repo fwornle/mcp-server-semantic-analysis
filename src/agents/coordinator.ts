@@ -2607,6 +2607,55 @@ export class CoordinatorAgent {
           };
           this.writeProgressFile(execution, workflow, `batch_${batch.batchNumber}`, [], currentBatchProgress);
 
+          // =======================================================================
+          // PER-BATCH MEMORY CLEANUP: Critical for preventing OOM on long workflows
+          // =======================================================================
+          // Clear large intermediate step results that aren't needed for subsequent batches
+          // Keep only summary data and timing, discard detailed results
+          const batchStepsToCompact = [
+            'extract_batch_commits',
+            'extract_batch_sessions',
+            'batch_semantic_analysis',
+            'generate_batch_observations',
+            'classify_with_ontology'
+          ];
+
+          for (const stepName of batchStepsToCompact) {
+            const stepResult = execution.results[stepName];
+            if (stepResult && !stepResult._compacted) {
+              // Keep only essential metadata, discard large data
+              execution.results[stepName] = {
+                _compacted: true,
+                _timing: stepResult._timing,
+                batchId: stepResult.batchId || batch.id,
+                _compactedAt: new Date().toISOString()
+              };
+            }
+          }
+
+          // Log memory usage every 5 batches or when heap > 500MB
+          const memUsage = process.memoryUsage();
+          const heapMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+          const rssMB = Math.round(memUsage.rss / 1024 / 1024);
+
+          if (batch.batchNumber % 5 === 0 || heapMB > 500) {
+            log(`Memory after batch ${batch.batchNumber}/${currentBatchProgress.totalBatches}`, 'info', {
+              heapUsedMB: heapMB,
+              rssMB: rssMB,
+              accumulatedEntities: accumulatedKG.entities.length,
+              accumulatedRelations: accumulatedKG.relations.length
+            });
+          }
+
+          // Trigger garbage collection if available (Node.js with --expose-gc)
+          if (typeof global !== 'undefined' && (global as any).gc) {
+            try {
+              (global as any).gc();
+            } catch (e) {
+              // GC not available, ignore
+            }
+          }
+
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           const errorStack = error instanceof Error ? error.stack : undefined;

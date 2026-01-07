@@ -149,7 +149,7 @@ process.on('exit', (code) => {
     // Also write to a dedicated crash log file for debugging
     const crashLogPath = cleanupState.progressFile?.replace('workflow-progress.json', 'workflow-exit.log');
     if (crashLogPath) {
-      const fs = require('fs');
+      // Use the already-imported fs module (ESM compatible)
       fs.appendFileSync(crashLogPath, `[${timestamp}] EXIT: code=${code}, workflowId=${cleanupState.workflowId}, heap=${Math.round(mem.heapUsed/1024/1024)}MB, rss=${Math.round(mem.rss/1024/1024)}MB, isShuttingDown=${cleanupState.isShuttingDown}\n`);
     }
   } catch (e) {

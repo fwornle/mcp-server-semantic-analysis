@@ -18,7 +18,7 @@ import {
 import { OntologyManager } from "./ontology/OntologyManager.js";
 import { OntologyValidator } from "./ontology/OntologyValidator.js";
 import fs from "fs/promises";
-import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync, readdirSync } from "fs";
 import path from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
@@ -1085,7 +1085,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
 
     try {
       // Open log file for stdout/stderr capture
-      const logFd = require('fs').openSync(logFilePath, 'a');
+      const logFd = openSync(logFilePath, 'a');
 
       const child = spawn('node', [runnerScript, configFile], {
         cwd: repositoryPath,
@@ -1103,7 +1103,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       child.unref();
 
       // Close file descriptor in parent (child keeps it open)
-      require('fs').closeSync(logFd);
+      closeSync(logFd);
 
       log(`Workflow runner spawned with PID: ${child.pid}`, 'info', {
         workflowId,
@@ -1308,10 +1308,10 @@ function detectCrashedWorkflow(progressData: any, repositoryPath: string): any {
       const logFilePath = path.join(logsDir, `wf_${workflowId.replace(/[^a-zA-Z0-9_-]/g, '_')}.log`);
       try {
         // Try to find log file by workflow ID pattern
-        const logFiles = require('fs').readdirSync(logsDir).filter((f: string) => f.includes('wf_'));
+        const logFiles = readdirSync(logsDir).filter((f: string) => f.includes('wf_'));
         if (logFiles.length > 0) {
           const latestLog = path.join(logsDir, logFiles[logFiles.length - 1]);
-          const logContent = require('fs').readFileSync(latestLog, 'utf-8');
+          const logContent = readFileSync(latestLog, 'utf-8');
           const lastLines = logContent.split('\n').slice(-20).join('\n');
           if (lastLines.includes('EXCEPTION') || lastLines.includes('Error') || lastLines.includes('MEMORY')) {
             crashDetails += `\n\nLast log entries from ${path.basename(latestLog)}:\n${lastLines}`;

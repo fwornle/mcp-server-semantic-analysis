@@ -1802,7 +1802,9 @@ export class CoordinatorAgent {
 
         batchCount++;
         const batchStartTime = Date.now();
-        const currentBatchProgress = { currentBatch: batchCount, totalBatches: totalBatchCount, batchId: batch.id };
+        // Use batch.batchNumber (actual sequential number like 23, 24) instead of batchCount (local counter)
+        // This ensures resumed workflows show correct batch numbers (e.g., 23/24 → 24/24)
+        const currentBatchProgress = { currentBatch: batch.batchNumber, totalBatches: totalBatchCount, batchId: batch.id };
 
         // Memory monitoring: Log stats and hint GC every 5 batches
         const COMPACT_EVERY_N_BATCHES = 5;
@@ -2600,10 +2602,10 @@ export class CoordinatorAgent {
           // Update progress file after each batch for dashboard visibility
           // Note: currentStep tracks DAG steps, batchProgress tracks batch iterations separately
           execution.batchProgress = {
-            currentBatch: batchCount,
+            currentBatch: batch.batchNumber,  // Use actual batch number for correct display
             totalBatches: currentBatchProgress.totalBatches
           };
-          this.writeProgressFile(execution, workflow, `batch_${batchCount}`, [], currentBatchProgress);
+          this.writeProgressFile(execution, workflow, `batch_${batch.batchNumber}`, [], currentBatchProgress);
 
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);

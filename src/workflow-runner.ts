@@ -134,6 +134,29 @@ process.on('uncaughtException', (error) => {
   gracefulCleanup(`Uncaught exception: ${error.message}`, 1);
 });
 
+// Additional exit monitoring for debugging silent crashes
+process.on('beforeExit', (code) => {
+  console.log(`[${new Date().toISOString()}] BEFORE EXIT: code=${code}`);
+  console.log(`CleanupState: isShuttingDown=${cleanupState.isShuttingDown}, workflowId=${cleanupState.workflowId}`);
+});
+
+process.on('exit', (code) => {
+  // This is the LAST thing that runs - use sync logging only
+  try {
+    const mem = process.memoryUsage();
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] EXIT: code=${code}, heap=${Math.round(mem.heapUsed/1024/1024)}MB, rss=${Math.round(mem.rss/1024/1024)}MB`);
+    // Also write to a dedicated crash log file for debugging
+    const crashLogPath = cleanupState.progressFile?.replace('workflow-progress.json', 'workflow-exit.log');
+    if (crashLogPath) {
+      const fs = require('fs');
+      fs.appendFileSync(crashLogPath, `[${timestamp}] EXIT: code=${code}, workflowId=${cleanupState.workflowId}, heap=${Math.round(mem.heapUsed/1024/1024)}MB, rss=${Math.round(mem.rss/1024/1024)}MB, isShuttingDown=${cleanupState.isShuttingDown}\n`);
+    }
+  } catch (e) {
+    // Ignore - can't do much at exit time
+  }
+});
+
 // Batch step names for phase separation
 const BATCH_STEPS = new Set([
   'plan_batches', 'extract_batch_commits', 'extract_batch_sessions',
@@ -429,10 +452,8 @@ async function main(): Promise<void> {
         elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
         pid: process.pid
       });
-      // Log memory every 2 minutes (every 4th heartbeat)
-      if (heartbeatCount % 4 === 0) {
-        logMemoryUsage(`heartbeat #${heartbeatCount}`);
-      }
+      // Log memory on EVERY heartbeat for crash investigation
+      logMemoryUsage(`heartbeat #${heartbeatCount}`);
       log(`[WorkflowRunner] Heartbeat sent`, 'debug');
     }, 30000); // 30 seconds - well under the 120s stale threshold
     cleanupState.heartbeatInterval = heartbeatInterval;

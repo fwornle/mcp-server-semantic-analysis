@@ -394,13 +394,24 @@ export class KGOperators {
    * Merge two entities, preserving role consistency
    */
   private mergeEntities(existing: KGEntity, incoming: KGEntity): KGEntity {
-    // Merge observations (deduplicate)
-    const allObservations = [...existing.observations, ...incoming.observations];
-    const uniqueObservations = [...new Set(allObservations)];
+    // Limits to prevent unbounded growth across many batches
+    const MAX_OBSERVATIONS = 50;
+    const MAX_REFERENCES = 100;
 
-    // Merge references
+    // Merge observations (deduplicate, limit size)
+    const allObservations = [...existing.observations, ...incoming.observations];
+    let uniqueObservations = [...new Set(allObservations)];
+    if (uniqueObservations.length > MAX_OBSERVATIONS) {
+      // Keep most recent observations (incoming takes precedence)
+      uniqueObservations = uniqueObservations.slice(-MAX_OBSERVATIONS);
+    }
+
+    // Merge references (deduplicate, limit size)
     const allReferences = [...(existing.references || []), ...(incoming.references || [])];
-    const uniqueReferences = [...new Set(allReferences)];
+    let uniqueReferences = [...new Set(allReferences)];
+    if (uniqueReferences.length > MAX_REFERENCES) {
+      uniqueReferences = uniqueReferences.slice(-MAX_REFERENCES);
+    }
 
     // Role consistency: core takes precedence
     const role = existing.role === 'core' || incoming.role === 'core' ? 'core' : 'non-core';
@@ -411,10 +422,17 @@ export class KGOperators {
     // Prefer existing embedding, but update if incoming is newer
     const embedding = incoming.embedding || existing.embedding;
 
-    // Combine context
-    const enrichedContext = [existing.enrichedContext, incoming.enrichedContext]
+    // Combine context (limit size to prevent string length overflow on large workflows)
+    const MAX_CONTEXT_LENGTH = 10000; // ~10KB max per entity
+    let enrichedContext = [existing.enrichedContext, incoming.enrichedContext]
       .filter(Boolean)
       .join(' | ');
+
+    // Truncate if too long, keeping the most recent context (incoming) prioritized
+    if (enrichedContext.length > MAX_CONTEXT_LENGTH) {
+      // Keep last MAX_CONTEXT_LENGTH characters (most recent context)
+      enrichedContext = '...' + enrichedContext.slice(-MAX_CONTEXT_LENGTH + 3);
+    }
 
     return {
       ...existing,

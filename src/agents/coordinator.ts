@@ -2612,12 +2612,13 @@ export class CoordinatorAgent {
           // =======================================================================
           // Clear large intermediate step results that aren't needed for subsequent batches
           // Keep only summary data and timing, discard detailed results
+          // NOTE: Do NOT compact classify_with_ontology - its outputs (classified count)
+          // are needed by the dashboard for display. The data is small (just counts).
           const batchStepsToCompact = [
             'extract_batch_commits',
             'extract_batch_sessions',
             'batch_semantic_analysis',
-            'generate_batch_observations',
-            'classify_with_ontology'
+            'generate_batch_observations'
           ];
 
           for (const stepName of batchStepsToCompact) {

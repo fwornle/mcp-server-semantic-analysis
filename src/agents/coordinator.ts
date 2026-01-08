@@ -2005,6 +2005,12 @@ export class CoordinatorAgent {
           // Analyze batch data using semantic analysis pipeline
           let batchEntities: KGEntity[] = [];
           let batchRelations: KGRelation[] = [];
+          // Enriched git analysis - populated in semantic analysis block, used for observation generation
+          let enrichedGitAnalysisForObs: any = {
+            commits: commits?.commits || [],
+            architecturalDecisions: [],
+            codeEvolution: []
+          };
           SemanticAnalyzer.resetStepMetrics();
           const semanticAnalysisStart = new Date();
 
@@ -2085,6 +2091,9 @@ export class CoordinatorAgent {
                   trend: 'stable'
                 }))
               };
+
+              // Store enriched git analysis for use in second observation generation call
+              enrichedGitAnalysisForObs = enrichedGitAnalysis;
 
               // Create insights structure from semantic analysis for observation agent
               const insightsForObservation = {
@@ -2225,7 +2234,7 @@ export class CoordinatorAgent {
               });
 
               const observationResult = await observationAgent.generateStructuredObservations(
-                { commits: commits, architecturalDecisions: [], codeEvolution: [] },  // git analysis - wrapped in expected format
+                enrichedGitAnalysisForObs,  // git analysis with architecturalDecisions and codeEvolution from semantic analysis
                 { sessions: sessionResult?.sessions || [] },  // vibe analysis - wrapped in expected format
                 { entities: batchEntities, relations: batchRelations }  // semantic analysis
               );

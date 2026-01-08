@@ -412,6 +412,8 @@ steps:
     parameters:
       persisted_entities: "{{final_persist.result}}"
       accumulated_entities: "{{accumulatedKG.entities}}"
+      git_analysis_results: "{{accumulatedKG.gitAnalysis}}"
+      vibe_analysis_results: "{{accumulatedKG.vibeAnalysis}}"
       code_graph_results: "{{index_codebase.result}}"
       code_synthesis_results: "{{synthesize_code_insights.result}}"
       team: "{{params.team}}"

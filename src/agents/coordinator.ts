@@ -1773,9 +1773,17 @@ export class CoordinatorAgent {
       }
 
       // Accumulated KG state (grows across batches)
-      let accumulatedKG: { entities: KGEntity[]; relations: KGRelation[] } = {
+      // Includes git/vibe analysis for finalization phase insight generation
+      let accumulatedKG: {
+        entities: KGEntity[];
+        relations: KGRelation[];
+        gitAnalysis: { commits: any[]; architecturalDecisions: any[]; codeEvolution: any[] };
+        vibeAnalysis: { sessions: any[] };
+      } = {
         entities: [],
-        relations: []
+        relations: [],
+        gitAnalysis: { commits: [], architecturalDecisions: [], codeEvolution: [] },
+        vibeAnalysis: { sessions: [] }
       };
 
       // PHASE 1: Iterate through batches
@@ -2217,8 +2225,8 @@ export class CoordinatorAgent {
               });
 
               const observationResult = await observationAgent.generateStructuredObservations(
-                commits,  // git analysis
-                sessionResult,  // vibe analysis
+                { commits: commits, architecturalDecisions: [], codeEvolution: [] },  // git analysis - wrapped in expected format
+                { sessions: sessionResult?.sessions || [] },  // vibe analysis - wrapped in expected format
                 { entities: batchEntities, relations: batchRelations }  // semantic analysis
               );
 
@@ -2444,10 +2452,18 @@ export class CoordinatorAgent {
           );
           const operatorsEndTime = new Date();
 
-          // Update accumulated KG
+          // Update accumulated KG (including git/vibe analysis for finalization insight generation)
           accumulatedKG = {
             entities: operatorResult.entities,
-            relations: operatorResult.relations
+            relations: operatorResult.relations,
+            gitAnalysis: {
+              commits: [...accumulatedKG.gitAnalysis.commits, ...(commits?.commits || [])],
+              architecturalDecisions: accumulatedKG.gitAnalysis.architecturalDecisions,
+              codeEvolution: accumulatedKG.gitAnalysis.codeEvolution
+            },
+            vibeAnalysis: {
+              sessions: [...accumulatedKG.vibeAnalysis.sessions, ...(sessionResult?.sessions || [])]
+            }
           };
 
           // Track operator steps completion for dashboard visibility

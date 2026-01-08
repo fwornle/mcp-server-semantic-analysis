@@ -2288,32 +2288,6 @@ export class CoordinatorAgent {
             trackBatchStep('generate_batch_observations', 'skipped', obsSkipDuration);
           }
 
-          // =======================================================================
-          // MID-BATCH MEMORY CLEANUP: Prevent OOM before heavy ontology classification
-          // =======================================================================
-          // Compact previous step results BEFORE ontology classification (the heaviest step)
-          const priorStepsToCompact = ['extract_batch_commits', 'extract_batch_sessions', 'batch_semantic_analysis', 'generate_batch_observations'];
-          for (const stepName of priorStepsToCompact) {
-            const stepResult = execution.results[stepName];
-            if (stepResult && !stepResult._compacted) {
-              execution.results[stepName] = {
-                _compacted: true,
-                _timing: stepResult._timing,
-                batchId: stepResult.batchId || batch.id,
-                _compactedAt: new Date().toISOString()
-              };
-            }
-          }
-
-          // Force GC if available to reclaim memory before heavy operation
-          if (typeof global !== 'undefined' && (global as any).gc) {
-            try {
-              (global as any).gc();
-            } catch (e) {
-              // GC not available, ignore
-            }
-          }
-
           // ONTOLOGY CLASSIFICATION: Classify entities using project ontology
           SemanticAnalyzer.resetStepMetrics();
           const ontologyClassificationStartTime = new Date();

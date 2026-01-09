@@ -2858,6 +2858,13 @@ export class CoordinatorAgent {
           if (allSemanticEntities.length === 0 && accumulatedKG.entities.length > 0) {
             allSemanticEntities.push(...accumulatedKG.entities);
           }
+          // BUG FIX: Also get commits/sessions from accumulatedKG (batch results use static keys, overwritten each batch)
+          if (allCommits.length === 0 && accumulatedKG.gitAnalysis?.commits?.length > 0) {
+            allCommits.push(...accumulatedKG.gitAnalysis.commits);
+          }
+          if (allSessions.length === 0 && accumulatedKG.vibeAnalysis?.sessions?.length > 0) {
+            allSessions.push(...accumulatedKG.vibeAnalysis.sessions);
+          }
 
           const insightResult = await insightAgent.generateComprehensiveInsights({
             git_analysis_results: { commits: allCommits },

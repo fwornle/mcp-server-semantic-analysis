@@ -1791,6 +1791,11 @@ export class CoordinatorAgent {
       let batch: BatchWindow | null;
       const totalBatchCount = batchScheduler.getProgress().totalBatches;
 
+      // CRITICAL: Dedicated arrays for commit/session accumulation
+      // These ensure data is preserved even if accumulatedKG is modified elsewhere
+      const allBatchCommits: any[] = [];
+      const allBatchSessions: any[] = [];
+
       // Initialize batch iterations tracking for tracer visualization
       execution.batchIterations = [];
 
@@ -1903,6 +1908,13 @@ export class CoordinatorAgent {
           this.writeProgressFile(execution, workflow, 'extract_batch_commits', [], currentBatchProgress);
           trackBatchStep('extract_batch_commits', 'completed', commitsDuration, { commitsCount: commits?.commits?.length || 0 });
 
+          // CRITICAL: Immediately accumulate commits into dedicated array
+          // This ensures commits are preserved regardless of memory compaction or other operations
+          if (commits?.commits?.length > 0) {
+            allBatchCommits.push(...commits.commits);
+            log(`Accumulated ${commits.commits.length} commits for batch ${batch.id} (total: ${allBatchCommits.length})`, 'info');
+          }
+
           // Check for cancellation after commit extraction
           this.checkCancellationOrThrow('extract_batch_commits');
 
@@ -1963,6 +1975,12 @@ export class CoordinatorAgent {
           execution.results['extract_batch_sessions'] = this.wrapWithTiming({ ...sessionResult, batchId: batch.id }, extractSessionsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_sessions', [], currentBatchProgress);
           trackBatchStep('extract_batch_sessions', 'completed', sessionsDuration, { sessionsCount: sessionResult?.sessions?.length || 0 });
+
+          // CRITICAL: Immediately accumulate sessions into dedicated array
+          if (sessionResult?.sessions?.length > 0) {
+            allBatchSessions.push(...sessionResult.sessions);
+            log(`Accumulated ${sessionResult.sessions.length} sessions for batch ${batch.id} (total: ${allBatchSessions.length})`, 'info');
+          }
 
           // Check for cancellation after session extraction
           this.checkCancellationOrThrow('extract_batch_sessions');
@@ -2462,6 +2480,8 @@ export class CoordinatorAgent {
           const operatorsEndTime = new Date();
 
           // Update accumulated KG (including git/vibe analysis for finalization insight generation)
+          const newCommitsCount = commits?.commits?.length || 0;
+          const previousCommitsCount = accumulatedKG.gitAnalysis.commits.length;
           accumulatedKG = {
             entities: operatorResult.entities,
             relations: operatorResult.relations,
@@ -2474,6 +2494,14 @@ export class CoordinatorAgent {
               sessions: [...accumulatedKG.vibeAnalysis.sessions, ...(sessionResult?.sessions || [])]
             }
           };
+
+          // DEBUG: Log commit accumulation
+          log(`DEBUG: Accumulating commits for batch ${batch.id}`, 'info', {
+            previousCommits: previousCommitsCount,
+            newCommits: newCommitsCount,
+            totalCommits: accumulatedKG.gitAnalysis.commits.length,
+            sampleNewCommit: commits?.commits?.[0]?.hash?.substring(0, 7) || 'none'
+          });
 
           // Track operator steps completion for dashboard visibility
           // Each operator gets individual timing based on the overall duration divided by operator count
@@ -2832,6 +2860,8 @@ export class CoordinatorAgent {
         try {
           log('Batch workflow: Generating insights from accumulated data', 'info', {
             accumulatedEntities: accumulatedKG.entities.length,
+            accumulatedCommits: accumulatedKG.gitAnalysis?.commits?.length || 0,
+            accumulatedSessions: accumulatedKG.vibeAnalysis?.sessions?.length || 0,
             hasCodeGraph: !!execution.results['index_codebase'],
             hasCodeSynthesis: !!execution.results['synthesize_code_insights']
           });
@@ -2858,13 +2888,38 @@ export class CoordinatorAgent {
           if (allSemanticEntities.length === 0 && accumulatedKG.entities.length > 0) {
             allSemanticEntities.push(...accumulatedKG.entities);
           }
-          // BUG FIX: Also get commits/sessions from accumulatedKG (batch results use static keys, overwritten each batch)
+
+          // PRIMARY SOURCE: Use dedicated batch accumulators (immune to memory compaction)
+          // These are populated immediately after each batch extraction
+          if (allCommits.length === 0 && allBatchCommits.length > 0) {
+            allCommits.push(...allBatchCommits);
+            log(`Using dedicated commit accumulator: ${allBatchCommits.length} commits`, 'info');
+          }
+          if (allSessions.length === 0 && allBatchSessions.length > 0) {
+            allSessions.push(...allBatchSessions);
+            log(`Using dedicated session accumulator: ${allBatchSessions.length} sessions`, 'info');
+          }
+
+          // FALLBACK: Also check accumulatedKG (legacy path, may have issues with memory compaction)
           if (allCommits.length === 0 && accumulatedKG.gitAnalysis?.commits?.length > 0) {
             allCommits.push(...accumulatedKG.gitAnalysis.commits);
+            log(`Using accumulatedKG fallback for commits: ${accumulatedKG.gitAnalysis.commits.length}`, 'info');
           }
           if (allSessions.length === 0 && accumulatedKG.vibeAnalysis?.sessions?.length > 0) {
             allSessions.push(...accumulatedKG.vibeAnalysis.sessions);
+            log(`Using accumulatedKG fallback for sessions: ${accumulatedKG.vibeAnalysis.sessions.length}`, 'info');
           }
+
+          // DEBUG: Log final counts before insight generation
+          log('DEBUG: Final counts before insight generation', 'info', {
+            allCommitsCount: allCommits.length,
+            allSessionsCount: allSessions.length,
+            allSemanticEntitiesCount: allSemanticEntities.length,
+            allBatchCommitsCount: allBatchCommits.length,
+            allBatchSessionsCount: allBatchSessions.length,
+            accumulatedKGCommits: accumulatedKG.gitAnalysis?.commits?.length || 0,
+            accumulatedKGSessions: accumulatedKG.vibeAnalysis?.sessions?.length || 0
+          });
 
           const insightResult = await insightAgent.generateComprehensiveInsights({
             git_analysis_results: { commits: allCommits },

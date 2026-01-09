@@ -1791,10 +1791,11 @@ export class CoordinatorAgent {
       let batch: BatchWindow | null;
       const totalBatchCount = batchScheduler.getProgress().totalBatches;
 
-      // CRITICAL: Dedicated arrays for commit/session accumulation
+      // CRITICAL: Dedicated arrays for commit/session/observation accumulation
       // These ensure data is preserved even if accumulatedKG is modified elsewhere
       const allBatchCommits: any[] = [];
       const allBatchSessions: any[] = [];
+      const allBatchObservations: any[] = [];
 
       // Initialize batch iterations tracking for tracer visualization
       execution.batchIterations = [];
@@ -2274,6 +2275,15 @@ export class CoordinatorAgent {
               }, observationStartTime);
               this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
               trackBatchStep('generate_batch_observations', 'completed', obsDuration, { observationsCount: batchObservations.length });
+
+              // CRITICAL: Accumulate observations for finalization phase
+              if (batchObservations.length > 0) {
+                allBatchObservations.push(...batchObservations);
+                log(`DEBUG: Accumulating observations for batch ${batch.id}`, 'info', {
+                  batchObservations: batchObservations.length,
+                  totalAccumulated: allBatchObservations.length
+                });
+              }
 
               // Check for cancellation after observation generation
               this.checkCancellationOrThrow('generate_batch_observations');
@@ -2917,6 +2927,7 @@ export class CoordinatorAgent {
             allSemanticEntitiesCount: allSemanticEntities.length,
             allBatchCommitsCount: allBatchCommits.length,
             allBatchSessionsCount: allBatchSessions.length,
+            allBatchObservationsCount: allBatchObservations.length,
             accumulatedKGCommits: accumulatedKG.gitAnalysis?.commits?.length || 0,
             accumulatedKGSessions: accumulatedKG.vibeAnalysis?.sessions?.length || 0
           });
@@ -2925,6 +2936,7 @@ export class CoordinatorAgent {
             git_analysis_results: { commits: allCommits },
             vibe_analysis_results: { sessions: allSessions },
             semantic_analysis_results: { entities: allSemanticEntities, relations: accumulatedKG.relations },
+            observations: allBatchObservations,
             code_graph_results: execution.results['index_codebase'] || execution.results['synthesize_code_insights'],
             code_synthesis_results: execution.results['synthesize_code_insights'],
             team: parameters.team || this.team

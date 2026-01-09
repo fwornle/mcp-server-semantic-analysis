@@ -533,6 +533,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
     const codeGraphResults = params.code_graph_results || params.codeGraphResults;
     const docSemanticsResults = params.doc_semantics_results || params.docSemanticsResults;
     const codeSynthesisResults = params.code_synthesis_results || params.codeSynthesisResults;
+    const observations = params.observations || [];
 
     log('Data availability checked', 'debug', {
       gitAnalysis: !!gitAnalysis,
@@ -541,7 +542,8 @@ Best practices, rules, and conventions for using this correctly. What should dev
       webResults: !!webResults,
       codeGraphResults: !!codeGraphResults,
       docSemanticsResults: !!docSemanticsResults,
-      codeSynthesisResults: !!codeSynthesisResults
+      codeSynthesisResults: !!codeSynthesisResults,
+      observationsCount: observations.length
     });
 
     log('Starting comprehensive insight generation', 'info', {
@@ -553,6 +555,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
       hasCodeGraphResults: !!codeGraphResults,
       hasDocSemanticsResults: !!docSemanticsResults,
       hasCodeSynthesisResults: !!codeSynthesisResults,
+      observationsCount: observations.length,
       codeGraphSkipped: codeGraphResults?.skipped || false,
       codeGraphEntities: codeGraphResults?.statistics?.totalEntities || 0,
       docSemanticsAnalyzed: docSemanticsResults?.statistics?.analyzed || 0,
@@ -599,9 +602,9 @@ Best practices, rules, and conventions for using this correctly. What should dev
         };
       }
 
-      // Extract patterns from all analyses (including code graph, doc semantics, and synthesis if available)
+      // Extract patterns from all analyses (including code graph, doc semantics, synthesis, and observations)
       const patternCatalog = await this.generatePatternCatalog(
-        filteredGitAnalysis, vibeAnalysis, semanticAnalysis, webResults, codeGraphResults, docSemanticsResults, codeSynthesisResults
+        filteredGitAnalysis, vibeAnalysis, semanticAnalysis, webResults, codeGraphResults, docSemanticsResults, codeSynthesisResults, observations
       );
 
       // DEBUGGING: Log all pattern significance scores BEFORE filtering
@@ -820,10 +823,11 @@ Best practices, rules, and conventions for using this correctly. What should dev
     webResults?: any,
     codeGraphResults?: any,
     docSemanticsResults?: any,
-    codeSynthesisResults?: SynthesisResult[]
+    codeSynthesisResults?: SynthesisResult[],
+    observations?: any[]
   ): Promise<PatternCatalog> {
     FilenameTracer.trace('PATTERN_CATALOG_START', 'generatePatternCatalog',
-      { hasGit: !!gitAnalysis, hasVibe: !!vibeAnalysis, hasSemantic: !!semanticAnalysis, hasCodeGraph: !!codeGraphResults, hasDocSemantics: !!docSemanticsResults, hasCodeSynthesis: !!codeSynthesisResults },
+      { hasGit: !!gitAnalysis, hasVibe: !!vibeAnalysis, hasSemantic: !!semanticAnalysis, hasCodeGraph: !!codeGraphResults, hasDocSemantics: !!docSemanticsResults, hasCodeSynthesis: !!codeSynthesisResults, observationsCount: observations?.length || 0 },
       'Starting pattern catalog generation'
     );
 
@@ -915,6 +919,17 @@ Best practices, rules, and conventions for using this correctly. What should dev
       }
     } catch (error) {
       console.error('Error extracting synthesis patterns:', error);
+    }
+
+    // Extract patterns from accumulated observations (batch-generated insights)
+    try {
+      if (observations && Array.isArray(observations) && observations.length > 0) {
+        const observationPatterns = this.extractPatternsFromObservations(observations);
+        patterns.push(...observationPatterns);
+        log(`Extracted ${observationPatterns.length} patterns from ${observations.length} observations`, 'info');
+      }
+    } catch (error) {
+      console.error('Error extracting observation patterns:', error);
     }
 
     // Analyze and summarize patterns
@@ -4018,6 +4033,117 @@ Significance: [1-10]`;
     }
 
     return Math.min(10, score);
+  }
+
+  /**
+   * Extract patterns from accumulated observations generated during batch processing.
+   * Observations contain high-level insights extracted from commit/session analysis.
+   */
+  private extractPatternsFromObservations(observations: any[]): IdentifiedPattern[] {
+    const patterns: IdentifiedPattern[] = [];
+    const categoryGroups: Record<string, any[]> = {};
+
+    // Group observations by category
+    for (const obs of observations) {
+      const category = obs.category || obs.type || 'general';
+      if (!categoryGroups[category]) {
+        categoryGroups[category] = [];
+      }
+      categoryGroups[category].push(obs);
+    }
+
+    // Create patterns from observation groups
+    for (const [category, categoryObs] of Object.entries(categoryGroups)) {
+      // If there are multiple observations in a category, it indicates a pattern
+      if (categoryObs.length >= 2) {
+        const significance = Math.min(9, 5 + Math.floor(categoryObs.length / 2));
+        patterns.push({
+          name: `${this.capitalizeCategory(category)} Pattern (${categoryObs.length} occurrences)`,
+          category: this.mapObservationCategoryToPatternCategory(category),
+          description: this.summarizeObservations(categoryObs),
+          significance,
+          evidence: categoryObs.slice(0, 5).map(o => o.content || o.observation || JSON.stringify(o).substring(0, 100)),
+          relatedComponents: this.extractComponentsFromObservations(categoryObs),
+          implementation: {
+            language: 'auto-detected',
+            usageNotes: [`Observed across ${categoryObs.length} instances`]
+          }
+        });
+      }
+
+      // Also create individual patterns for high-significance observations
+      for (const obs of categoryObs) {
+        const obsSignificance = obs.significance || obs.score || 5;
+        if (obsSignificance >= 6) {
+          patterns.push({
+            name: obs.title || obs.name || `${this.capitalizeCategory(category)} Insight`,
+            category: this.mapObservationCategoryToPatternCategory(category),
+            description: obs.content || obs.observation || obs.description || 'High-significance observation',
+            significance: obsSignificance,
+            evidence: obs.evidence || [obs.source || 'batch analysis'],
+            relatedComponents: obs.components || obs.entities || [],
+            implementation: {
+              language: 'auto-detected',
+              usageNotes: obs.recommendations || []
+            }
+          });
+        }
+      }
+    }
+
+    log(`Extracted ${patterns.length} patterns from ${observations.length} observations across ${Object.keys(categoryGroups).length} categories`, 'info');
+    return patterns;
+  }
+
+  private capitalizeCategory(category: string): string {
+    return category.charAt(0).toUpperCase() + category.slice(1).replace(/_/g, ' ');
+  }
+
+  private mapObservationCategoryToPatternCategory(category: string): string {
+    const categoryMap: Record<string, string> = {
+      'architectural': 'architectural',
+      'architecture': 'architectural',
+      'code': 'CodeStructure',
+      'code_structure': 'CodeStructure',
+      'quality': 'CodeQuality',
+      'code_quality': 'CodeQuality',
+      'workflow': 'Workflow',
+      'process': 'Workflow',
+      'documentation': 'Documentation',
+      'testing': 'Testing',
+      'security': 'Security',
+      'performance': 'Performance'
+    };
+    return categoryMap[category.toLowerCase()] || 'general';
+  }
+
+  private summarizeObservations(observations: any[]): string {
+    const contents = observations
+      .map(o => o.content || o.observation || '')
+      .filter(c => c.length > 0)
+      .slice(0, 3);
+
+    if (contents.length === 0) {
+      return `Pattern observed across ${observations.length} instances`;
+    }
+
+    return contents.join('; ').substring(0, 300);
+  }
+
+  private extractComponentsFromObservations(observations: any[]): string[] {
+    const components = new Set<string>();
+    for (const obs of observations) {
+      if (obs.components) {
+        obs.components.forEach((c: string) => components.add(c));
+      }
+      if (obs.entities) {
+        obs.entities.forEach((e: string) => components.add(e));
+      }
+      if (obs.files) {
+        obs.files.slice(0, 3).forEach((f: string) => components.add(f));
+      }
+    }
+    return Array.from(components).slice(0, 10);
   }
 
   /**

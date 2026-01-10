@@ -1381,22 +1381,64 @@ ${JSON.stringify(devThemes, null, 2)}
 
 ${crossAnalysisSection}
 
-Based on this comprehensive analysis, provide insights in JSON format:
+Based on this comprehensive analysis, provide STRUCTURED insights in JSON format.
+
+CRITICAL REQUIREMENTS - Each insight MUST include:
+1. A descriptive PascalCase name (e.g., "TypedReduxHooks", "ErrorBoundaryRecovery")
+2. Actual code examples with backticks
+3. DO rules (ALWAYS, Use X when...)
+4. DON'T rules (NEVER, Avoid X when...)
+5. Evidence from commits or files
+
+JSON Format:
 {
-  "keyPatterns": ["specific pattern with evidence..."],
-  "architecturalDecisions": ["specific decision: rationale and impact..."],
-  "technicalDebt": ["specific debt item: location and recommended fix..."],
-  "innovativeApproaches": ["specific innovation: what makes it novel..."],
-  "learnings": ["specific learning: applicable context and takeaway..."]
+  "patterns": [
+    {
+      "name": "DescriptivePascalCaseName",
+      "problem": "What specific problem this solves",
+      "solution": "How it solves the problem",
+      "codeExample": "\`const hooks = useTypedSelector(state => state.feature)\`",
+      "doRules": ["ALWAYS use typed selectors", "Use memoization for expensive computations"],
+      "dontRules": ["NEVER access state directly without selectors", "Avoid inline object creation in selectors"],
+      "evidence": ["commit: abc123 - Added typed Redux hooks", "file: src/store/hooks.ts"]
+    }
+  ],
+  "architecturalDecisions": [
+    {
+      "name": "FeatureSliceArchitecture",
+      "decision": "What was decided",
+      "rationale": "Why this approach was chosen",
+      "codeExample": "\`createSlice({ name: 'feature', initialState, reducers })\`",
+      "tradeoffs": ["Pro: Better code organization", "Con: More boilerplate"],
+      "evidence": ["commit: def456 - Migrated to feature slices"]
+    }
+  ],
+  "technicalDebt": [
+    {
+      "name": "LegacyCallbackProps",
+      "issue": "What the problem is",
+      "location": "src/components/OldComponent.tsx:45-67",
+      "suggestedFix": "Refactor to use hooks pattern",
+      "priority": "medium"
+    }
+  ],
+  "learnings": [
+    {
+      "name": "AsyncThunkErrorHandling",
+      "insight": "Specific actionable learning",
+      "codeExample": "\`createAsyncThunk('name', async (arg, { rejectWithValue }) => { ... })\`",
+      "applicability": "When to apply this learning"
+    }
+  ]
 }
 
-Focus on SPECIFIC, ACTIONABLE insights:
-1. Name specific files, patterns, and commits that demonstrate good practices
-2. Identify specific technical debt with file locations
-3. Highlight innovative approaches with concrete examples
-4. Extract learnings that can be applied to future development
-5. Connect insights to actual commit messages and code changes
-6. Analyze code graph relationships to identify architectural patterns and dependencies`;
+QUALITY RULES:
+- Each pattern/learning MUST have a \`codeExample\` with actual code in backticks
+- Names must be PascalCase and descriptive (NOT generic like "General" or "Various")
+- doRules/dontRules must be specific and actionable (NOT vague like "follow best practices")
+- Evidence must reference actual commits or files from the analysis
+- Minimum 3 patterns and 2 learnings required
+- Skip any insight that lacks concrete code examples or specific guidance`;
   }
 
   private parseInsightsFromLLMResponse(response: string): SemanticAnalysisResult['semanticInsights'] {
@@ -1405,6 +1447,19 @@ Focus on SPECIFIC, ACTIONABLE insights:
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
+
+        // Handle new structured format
+        if (parsed.patterns || parsed.learnings) {
+          return {
+            keyPatterns: this.convertStructuredPatterns(parsed.patterns || []),
+            architecturalDecisions: this.convertStructuredDecisions(parsed.architecturalDecisions || []),
+            technicalDebt: this.convertStructuredDebt(parsed.technicalDebt || []),
+            innovativeApproaches: parsed.innovativeApproaches || [],
+            learnings: this.convertStructuredLearnings(parsed.learnings || [])
+          };
+        }
+
+        // Legacy format fallback
         return {
           keyPatterns: parsed.keyPatterns || [],
           architecturalDecisions: parsed.architecturalDecisions || [],
@@ -1425,6 +1480,72 @@ Focus on SPECIFIC, ACTIONABLE insights:
       innovativeApproaches: this.extractPatternFromText(response, 'innovative|creative|novel'),
       learnings: this.extractPatternFromText(response, 'learning|insight|lesson')
     };
+  }
+
+  /**
+   * Convert structured pattern objects to rich observation strings
+   */
+  private convertStructuredPatterns(patterns: any[]): string[] {
+    return patterns
+      .filter(p => p.name && p.codeExample) // Must have name and code example
+      .map(p => {
+        const parts = [`${p.name}:`];
+        if (p.problem) parts.push(`Problem: ${p.problem}`);
+        if (p.solution) parts.push(`Solution: ${p.solution}`);
+        if (p.codeExample) parts.push(`Example: ${p.codeExample}`);
+        if (p.doRules?.length) parts.push(`DO: ${p.doRules.join('; ')}`);
+        if (p.dontRules?.length) parts.push(`DON'T: ${p.dontRules.join('; ')}`);
+        if (p.evidence?.length) parts.push(`Evidence: ${p.evidence.slice(0, 2).join(', ')}`);
+        return parts.join(' | ');
+      });
+  }
+
+  /**
+   * Convert structured decision objects to rich observation strings
+   */
+  private convertStructuredDecisions(decisions: any[]): string[] {
+    return decisions
+      .filter(d => d.name && (d.decision || d.rationale))
+      .map(d => {
+        const parts = [`${d.name}:`];
+        if (d.decision) parts.push(`Decision: ${d.decision}`);
+        if (d.rationale) parts.push(`Rationale: ${d.rationale}`);
+        if (d.codeExample) parts.push(`Example: ${d.codeExample}`);
+        if (d.tradeoffs?.length) parts.push(`Tradeoffs: ${d.tradeoffs.join('; ')}`);
+        if (d.evidence?.length) parts.push(`Evidence: ${d.evidence.slice(0, 2).join(', ')}`);
+        return parts.join(' | ');
+      });
+  }
+
+  /**
+   * Convert structured debt objects to rich observation strings
+   */
+  private convertStructuredDebt(debt: any[]): string[] {
+    return debt
+      .filter(d => d.name && d.issue)
+      .map(d => {
+        const parts = [`${d.name}:`];
+        if (d.issue) parts.push(`Issue: ${d.issue}`);
+        if (d.location) parts.push(`Location: ${d.location}`);
+        if (d.suggestedFix) parts.push(`Fix: ${d.suggestedFix}`);
+        if (d.priority) parts.push(`Priority: ${d.priority}`);
+        return parts.join(' | ');
+      });
+  }
+
+  /**
+   * Convert structured learning objects to rich observation strings
+   */
+  private convertStructuredLearnings(learnings: any[]): string[] {
+    return learnings
+      .filter(l => l.name && (l.insight || l.codeExample))
+      .map(l => {
+        const parts = [`${l.name}:`];
+        if (l.insight) parts.push(`Insight: ${l.insight}`);
+        if (l.codeExample) parts.push(`Example: ${l.codeExample}`);
+        if (l.applicability) parts.push(`When: ${l.applicability}`);
+        return parts.join(' | ');
+      });
   }
 
   private extractPatternFromText(text: string, pattern: string): string[] {

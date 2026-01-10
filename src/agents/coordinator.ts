@@ -2803,10 +2803,24 @@ export class CoordinatorAgent {
           });
           const stepEndTime = new Date();
           execution.results[step.name] = this.wrapWithTiming(stepResult || {}, stepStartTime, stepEndTime);
+
+          // Run phase-specific QA checkpoint after key steps
+          const qaCheckpoint = await this.runPhaseQACheckpoint(step.name, stepResult, execution);
+          const qaWarnings: string[] = [];
+          if (!qaCheckpoint.passed) {
+            log(`QA checkpoint failed for ${step.name}`, 'warning', {
+              score: qaCheckpoint.score,
+              issues: qaCheckpoint.issues.slice(0, 3),
+              shouldRetry: qaCheckpoint.shouldRetry
+            });
+            qaWarnings.push(...qaCheckpoint.issues.slice(0, 5));
+          }
+
           log(`Finalization step ${step.name} completed`, 'info', {
             resultType: typeof stepResult,
             resultKeys: stepResult ? Object.keys(stepResult) : [],
-            duration: `${stepEndTime.getTime() - stepStartTime.getTime()}ms`
+            duration: `${stepEndTime.getTime() - stepStartTime.getTime()}ms`,
+            qaScore: qaCheckpoint.score
           });
 
           // Record finalization step for workflow report
@@ -2821,7 +2835,7 @@ export class CoordinatorAgent {
             inputs: step.parameters || {},
             outputs: this.summarizeStepResult(stepResult),
             decisions: [],
-            warnings: [],
+            warnings: qaWarnings,
             errors: []
           });
         } catch (error) {
@@ -3372,6 +3386,119 @@ export class CoordinatorAgent {
     }
 
     return criticalFailures;
+  }
+
+  /**
+   * Run phase-specific QA checkpoint after a step completes.
+   * Returns issues that may trigger retries or block progression.
+   */
+  private async runPhaseQACheckpoint(
+    stepName: string,
+    stepResult: any,
+    execution: WorkflowExecution
+  ): Promise<{
+    passed: boolean;
+    score: number;
+    issues: string[];
+    recommendations: string[];
+    shouldRetry: boolean;
+  }> {
+    const qaAgent = this.agents.get('quality_assurance') as any;
+    if (!qaAgent) {
+      log('QA agent not available for phase checkpoint', 'warning');
+      return { passed: true, score: 100, issues: [], recommendations: [], shouldRetry: false };
+    }
+
+    let result = { passed: true, score: 100, issues: [] as string[], recommendations: [] as string[], shouldRetry: false };
+
+    // Phase-specific QA based on step name
+    switch (stepName) {
+      case 'semantic_analysis':
+      case 'analyze_semantics':
+        // Post-semantic analysis QA
+        if (stepResult && typeof qaAgent.validateSemanticOutputQuality === 'function') {
+          const validation = qaAgent.validateSemanticOutputQuality(stepResult);
+          result = {
+            passed: validation.passed,
+            score: validation.score,
+            issues: validation.issues,
+            recommendations: validation.recommendations,
+            shouldRetry: !validation.passed && validation.score >= 40 // Retry if fixable
+          };
+          log('Post-semantic QA checkpoint', 'info', {
+            step: stepName,
+            passed: result.passed,
+            score: result.score,
+            issueCount: result.issues.length
+          });
+        }
+        break;
+
+      case 'generate_observations':
+        // Post-observation generation QA
+        if (stepResult?.observations && typeof qaAgent.prePersistQualityGate === 'function') {
+          const gateResult = qaAgent.prePersistQualityGate(stepResult.observations);
+          result = {
+            passed: gateResult.summary.blocked === 0 || gateResult.summary.approved > gateResult.summary.blocked,
+            score: gateResult.summary.total > 0
+              ? Math.round((gateResult.summary.approved / gateResult.summary.total) * 100)
+              : 0,
+            issues: gateResult.blocked.map((b: { entity: { name: string }; reason: string }) => `${b.entity.name}: ${b.reason}`),
+            recommendations: gateResult.summary.blocked > 0
+              ? ['Improve LLM prompts for higher quality observations', 'Add more code references']
+              : [],
+            shouldRetry: gateResult.summary.blocked > gateResult.summary.approved
+          };
+          log('Post-observation QA checkpoint', 'info', {
+            step: stepName,
+            passed: result.passed,
+            approved: gateResult.summary.approved,
+            blocked: gateResult.summary.blocked
+          });
+
+          // Store filtered results back if we have any approved
+          if (gateResult.summary.approved > 0) {
+            execution.results[stepName] = {
+              ...stepResult,
+              observations: gateResult.approved,
+              _qaFiltered: {
+                blocked: gateResult.blocked.length,
+                approved: gateResult.approved.length
+              }
+            };
+          }
+        }
+        break;
+
+      case 'synthesize_code_insights':
+        // Post-code synthesis QA - check for meaningful insights
+        if (stepResult?.insights && typeof qaAgent.validateSemanticOutputQuality === 'function') {
+          const validation = qaAgent.validateSemanticOutputQuality({ semanticInsights: stepResult.insights });
+          result = {
+            passed: validation.passed,
+            score: validation.score,
+            issues: validation.issues,
+            recommendations: validation.recommendations,
+            shouldRetry: !validation.passed && validation.score >= 40
+          };
+          log('Post-synthesis QA checkpoint', 'info', {
+            step: stepName,
+            passed: result.passed,
+            score: result.score
+          });
+        }
+        break;
+    }
+
+    // Store QA checkpoint result for reporting
+    if (result.issues.length > 0) {
+      if (!execution.results._qaCheckpoints) {
+        execution.results._qaCheckpoints = {};
+      }
+      execution.results._qaCheckpoints[stepName] = result;
+    }
+
+    return result;
   }
 
   /**

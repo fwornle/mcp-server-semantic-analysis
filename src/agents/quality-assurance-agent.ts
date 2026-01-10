@@ -1336,6 +1336,266 @@ Respond with JSON only:
     };
   }
 
+  // ============================================================
+  // PHASE-SPECIFIC QA METHODS
+  // These methods provide quality checks at different workflow phases
+  // ============================================================
+
+  /**
+   * Phase: Post-Semantic Analysis
+   * Validates that semantic analysis output has quality indicators:
+   * - Code references (backticks, file paths)
+   * - DO/DON'T rules (actionable guidance)
+   * - Pattern names (not generic)
+   */
+  validateSemanticOutputQuality(semanticResult: any): {
+    passed: boolean;
+    score: number;
+    issues: string[];
+    recommendations: string[];
+  } {
+    const issues: string[] = [];
+    const recommendations: string[] = [];
+    let score = 100;
+
+    // Get all insights from the semantic analysis
+    const insights = semanticResult?.semanticInsights || {};
+    const allInsights = [
+      ...(insights.keyPatterns || []),
+      ...(insights.architecturalDecisions || []),
+      ...(insights.learnings || [])
+    ].filter(Boolean);
+
+    // Check 1: Are there enough insights?
+    if (allInsights.length < 3) {
+      issues.push(`Only ${allInsights.length} insights generated (minimum 3 expected)`);
+      score -= 20;
+      recommendations.push('Run semantic analysis with more git history or session data');
+    }
+
+    // Check 2: Do insights have code references?
+    const insightsWithCode = allInsights.filter((i: string) =>
+      /`[^`]+`/.test(i) || // Has backtick code
+      /\.(ts|js|tsx|jsx|py|java|go)/.test(i) || // Has file extension
+      /function|class|method|const|let|var|import|export/i.test(i) // Has code keywords
+    );
+    const codeRefRatio = allInsights.length > 0 ? insightsWithCode.length / allInsights.length : 0;
+    if (codeRefRatio < 0.5) {
+      issues.push(`Only ${Math.round(codeRefRatio * 100)}% of insights have code references (target: 50%+)`);
+      score -= 15;
+      recommendations.push('Improve LLM prompt to require code examples in insights');
+    }
+
+    // Check 3: Do insights have DO/DON'T rules?
+    const insightsWithRules = allInsights.filter((i: string) =>
+      /\bDO\b|DON'T|NEVER|ALWAYS|AVOID|USE\s+\w+\s+WHEN/i.test(i)
+    );
+    const rulesRatio = allInsights.length > 0 ? insightsWithRules.length / allInsights.length : 0;
+    if (rulesRatio < 0.3) {
+      issues.push(`Only ${Math.round(rulesRatio * 100)}% of insights have actionable rules (target: 30%+)`);
+      score -= 10;
+      recommendations.push('Insights should include DO/DON\'T guidance');
+    }
+
+    // Check 4: Are pattern names specific (not generic)?
+    const genericNames = allInsights.filter((i: string) =>
+      /^(General|Various|Multiple|Misc|Other|Unknown)/i.test(i) ||
+      /\(\d+\s*occurrences?\)/i.test(i)
+    );
+    if (genericNames.length > 0) {
+      issues.push(`${genericNames.length} insights have generic/garbage names`);
+      score -= genericNames.length * 5;
+      recommendations.push('Reject generic pattern names at source');
+    }
+
+    log('Semantic output quality validation', 'info', {
+      totalInsights: allInsights.length,
+      withCode: insightsWithCode.length,
+      withRules: insightsWithRules.length,
+      genericNames: genericNames.length,
+      score
+    });
+
+    return {
+      passed: score >= 60,
+      score: Math.max(0, score),
+      issues,
+      recommendations
+    };
+  }
+
+  /**
+   * Phase: Post-Observation Generation
+   * Validates observation meaningfulness using heuristics
+   */
+  validateObservationMeaningfulness(observation: string | { type: string; content: string }): {
+    meaningful: boolean;
+    score: number;
+    reason: string;
+  } {
+    const content = typeof observation === 'string' ? observation : observation.content;
+
+    // Use the garbage detection helper
+    const garbageResult = this.detectGarbageObservation(content);
+    if (garbageResult.isGarbage) {
+      return {
+        meaningful: false,
+        score: 0.1,
+        reason: garbageResult.reason
+      };
+    }
+
+    // Score based on quality indicators
+    let score = 0.5; // Base score
+
+    // Positive indicators
+    if (/`[^`]+`/.test(content)) score += 0.15; // Has code reference
+    if (/\bDO\b|DON'T|NEVER|ALWAYS/i.test(content)) score += 0.15; // Has actionable rule
+    if (/\.(ts|js|tsx|jsx|py|java|go):\d+/.test(content)) score += 0.1; // Has file:line reference
+    if (content.length > 200) score += 0.1; // Has substantial content
+
+    // Negative indicators
+    if (content.length < 50) score -= 0.2;
+    if (/pattern|insight|observation/i.test(content) && content.length < 100) score -= 0.1;
+
+    return {
+      meaningful: score >= 0.5,
+      score: Math.min(1, Math.max(0, score)),
+      reason: score >= 0.5 ? 'Observation has meaningful content' : 'Observation lacks substance'
+    };
+  }
+
+  /**
+   * Helper: Detect garbage patterns in a single observation
+   * Returns true if observation matches known garbage patterns
+   */
+  detectGarbageObservation(content: string): {
+    isGarbage: boolean;
+    reason: string;
+    pattern?: string;
+  } {
+    const garbagePatterns: Array<{ pattern: RegExp; reason: string }> = [
+      // Template/boilerplate patterns
+      { pattern: /^Insight derived from semantic analysis/i, reason: 'Hardcoded boilerplate' },
+      { pattern: /^Applies to similar.*projects/i, reason: 'Generic applicability statement' },
+      { pattern: /^Source: batch observation analysis/i, reason: 'Internal metadata exposed' },
+      { pattern: /^Entity type: (Unclassified|Pattern)/i, reason: 'Internal metadata exposed' },
+
+      // Keyword-only definitions
+      { pattern: /^[a-zA-Z_-]+:\s+.{0,40}$/i, reason: 'Keyword-only definition (too brief)' },
+
+      // Generic/meaningless patterns
+      { pattern: /^No (theme|pattern|data|insight)/i, reason: 'No-data placeholder' },
+      { pattern: /^\(No (theme|pattern)\)/i, reason: 'No-data placeholder' },
+      { pattern: /^General\s/i, reason: 'Generic observation' },
+      { pattern: /^Unknown/i, reason: 'Unknown placeholder' },
+      { pattern: /^Various/i, reason: 'Vague description' },
+      { pattern: /^Multiple/i, reason: 'Vague description' },
+      { pattern: /\(\d+\s*occurrences?\)/i, reason: 'Count-based description without substance' },
+
+      // Conversation fragments
+      { pattern: /you were just in the process/i, reason: 'Conversation fragment' },
+      { pattern: /I cannot see any/i, reason: 'Conversation fragment' },
+      { pattern: /I'll help you/i, reason: 'Conversation fragment' },
+
+      // Template-filled metadata
+      { pattern: /architectural decision involving \d+ files/i, reason: 'Template metadata' },
+      { pattern: /changes require careful coordination across \d+ files/i, reason: 'Template metadata' },
+      { pattern: /Pattern observed across \d+ instances/i, reason: 'Count without insight' },
+
+      // Over-generic patterns
+      { pattern: /demonstrates? (a |good )?practice/i, reason: 'Generic practice statement' },
+      { pattern: /indicates? (a |good )?practice/i, reason: 'Generic practice statement' },
+      { pattern: /Cross-source analysis reveals alignment/i, reason: 'Template correlation statement' },
+    ];
+
+    for (const { pattern, reason } of garbagePatterns) {
+      if (pattern.test(content)) {
+        return { isGarbage: true, reason, pattern: pattern.source };
+      }
+    }
+
+    // Length-based checks
+    if (content.trim().length < 30) {
+      return { isGarbage: true, reason: 'Too short to be meaningful' };
+    }
+
+    return { isGarbage: false, reason: 'Passed garbage detection' };
+  }
+
+  /**
+   * Phase: Pre-Persist
+   * Quality gate before persisting entities to knowledge base
+   * Returns entities that should be blocked from persistence
+   */
+  prePersistQualityGate(entities: Array<{
+    name: string;
+    entityType: string;
+    observations: Array<string | { type: string; content: string }>;
+  }>): {
+    approved: typeof entities;
+    blocked: Array<{ entity: typeof entities[0]; reason: string }>;
+    summary: { total: number; approved: number; blocked: number };
+  } {
+    const approved: typeof entities = [];
+    const blocked: Array<{ entity: typeof entities[0]; reason: string }> = [];
+
+    for (const entity of entities) {
+      // Check entity name quality
+      const isNameValid = this.isValidEntityName(entity.name);
+      if (!isNameValid) {
+        blocked.push({ entity, reason: `Invalid entity name: ${entity.name} does not meet naming standards` });
+        continue;
+      }
+
+      // Check observations quality
+      const observations = entity.observations.map(o =>
+        typeof o === 'string' ? o : o.content
+      ).filter(Boolean);
+
+      const meaningfulObs = observations.filter(obs => {
+        const result = this.validateObservationMeaningfulness(obs);
+        return result.meaningful;
+      });
+
+      // Require at least 50% meaningful observations
+      if (meaningfulObs.length < observations.length * 0.5) {
+        blocked.push({
+          entity,
+          reason: `Only ${meaningfulObs.length}/${observations.length} observations are meaningful`
+        });
+        continue;
+      }
+
+      // Require at least one observation with code reference
+      const hasCodeRef = observations.some(obs =>
+        /`[^`]+`/.test(obs) || /\.(ts|js|tsx|jsx|py|java|go)/.test(obs)
+      );
+      if (!hasCodeRef && observations.length > 0) {
+        blocked.push({ entity, reason: 'No observations have code references' });
+        continue;
+      }
+
+      approved.push(entity);
+    }
+
+    log('Pre-persist quality gate', 'info', {
+      total: entities.length,
+      approved: approved.length,
+      blocked: blocked.length
+    });
+
+    return {
+      approved,
+      blocked,
+      summary: {
+        total: entities.length,
+        approved: approved.length,
+        blocked: blocked.length
+      }
+    };
+  }
+
   private async validateInsightGeneration(result: any, errors: string[], warnings: string[]): Promise<void> {
     if (!result) {
       errors.push('Insight generation result is null or undefined');

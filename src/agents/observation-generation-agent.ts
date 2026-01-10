@@ -857,13 +857,113 @@ export class ObservationGenerationAgent {
     }
   }
 
+  /**
+   * Pre-validation: Check if insight input is meaningful before creating entity
+   * Rejects garbage inputs like keyword-only definitions, generic statements, etc.
+   */
+  private isValidInsightInput(insightText: string): { valid: boolean; reason?: string } {
+    // Reject empty or too short
+    if (!insightText || insightText.trim().length < 30) {
+      return { valid: false, reason: 'Too short to be meaningful insight' };
+    }
+
+    // Reject keyword-only definitions (e.g., "api: Handles external communication")
+    const keywordPattern = /^[a-zA-Z_-]+:\s+.{0,60}$/;
+    if (keywordPattern.test(insightText.trim())) {
+      return { valid: false, reason: 'Keyword-only definition, not a meaningful insight' };
+    }
+
+    // Reject generic/boilerplate patterns
+    const genericPatterns = [
+      /^General\s/i,
+      /^No (theme|pattern|data|insight)/i,
+      /\(\d+\s*occurrences?\)/i,
+      /^Semantic insight$/i,
+      /^Unknown/i,
+      /^Undefined/i,
+      /^Various/i,
+      /^Multiple/i,
+      /^Miscellaneous/i,
+    ];
+    for (const pattern of genericPatterns) {
+      if (pattern.test(insightText.trim())) {
+        return { valid: false, reason: `Matches generic pattern: ${pattern}` };
+      }
+    }
+
+    // Reject insights that are just listing concepts without substance
+    const wordCount = insightText.split(/\s+/).length;
+    if (wordCount < 8 && !insightText.includes('`') && !insightText.includes('()')) {
+      return { valid: false, reason: 'Too few words and no code references' };
+    }
+
+    // Require minimum substance: either 100+ chars or contains code refs
+    const hasCodeRef = /[`\(\)\.\/]|function|class|method|import|export|const|let|var/i.test(insightText);
+    if (insightText.length < 100 && !hasCodeRef) {
+      return { valid: false, reason: 'Insufficient substance (< 100 chars, no code references)' };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Generate a clean entity name, rejecting garbage inputs
+   */
+  private generateCleanEntityName(description: string): string | null {
+    // Reject garbage before generating name
+    const validation = this.isValidInsightInput(description);
+    if (!validation.valid) {
+      log('Rejected garbage input for entity name', 'debug', {
+        reason: validation.reason,
+        input: description.substring(0, 80)
+      });
+      return null;
+    }
+
+    // Extract meaningful words, skip common filler words
+    const fillerWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'this', 'that', 'these', 'those', 'it', 'its']);
+
+    const words = description
+      .replace(/[^a-zA-Z0-9\s]/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter(word => word.length > 2 && !fillerWords.has(word.toLowerCase()))
+      .slice(0, 4)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
+
+    if (words.length < 2) {
+      return null; // Not enough meaningful words
+    }
+
+    // Don't prefix with "SemanticInsight" - let ontology classify the type
+    return words.join('');
+  }
+
   private async createSemanticInsightObservation(
     insight: any,
     semanticAnalysis: any
   ): Promise<StructuredObservation | null> {
     try {
       const insightText = typeof insight === 'string' ? insight : insight.description || 'Semantic insight';
-      const entityName = this.generateEntityName('SemanticInsight', insightText);
+
+      // Phase 1.2: Pre-validate before creating entity
+      const validation = this.isValidInsightInput(insightText);
+      if (!validation.valid) {
+        log('Skipping garbage insight', 'debug', {
+          reason: validation.reason,
+          preview: insightText.substring(0, 100)
+        });
+        return null;
+      }
+
+      // Phase 1.3: Generate clean entity name (may return null for garbage)
+      const entityName = this.generateCleanEntityName(insightText);
+      if (!entityName) {
+        log('Could not generate meaningful entity name', 'debug', {
+          preview: insightText.substring(0, 100)
+        });
+        return null;
+      }
       const currentDate = new Date().toISOString();
 
       // ENHANCEMENT: Use LLM to extract deeper insights and categorization
@@ -897,36 +997,23 @@ Provide a JSON response with:
         log("LLM insight enhancement failed, using template-based approach", "warning", error);
       }
 
-      const observations: ObservationTemplate[] = [
-        {
+      // Only include observations with actual meaningful content - no hardcoded boilerplate
+      const observations: ObservationTemplate[] = [];
+
+      // Add learning observation only if we have meaningful content
+      const learningContent = enhancedInsights?.keyLearnings?.join('. ') || insightText;
+      if (learningContent && learningContent.length > 50) {
+        observations.push({
           type: 'learning',
-          content: enhancedInsights?.keyLearnings?.join('. ') || insightText,
+          content: learningContent,
           date: currentDate,
           metadata: {
             transferable: true,
             domain: enhancedInsights?.technicalDomain || 'semantic-analysis',
             confidence: enhancedInsights?.confidence || 0.7
           }
-        },
-        {
-          type: 'rationale',
-          content: 'Insight derived from semantic analysis of git and conversation history',
-          date: currentDate,
-          metadata: {
-            factors: ['semantic-analysis', 'pattern-recognition', 'cross-source'],
-            tradeoffs: ['comprehensive analysis', 'high confidence']
-          }
-        },
-        {
-          type: 'applicability',
-          content: enhancedInsights?.applicabilityScope || 'Applies to similar software development projects with rich commit and conversation history',
-          date: currentDate,
-          metadata: {
-            scope: enhancedInsights?.technicalDomain || 'software-development',
-            generalizability: 'high'
-          }
-        }
-      ];
+        });
+      }
 
       // Add actionable recommendations if available
       if (enhancedInsights?.actionableRecommendations) {

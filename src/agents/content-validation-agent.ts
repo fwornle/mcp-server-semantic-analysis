@@ -171,6 +171,11 @@ export class ContentValidationAgent {
   private parallelWorkers: number;
   private team: string;
 
+  // Cached git commits for batch validation (prevents re-fetching per entity)
+  private cachedGitCommits: any[] | null = null;
+  private cachedGitCommitsTimestamp: number = 0;
+  private static readonly GIT_CACHE_TTL_MS = 60000; // 1 minute cache TTL
+
   // Known patterns for reference extraction
   private filePathPatterns = [
     /`([^`]+\.[a-z]{2,4})`/gi,                          // `file.ts`
@@ -269,7 +274,8 @@ export class ContentValidationAgent {
    */
   async detectEntityGitStaleness(
     entity: { name: string; entityType?: string; observations?: any[]; metadata?: any },
-    team: string
+    team: string,
+    prefetchedCommits?: any[] // Optional pre-fetched commits to avoid per-entity git calls
   ): Promise<{
     isStale: boolean;
     correlations: CommitEntityCorrelation[];
@@ -295,41 +301,45 @@ export class ContentValidationAgent {
     }
 
     try {
-      // Get entity's last_updated timestamp
-      const entityLastUpdated = entity.metadata?.last_updated
-        ? new Date(entity.metadata.last_updated)
-        : null;
+      let commits: any[];
 
-      if (!entityLastUpdated) {
-        log(`Entity has no last_updated timestamp, treating as potentially stale`, 'debug', {
-          entityName: entity.name
+      // Use pre-fetched commits if provided (batch optimization)
+      if (prefetchedCommits && prefetchedCommits.length > 0) {
+        commits = prefetchedCommits;
+        log(`Using ${commits.length} pre-fetched commits for entity`, 'debug', { entityName: entity.name });
+      } else {
+        // Fallback: fetch commits for this specific entity
+        // Get entity's last modification timestamp
+        const lastModTime = entity.metadata?.last_updated
+          ? new Date(entity.metadata.last_updated)
+          : null;
+
+        if (!lastModTime) {
+          log(`Entity has no last_updated timestamp, treating as potentially stale`, 'debug', {
+            entityName: entity.name
+          });
+        }
+
+        // Get commits since entity was last modified (or last 30 days if no timestamp)
+        const sinceDate = lastModTime || new Date(Date.now() - this.stalenessThresholdDays * 24 * 60 * 60 * 1000);
+
+        // Use analyzeGitHistory to get commits - returns full analysis including commits array
+        const analysisResult = await this.gitHistoryAgent.analyzeGitHistory({
+          fromTimestamp: sinceDate.toISOString(),
+          checkpoint_enabled: false // Don't use checkpoints for staleness detection
         });
-        // If no timestamp, check recent commits (last 30 days by default)
-        const sinceDate = new Date();
-        sinceDate.setDate(sinceDate.getDate() - this.stalenessThresholdDays);
+        commits = analysisResult.commits;
       }
 
-      // Get commits since entity was last updated (or last 30 days if no timestamp)
-      const sinceDate = entityLastUpdated || new Date(Date.now() - this.stalenessThresholdDays * 24 * 60 * 60 * 1000);
-
-      // Use analyzeGitHistory to get commits - returns full analysis including commits array
-      const analysisResult = await this.gitHistoryAgent.analyzeGitHistory({
-        fromTimestamp: sinceDate.toISOString(),
-        checkpoint_enabled: false // Don't use checkpoints for staleness detection
-      });
-      const commits = analysisResult.commits;
-
       if (commits.length === 0) {
-        log(`No commits since entity last updated`, 'debug', {
-          entityName: entity.name,
-          lastUpdated: entityLastUpdated?.toISOString()
+        log(`No commits found for staleness check`, 'debug', {
+          entityName: entity.name
         });
         return result;
       }
 
       log(`Checking ${commits.length} commits against entity`, 'debug', {
-        entityName: entity.name,
-        sinceDate: sinceDate.toISOString()
+        entityName: entity.name
       });
 
       // Convert entity format for GitStalenessDetector
@@ -422,18 +432,44 @@ export class ContentValidationAgent {
         log(`Checking ${entities.length} entities for staleness via git-based detection`, 'info');
       }
 
-      // Process entities in batches with event loop yields to prevent blocking
-      const BATCH_SIZE = 10;
-      let processedCount = 0;
       const team = this.team;
 
-      for (const entity of entities) {
-        // Yield to event loop every BATCH_SIZE entities to prevent blocking
-        if (processedCount > 0 && processedCount % BATCH_SIZE === 0) {
-          await new Promise(resolve => setImmediate(resolve));
+      // OPTIMIZATION: Pre-fetch git commits ONCE for all entities (major performance improvement)
+      let prefetchedCommits: any[] = [];
+      if (this.useGitBasedDetection) {
+        // Initialize git history agent if not already done
+        if (!this.gitHistoryAgent) {
+          this.gitHistoryAgent = new GitHistoryAgent(this.repositoryPath);
         }
-        processedCount++;
 
+        const sinceDate = new Date(Date.now() - this.stalenessThresholdDays * 24 * 60 * 60 * 1000);
+        log(`Pre-fetching git commits since ${sinceDate.toISOString()} for batch validation`, 'info');
+
+        try {
+          const analysisResult = await this.gitHistoryAgent.analyzeGitHistory({
+            fromTimestamp: sinceDate.toISOString(),
+            checkpoint_enabled: false
+          });
+          prefetchedCommits = analysisResult.commits || [];
+          log(`Pre-fetched ${prefetchedCommits.length} commits for batch staleness detection`, 'info');
+        } catch (error) {
+          log(`Failed to pre-fetch git commits, will fetch per-entity`, 'warning', error);
+        }
+      }
+
+      // OPTIMIZATION: Process entities in parallel batches (instead of sequential)
+      const PARALLEL_BATCH_SIZE = 10; // Process 10 entities concurrently
+      const validationResults: Array<{
+        entity: any;
+        entityName: string;
+        entityType: string;
+        issues: ValidationIssue[];
+        staleness: 'critical' | 'moderate' | 'low';
+        score: number;
+      }> = [];
+
+      // Helper function to validate a single entity
+      const validateEntity = async (entity: any) => {
         const entityName = entity.name || entity.id || 'Unknown';
         const entityType = entity.type || entity.entityType || 'Unknown';
         const observations = entity.observations || [];
@@ -442,12 +478,11 @@ export class ContentValidationAgent {
         let staleness: 'critical' | 'moderate' | 'low' = 'low';
         let score = 100;
 
-        // Use git-based staleness detection (primary mechanism)
+        // Use git-based staleness detection with pre-fetched commits
         if (this.useGitBasedDetection) {
-          const gitStaleness = await this.detectEntityGitStaleness(entity, team);
+          const gitStaleness = await this.detectEntityGitStaleness(entity, team, prefetchedCommits);
 
           if (gitStaleness.isStale) {
-            // Determine staleness severity based on score
             if (gitStaleness.stalenessScore < 40) {
               staleness = 'critical';
             } else if (gitStaleness.stalenessScore < 70) {
@@ -455,7 +490,6 @@ export class ContentValidationAgent {
             }
             score = gitStaleness.stalenessScore;
 
-            // Add issues from git-based detection
             for (const correlation of gitStaleness.correlations) {
               issues.push({
                 type: staleness === 'critical' ? 'error' : 'warning',
@@ -468,7 +502,7 @@ export class ContentValidationAgent {
           }
         }
 
-        // Also validate file references in observations (still useful regardless of git-based detection)
+        // Validate file references in observations (synchronous file existence checks)
         for (const observation of observations) {
           const obsText = typeof observation === 'string' ? observation : observation.content || '';
           const fileRefs = this.extractFileReferences(obsText);
@@ -487,7 +521,23 @@ export class ContentValidationAgent {
           }
         }
 
-        // Add to stale entities if issues found
+        return { entity, entityName, entityType, issues, staleness, score };
+      };
+
+      // Process entities in parallel batches
+      for (let i = 0; i < entities.length; i += PARALLEL_BATCH_SIZE) {
+        const batch = entities.slice(i, i + PARALLEL_BATCH_SIZE);
+        const batchNum = Math.floor(i / PARALLEL_BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(entities.length / PARALLEL_BATCH_SIZE);
+
+        log(`Processing validation batch ${batchNum}/${totalBatches} (${batch.length} entities in parallel)`, 'debug');
+
+        const batchResults = await Promise.all(batch.map(validateEntity));
+        validationResults.push(...batchResults);
+      }
+
+      // Aggregate results from parallel validation
+      for (const { entity, entityName, entityType, issues, staleness, score } of validationResults) {
         if (issues.length > 0) {
           result.staleEntitiesFound++;
           if (staleness === 'critical') {

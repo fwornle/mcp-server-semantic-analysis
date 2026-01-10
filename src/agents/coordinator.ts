@@ -206,7 +206,8 @@ export class CoordinatorAgent {
 
         const timing = result?._timing as { duration?: number } | undefined;
         const llmMetrics = result?._llmMetrics as { totalCalls?: number; totalTokens?: number; providers?: string[] } | undefined;
-        const hasError = result?.error && Object.keys(result).filter(k => !k.startsWith('_')).length === 1;
+        // Check for error - either explicit error field OR timeout indicator
+        const hasError = !!(result?.error || result?.timeout || (typeof result === 'object' && result !== null && 'error' in result));
 
         stepsDetail.push({
           name: stepName,

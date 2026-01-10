@@ -687,33 +687,49 @@ export class ContentValidationAgent {
       result.totalEntities = entities.length;
       const entitiesToValidate = entities.slice(0, maxEntities);
 
-      for (let i = 0; i < entitiesToValidate.length; i++) {
-        const entity = entitiesToValidate[i];
-        // Handle different field names from GraphDatabaseService (entity_name) vs normalized (name)
-        const entityName = entity.name || entity.entityName || entity.entity_name;
+      // Process entities in parallel batches with controlled concurrency
+      // Use parallelWorkers setting (default 1, max 20) for concurrent validation
+      const concurrencyLimit = Math.max(this.parallelWorkers, 3); // At least 3 for efficiency
 
-        // Yield to event loop to prevent blocking
-        if (i > 0 && i % 5 === 0) {
-          await new Promise(resolve => setImmediate(resolve));
-        }
+      for (let i = 0; i < entitiesToValidate.length; i += concurrencyLimit) {
+        const batch = entitiesToValidate.slice(i, i + concurrencyLimit);
 
-        if (options?.progressCallback) {
-          options.progressCallback(i + 1, entitiesToValidate.length, entityName);
-        }
+        // Process batch in parallel
+        const batchResults = await Promise.all(
+          batch.map(async (entity, batchIndex) => {
+            const entityName = entity.name || entity.entityName || entity.entity_name;
+            const globalIndex = i + batchIndex;
 
-        try {
-          const report = await this.validateEntityAccuracy(entityName, team);
-          result.validatedEntities++;
+            if (options?.progressCallback) {
+              options.progressCallback(globalIndex + 1, entitiesToValidate.length, entityName);
+            }
 
-          if (!report.overallValid) {
-            result.invalidEntities++;
-            result.reports.push(report);
-          } else if (!skipHealthy) {
-            result.reports.push(report);
+            try {
+              const report = await this.validateEntityAccuracy(entityName, team);
+              return { success: true, report, entityName };
+            } catch (error) {
+              log(`Error validating entity ${entityName}`, "error", error);
+              return { success: false, report: null, entityName };
+            }
+          })
+        );
+
+        // Aggregate batch results
+        for (const { success, report } of batchResults) {
+          if (success && report) {
+            result.validatedEntities++;
+            if (!report.overallValid) {
+              result.invalidEntities++;
+              result.reports.push(report);
+            } else if (!skipHealthy) {
+              result.reports.push(report);
+            }
           }
-        } catch (error) {
-          log(`Error validating entity ${entityName}`, "error", error);
         }
+
+        // Log progress for batches
+        const processed = Math.min(i + concurrencyLimit, entitiesToValidate.length);
+        log(`Validated ${processed}/${entitiesToValidate.length} entities for team ${team}`, "debug");
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);

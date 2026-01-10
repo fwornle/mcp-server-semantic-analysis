@@ -332,6 +332,7 @@ steps:
 
   # PHASE F2b: Code Graph RAG - LLM Synthesis
   # Generate insights about current codebase structure
+  # NOTE: Now parallelized with 5 concurrent LLM calls, so 30 entities ≈ 6 batches × ~30s = ~3 min
   - name: synthesize_code_insights
     agent: code_graph
     action: synthesizeInsights
@@ -339,8 +340,8 @@ steps:
     parameters:
       target_entities: ["Class", "Function"]
       depth: "full"
-      limit: 30
-    timeout: 300
+      limit: 30  # 30 entities in ~6 batches of 5 concurrent calls
+    timeout: 300  # 5 minutes (parallelized processing is ~5x faster)
     dependencies:
       - index_codebase
     phase: finalization
@@ -452,14 +453,15 @@ steps:
     phase: finalization
 
   # PHASE 8: Content Validation
+  # NOTE: Now parallelized with 3+ concurrent validation calls per team
   - name: final_validation
     agent: content_validation
     action: validateAllEntities
     parameters:
       deduplicated_results: "{{final_dedup.result}}"
-      maxEntitiesPerProject: 50  # Limit to prevent timeout on large KBs
+      maxEntitiesPerProject: 50  # 50 entities per project with parallel validation
       skipHealthyEntities: true  # Only report problematic entities
-    timeout: 300  # 5 minutes (increased from 120s for large KBs)
+    timeout: 300  # 5 minutes (parallelized processing is ~3x faster)
     dependencies:
       - final_dedup
     phase: finalization

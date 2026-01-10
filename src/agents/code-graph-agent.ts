@@ -1116,13 +1116,13 @@ export class CodeGraphAgent {
     // Initialize SemanticAnalyzer for LLM-powered synthesis
     const semanticAnalyzer = new SemanticAnalyzer();
 
-    // Synthesize insights for each entity
-    for (const entity of entities) {
+    // Process a single entity (used for parallel execution)
+    const processEntity = async (entity: any): Promise<SynthesisResult> => {
       const qualifiedName = entity.qualifiedName || entity.name;
       const entityType = entity.entityType || 'Unknown';
 
       try {
-        // Get relationships for this entity
+        // Get relationships for this entity (parallel Cypher queries)
         const [callsResult, calledByResult, inheritsResult, containsResult] = await Promise.all([
           this.runCypherQuery(`
             MATCH (n)-[:CALLS]->(target)
@@ -1189,14 +1189,14 @@ ISSUES: [comma-separated list of potential risks or concerns, or "None identifie
         synthesis.dependencies = calls;
         synthesis.dependents = calledBy;
         synthesis.components = contains.length > 0 ? contains : synthesis.components;
-        results.push(synthesis);
 
         log(`[CodeGraphAgent] Synthesized insights for ${qualifiedName}`, 'debug');
+        return synthesis;
 
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         log(`[CodeGraphAgent] Synthesis failed for ${qualifiedName}: ${errorMsg}`, 'warning');
-        results.push({
+        return {
           entityName: qualifiedName,
           entityType,
           purpose: 'Synthesis failed',
@@ -1209,8 +1209,18 @@ ISSUES: [comma-separated list of potential risks or concerns, or "None identifie
           documentation: '',
           success: false,
           errorMessage: errorMsg
-        });
+        };
       }
+    };
+
+    // Process entities in parallel batches with controlled concurrency
+    // Limit to 5 concurrent LLM calls to avoid overwhelming the API
+    const CONCURRENCY_LIMIT = 5;
+    for (let i = 0; i < entities.length; i += CONCURRENCY_LIMIT) {
+      const batch = entities.slice(i, i + CONCURRENCY_LIMIT);
+      const batchResults = await Promise.all(batch.map(processEntity));
+      results.push(...batchResults);
+      log(`[CodeGraphAgent] Processed batch ${Math.floor(i / CONCURRENCY_LIMIT) + 1}/${Math.ceil(entities.length / CONCURRENCY_LIMIT)} (${results.length}/${entities.length} entities)`, 'info');
     }
 
     log(`[CodeGraphAgent] Completed synthesis for ${results.length} entities`, 'info');

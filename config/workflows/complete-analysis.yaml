@@ -43,13 +43,15 @@ steps:
     dependencies: []
 
   # PHASE 1.5: LLM-powered Code Synthesis (depends on index)
+  # NOTE: Now parallelized with 5 concurrent LLM calls, so 20 entities ≈ 4 batches × ~30s = ~2 min
   - name: synthesize_code_insights
     agent: code_graph
     action: synthesizeInsights
     parameters:
       target_entities: ["Class", "Function"]
       depth: "full"
-    timeout: 300
+      limit: 20  # 20 entities in ~4 batches of 5 concurrent calls
+    timeout: 300  # 5 minutes (parallelized processing is ~5x faster)
     dependencies:
       - index_codebase
 
@@ -175,12 +177,15 @@ steps:
     dependencies:
       - persist_results
 
+  # Content validation now parallelized with 3+ concurrent validation calls
   - name: validate_content
     agent: content_validation
     action: validateAllEntities
     parameters:
       deduplicated_results: "{{deduplicate_insights.result}}"
-    timeout: 120
+      maxEntitiesPerProject: 50
+      skipHealthyEntities: true
+    timeout: 300  # 5 minutes (parallelized processing)
     dependencies:
       - deduplicate_insights
 

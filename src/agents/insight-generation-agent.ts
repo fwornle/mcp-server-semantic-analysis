@@ -4037,62 +4037,80 @@ Significance: [1-10]`;
 
   /**
    * Extract patterns from accumulated observations generated during batch processing.
-   * Observations contain high-level insights extracted from commit/session analysis.
+   * Observations are already structured as pattern-like entities with name, entityType, significance, and nested observations.
    */
   private extractPatternsFromObservations(observations: any[]): IdentifiedPattern[] {
     const patterns: IdentifiedPattern[] = [];
-    const categoryGroups: Record<string, any[]> = {};
 
-    // Group observations by category
     for (const obs of observations) {
-      const category = obs.category || obs.type || 'general';
-      if (!categoryGroups[category]) {
-        categoryGroups[category] = [];
+      // Skip observations without a name
+      if (!obs.name) continue;
+
+      // Get significance (default to 5 if not present)
+      const significance = obs.significance || 5;
+
+      // Skip low-significance observations (< 5)
+      if (significance < 5) continue;
+
+      // Extract evidence from nested observations array
+      const evidence: string[] = [];
+      if (obs.observations && Array.isArray(obs.observations)) {
+        for (const nested of obs.observations) {
+          if (typeof nested === 'string') {
+            evidence.push(nested);
+          } else if (nested.content) {
+            evidence.push(nested.content);
+          }
+        }
       }
-      categoryGroups[category].push(obs);
+
+      // Map entityType to pattern category
+      const category = this.mapEntityTypeToCategory(obs.entityType || 'Unclassified');
+
+      // Create pattern from observation entity
+      patterns.push({
+        name: obs.name,
+        category,
+        description: evidence.length > 0 ? evidence.slice(0, 3).join('; ') : `Pattern with significance ${significance}`,
+        significance,
+        evidence: evidence.slice(0, 5),
+        relatedComponents: this.extractRelatedFromObservation(obs),
+        implementation: {
+          language: 'auto-detected',
+          usageNotes: [`Source: batch observation analysis`, `Entity type: ${obs.entityType || 'Unclassified'}`]
+        }
+      });
     }
 
-    // Create patterns from observation groups
-    for (const [category, categoryObs] of Object.entries(categoryGroups)) {
-      // If there are multiple observations in a category, it indicates a pattern
-      if (categoryObs.length >= 2) {
-        const significance = Math.min(9, 5 + Math.floor(categoryObs.length / 2));
-        patterns.push({
-          name: `${this.capitalizeCategory(category)} Pattern (${categoryObs.length} occurrences)`,
-          category: this.mapObservationCategoryToPatternCategory(category),
-          description: this.summarizeObservations(categoryObs),
-          significance,
-          evidence: categoryObs.slice(0, 5).map(o => o.content || o.observation || JSON.stringify(o).substring(0, 100)),
-          relatedComponents: this.extractComponentsFromObservations(categoryObs),
-          implementation: {
-            language: 'auto-detected',
-            usageNotes: [`Observed across ${categoryObs.length} instances`]
-          }
-        });
-      }
+    log(`Extracted ${patterns.length} patterns from ${observations.length} observation entities`, 'info');
+    return patterns;
+  }
 
-      // Also create individual patterns for high-significance observations
-      for (const obs of categoryObs) {
-        const obsSignificance = obs.significance || obs.score || 5;
-        if (obsSignificance >= 6) {
-          patterns.push({
-            name: obs.title || obs.name || `${this.capitalizeCategory(category)} Insight`,
-            category: this.mapObservationCategoryToPatternCategory(category),
-            description: obs.content || obs.observation || obs.description || 'High-significance observation',
-            significance: obsSignificance,
-            evidence: obs.evidence || [obs.source || 'batch analysis'],
-            relatedComponents: obs.components || obs.entities || [],
-            implementation: {
-              language: 'auto-detected',
-              usageNotes: obs.recommendations || []
-            }
-          });
+  private mapEntityTypeToCategory(entityType: string): string {
+    const typeMap: Record<string, string> = {
+      'Pattern': 'architectural',
+      'ArchitecturalPattern': 'architectural',
+      'CodePattern': 'CodeStructure',
+      'Workflow': 'Workflow',
+      'Documentation': 'Documentation',
+      'Testing': 'Testing',
+      'Security': 'Security',
+      'Performance': 'Performance',
+      'Unclassified': 'general'
+    };
+    return typeMap[entityType] || 'general';
+  }
+
+  private extractRelatedFromObservation(obs: any): string[] {
+    const related: string[] = [];
+    if (obs.relationships && Array.isArray(obs.relationships)) {
+      for (const rel of obs.relationships) {
+        if (rel.to && rel.to !== obs.name) {
+          related.push(rel.to);
         }
       }
     }
-
-    log(`Extracted ${patterns.length} patterns from ${observations.length} observations across ${Object.keys(categoryGroups).length} categories`, 'info');
-    return patterns;
+    return related.slice(0, 10);
   }
 
   private capitalizeCategory(category: string): string {

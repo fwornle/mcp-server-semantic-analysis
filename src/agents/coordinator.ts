@@ -2097,7 +2097,7 @@ export class CoordinatorAgent {
               const enrichedGitAnalysis = {
                 ...gitAnalysis,
                 architecturalDecisions: (semanticResult?.codeAnalysis?.architecturalPatterns || []).map((p: any) => ({
-                  type: p.name || 'Pattern',
+                  type: p.name || 'ArchitecturalDecision',
                   description: p.description || '',
                   files: p.files || [],
                   impact: p.confidence > 0.7 ? 'high' : p.confidence > 0.4 ? 'medium' : 'low',

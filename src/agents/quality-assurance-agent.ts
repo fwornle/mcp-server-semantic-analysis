@@ -1131,16 +1131,20 @@ Respond with a JSON object:
     // Check for generic "SomethingPattern" without specificity (just adding "Pattern" to a word)
     const isSimplePatternName = /^[A-Z][a-z]+Pattern$/.test(entity.name);  // e.g., "ConfigurationPattern"
 
-    // NEW: Check for garbage entity names with broken camelCase (too many concatenated words without proper casing)
-    // e.g., "CrossanalysisGitvibecorrelationPattern" - has lowercase run-on words
+    // Check for garbage entity names with broken patterns
     const hasGarbageName = (name: string): boolean => {
       // Check for lowercase run-ons like "analysisGitvibe" (should be "AnalysisGitVibe")
       if (/[a-z]{3,}[A-Z][a-z]+[a-z]{3,}[A-Z]/.test(name)) return true;
       // Check for 5+ capitalized word segments concatenated (over-compounded names)
       const segments = name.match(/[A-Z][a-z]+/g) || [];
       if (segments.length >= 5) return true;
-      // Check for "Crossanalysis" pattern (incorrectly cased compound words)
-      if (/Crossanalysis|Gitanalysis|Vibeanalysis|Semanticinsight/i.test(name)) return true;
+      // Check for incorrectly cased compound words like "Semanticinsight" (should be "SemanticInsight")
+      if (/Crossanalysis|Gitanalysis|Vibeanalysis|Semanticinsight|Codeevolution|Problemsolution/i.test(name)) return true;
+      // Check for meaningless "GeneralPattern" or names with parentheses (e.g., "GeneralPattern(182occurrences)")
+      if (/^General(Pattern)?(\(|$)/i.test(name)) return true;
+      if (/\(.*occurrences?\)/i.test(name)) return true;
+      // Check for "Pattern" appearing twice in the name (e.g., "GeneralPattern...Pattern")
+      if ((name.match(/Pattern/gi) || []).length >= 2) return true;
       return false;
     };
 
@@ -1155,7 +1159,7 @@ Respond with a JSON object:
       ? observationContents.reduce((sum, o) => sum + o.length, 0) / observationContents.length
       : 0;
 
-    // NEW: Check for garbage observation patterns (template-filled nonsense)
+    // Check for garbage observation patterns (template-filled nonsense without actionable insights)
     const garbageObservationPatterns = [
       /\(No theme\)/i,
       /\(No pattern\)/i,
@@ -1165,6 +1169,16 @@ Respond with a JSON object:
       /Pattern applicable to projects with active development/i,
       /demonstrates? (a |good )?practice/i,  // Generic "demonstrates good practice" template
       /indicates? (a |good )?practice/i,
+      // NEW: Template-filled metadata observations that lack actionable insights
+      /architectural decision involving \d+ files with (high|medium|low) impact/i,
+      /changes require careful coordination across \d+ files/i,
+      /\(commit: [a-f0-9]{7,}\)/i,  // Just referencing commit hashes without explanation
+      /Files: \d+, Impact: (high|medium|low)/i,  // Pure metadata, no insight
+      /Insight derived from semantic analysis/i,  // Meta-commentary about how it was derived
+      /Applies to similar.*projects/i,  // Generic applicability statement
+      /Source: batch observation analysis/i,  // Internal metadata exposed as observation
+      /Entity type: (Unclassified|Pattern)/i,  // Internal type exposed as observation
+      /Pattern observed across \d+ instances/i,  // Meaningless count-based description
     ];
 
     const hasGarbageObservations = observationContents.some(obs =>

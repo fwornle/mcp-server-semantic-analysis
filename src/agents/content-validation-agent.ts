@@ -2571,7 +2571,8 @@ Respond with a JSON array:
     };
 
     // Use protected type if available, otherwise fall back to entity's type
-    const entityType = PROTECTED_ENTITY_TYPES[entityName] || entity.entityType || entity.type || 'Pattern';
+    // Default to 'Unclassified' instead of 'Pattern' - let ontology classify properly
+    const entityType = PROTECTED_ENTITY_TYPES[entityName] || entity.entityType || entity.type || 'Unclassified';
 
     const context: {
       git_analysis: any;
@@ -2622,12 +2623,13 @@ Respond with a JSON array:
           significance: 7
         }));
 
-      // If no patterns found, create a general pattern from entity info
-      if (context.patterns.length === 0) {
+      // If no patterns found, create context entry from entity info
+      // Don't create generic "Pattern" entries - let ontology classify properly
+      if (context.patterns.length === 0 && entity.entityType && entity.entityType !== 'Unclassified') {
         context.patterns.push({
           name: entityName,
-          description: `${entity.entityType || 'Pattern'} for ${entityName}: ${newObservations.slice(0, 3).map(o => o.content).join('. ')}`,
-          type: entity.entityType || 'general',
+          description: `${entity.entityType} - ${entityName}: ${newObservations.slice(0, 3).map(o => o.content).join('. ')}`,
+          type: entity.entityType,
           significance: 6
         });
       }

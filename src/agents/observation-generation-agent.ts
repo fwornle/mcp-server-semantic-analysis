@@ -1217,18 +1217,23 @@ Provide a JSON response with:
 
   // Helper methods
   private generateEntityName(type: string, description: string): string {
-    // Create a clean, CamelCase entity name that matches existing patterns
+    // Create a clean, PascalCase entity name - DO NOT force "Pattern" suffix
+    // Entity types are determined by ontology classification, not naming convention
     const cleaned = description
       .replace(/[^a-zA-Z0-9\s]/g, '')
       .trim()
       .split(/\s+/)
-      .slice(0, 3) // Max 3 words to keep it concise
+      .slice(0, 4) // Max 4 words for descriptive names
       .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join('');
 
-    // Combine type and cleaned description
-    const typeCapitalized = type.charAt(0).toUpperCase() + type.slice(1).toLowerCase();
-    return `${typeCapitalized}${cleaned}Pattern`;
+    // Preserve original type casing (e.g., "SemanticInsight" stays "SemanticInsight")
+    // Only capitalize first letter if not already PascalCase
+    const typeFormatted = /^[A-Z]/.test(type) ? type : type.charAt(0).toUpperCase() + type.slice(1);
+
+    // Combine type and description WITHOUT forcing "Pattern" suffix
+    // The entity type (Pattern, Workflow, Evolution, etc.) is determined by ontology classification
+    return `${typeFormatted}${cleaned}`;
   }
 
   private calculateSignificance(impact: string, fileCount: number): number {

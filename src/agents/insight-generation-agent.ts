@@ -1377,20 +1377,19 @@ Best practices, rules, and conventions for using this correctly. What should dev
         'Raw pattern name input'
       );
 
-      // Use actual pattern name directly (no hard-coded fallbacks)
-      // Remove spaces and ensure proper casing
+      // Use actual pattern/entity name directly - DO NOT force "Pattern" suffix
+      // Entity types (Pattern, Workflow, Evolution, etc.) are determined by content/ontology
+      // Remove spaces and ensure proper PascalCase
       filename = topPattern.name.replace(/\s+/g, '');
 
-      // Ensure it ends with 'Pattern' if not already present
-      if (!filename.endsWith('Pattern') && !filename.endsWith('Implementation')) {
-        filename += 'Pattern';
-      }
+      // DO NOT append "Pattern" - the entity type is determined by ontology classification
+      // Names like "ApiRouting", "ReduxStateManagement", "AuthenticationFlow" are valid
 
       FilenameTracer.trace('PATTERN_NAME_USED', 'generateMeaningfulNameAndTitle',
         topPattern.name, filename
       );
     } else {
-      filename = 'SemanticAnalysisPattern';
+      filename = 'SemanticAnalysisInsight';
       FilenameTracer.trace('FALLBACK', 'generateMeaningfulNameAndTitle',
         'NO_PATTERN', filename
       );
@@ -2195,7 +2194,7 @@ Return the fixed PlantUML code now:`;
       }).join('\n');
 
       analysisContext = `**Entity:** ${entityInfo.name}
-**Type:** ${entityInfo.type || 'Pattern'}
+**Type:** ${entityInfo.type || 'Unclassified'}
 
 **Observations (use these to understand the architecture):**
 ${observationsText}`;
@@ -2646,7 +2645,7 @@ end note
     const patterns = data.patternCatalog?.patterns || [];
     const gitCommits = data.gitAnalysis?.commits?.length || 0;
     const topPattern = patterns.sort((a: any, b: any) => b.significance - a.significance)[0];
-    const patternType = topPattern?.category || 'Pattern';
+    const patternType = topPattern?.category || 'Implementation';
     
     // Generate meaningful use cases based on actual analysis data
     const useCases = [];
@@ -2709,7 +2708,7 @@ actor "Team Lead" as Lead
 actor "Architect" as Architect
 actor "QA Engineer" as QA
 
-package "${topPattern?.name || 'Pattern'} Implementation" {
+package "${topPattern?.name || 'System'} Implementation" {
 ${useCases.join('\n')}
 }
 
@@ -2718,7 +2717,7 @@ ${actorConnections.join('\n')}
 ${relationships.join('\n')}
 
 note top of UC1
-  Pattern: ${topPattern?.name || 'Repository Pattern'}
+  Entity: ${topPattern?.name || 'Architecture'}
   Significance: ${topPattern?.significance || 'N/A'}/10
   Category: ${topPattern?.category || 'Design'}
   Files Analyzed: ${gitCommits}
@@ -4142,7 +4141,9 @@ Significance: [1-10]`;
       .slice(0, 3);
 
     if (contents.length === 0) {
-      return `Pattern observed across ${observations.length} instances`;
+      // Return empty instead of generic "Pattern observed" - let caller handle missing data
+      // This prevents creating garbage insight documents from empty observations
+      return '';
     }
 
     return contents.join('; ').substring(0, 300);

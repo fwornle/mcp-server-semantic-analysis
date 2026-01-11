@@ -749,32 +749,86 @@ Best practices, rules, and conventions for using this correctly. What should dev
 
       const insightDocuments: InsightDocument[] = [];
 
-      if (significantPatterns.length >= 1 && significantPatterns.length <= 5) {
-        // PERFORMANCE OPTIMIZATION: Generate insights in parallel instead of sequentially
-        log(`Generating separate insights for ${significantPatterns.length} significant patterns (≥3 significance) IN PARALLEL`, 'info');
-        
-        // Create insight generation tasks for parallel execution
-        const insightTasks = significantPatterns.map(pattern => {
-          const singlePatternCatalog: PatternCatalog = {
-            patterns: [pattern],
-            summary: {
-              totalPatterns: 1,
-              byCategory: { [pattern.category]: 1 },
-              avgSignificance: pattern.significance,
-              topPatterns: [pattern.name]
+      // FIX: Generate insights for ALL significant patterns, not just 1-5
+      // When there are many patterns, generate individual insights for top N by significance
+      // and group remaining into thematic clusters
+      const MAX_INDIVIDUAL_INSIGHTS = 20; // Top patterns get individual insight documents
+      const BATCH_SIZE = 10; // Process in batches to avoid overwhelming the system
+
+      if (significantPatterns.length > 0) {
+        // Sort by significance (already sorted) and take top N for individual insights
+        const topPatterns = significantPatterns.slice(0, MAX_INDIVIDUAL_INSIGHTS);
+        const remainingPatterns = significantPatterns.slice(MAX_INDIVIDUAL_INSIGHTS);
+
+        log(`Generating insights for ${topPatterns.length} top patterns (out of ${significantPatterns.length} significant) IN BATCHES of ${BATCH_SIZE}`, 'info');
+
+        // Process top patterns in batches to avoid memory/rate issues
+        for (let i = 0; i < topPatterns.length; i += BATCH_SIZE) {
+          const batch = topPatterns.slice(i, i + BATCH_SIZE);
+          log(`Processing insight batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(topPatterns.length / BATCH_SIZE)} (${batch.length} patterns)`, 'info');
+
+          const insightTasks = batch.map(pattern => {
+            const singlePatternCatalog: PatternCatalog = {
+              patterns: [pattern],
+              summary: {
+                totalPatterns: 1,
+                byCategory: { [pattern.category]: 1 },
+                avgSignificance: pattern.significance,
+                topPatterns: [pattern.name]
+              }
+            };
+
+            return this.generateInsightDocument(
+              gitAnalysis, vibeAnalysis, semanticAnalysis, singlePatternCatalog, webResults
+            ).catch(err => {
+              log(`Failed to generate insight for pattern ${pattern.name}: ${err.message}`, 'error');
+              return null; // Continue with other patterns
+            });
+          });
+
+          // Execute batch in parallel
+          const batchResults = await Promise.all(insightTasks);
+          insightDocuments.push(...batchResults.filter((doc): doc is InsightDocument => doc !== null));
+        }
+
+        // If there are remaining patterns (beyond top N), group them by category into summary insights
+        if (remainingPatterns.length > 0) {
+          log(`Grouping ${remainingPatterns.length} remaining patterns by category for summary insights`, 'info');
+          const byCategory = new Map<string, typeof remainingPatterns>();
+          for (const pattern of remainingPatterns) {
+            const cat = pattern.category || 'general';
+            if (!byCategory.has(cat)) byCategory.set(cat, []);
+            byCategory.get(cat)!.push(pattern);
+          }
+
+          // Generate one summary insight per category (for remaining patterns)
+          for (const [category, categoryPatterns] of byCategory) {
+            if (categoryPatterns.length >= 3) { // Only if there are enough patterns to warrant a summary
+              const categoryCatalog: PatternCatalog = {
+                patterns: categoryPatterns,
+                summary: {
+                  totalPatterns: categoryPatterns.length,
+                  byCategory: { [category]: categoryPatterns.length },
+                  avgSignificance: categoryPatterns.reduce((sum, p) => sum + p.significance, 0) / categoryPatterns.length,
+                  topPatterns: categoryPatterns.slice(0, 5).map(p => p.name)
+                }
+              };
+
+              try {
+                const summaryDoc = await this.generateInsightDocument(
+                  gitAnalysis, vibeAnalysis, semanticAnalysis, categoryCatalog, webResults
+                );
+                insightDocuments.push(summaryDoc);
+                log(`Generated category summary insight for ${category} (${categoryPatterns.length} patterns)`, 'info');
+              } catch (err: any) {
+                log(`Failed to generate category summary for ${category}: ${err.message}`, 'error');
+              }
             }
-          };
-          
-          return this.generateInsightDocument(
-            gitAnalysis, vibeAnalysis, semanticAnalysis, singlePatternCatalog, webResults
-          );
-        });
-        
-        // Execute all insight generation tasks in parallel
-        const parallelResults = await Promise.all(insightTasks);
-        insightDocuments.push(...parallelResults);
+          }
+        }
       } else {
-        // Generate single comprehensive insight document
+        // No significant patterns - generate a minimal document explaining why
+        log('No significant patterns found, generating minimal insight document', 'info');
         const insightDocument = await this.generateInsightDocument(
           gitAnalysis, vibeAnalysis, semanticAnalysis, patternCatalog, webResults
         );

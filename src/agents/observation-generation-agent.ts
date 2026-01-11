@@ -277,27 +277,30 @@ export class ObservationGenerationAgent {
       const entityName = this.generateEntityName(decision.type, decision.description);
       const currentDate = new Date().toISOString();
 
-      // Create concise observations that match existing pattern
+      // Create actionable observations with concrete guidance (avoid template garbage patterns)
+      const keyFiles = decision.files.slice(0, 3).map((f: string) => '`' + f.split('/').pop() + '`').join(', ');
+      const technologies = this.extractTechnologiesFromFiles(decision.files);
+      const techList = technologies.length > 0 ? technologies.join(', ') : 'TypeScript';
+
       const observations: (string | ObservationTemplate)[] = [
-        `${decision.type} architectural decision involving ${decision.files.length} files with ${decision.impact} impact`,
         {
-          type: 'implementation',
-          content: `${decision.description} (commit: ${decision.commit})`,
+          type: 'problem',
+          content: `When working with ${decision.type} in this codebase, changes often span multiple modules. Key files: ${keyFiles}`,
           date: currentDate
         },
         {
-          type: 'insight',
-          content: `${decision.type} changes require careful coordination across ${decision.files.length} files`,
+          type: 'solution',
+          content: `${decision.description}. This pattern was established to ${this.inferDecisionRationale(decision.type, decision.impact)}`,
+          date: currentDate
+        },
+        {
+          type: 'learning',
+          content: `DO: Check ${keyFiles} when modifying ${decision.type} behavior. DON'T: Make isolated changes without verifying related modules`,
           date: currentDate
         },
         {
           type: 'applicability',
-          content: `Similar ${decision.type} decisions in ${this.extractTechnologiesFromFiles(decision.files).join(', ')} projects`,
-          date: currentDate
-        },
-        {
-          type: 'metric',
-          content: `Files: ${decision.files.length}, Impact: ${decision.impact}, Commit: ${decision.commit}`,
+          content: `This ${decision.type} pattern is applicable when building ${techList} systems with ${decision.impact === 'high' ? 'critical' : 'standard'} reliability requirements`,
           date: currentDate
         }
       ];
@@ -348,10 +351,14 @@ export class ObservationGenerationAgent {
       const entityName = this.generateEntityName('CodeEvolution', pattern.pattern);
       const currentDate = new Date().toISOString();
 
+      // Create actionable code evolution observations
+      const keyFiles = pattern.files.slice(0, 3).map((f: string) => '`' + f.split('/').pop() + '`').join(', ');
+      const trendGuidance = this.interpretTrend(pattern.trend, pattern.pattern);
+
       const observations: ObservationTemplate[] = [
         {
           type: 'problem',
-          content: `Recurring development pattern identified: ${pattern.pattern}`,
+          content: `Development teams frequently apply ${pattern.pattern} when modifying ${keyFiles}. Understanding this pattern improves code review efficiency`,
           date: currentDate,
           metadata: {
             frequency: pattern.occurrences,
@@ -360,7 +367,7 @@ export class ObservationGenerationAgent {
         },
         {
           type: 'solution',
-          content: `Consistent approach applied ${pattern.occurrences} times across ${pattern.files.length} files`,
+          content: `DO: Follow the ${pattern.pattern} approach when editing these files. DON'T: Deviate without team discussion`,
           date: currentDate,
           metadata: {
             approach: pattern.pattern,
@@ -369,30 +376,11 @@ export class ObservationGenerationAgent {
         },
         {
           type: 'learning',
-          content: `Pattern shows ${pattern.trend} trend, indicating ${this.interpretTrend(pattern.trend, pattern.pattern)}`,
+          content: `${trendGuidance}. Key touchpoints: ${keyFiles}`,
           date: currentDate,
           metadata: {
             transferable: true,
             domain: 'development-process'
-          }
-        },
-        {
-          type: 'applicability',
-          content: `Applies to similar ${pattern.pattern} scenarios in TypeScript/JavaScript projects`,
-          date: currentDate,
-          metadata: {
-            scope: 'project-type',
-            generalizability: 'high'
-          }
-        },
-        {
-          type: 'metric',
-          content: `Occurrences: ${pattern.occurrences}, Files: ${pattern.files.length}, Trend: ${pattern.trend}`,
-          date: currentDate,
-          metadata: {
-            quantifiable: true,
-            baseline: pattern.occurrences,
-            trend: pattern.trend
           }
         }
       ];
@@ -460,27 +448,24 @@ export class ObservationGenerationAgent {
       const entityName = this.generateEntityName('ProblemSolution', pair.problem.description);
       const currentDate = new Date().toISOString();
 
-      // Create observations matching existing style - mix of strings and structured objects
+      // Create actionable observations from problem-solution pairs
+      const techList = pair.solution.technologies.slice(0, 3).map((t: string) => '`' + t + '`').join(', ');
+      const stepSummary = pair.solution.steps.length > 2 ? 'multi-step systematic' : 'direct focused';
+
       const observations: (string | ObservationTemplate)[] = [
-        pair.problem.description.length > 100 ? pair.problem.description.substring(0, 100) + '...' : pair.problem.description,
         {
-          type: 'implementation',
-          content: `${pair.solution.approach} using ${pair.solution.technologies.join(', ')}`,
+          type: 'problem',
+          content: pair.problem.description,
           date: currentDate
         },
         {
-          type: 'insight',
-          content: `${pair.problem.difficulty} difficulty problems benefit from ${pair.solution.steps.length > 2 ? 'systematic' : 'direct'} approach`,
+          type: 'solution',
+          content: `DO: Apply ${pair.solution.approach} using ${techList}. This ${stepSummary} approach achieved: ${pair.solution.outcome}`,
           date: currentDate
         },
         {
-          type: 'applicability',
-          content: `Similar ${pair.problem.difficulty} difficulty development challenges in conversation-driven environments`,
-          date: currentDate
-        },
-        {
-          type: 'metric',
-          content: `Solution steps: ${pair.solution.steps.length}, Technologies: ${pair.solution.technologies.length}, Outcome: ${pair.solution.outcome}`,
+          type: 'learning',
+          content: `When facing ${pair.problem.difficulty}-difficulty problems, ${pair.solution.steps.length > 2 ? 'break down into smaller steps' : 'tackle directly'}. Key tools: ${techList}`,
           date: currentDate
         }
       ];
@@ -549,10 +534,14 @@ export class ObservationGenerationAgent {
       const commonTechnologies = this.extractCommonTechnologies(contexts);
       const successfulOutcomes = contexts.filter(c => c.outcomes.length > 0).length;
 
+      // Create actionable development context observations
+      const techList = commonTechnologies.slice(0, 3).map(t => '`' + t + '`').join(', ');
+      const successRate = Math.round((successfulOutcomes / totalContexts) * 100);
+
       const observations: ObservationTemplate[] = [
         {
           type: 'problem',
-          content: `Recurring development context: ${type} activities across ${totalContexts} conversation sessions`,
+          content: `When working on ${type} tasks, developers in this codebase commonly use ${techList}`,
           date: currentDate,
           metadata: {
             frequency: totalContexts,
@@ -561,39 +550,20 @@ export class ObservationGenerationAgent {
         },
         {
           type: 'solution',
-          content: `Consistent approach patterns identified for ${type} problems`,
+          content: `DO: For ${type} work, start with ${commonTechnologies[0] || 'established patterns'}. ${successRate > 70 ? 'This approach has a strong success rate.' : 'Consider reviewing past outcomes for improvements.'}`,
           date: currentDate,
           metadata: {
             approach: type,
-            successRate: Math.round((successfulOutcomes / totalContexts) * 100)
+            successRate: successRate
           }
         },
         {
           type: 'learning',
-          content: `${type} contexts show ${successfulOutcomes}/${totalContexts} success rate with common use of ${commonTechnologies.slice(0, 3).join(', ')}`,
+          content: `${type} tasks in this project typically succeed when using ${techList}. DON'T: Introduce unfamiliar tools without team buy-in`,
           date: currentDate,
           metadata: {
             transferable: true,
             domain: 'development-workflow'
-          }
-        },
-        {
-          type: 'technology',
-          content: commonTechnologies.join(', '),
-          date: currentDate,
-          metadata: {
-            tools: commonTechnologies,
-            contexts: totalContexts
-          }
-        },
-        {
-          type: 'metric',
-          content: `Contexts: ${totalContexts}, Success rate: ${Math.round((successfulOutcomes / totalContexts) * 100)}%`,
-          date: currentDate,
-          metadata: {
-            quantifiable: true,
-            baseline: totalContexts,
-            successRate: successfulOutcomes / totalContexts
           }
         }
       ];
@@ -1349,7 +1319,7 @@ Provide a JSON response with:
 
   private extractTechnologiesFromFiles(files: string[]): string[] {
     const technologies = new Set<string>();
-    
+
     files.forEach(file => {
       const ext = path.extname(file).toLowerCase();
       switch (ext) {
@@ -1362,8 +1332,41 @@ Provide a JSON response with:
         case '.yaml': technologies.add('YAML'); break;
       }
     });
-    
+
     return Array.from(technologies);
+  }
+
+  /**
+   * Infer the rationale behind an architectural decision based on type and impact.
+   * Provides actionable context for why the pattern exists.
+   */
+  private inferDecisionRationale(decisionType: string, impact: string): string {
+    const typeRationales: Record<string, string> = {
+      'api': 'ensure consistent external interfaces and maintainable service contracts',
+      'config': 'centralize configuration management and enable environment-specific overrides',
+      'error': 'provide comprehensive error tracking and graceful failure recovery',
+      'logging': 'enable observability and debugging across the distributed system',
+      'auth': 'secure access control and identity verification throughout the application',
+      'database': 'optimize data persistence and ensure transactional integrity',
+      'cache': 'improve performance through strategic data caching',
+      'test': 'maintain code quality through comprehensive automated testing',
+      'promise': 'manage asynchronous operations and prevent callback complexity',
+      'event': 'enable loose coupling through event-driven communication',
+      'state': 'manage application state predictably and avoid data inconsistencies',
+      'security': 'protect against common vulnerabilities and ensure data safety',
+    };
+
+    const lowerType = decisionType.toLowerCase();
+    for (const [key, rationale] of Object.entries(typeRationales)) {
+      if (lowerType.includes(key)) {
+        return rationale;
+      }
+    }
+
+    // Default rationale based on impact
+    return impact === 'high'
+      ? 'ensure system reliability and maintainability at scale'
+      : 'maintain code consistency and developer experience';
   }
 
   private extractCommonTechnologies(contexts: any[]): string[] {

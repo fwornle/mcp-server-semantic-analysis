@@ -23,6 +23,7 @@ import { getBatchCheckpointManager } from "../utils/batch-checkpoint-manager.js"
 import { SemanticAnalyzer } from "./semantic-analyzer.js";
 import { SmartOrchestrator, createSmartOrchestrator, type StepResultWithMetadata } from "../orchestrator/smart-orchestrator.js";
 import { AgentResponse, AgentIssue, createIssue, createDefaultMetadata, createDefaultRouting, createAgentResponse } from "../types/agent-response.js";
+import { UKBTraceReportManager } from "../utils/ukb-trace-report.js";
 
 export interface WorkflowDefinition {
   name: string;
@@ -115,6 +116,7 @@ export class CoordinatorAgent {
   private monitorIntervalId: ReturnType<typeof setInterval> | null = null;
   private reportAgent: WorkflowReportAgent;
   private smartOrchestrator: SmartOrchestrator;
+  private traceReport: UKBTraceReportManager | null = null;
 
   constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
@@ -1705,6 +1707,10 @@ export class CoordinatorAgent {
     // Start workflow report tracking (for dashboard history)
     this.reportAgent.startWorkflowReport(workflowName, executionId, parameters);
 
+    // Initialize trace report for detailed workflow tracing
+    this.traceReport = new UKBTraceReportManager(parameters.repositoryPath || this.repositoryPath);
+    this.traceReport.startWorkflow(executionId, workflowName, parameters.team || this.team, parameters.repositoryPath || this.repositoryPath);
+
     try {
       execution.status = 'running';
 
@@ -1848,6 +1854,11 @@ export class CoordinatorAgent {
         };
         execution.batchIterations!.push(currentBatchIteration);
 
+        // Start trace for this batch
+        if (this.traceReport) {
+          this.traceReport.startBatch(batch.id, batch.batchNumber);
+        }
+
         // Helper to track step completion in this batch iteration with optional LLM metrics
         const trackBatchStep = (
           stepName: string,
@@ -1917,6 +1928,11 @@ export class CoordinatorAgent {
             log(`Accumulated ${commits.commits.length} commits for batch ${batch.id} (total: ${allBatchCommits.length})`, 'info');
           }
 
+          // Trace git history for this batch
+          if (this.traceReport) {
+            this.traceReport.traceGitHistory(batch.id, commits);
+          }
+
           // Check for cancellation after commit extraction
           this.checkCancellationOrThrow('extract_batch_commits');
 
@@ -1982,6 +1998,11 @@ export class CoordinatorAgent {
           if (sessionResult?.sessions?.length > 0) {
             allBatchSessions.push(...sessionResult.sessions);
             log(`Accumulated ${sessionResult.sessions.length} sessions for batch ${batch.id} (total: ${allBatchSessions.length})`, 'info');
+          }
+
+          // Trace vibe history for this batch
+          if (this.traceReport) {
+            this.traceReport.traceVibeHistory(batch.id, sessionResult);
           }
 
           // Check for cancellation after session extraction
@@ -2219,6 +2240,12 @@ export class CoordinatorAgent {
             provider: semanticLlmMetrics.providers?.[0]
           } : undefined);
 
+          // Trace semantic analysis for this batch
+          if (this.traceReport) {
+            const llmProvider = semanticLlmMetrics.providers?.join(', ') || semanticLlmMetrics.calls?.[0]?.model || 'unknown';
+            this.traceReport.traceSemanticAnalysis(batch.id, { entities: batchEntities, relations: batchRelations }, llmProvider, semanticLlmMetrics.totalTokens || 0);
+          }
+
           // Check for cancellation after semantic analysis
           this.checkCancellationOrThrow('batch_semantic_analysis');
 
@@ -2284,6 +2311,11 @@ export class CoordinatorAgent {
                   batchObservations: batchObservations.length,
                   totalAccumulated: allBatchObservations.length
                 });
+              }
+
+              // Trace observations for this batch
+              if (this.traceReport) {
+                this.traceReport.traceObservations(batch.id, { observations: batchObservations });
               }
 
               // Check for cancellation after observation generation
@@ -2422,6 +2454,16 @@ export class CoordinatorAgent {
                 model: ontologyModels.length > 0 ? ontologyModels[0] : undefined,
                 provider: ontologyLlmUsage.providersUsed?.[0]
               } : undefined);
+
+              // Trace ontology classification for this batch
+              if (this.traceReport) {
+                this.traceReport.traceOntologyClassification(
+                  batch.id,
+                  classificationResult,
+                  classificationResult?.summary?.llmCalls || 0,
+                  ontologyLlmUsage?.totalTokens || 0
+                );
+              }
 
               // Record ontology classification step for workflow report (only on first batch)
               if (batch.id === 'batch-001') {
@@ -2662,6 +2704,11 @@ export class CoordinatorAgent {
             entities: accumulatedKG.entities.length,
             relations: accumulatedKG.relations.length
           });
+
+          // End trace for this batch
+          if (this.traceReport) {
+            this.traceReport.endBatch(batch.id);
+          }
 
           // Update progress file after each batch for dashboard visibility
           // Note: currentStep tracks DAG steps, batchProgress tracks batch iterations separately
@@ -2966,6 +3013,11 @@ export class CoordinatorAgent {
             batchId: 'finalization-insights'
           });
 
+          // Trace insight generation
+          if (this.traceReport) {
+            this.traceReport.traceInsightGeneration(insightResult);
+          }
+
           log('Batch workflow: Insight generation completed', 'info', {
             documentsGenerated: insightResult.insightDocuments?.length || 0,
             patternsIdentified: insightResult.patternCatalog?.patterns?.length || 0,
@@ -3013,6 +3065,15 @@ export class CoordinatorAgent {
         totalBatches: progress.totalBatches,
         accumulatedStats: progress.accumulatedStats
       });
+
+      // Finalize trace report
+      if (this.traceReport) {
+        // Get final entity count from accumulated KG
+        const finalEntityCount = accumulatedKG.entities.length;
+        const finalRelationCount = accumulatedKG.relations.length;
+        this.traceReport.endWorkflow('completed', finalEntityCount, finalRelationCount);
+        log('UKB trace report saved', 'info');
+      }
 
       // Export knowledge base to JSON for git tracking
       try {
@@ -3068,6 +3129,18 @@ export class CoordinatorAgent {
         stack: stackTrace,
         duration: execution.endTime.getTime() - execution.startTime.getTime()
       });
+
+      // Finalize trace report for failed workflow
+      if (this.traceReport) {
+        this.traceReport.traceQAIssue(undefined, 'workflow', {
+          severity: 'error',
+          category: 'workflow_failure',
+          message: errorMessage,
+          context: { stack: stackTrace }
+        });
+        this.traceReport.endWorkflow('failed', 0, 0);
+        log('UKB trace report saved (failed workflow)', 'info');
+      }
 
       // Write final progress file for dashboard
       this.writeProgressFile(execution, workflow);

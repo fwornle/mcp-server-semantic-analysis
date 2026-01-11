@@ -201,6 +201,13 @@ export class CoordinatorAgent {
 
       // Get valid workflow step names to filter out non-step entries like 'accumulatedKG'
       const validStepNames = new Set(workflow.steps.map(s => s.name));
+      // Also include batch-specific step names that are dynamically executed
+      const batchStepNames = [
+        'extract_batch_commits', 'extract_batch_sessions', 'batch_semantic_analysis',
+        'generate_batch_observations', 'classify_with_ontology',
+        'plan_batches', 'batch_checkpoint'
+      ];
+      batchStepNames.forEach(name => validStepNames.add(name));
 
       for (const [stepName, result] of Object.entries(execution.results)) {
         // Skip non-workflow-step entries (e.g., 'accumulatedKG', internal state)

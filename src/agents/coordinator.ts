@@ -399,6 +399,75 @@ export class CoordinatorAgent {
     }
   }
 
+  /**
+   * Check and handle single-step debugging mode
+   * If enabled, pauses after current step and waits for user to advance
+   * @param stepName - Name of the step that just completed
+   */
+  private async checkSingleStepPause(stepName: string): Promise<void> {
+    try {
+      const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
+      if (!fs.existsSync(progressPath)) return;
+
+      const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+
+      // Check if single-step mode is enabled
+      if (!progress.singleStepMode) return;
+
+      log(`Single-step mode: Pausing after step '${stepName}'`, 'info');
+
+      // Set paused state
+      progress.stepPaused = true;
+      progress.pausedAtStep = stepName;
+      progress.pausedAt = new Date().toISOString();
+      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
+
+      // Poll for resume signal (check every 500ms, max 30 minutes)
+      const maxWaitMs = 30 * 60 * 1000;
+      const pollIntervalMs = 500;
+      const startTime = Date.now();
+
+      while (Date.now() - startTime < maxWaitMs) {
+        // Check for cancellation while paused
+        if (this.isWorkflowCancelled()) {
+          log('Workflow cancelled while paused', 'warning');
+          throw new Error(`WORKFLOW_CANCELLED: paused at ${stepName}`);
+        }
+
+        // Re-read progress file to check for resume signal
+        const currentProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+
+        // Check if single-step mode was disabled (user wants to continue freely)
+        if (!currentProgress.singleStepMode) {
+          log('Single-step mode disabled, resuming workflow', 'info');
+          return;
+        }
+
+        // Check if stepPaused was cleared (user clicked advance)
+        if (!currentProgress.stepPaused) {
+          log(`Single-step mode: Advancing from step '${stepName}'`, 'info');
+          return;
+        }
+
+        // Wait before next poll
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      }
+
+      // Timeout - disable single-step mode and continue
+      log('Single-step mode timeout (30 minutes), resuming workflow', 'warning');
+      progress.singleStepMode = false;
+      progress.stepPaused = false;
+      progress.singleStepTimeout = new Date().toISOString();
+      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('WORKFLOW_CANCELLED')) {
+        throw error; // Re-throw cancellation errors
+      }
+      log(`Single-step pause check failed: ${error}`, 'warning');
+      // Don't block workflow on single-step mode errors
+    }
+  }
+
   private initializeWorkflows(): void {
     // Try to load workflows from YAML (single source of truth)
     try {
@@ -1938,6 +2007,7 @@ export class CoordinatorAgent {
 
           // Check for cancellation after commit extraction
           this.checkCancellationOrThrow('extract_batch_commits');
+          await this.checkSingleStepPause('extract_batch_commits');
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
           if (batch.id === 'batch-001') {
@@ -2014,6 +2084,7 @@ export class CoordinatorAgent {
 
           // Check for cancellation after session extraction
           this.checkCancellationOrThrow('extract_batch_sessions');
+          await this.checkSingleStepPause('extract_batch_sessions');
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
           if (batch.id === 'batch-001') {
@@ -2258,6 +2329,7 @@ export class CoordinatorAgent {
 
           // Check for cancellation after semantic analysis
           this.checkCancellationOrThrow('batch_semantic_analysis');
+          await this.checkSingleStepPause('batch_semantic_analysis');
 
           // Record semantic analysis step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -2339,6 +2411,7 @@ export class CoordinatorAgent {
 
               // Check for cancellation after observation generation
               this.checkCancellationOrThrow('generate_batch_observations');
+              await this.checkSingleStepPause('generate_batch_observations');
 
               // Record step for workflow report (only on first batch)
               if (batch.id === 'batch-001') {
@@ -2464,6 +2537,7 @@ export class CoordinatorAgent {
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
               // Check for cancellation after ontology classification
               this.checkCancellationOrThrow('classify_with_ontology');
+              await this.checkSingleStepPause('classify_with_ontology');
 
               // Pass LLM metrics to batch step tracking for tracer visualization
               const ontologyModels = ontologyLlmUsage?.modelsUsed || [];

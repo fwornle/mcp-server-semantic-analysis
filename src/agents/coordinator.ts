@@ -2313,9 +2313,15 @@ export class CoordinatorAgent {
                 });
               }
 
-              // Trace observations for this batch
+              // Trace observations for this batch (non-critical - don't fail workflow if tracing fails)
               if (this.traceReport) {
-                this.traceReport.traceObservations(batch.id, { observations: batchObservations });
+                try {
+                  this.traceReport.traceObservations(batch.id, { observations: batchObservations });
+                } catch (traceError) {
+                  log(`Batch ${batch.id}: Failed to trace observations (non-critical)`, 'warning', {
+                    error: traceError instanceof Error ? traceError.message : String(traceError)
+                  });
+                }
               }
 
               // Check for cancellation after observation generation

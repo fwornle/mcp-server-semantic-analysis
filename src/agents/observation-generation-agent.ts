@@ -420,7 +420,7 @@ export class ObservationGenerationAgent {
   private async generateFromVibeAnalysis(vibeAnalysis: any): Promise<StructuredObservation[]> {
     const observations: StructuredObservation[] = [];
 
-    // Generate observations for problem-solution pairs
+    // Generate observations for problem-solution pairs (legacy format)
     if (vibeAnalysis.problemSolutionPairs) {
       for (const pair of vibeAnalysis.problemSolutionPairs.slice(0, 10)) { // Top 10 pairs
         const observation = await this.createProblemSolutionObservation(pair, vibeAnalysis);
@@ -428,7 +428,7 @@ export class ObservationGenerationAgent {
       }
     }
 
-    // Generate observations for development contexts
+    // Generate observations for development contexts (legacy format)
     if (vibeAnalysis.developmentContexts) {
       const contextGroups = this.groupContextsByType(vibeAnalysis.developmentContexts);
       for (const [type, contexts] of contextGroups.entries()) {
@@ -437,7 +437,55 @@ export class ObservationGenerationAgent {
       }
     }
 
+    // Handle batch session format from coordinator: { sessions: [...] }
+    if (vibeAnalysis.sessions && Array.isArray(vibeAnalysis.sessions)) {
+      log('Processing vibe sessions from batch', 'info', {
+        sessionCount: vibeAnalysis.sessions.length
+      });
+
+      for (const session of vibeAnalysis.sessions.slice(0, 15)) {
+        const observation = this.createSessionObservation(session);
+        if (observation) observations.push(observation);
+      }
+    }
+
     return observations;
+  }
+
+  /**
+   * Create observation from a vibe session
+   */
+  private createSessionObservation(session: any): StructuredObservation | null {
+    if (!session) return null;
+
+    const sessionDate = session.date || session.timestamp || new Date().toISOString();
+    const topics = session.topics || session.keyTopics || [];
+    const summary = session.summary || session.content || '';
+
+    // Skip empty sessions
+    if (!summary && topics.length === 0) return null;
+
+    const topicsStr = topics.slice(0, 5).join(', ');
+
+    return {
+      id: `session-${session.id || Date.now()}`,
+      timestamp: sessionDate,
+      observationType: 'session-observation',
+      content: summary ? summary.substring(0, 500) : `Session topics: ${topicsStr}`,
+      entities: topics.slice(0, 3).map((topic: string) => ({
+        name: topic,
+        type: 'Topic',
+        confidence: 0.7
+      })),
+      relations: [],
+      metadata: {
+        confidence: 0.6,
+        sourceType: 'vibe-history',
+        processingPhase: 'batch-analysis',
+        tags: topics.slice(0, 5)
+      },
+      significance: session.significance || 5
+    };
   }
 
   private async createProblemSolutionObservation(
@@ -604,10 +652,10 @@ export class ObservationGenerationAgent {
   private async generateFromSemanticAnalysis(semanticAnalysis: any): Promise<StructuredObservation[]> {
     const observations: StructuredObservation[] = [];
 
-    // Generate observations for key insights
+    // Generate observations for key insights (legacy format)
     if (semanticAnalysis.insights) {
-      const insights = Array.isArray(semanticAnalysis.insights) 
-        ? semanticAnalysis.insights 
+      const insights = Array.isArray(semanticAnalysis.insights)
+        ? semanticAnalysis.insights
         : [semanticAnalysis.insights];
 
       for (const insight of insights.slice(0, 5)) {
@@ -616,7 +664,52 @@ export class ObservationGenerationAgent {
       }
     }
 
+    // Handle batch entity format from coordinator: { entities: [...], relations: [...] }
+    if (semanticAnalysis.entities && Array.isArray(semanticAnalysis.entities)) {
+      log('Processing semantic entities from batch', 'info', {
+        entityCount: semanticAnalysis.entities.length,
+        relationCount: semanticAnalysis.relations?.length || 0
+      });
+
+      for (const entity of semanticAnalysis.entities.slice(0, 20)) {
+        const observation = this.createEntityObservation(entity);
+        if (observation) observations.push(observation);
+      }
+    }
+
     return observations;
+  }
+
+  /**
+   * Create observation from a batch entity
+   */
+  private createEntityObservation(entity: any): StructuredObservation | null {
+    if (!entity.name) return null;
+
+    const entityObservations = entity.observations || entity.rawObservations || [];
+    const observationContent = Array.isArray(entityObservations)
+      ? entityObservations.slice(0, 3).join(' | ')
+      : String(entityObservations).substring(0, 500);
+
+    return {
+      id: `entity-${entity.name}-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      observationType: 'entity-observation',
+      content: observationContent || `Entity: ${entity.name}`,
+      entities: [{
+        name: entity.name,
+        type: entity.type || entity.entityType || 'Unclassified',
+        confidence: entity.significance ? entity.significance / 10 : 0.5
+      }],
+      relations: entity.relations || [],
+      metadata: {
+        confidence: entity.significance ? entity.significance / 10 : 0.5,
+        sourceType: entity.sourceType || 'semantic',
+        processingPhase: 'batch-analysis',
+        tags: entity.tags || []
+      },
+      significance: entity.significance || 5
+    };
   }
 
   private async generateFromInsightsResults(insightsResults: any): Promise<StructuredObservation[]> {

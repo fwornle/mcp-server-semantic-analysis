@@ -1909,6 +1909,9 @@ export class CoordinatorAgent {
             hasGitAgent: !!gitAgent
           });
 
+          // FIXED: Write progress BEFORE step runs so dashboard shows it as running
+          this.writeProgressFile(execution, workflow, 'extract_batch_commits', ['extract_batch_commits'], currentBatchProgress);
+
           const commits = await gitAgent.extractCommitsForBatch(
             batch.startCommit,
             batch.endCommit
@@ -1979,6 +1982,10 @@ export class CoordinatorAgent {
           const vibeAgent = this.agents.get('vibe_history') as VibeHistoryAgent;
           SemanticAnalyzer.resetStepMetrics();
           const extractSessionsStart = new Date();
+
+          // FIXED: Write progress BEFORE step runs so dashboard shows it as running
+          this.writeProgressFile(execution, workflow, 'extract_batch_sessions', ['extract_batch_sessions'], currentBatchProgress);
+
           const sessionResult = await vibeAgent.extractSessionsForCommits(
             commits.commits.map(c => ({
               date: c.date,
@@ -2054,6 +2061,9 @@ export class CoordinatorAgent {
           };
           SemanticAnalyzer.resetStepMetrics();
           const semanticAnalysisStart = new Date();
+
+          // FIXED: Write progress BEFORE step runs so dashboard shows it as running
+          this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', ['batch_semantic_analysis'], currentBatchProgress);
 
           try {
             // Get agents for analysis
@@ -2274,6 +2284,9 @@ export class CoordinatorAgent {
           const observationAgent = this.agents.get('observation_generation') as ObservationGenerationAgent;
           let batchObservations: StructuredObservation[] = [];
 
+          // FIXED: Write progress BEFORE step runs so dashboard shows it as running
+          this.writeProgressFile(execution, workflow, 'generate_batch_observations', ['generate_batch_observations'], currentBatchProgress);
+
           if (observationAgent) {
             try {
               log(`Batch ${batch.id}: Generating structured observations`, 'info', {
@@ -2375,6 +2388,10 @@ export class CoordinatorAgent {
           // ONTOLOGY CLASSIFICATION: Classify entities using project ontology
           SemanticAnalyzer.resetStepMetrics();
           const ontologyClassificationStartTime = new Date();
+
+          // FIXED: Write progress BEFORE step runs so dashboard shows it as running
+          this.writeProgressFile(execution, workflow, 'classify_with_ontology', ['classify_with_ontology'], currentBatchProgress);
+
           const ontologyAgent = this.agents.get('ontology_classification') as OntologyClassificationAgent;
 
           if (ontologyAgent && batchEntities.length > 0) {
@@ -2530,6 +2547,10 @@ export class CoordinatorAgent {
           // Apply Tree-KG operators
           SemanticAnalyzer.resetStepMetrics();
           const operatorsStartTime = new Date();
+
+          // FIXED: Write progress BEFORE step runs so dashboard shows it as running
+          this.writeProgressFile(execution, workflow, 'kg_operators', ['kg_operators'], currentBatchProgress);
+
           const operatorResult = await kgOperators.applyAll(
             batchEntities,
             batchRelations,
@@ -2623,6 +2644,10 @@ export class CoordinatorAgent {
           // Calculate batch stats
           SemanticAnalyzer.resetStepMetrics();
           const qaStartTime = new Date();
+
+          // FIXED: Write progress BEFORE step runs so dashboard shows it as running
+          this.writeProgressFile(execution, workflow, 'batch_qa', ['batch_qa'], currentBatchProgress);
+
           const batchDuration = Date.now() - batchStartTime;
           const stats: BatchStats = {
             commits: commits.commits.length,
@@ -2669,6 +2694,10 @@ export class CoordinatorAgent {
           // Save checkpoint
           SemanticAnalyzer.resetStepMetrics();
           const checkpointStartTime = new Date();
+
+          // FIXED: Write progress BEFORE step runs so dashboard shows it as running
+          this.writeProgressFile(execution, workflow, 'save_batch_checkpoint', ['save_batch_checkpoint'], currentBatchProgress);
+
           checkpointManager.saveBatchCheckpoint(
             batch.id,
             batch.batchNumber,

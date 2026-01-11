@@ -211,12 +211,12 @@ edges:
   # Insights -> Observations
   - from: insight_generation
     to: observation_generation
-    type: dependency
+    type: dataflow
 
   # Observations -> Ontology
   - from: observation_generation
     to: ontology_classification
-    type: dependency
+    type: dataflow
 
   # Semantic Analysis also feeds Ontology directly (entities need classification)
   - from: semantic_analysis

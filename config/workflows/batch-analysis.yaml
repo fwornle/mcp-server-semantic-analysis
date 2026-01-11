@@ -505,13 +505,13 @@ edges:
   # Observation generation (transforms semantics into structured observations)
   - from: semantic_analysis
     to: observation_generation
-    type: dependency
+    type: dataflow
     label: "observe"
 
   # Ontology classification (classifies observations using project ontology)
   - from: observation_generation
     to: ontology_classification
-    type: dependency
+    type: dataflow
     label: "classify"
 
   # Semantic analysis also feeds Ontology directly (entities need classification)

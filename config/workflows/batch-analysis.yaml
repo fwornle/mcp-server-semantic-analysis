@@ -514,6 +514,11 @@ edges:
     type: dependency
     label: "classify"
 
+  # Semantic analysis also feeds Ontology directly (entities need classification)
+  - from: semantic_analysis
+    to: ontology_classification
+    type: dataflow
+
   # Tree-KG operator pipeline
   - from: ontology_classification
     to: kg_operators

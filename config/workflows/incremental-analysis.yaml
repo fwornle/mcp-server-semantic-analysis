@@ -218,6 +218,11 @@ edges:
     to: ontology_classification
     type: dependency
 
+  # Semantic Analysis also feeds Ontology directly (entities need classification)
+  - from: semantic_analysis
+    to: ontology_classification
+    type: dataflow
+
   # Ontology + Code Entities -> QA
   - from: ontology_classification
     to: quality_assurance

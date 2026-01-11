@@ -595,23 +595,23 @@ edges:
   # Persistence outputs to insight generation
   - from: persistence
     to: insight_generation
-    type: dependency
+    type: dataflow
     label: "generate docs"
 
   # Insight generation outputs to web search
   - from: insight_generation
     to: web_search
-    type: dependency
+    type: dataflow
     label: "find patterns"
 
   # Web search outputs to deduplication
   - from: web_search
     to: deduplication
-    type: dependency
+    type: dataflow
 
   - from: deduplication
     to: content_validation
-    type: dependency
+    type: dataflow
 
 # Operator tier assignments (for coordinator reference)
 operator_tiers:

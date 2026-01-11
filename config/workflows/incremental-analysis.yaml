@@ -239,9 +239,9 @@ edges:
   # Persistence -> Deduplication
   - from: persistence
     to: deduplication
-    type: dependency
+    type: dataflow
 
   # Deduplication -> Content Validation
   - from: deduplication
     to: content_validation
-    type: dependency
+    type: dataflow

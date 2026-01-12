@@ -2317,9 +2317,20 @@ export class CoordinatorAgent {
           }, semanticAnalysisStart);
           this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', [], currentBatchProgress);
           // Pass LLM metrics to batch step tracking for tracer visualization
+          // Include entity NAMES not just counts for better trace visibility
           trackBatchStep('batch_semantic_analysis', 'completed', semanticDuration, {
             batchEntities: batchEntities.length,
-            batchRelations: batchRelations.length
+            batchRelations: batchRelations.length,
+            // Show first 5 entity names for quick reference in trace
+            entityNames: batchEntities.slice(0, 5).map(e => e.name),
+            // Show entity types distribution
+            entityTypes: batchEntities.reduce((acc: Record<string, number>, e) => {
+              const type = e.type || 'unknown';
+              acc[type] = (acc[type] || 0) + 1;
+              return acc;
+            }, {}),
+            // Indicate if rule-based fallback was used (no LLM metrics means fallback)
+            llmUsed: semanticLlmMetrics.totalCalls > 0
           }, semanticLlmMetrics.totalCalls > 0 ? {
             calls: semanticLlmMetrics.totalCalls,
             tokens: semanticLlmMetrics.totalTokens,
@@ -2394,7 +2405,17 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, observationStartTime);
               this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
-              trackBatchStep('generate_batch_observations', 'completed', obsDuration, { observationsCount: batchObservations.length });
+              trackBatchStep('generate_batch_observations', 'completed', obsDuration, {
+                observationsCount: batchObservations.length,
+                // Show first 5 observation entity names
+                observationNames: batchObservations.slice(0, 5).map(o => o.name),
+                // Show observation types distribution
+                observationTypes: batchObservations.reduce((acc: Record<string, number>, o) => {
+                  const type = o.observationType || o.entityType || 'unknown';
+                  acc[type] = (acc[type] || 0) + 1;
+                  return acc;
+                }, {})
+              });
 
               // CRITICAL: Accumulate observations for finalization phase
               if (batchObservations.length > 0) {
@@ -2548,9 +2569,19 @@ export class CoordinatorAgent {
 
               // Pass LLM metrics to batch step tracking for tracer visualization
               const ontologyModels = ontologyLlmUsage?.modelsUsed || [];
+              // Extract classified entity names for trace visibility
+              const classifiedEntities = classificationResult?.classified || [];
               trackBatchStep('classify_with_ontology', 'completed', ontologyDuration, {
                 classified: classificationResult?.summary?.classifiedCount || 0,
-                llmCalls: classificationResult?.summary?.llmCalls || 0
+                unclassified: classificationResult?.summary?.unclassifiedCount || 0,
+                llmCalls: classificationResult?.summary?.llmCalls || 0,
+                // Show ontology class distribution
+                byClass: classificationResult?.summary?.byClass || {},
+                // Show first 5 classified entity names with their classes
+                classifiedEntities: classifiedEntities.slice(0, 5).map((c: any) => ({
+                  name: c.entity?.name || c.name || 'unknown',
+                  class: c.ontologyClass || c.entityType || 'unknown'
+                }))
               }, ontologyLlmUsage ? {
                 calls: classificationResult?.summary?.llmCalls || 0,
                 tokens: ontologyLlmUsage.totalTokens,

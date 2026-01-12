@@ -464,44 +464,75 @@ export class ObservationGenerationAgent {
   }
 
   /**
-   * Create observation from a vibe session
+   * Create observation from a vibe session (ConversationSession format)
+   *
+   * ConversationSession structure:
+   * - filename, timestamp, project, sessionType
+   * - exchanges: ConversationExchange[] (userMessage, assistantMessage pairs)
+   * - metadata: { sessionId, summary, totalMessages }
    */
   private createSessionObservation(session: any): StructuredObservation | null {
     if (!session) return null;
 
-    const sessionDate = session.date || session.timestamp || new Date().toISOString();
-    const topics = session.topics || session.keyTopics || [];
-    const summary = session.summary || session.content || '';
+    const sessionDate = session.timestamp || session.date || new Date().toISOString();
 
-    // Skip empty sessions
-    if (!summary && topics.length === 0) return null;
+    // STRICT: Only use metadata.summary - this is the correct location per ConversationSession interface
+    // NO FALLBACKS - if no summary exists, this session should not create an entity
+    // Empty sessions indicate upstream processing (vibe-history-agent) needs to generate proper summaries
+    const summary = session.metadata?.summary;
 
-    const topicsStr = topics.slice(0, 5).join(', ');
+    if (!summary || typeof summary !== 'string' || summary.trim().length < 10) {
+      // No valid summary - skip this session entirely
+      return null;
+    }
+
+    // Generate meaningful entity name from summary content
+    const entityName = summary
+      .substring(0, 60)
+      .replace(/[^a-zA-Z0-9\s]/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .slice(0, 5)
+      .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join('');
+
+    if (!entityName || entityName.length < 3) {
+      // Cannot generate meaningful name - skip
+      return null;
+    }
+
+    // Use summary directly as observation content
+    const observationContent = summary.substring(0, 500);
 
     return {
-      id: `session-${session.id || Date.now()}`,
-      name: `Session-${session.id || Date.now()}`,
-      entityType: 'SessionObservation',
-      observations: [summary ? summary.substring(0, 500) : `Session topics: ${topicsStr}`],
-      relationships: [],
-      timestamp: sessionDate,
+      id: `session-${session.metadata?.sessionId || Date.now()}`,
+      name: entityName,
+      entityType: 'Unclassified',  // Let ontology classification determine the type
+      observations: [observationContent],
+      relationships: [
+        // Connect to project node
+        {
+          from: entityName,
+          to: this.team || 'Coding',
+          relationType: 'observed_in',
+          type: 'observed_in',
+          target: this.team || 'Coding'
+        }
+      ],
+      timestamp: typeof sessionDate === 'string' ? sessionDate : sessionDate.toISOString(),
       observationType: 'session-observation',
-      content: summary ? summary.substring(0, 500) : `Session topics: ${topicsStr}`,
-      entities: topics.slice(0, 3).map((topic: string) => ({
-        name: topic,
-        type: 'Topic',
-        confidence: 0.7
-      })),
+      content: observationContent,
+      entities: [],
       relations: [],
       metadata: {
         created_at: new Date().toISOString(),
         last_updated: new Date().toISOString(),
-        confidence: 0.6,
+        confidence: 0.8,
         sourceType: 'vibe-history',
         processingPhase: 'batch-analysis',
-        tags: topics.slice(0, 5)
-      },
-      significance: session.significance || 5
+        sessionId: session.metadata?.sessionId
+      } as any,
+      significance: 6
     };
   }
 

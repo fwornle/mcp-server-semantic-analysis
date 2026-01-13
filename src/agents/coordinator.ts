@@ -3220,6 +3220,37 @@ export class CoordinatorAgent {
         const finalRelationCount = accumulatedKG.relations.length;
         this.traceReport.endWorkflow('completed', finalEntityCount, finalRelationCount);
         log('UKB trace report saved', 'info');
+
+        // Generate human-readable markdown report from the trace data
+        try {
+          const latestReport = UKBTraceReportManager.loadLatestReport(parameters.repositoryPath || this.repositoryPath);
+          if (latestReport) {
+            const markdownReport = UKBTraceReportManager.generateMarkdownReport(latestReport);
+            const markdownPath = path.join(
+              parameters.repositoryPath || this.repositoryPath,
+              '.data',
+              'ukb-trace-reports',
+              'latest-trace-report.md'
+            );
+            fs.writeFileSync(markdownPath, markdownReport);
+            log('Human-readable UKB trace report saved', 'info', { path: markdownPath });
+
+            // Also generate full trace report showing ALL content for debugging
+            const fullTraceReport = UKBTraceReportManager.generateFullTraceReport(latestReport);
+            const fullTracePath = path.join(
+              parameters.repositoryPath || this.repositoryPath,
+              '.data',
+              'ukb-trace-reports',
+              'latest-trace-full.md'
+            );
+            fs.writeFileSync(fullTracePath, fullTraceReport);
+            log('Full UKB trace report saved', 'info', { path: fullTracePath });
+          }
+        } catch (mdError) {
+          log('Failed to generate markdown trace report (non-critical)', 'warning', {
+            error: mdError instanceof Error ? mdError.message : String(mdError)
+          });
+        }
       }
 
       // Export knowledge base to JSON for git tracking

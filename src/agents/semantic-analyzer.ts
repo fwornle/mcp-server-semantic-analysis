@@ -130,6 +130,15 @@ export interface StepLLMMetrics {
   totalTokens: number;
   providers: string[];
   calls: LLMCallMetrics[];
+  // Fallback tracking for data loss analysis
+  fallbacks: Array<{
+    timestamp: number;
+    reason: string;
+    failedProviders: string[];
+    usedMethod: 'regex' | 'template' | 'none';
+    taskType?: string;
+  }>;
+  fallbackCount: number;
 }
 
 export class SemanticAnalyzer {
@@ -141,6 +150,8 @@ export class SemanticAnalyzer {
     totalTokens: 0,
     providers: [],
     calls: [],
+    fallbacks: [],
+    fallbackCount: 0,
   };
 
   /**
@@ -154,7 +165,30 @@ export class SemanticAnalyzer {
       totalTokens: 0,
       providers: [],
       calls: [],
+      fallbacks: [],
+      fallbackCount: 0,
     };
+  }
+
+  /**
+   * Record a fallback to regex/template when LLM fails
+   * Call this from agents when they fall back from LLM to regex extraction
+   */
+  static recordFallback(options: {
+    reason: string;
+    failedProviders: string[];
+    usedMethod: 'regex' | 'template' | 'none';
+    taskType?: string;
+  }): void {
+    SemanticAnalyzer.currentStepMetrics.fallbacks.push({
+      timestamp: Date.now(),
+      ...options,
+    });
+    SemanticAnalyzer.currentStepMetrics.fallbackCount++;
+    log(`LLM fallback recorded: ${options.reason} → ${options.usedMethod}`, 'warning', {
+      failedProviders: options.failedProviders,
+      taskType: options.taskType,
+    });
   }
 
   /**

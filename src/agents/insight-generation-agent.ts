@@ -123,6 +123,8 @@ export class InsightGenerationAgent {
   private serenaAnalyzer: SerenaCodeAnalyzer;
   private repositoryPath: string;
   private webSearchAgent: WebSearchAgent;
+  // Cached ontology descriptions loaded from ontology JSON files
+  private ontologyDescriptions: Map<string, string> = new Map();
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
@@ -135,6 +137,79 @@ export class InsightGenerationAgent {
     this.webSearchAgent = new WebSearchAgent();
     this.initializeDirectories();
     this.checkPlantUMLAvailability();
+    // Load ontology descriptions asynchronously (will be available for most calls)
+    this.loadOntologyDescriptions();
+  }
+
+  /**
+   * Load entity class descriptions from upper and lower ontology JSON files.
+   * This allows synthesizePatternDescription to use dynamic descriptions
+   * instead of hard-coded ones.
+   */
+  private loadOntologyDescriptions(): void {
+    try {
+      // Load upper ontology
+      const upperPath = path.join(this.repositoryPath, '.data/ontologies/upper/development-knowledge-ontology.json');
+      if (fs.existsSync(upperPath)) {
+        const upperOntology = JSON.parse(fs.readFileSync(upperPath, 'utf-8'));
+        if (upperOntology.entities) {
+          for (const [className, entityDef] of Object.entries(upperOntology.entities)) {
+            const def = entityDef as { description?: string };
+            if (def.description) {
+              // Convert description to action phrase for synthesizePatternDescription
+              this.ontologyDescriptions.set(className, this.descriptionToActionPhrase(className, def.description));
+            }
+          }
+          log(`Loaded ${this.ontologyDescriptions.size} entity classes from upper ontology`, 'info');
+        }
+      }
+
+      // Load lower ontology (team-specific) - try 'coding' team by default
+      const lowerPath = path.join(this.repositoryPath, '.data/ontologies/lower/coding-ontology.json');
+      if (fs.existsSync(lowerPath)) {
+        const lowerOntology = JSON.parse(fs.readFileSync(lowerPath, 'utf-8'));
+        if (lowerOntology.entities) {
+          for (const [className, entityDef] of Object.entries(lowerOntology.entities)) {
+            const def = entityDef as { description?: string };
+            if (def.description && !this.ontologyDescriptions.has(className)) {
+              this.ontologyDescriptions.set(className, this.descriptionToActionPhrase(className, def.description));
+            }
+          }
+          log(`Extended with ${Object.keys(lowerOntology.entities).length} entity classes from lower ontology`, 'info');
+        }
+      }
+    } catch (error) {
+      log(`Failed to load ontology descriptions (will use fallback): ${error}`, 'warning');
+    }
+  }
+
+  /**
+   * Convert an ontology description like "A reusable solution..." to an action phrase
+   * like "reusable solution pattern that addresses" for use in synthesizePatternDescription
+   */
+  private descriptionToActionPhrase(className: string, description: string): string {
+    // Extract the core noun phrase and convert to action
+    const lowerDesc = description.toLowerCase();
+
+    // Map common ontology description patterns to action phrases
+    if (lowerDesc.includes('reusable solution')) return 'reusable solution pattern that addresses';
+    if (lowerDesc.includes('observation') || lowerDesc.includes('learning')) return 'development insight that captures';
+    if (lowerDesc.includes('architectural') || lowerDesc.includes('design decision')) return 'architectural decision that guides';
+    if (lowerDesc.includes('sequence of steps') || lowerDesc.includes('process')) return 'workflow process that orchestrates';
+    if (lowerDesc.includes('component') || lowerDesc.includes('service')) return 'system component that provides';
+    if (lowerDesc.includes('integration')) return 'integration point that connects';
+    if (lowerDesc.includes('documentation')) return 'documentation that explains';
+    if (lowerDesc.includes('metric') || lowerDesc.includes('quality')) return 'quality metric that measures';
+    if (lowerDesc.includes('constraint') || lowerDesc.includes('rule')) return 'constraint that governs';
+    if (lowerDesc.includes('data structure') || lowerDesc.includes('format')) return 'data structure that represents';
+    if (lowerDesc.includes('configuration') || lowerDesc.includes('setting')) return 'configuration that controls';
+    if (lowerDesc.includes('execution') || lowerDesc.includes('runtime')) return 'execution context that defines';
+    if (lowerDesc.includes('model') || lowerDesc.includes('processing')) return 'model component that processes';
+    if (lowerDesc.includes('analysis') || lowerDesc.includes('artifact')) return 'analysis artifact that captures';
+
+    // Default: use first sentence of description, converted to action phrase
+    const firstSentence = description.split('.')[0].toLowerCase();
+    return `${className.toLowerCase()} that ${firstSentence.includes('that') ? firstSentence.split('that')[1]?.trim() || 'represents' : 'represents'}`;
   }
 
   /**
@@ -4121,10 +4196,12 @@ Significance: [1-10]`;
       const category = this.mapEntityTypeToCategory(obs.entityType || 'Unclassified');
 
       // Create pattern from observation entity
+      // FIXED: Generate a proper description that synthesizes the evidence instead of duplicating it
+      const synthesizedDescription = this.synthesizePatternDescription(obs.name, category, evidence, significance);
       patterns.push({
         name: obs.name,
         category,
-        description: evidence.length > 0 ? evidence.slice(0, 3).join('; ') : `Pattern with significance ${significance}`,
+        description: synthesizedDescription,
         significance,
         evidence: evidence.slice(0, 5),
         relatedComponents: this.extractRelatedFromObservation(obs),
@@ -4164,6 +4241,65 @@ Significance: [1-10]`;
       }
     }
     return related.slice(0, 10);
+  }
+
+  /**
+   * Synthesize a meaningful description from pattern components instead of duplicating evidence.
+   * This generates a human-readable summary that explains WHAT the pattern is and WHY it matters,
+   * rather than just listing the evidence items.
+   *
+   * NOTE: Categories are dynamically loaded from upper/lower ontology JSON files.
+   * Falls back to generic descriptions if ontology not available.
+   */
+  private synthesizePatternDescription(name: string, category: string, evidence: string[], significance: number): string {
+    // Extract key concepts from evidence for synthesis
+    const keyFiles = evidence
+      .flatMap(e => e.match(/`[^`]+\.[a-z]+`/g) || [])
+      .slice(0, 3)
+      .join(', ');
+
+    const keyActions = evidence
+      .flatMap(e => {
+        // Look for action patterns like "DO:", "handles", "manages", "provides"
+        const doMatch = e.match(/DO:\s*([^.]+)/i);
+        const handlesMatch = e.match(/(handles|manages|provides|ensures|implements)\s+([^.|]+)/i);
+        return doMatch ? [doMatch[1].trim()] : handlesMatch ? [handlesMatch[0].trim()] : [];
+      })
+      .slice(0, 2);
+
+    // Get description from dynamically loaded ontology (loaded at construction time)
+    // Falls back to generic description if not found
+    let categoryDesc = this.ontologyDescriptions.get(category);
+
+    if (!categoryDesc) {
+      // Fallback descriptions for categories not in ontology
+      const fallbackDescriptions: Record<string, string> = {
+        'architectural': 'architectural pattern that structures',
+        'CodeStructure': 'code organization pattern that defines',
+        'general': 'development pattern that supports',
+        'Unclassified': 'development concept that represents'
+      };
+      categoryDesc = fallbackDescriptions[category] || fallbackDescriptions['Unclassified'];
+    }
+
+    // Build synthesized description
+    let description = `${name} is a ${categoryDesc} the codebase`;
+
+    if (keyFiles) {
+      description += ` with key implementations in ${keyFiles}`;
+    }
+
+    if (keyActions.length > 0) {
+      description += `. It ${keyActions.join(' and ')}`;
+    }
+
+    if (significance >= 8) {
+      description += '. This is a high-significance pattern that should be understood before making related changes.';
+    } else if (significance >= 6) {
+      description += '. Review related modules when modifying this area.';
+    }
+
+    return description;
   }
 
   private capitalizeCategory(category: string): string {

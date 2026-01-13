@@ -10,3 +10,6 @@ export * from './agent-response';
 
 // Agent dataflow interfaces - strict input/output contracts for each agent
 export * from './agent-dataflow';
+
+// Trace types for UKB workflow visibility
+export * from './trace-types';

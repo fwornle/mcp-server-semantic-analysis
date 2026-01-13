@@ -159,10 +159,13 @@ export class ObservationGenerationAgent {
         log(`Generated ${insightObservations.length} observations from insights`, 'info');
       }
 
-      // Generate cross-analysis observations
+      // Generate cross-analysis observations (now with LLM-based correlation)
       const crossObservations = await this.generateCrossAnalysisObservations(
         actualGitAnalysis, actualVibeAnalysis, actualSemanticAnalysis
       );
+      if (crossObservations.length > 0) {
+        log(`Generated ${crossObservations.length} cross-analysis observations`, 'info');
+      }
       observations.push(...crossObservations);
 
       // Enhance with web search results
@@ -269,12 +272,15 @@ export class ObservationGenerationAgent {
       }
     }
 
-    // Generate observations for code evolution patterns
+    // Generate observations for ALL code evolution patterns
+    // FIXED: Removed .slice(0, 5) limit - let deduplication handle duplicates
     if (gitAnalysis.codeEvolution) {
-      for (const pattern of gitAnalysis.codeEvolution.slice(0, 5)) { // Top 5 patterns
+      log(`Processing ${gitAnalysis.codeEvolution.length} code evolution patterns (no artificial limit)`, 'info');
+      for (const pattern of gitAnalysis.codeEvolution) {
         const observation = await this.createCodeEvolutionObservation(pattern, gitAnalysis);
         if (observation) observations.push(observation);
       }
+      log(`Generated ${observations.length} observations from code evolution patterns`, 'info');
     }
 
     return observations;
@@ -431,9 +437,11 @@ export class ObservationGenerationAgent {
   private async generateFromVibeAnalysis(vibeAnalysis: any): Promise<StructuredObservation[]> {
     const observations: StructuredObservation[] = [];
 
-    // Generate observations for problem-solution pairs (legacy format)
+    // Generate observations for ALL problem-solution pairs (legacy format)
+    // FIXED: Removed .slice(0, 10) limit - let deduplication handle duplicates
     if (vibeAnalysis.problemSolutionPairs) {
-      for (const pair of vibeAnalysis.problemSolutionPairs.slice(0, 10)) { // Top 10 pairs
+      log(`Processing ${vibeAnalysis.problemSolutionPairs.length} problem-solution pairs (no artificial limit)`, 'info');
+      for (const pair of vibeAnalysis.problemSolutionPairs) {
         const observation = await this.createProblemSolutionObservation(pair, vibeAnalysis);
         if (observation) observations.push(observation);
       }
@@ -449,18 +457,63 @@ export class ObservationGenerationAgent {
     }
 
     // Handle batch session format from coordinator: { sessions: [...] }
+    // FIXED: Removed .slice(0, 15) limit - process ALL sessions
     if (vibeAnalysis.sessions && Array.isArray(vibeAnalysis.sessions)) {
-      log('Processing vibe sessions from batch', 'info', {
-        sessionCount: vibeAnalysis.sessions.length
-      });
+      log(`Processing ALL ${vibeAnalysis.sessions.length} vibe sessions (no artificial limit)`, 'info');
 
-      for (const session of vibeAnalysis.sessions.slice(0, 15)) {
+      let validSessionCount = 0;
+      let skippedSessionCount = 0;
+      for (const session of vibeAnalysis.sessions) {
         const observation = this.createSessionObservation(session);
-        if (observation) observations.push(observation);
+        if (observation) {
+          observations.push(observation);
+          validSessionCount++;
+        } else {
+          skippedSessionCount++;
+        }
       }
+      log(`Session processing complete: ${validSessionCount} valid, ${skippedSessionCount} skipped (no summary)`, 'info');
     }
 
     return observations;
+  }
+
+  /**
+   * Synthesize a summary from session exchanges when metadata.summary is missing
+   * Uses first user message + assistant response to create a meaningful summary
+   */
+  private synthesizeSessionSummary(session: any): string | null {
+    if (!session?.exchanges?.length) return null;
+
+    // Try to extract meaningful content from exchanges
+    const exchanges = session.exchanges.slice(0, 3); // First 3 exchanges
+    const contentParts: string[] = [];
+
+    for (const exchange of exchanges) {
+      // Handle different exchange formats
+      const userMsg = exchange.userMessage || exchange.user || exchange.content?.user || '';
+      const assistantMsg = exchange.assistantMessage || exchange.assistant || exchange.content?.assistant || '';
+
+      if (userMsg && typeof userMsg === 'string' && userMsg.length > 20) {
+        contentParts.push(userMsg.substring(0, 200));
+      }
+      if (assistantMsg && typeof assistantMsg === 'string' && assistantMsg.length > 20) {
+        contentParts.push(assistantMsg.substring(0, 200));
+      }
+    }
+
+    if (contentParts.length === 0) return null;
+
+    // Create a summary from the first meaningful content
+    const combinedContent = contentParts.join(' ').substring(0, 500);
+
+    // Extract key topic from content
+    const firstSentence = combinedContent.split(/[.!?]/)[0]?.trim();
+    if (firstSentence && firstSentence.length >= 20) {
+      return `Session discussing: ${firstSentence}`;
+    }
+
+    return `Development session with ${session.exchanges.length} exchanges`;
   }
 
   /**
@@ -476,14 +529,22 @@ export class ObservationGenerationAgent {
 
     const sessionDate = session.timestamp || session.date || new Date().toISOString();
 
-    // STRICT: Only use metadata.summary - this is the correct location per ConversationSession interface
-    // NO FALLBACKS - if no summary exists, this session should not create an entity
-    // Empty sessions indicate upstream processing (vibe-history-agent) needs to generate proper summaries
-    const summary = session.metadata?.summary;
+    // ENHANCED: Try metadata.summary first, then synthesize from exchanges
+    let summary = session.metadata?.summary;
 
     if (!summary || typeof summary !== 'string' || summary.trim().length < 10) {
-      // No valid summary - skip this session entirely
-      return null;
+      // Try to synthesize a summary from session content
+      summary = this.synthesizeSessionSummary(session);
+
+      if (!summary) {
+        // Truly empty session - skip
+        return null;
+      }
+
+      log(`Synthesized summary for session ${session.metadata?.sessionId || 'unknown'}`, 'debug', {
+        synthesizedLength: summary.length,
+        exchangeCount: session.exchanges?.length || 0
+      });
     }
 
     // Generate meaningful entity name from summary content
@@ -719,11 +780,16 @@ export class ObservationGenerationAgent {
         relationCount: semanticAnalysis.relations?.length || 0
       });
 
-      // Process entities with LLM synthesis (async)
+      // Process ALL entities with LLM synthesis (async)
+      // FIXED: Removed .slice(0, 20) limit that was causing 95% data loss
+      // The deduplication operators downstream will handle any duplicates
+      log(`Processing ${semanticAnalysis.entities.length} semantic entities (no artificial limit)`, 'info');
       const entityObservations = await Promise.all(
-        semanticAnalysis.entities.slice(0, 20).map((entity: any) => this.createEntityObservation(entity))
+        semanticAnalysis.entities.map((entity: any) => this.createEntityObservation(entity))
       );
-      observations.push(...entityObservations.filter((obs): obs is StructuredObservation => obs !== null));
+      const validEntityObs = entityObservations.filter((obs): obs is StructuredObservation => obs !== null);
+      observations.push(...validEntityObs);
+      log(`Generated ${validEntityObs.length} observations from ${semanticAnalysis.entities.length} entities`, 'info');
     }
 
     return observations;
@@ -1236,9 +1302,9 @@ Provide a JSON response with:
   ): Promise<StructuredObservation[]> {
     const observations: StructuredObservation[] = [];
 
-    // Correlate git patterns with conversation patterns
+    // Correlate git patterns with conversation patterns using LLM
     if (gitAnalysis?.codeEvolution && vibeAnalysis?.patterns?.developmentThemes) {
-      const correlation = this.correlatePatternsAcrossSources(
+      const correlation = await this.correlatePatternsAcrossSources(
         gitAnalysis.codeEvolution,
         vibeAnalysis.patterns.developmentThemes
       );
@@ -1251,30 +1317,149 @@ Provide a JSON response with:
     return observations;
   }
 
-  private correlatePatternsAcrossSources(
+  private async correlatePatternsAcrossSources(
     gitPatterns: any[],
     vibeThemes: any[]
-  ): StructuredObservation | null {
-    // DISABLED: This method was generating garbage observations like:
-    // "Correlation identified between git activity (promise) and conversation focus (No theme)"
-    //
-    // The approach of template-filling raw data produces meaningless entities that:
-    // 1. Have broken entity names (e.g., "CrossanalysisGitvibecorrelationPattern")
-    // 2. Contain no actionable insights for developers
-    // 3. Waste storage and attention in the knowledge graph
-    //
-    // TODO: If cross-source correlation is needed, use LLM to:
-    // 1. Actually analyze both sources semantically
-    // 2. Identify real patterns that span git commits AND conversations
-    // 3. Generate specific, actionable observations with code references
-    // 4. Create proper entity names based on the actual correlation found
-    //
-    // Until that's implemented, return null to avoid generating garbage.
-    log('Skipping cross-analysis correlation (disabled - was generating garbage)', 'info', {
-      gitPatternsCount: gitPatterns?.length || 0,
-      vibeThemesCount: vibeThemes?.length || 0
-    });
-    return null;
+  ): Promise<StructuredObservation | null> {
+    // RESTORED: Use LLM to find meaningful correlations between git and vibe data
+    // Previously disabled because template-filling produced garbage
+
+    if (!gitPatterns?.length || !vibeThemes?.length) {
+      log('Skipping cross-analysis: insufficient data', 'debug', {
+        gitPatternsCount: gitPatterns?.length || 0,
+        vibeThemesCount: vibeThemes?.length || 0
+      });
+      return null;
+    }
+
+    // Filter out empty/meaningless themes
+    const validThemes = vibeThemes.filter(t =>
+      t.theme && t.theme !== 'No theme' && t.theme.length > 3
+    );
+
+    if (!validThemes.length) {
+      log('Skipping cross-analysis: no valid themes', 'debug');
+      return null;
+    }
+
+    try {
+      const prompt = `Analyze correlations between code changes and development discussions:
+
+## Git Patterns (${gitPatterns.length} patterns)
+${gitPatterns.slice(0, 10).map(p => `- ${p.pattern}: ${p.occurrences || 1} occurrences`).join('\n')}
+
+## Conversation Themes (${validThemes.length} themes)
+${validThemes.slice(0, 10).map(t => `- ${t.theme}: ${t.count || 1} mentions`).join('\n')}
+
+Find meaningful correlations where:
+1. Git activity patterns relate to conversation topics
+2. Both indicate the same underlying development focus
+3. The correlation provides actionable insight
+
+Return JSON:
+{
+  "hasCorrelation": boolean,
+  "correlationName": string (PascalCase, e.g., "AuthenticationRefactoringPattern"),
+  "description": string (1-2 sentences explaining the correlation),
+  "gitPatterns": string[] (related git patterns),
+  "vibeThemes": string[] (related conversation themes),
+  "actionableInsight": string (what developers should know),
+  "confidence": number (0-1)
+}
+
+If no meaningful correlation exists, return { "hasCorrelation": false }`;
+
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: 'patterns',
+        provider: 'auto',
+        taskType: 'observation_generation'
+      });
+
+      const correlation = JSON.parse(result.insights);
+
+      if (!correlation.hasCorrelation || correlation.confidence < 0.5) {
+        log('Cross-analysis: no significant correlation found', 'debug', {
+          hasCorrelation: correlation.hasCorrelation,
+          confidence: correlation.confidence
+        });
+        return null;
+      }
+
+      const currentDate = new Date().toISOString();
+      const entityName = correlation.correlationName || 'CrossSourceCorrelation';
+
+      log('Cross-analysis: correlation found', 'info', {
+        name: entityName,
+        confidence: correlation.confidence,
+        gitPatterns: correlation.gitPatterns?.length || 0,
+        vibeThemes: correlation.vibeThemes?.length || 0
+      });
+
+      const observations: ObservationTemplate[] = [
+        {
+          type: 'learning',
+          content: correlation.description,
+          date: currentDate,
+          metadata: {
+            transferable: true,
+            domain: 'cross-analysis',
+            confidence: correlation.confidence
+          }
+        },
+        {
+          type: 'insight',
+          content: correlation.actionableInsight,
+          date: currentDate,
+          metadata: {
+            actionable: true,
+            gitPatterns: correlation.gitPatterns,
+            vibeThemes: correlation.vibeThemes
+          }
+        }
+      ];
+
+      return {
+        name: entityName,
+        entityType: 'Unclassified',
+        significance: Math.round(correlation.confidence * 10),
+        observations,
+        tags: ['cross-analysis', 'correlation', 'git-vibe', 'llm-synthesized'],
+        relationships: [
+          {
+            from: entityName,
+            to: 'GitHistoryAnalysis',
+            relationType: 'correlates',
+            type: 'correlates',
+            target: 'GitHistoryAnalysis',
+            description: `Correlates ${correlation.gitPatterns?.length || 0} git patterns`
+          },
+          {
+            from: entityName,
+            to: 'VibeHistoryAnalysis',
+            relationType: 'correlates',
+            type: 'correlates',
+            target: 'VibeHistoryAnalysis',
+            description: `Correlates ${correlation.vibeThemes?.length || 0} conversation themes`
+          }
+        ],
+        metadata: {
+          created_at: currentDate,
+          last_updated: currentDate,
+          generatedAt: currentDate,
+          sourceData: ['git-history', 'vibe-history'],
+          team: this.team,
+          confidence: correlation.confidence,
+          validationStatus: 'pending',
+          llmSynthesized: true
+        }
+      };
+
+    } catch (error) {
+      log('Cross-analysis LLM correlation failed', 'warning', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
 
     // Original garbage-generating code preserved for reference:
     /*

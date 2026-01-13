@@ -335,16 +335,17 @@ export class UKBTraceReportManager {
     if (!batch) return;
 
     const commits = gitResult?.commits || [];
+    // ENHANCED: Store ALL commits, not just first 20
     batch.sourceData.gitHistory = {
       commitsCount: commits.length,
-      commits: commits.slice(0, 20).map((c: any) => ({
+      commits: commits.map((c: any) => ({
         hash: c.hash?.substring(0, 8) || 'unknown',
-        message: (c.message || '').substring(0, 100),
-        filesChanged: c.files?.slice(0, 10) || [],
+        message: (c.message || '').substring(0, 100),  // Truncate message, but keep all commits
+        filesChanged: c.files || [],  // Keep all files
         author: c.author || 'unknown',
         date: c.date || ''
       })),
-      codeFilesDiscovered: this.extractUniqueFiles(commits).slice(0, 50),
+      codeFilesDiscovered: this.extractUniqueFiles(commits),  // All files, no slice
       architecturalDecisions: gitResult?.architecturalDecisions || []
     };
 
@@ -356,20 +357,36 @@ export class UKBTraceReportManager {
     if (!batch) return;
 
     const sessions = vibeResult?.sessions || [];
+    // ENHANCED: Store ALL sessions, not just first 20
     batch.sourceData.vibeHistory = {
       sessionsCount: sessions.length,
-      sessions: sessions.slice(0, 20).map((s: any) => ({
-        sessionId: s.sessionId || s.id || 'unknown',
-        date: s.date || '',
+      sessions: sessions.map((s: any) => ({
+        sessionId: s.sessionId || s.metadata?.sessionId || s.id || s.filename || 'unknown',
+        date: s.date || s.timestamp || '',
         duration: s.duration || 0,
-        keyTopics: s.keyTopics?.slice(0, 5) || [],
-        problemsSolved: s.problemsSolved?.slice(0, 5) || [],
-        toolsUsed: s.toolsUsed?.slice(0, 10) || []
+        keyTopics: s.keyTopics || [],
+        problemsSolved: s.problemsSolved || [],
+        toolsUsed: s.toolsUsed || [],
+        summary: s.metadata?.summary || this.extractSessionSummary(s) || '',
+        exchangeCount: s.exchanges?.length || 0
       })),
-      vibesExtracted: this.extractVibes(sessions).slice(0, 30)
+      vibesExtracted: this.extractVibes(sessions)  // All vibes, no slice
     };
 
     console.error(`[UKBTraceReport] Batch ${batchId}: ${sessions.length} sessions, ${batch.sourceData.vibeHistory.vibesExtracted.length} vibes`);
+  }
+
+  /**
+   * Extract a summary from session exchanges when metadata.summary is missing
+   */
+  private extractSessionSummary(session: any): string {
+    if (!session?.exchanges?.length) return '';
+    const firstExchange = session.exchanges[0];
+    const userMsg = firstExchange?.userMessage || firstExchange?.user || '';
+    if (userMsg && typeof userMsg === 'string') {
+      return userMsg.substring(0, 100);
+    }
+    return `Session with ${session.exchanges.length} exchanges`;
   }
 
   traceSemanticAnalysis(batchId: string, semanticResult: any, llmProvider: string, tokensUsed: number): void {
@@ -377,15 +394,16 @@ export class UKBTraceReportManager {
     if (!batch) return;
 
     const entities = semanticResult?.entities || [];
+    // ENHANCED: Store ALL entities/concepts, not just first 30
     batch.conceptExtraction = {
       batchId,
-      concepts: entities.slice(0, 30).map((e: any) => ({
+      concepts: entities.map((e: any) => ({
         name: e.name || 'unknown',
         type: e.type || e.entityType || 'unknown',
         sourceType: this.inferSourceType(e),
-        sourceReferences: this.extractSourceRefs(e).slice(0, 10),
+        sourceReferences: this.extractSourceRefs(e),  // All refs, no slice
         significance: e.significance || 5,
-        rawObservations: (e.observations || []).slice(0, 5)
+        rawObservations: e.observations || []  // All observations, no slice
       })),
       entitiesCreated: entities.length,
       relationsCreated: semanticResult?.relations?.length || 0,
@@ -407,22 +425,32 @@ export class UKBTraceReportManager {
     const observations = observationResult?.observations || [];
     const byType: Record<string, number> = {};
 
+    // ENHANCED: Store ALL observations, not just first 30
     batch.observationDerivation = {
       batchId,
-      observations: observations.slice(0, 30).map((o: any) => {
+      observations: observations.map((o: any) => {
         const type = o.entityType || o.type || 'unknown';
         byType[type] = (byType[type] || 0) + 1;
+
+        // Extract first observation content for tracing
+        const firstObs = o.observations?.[0];
+        const content = typeof firstObs === 'string'
+          ? firstObs
+          : (firstObs?.content || '');
 
         return {
           entityName: o.name || 'unknown',
           observationType: type,
-          content: (o.observations?.[0] || '').substring(0, 200),
+          content: content.substring(0, 300),  // More content for debugging
+          observationCount: o.observations?.length || 0,
+          significance: o.significance || 5,
           derivedFrom: {
-            gitCommits: [],
-            vibeSessions: [],
-            codeFiles: []
+            gitCommits: o.metadata?.sourceCommits || [],
+            vibeSessions: o.metadata?.sourceSessions || [],
+            codeFiles: o.metadata?.sourceFiles || []
           },
-          confidence: o.metadata?.confidence || 0.5
+          confidence: o.metadata?.confidence || 0.5,
+          llmSynthesized: o.metadata?.llmSynthesized || false
         };
       }),
       totalObservations: observations.length,
@@ -442,29 +470,31 @@ export class UKBTraceReportManager {
     const classified = classificationResult?.classified || [];
     const byClass: Record<string, number> = {};
 
+    // ENHANCED: Store ALL classifications, not just first 30
     batch.ontologyClassification = {
       batchId,
-      classifications: classified.slice(0, 30).map((c: any) => {
-        const classType = c.ontologyClass || c.type || 'Unclassified';
+      classifications: classified.map((c: any) => {
+        const classType = c.ontologyClass || c.ontologyMetadata?.ontologyClass || c.type || 'Unclassified';
         byClass[classType] = (byClass[classType] || 0) + 1;
 
         return {
-          entityName: c.name || 'unknown',
-          originalType: c.originalType || 'unknown',
+          entityName: c.entity?.name || c.name || c.original?.name || 'unknown',
+          originalType: c.originalType || c.original?.entityType || 'unknown',
           classifiedAs: classType,
-          ontologyPath: c.ontologyPath || [classType],
-          confidence: c.confidence || 0.5,
-          llmReasoning: (c.reasoning || '').substring(0, 200)
+          ontologyPath: c.ontologyPath || c.ontologyMetadata?.ontologyPath || [classType],
+          confidence: c.confidence || c.ontologyMetadata?.confidence || 0.5,
+          llmReasoning: (c.reasoning || c.ontologyMetadata?.reasoning || '').substring(0, 300),
+          method: c.method || c.ontologyMetadata?.method || 'unknown'
         };
       }),
       classified: classified.length,
-      unclassified: classificationResult?.unclassified?.length || 0,
+      unclassified: classificationResult?.unclassified?.length || classificationResult?.summary?.unclassifiedCount || 0,
       byClass,
       llmCalls,
       tokensUsed
     };
 
-    console.error(`[UKBTraceReport] Batch ${batchId}: ${classified.length} classified, ${byClass}`);
+    console.error(`[UKBTraceReport] Batch ${batchId}: ${classified.length} classified, byClass: ${JSON.stringify(byClass)}`);
   }
 
   traceQAIssue(batchId: string | undefined, stepName: string, issue: Omit<QAIssue, 'stepName' | 'batchId'>): void {
@@ -855,6 +885,318 @@ export class UKBTraceReportManager {
     md += `- Total Calls: ${report.llmUsage.totalCalls}\n`;
     md += `- Total Tokens: ${report.llmUsage.totalTokens.toLocaleString()}\n`;
     md += `- Providers: ${Object.keys(report.llmUsage.byProvider).join(', ')}\n\n`;
+
+    // Add detailed per-batch trace for visibility
+    if (report.batches && report.batches.length > 0) {
+      md += `## Per-Batch Execution Trace\n\n`;
+      md += `This section shows exactly what was extracted at each step for each batch.\n\n`;
+
+      // Show first 3 batches in detail, then summary for rest
+      const detailedBatches = report.batches.slice(0, 3);
+      const remainingBatches = report.batches.slice(3);
+
+      for (const batch of detailedBatches) {
+        md += `### Batch ${batch.batchNumber}: ${batch.batchId}\n\n`;
+
+        // Git History Step
+        md += `#### 1. Git History Analysis\n`;
+        md += `- **Commits Processed:** ${batch.sourceData.gitHistory.commitsCount}\n`;
+        if (batch.sourceData.gitHistory.commits.length > 0) {
+          md += `- **Sample Commits:**\n`;
+          for (const commit of batch.sourceData.gitHistory.commits.slice(0, 3)) {
+            md += `  - \`${commit.hash}\`: ${commit.message.substring(0, 60)}${commit.message.length > 60 ? '...' : ''}\n`;
+          }
+        }
+        if (batch.sourceData.gitHistory.codeFilesDiscovered.length > 0) {
+          md += `- **Code Files:** ${batch.sourceData.gitHistory.codeFilesDiscovered.slice(0, 5).join(', ')}${batch.sourceData.gitHistory.codeFilesDiscovered.length > 5 ? ` (+${batch.sourceData.gitHistory.codeFilesDiscovered.length - 5} more)` : ''}\n`;
+        }
+        md += `\n`;
+
+        // Vibe History Step
+        md += `#### 2. Vibe/Session Analysis\n`;
+        md += `- **Sessions Processed:** ${batch.sourceData.vibeHistory.sessionsCount}\n`;
+        if (batch.sourceData.vibeHistory.vibesExtracted.length > 0) {
+          md += `- **Vibes Extracted:** ${batch.sourceData.vibeHistory.vibesExtracted.slice(0, 5).join(', ')}\n`;
+        }
+        md += `\n`;
+
+        // Semantic Analysis Step
+        md += `#### 3. Semantic Analysis → Concepts\n`;
+        md += `- **Entities Created:** ${batch.conceptExtraction.entitiesCreated}\n`;
+        md += `- **Relations Created:** ${batch.conceptExtraction.relationsCreated}\n`;
+        md += `- **LLM Provider:** ${batch.conceptExtraction.llmProvider || 'rule-based'}\n`;
+        md += `- **Tokens Used:** ${batch.conceptExtraction.tokensUsed}\n`;
+        if (batch.conceptExtraction.concepts.length > 0) {
+          md += `- **Sample Concepts Extracted:**\n`;
+          for (const concept of batch.conceptExtraction.concepts.slice(0, 5)) {
+            md += `  - **${concept.name}** (${concept.type}, significance: ${concept.significance})\n`;
+            if (concept.rawObservations.length > 0) {
+              md += `    - Evidence: "${concept.rawObservations[0].substring(0, 80)}${concept.rawObservations[0].length > 80 ? '...' : ''}"\n`;
+            }
+          }
+        }
+        md += `\n`;
+
+        // Observation Generation Step
+        md += `#### 4. Observation Generation\n`;
+        md += `- **Observations Created:** ${batch.observationDerivation.totalObservations}\n`;
+        if (Object.keys(batch.observationDerivation.observationsByType).length > 0) {
+          md += `- **By Type:** ${Object.entries(batch.observationDerivation.observationsByType).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+        }
+        if (batch.observationDerivation.observations.length > 0) {
+          md += `- **Sample Observations:**\n`;
+          for (const obs of batch.observationDerivation.observations.slice(0, 3)) {
+            md += `  - **${obs.entityName}** (${obs.observationType}): "${obs.content.substring(0, 60)}${obs.content.length > 60 ? '...' : ''}"\n`;
+          }
+        }
+        md += `\n`;
+
+        // Ontology Classification Step
+        md += `#### 5. Ontology Classification\n`;
+        md += `- **Classified:** ${batch.ontologyClassification.classified}\n`;
+        md += `- **Unclassified:** ${batch.ontologyClassification.unclassified}\n`;
+        md += `- **LLM Calls:** ${batch.ontologyClassification.llmCalls}\n`;
+        if (Object.keys(batch.ontologyClassification.byClass).length > 0) {
+          md += `- **By Ontology Class:** ${Object.entries(batch.ontologyClassification.byClass).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+        }
+        if (batch.ontologyClassification.classifications.length > 0) {
+          md += `- **Sample Classifications:**\n`;
+          for (const cls of batch.ontologyClassification.classifications.slice(0, 3)) {
+            md += `  - **${cls.entityName}**: ${cls.originalType} → ${cls.classifiedAs} (confidence: ${(cls.confidence * 100).toFixed(0)}%)\n`;
+          }
+        }
+        md += `\n`;
+
+        // Data Loss for this batch
+        if (batch.dataLoss && batch.dataLoss.length > 0) {
+          md += `#### Data Loss in This Batch\n`;
+          for (const loss of batch.dataLoss) {
+            md += `- **${loss.stepName}**: ${loss.inputCount} → ${loss.outputCount} (${loss.lossPercentage}% loss)\n`;
+          }
+          md += `\n`;
+        }
+
+        md += `---\n\n`;
+      }
+
+      // Summary for remaining batches
+      if (remainingBatches.length > 0) {
+        md += `### Remaining Batches Summary (${remainingBatches.length} batches)\n\n`;
+        md += `| Batch | Commits | Sessions | Concepts | Observations | Classified |\n`;
+        md += `|-------|---------|----------|----------|--------------|------------|\n`;
+        for (const batch of remainingBatches) {
+          md += `| ${batch.batchNumber} | ${batch.sourceData.gitHistory.commitsCount} | ${batch.sourceData.vibeHistory.sessionsCount} | ${batch.conceptExtraction.entitiesCreated} | ${batch.observationDerivation.totalObservations} | ${batch.ontologyClassification.classified} |\n`;
+        }
+        md += `\n`;
+      }
+    }
+
+    // Finalization phase details
+    if (report.finalization) {
+      md += `## Finalization Phase\n\n`;
+
+      if (report.finalization.codeGraphStats.totalFunctions > 0 ||
+          report.finalization.codeGraphStats.totalClasses > 0) {
+        md += `### Code Graph Analysis\n`;
+        md += `- Functions: ${report.finalization.codeGraphStats.totalFunctions}\n`;
+        md += `- Classes: ${report.finalization.codeGraphStats.totalClasses}\n`;
+        md += `- Methods: ${report.finalization.codeGraphStats.totalMethods}\n`;
+        if (Object.keys(report.finalization.codeGraphStats.languageDistribution).length > 0) {
+          md += `- Languages: ${Object.entries(report.finalization.codeGraphStats.languageDistribution).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+        }
+        md += `\n`;
+      }
+
+      if (report.finalization.insightGeneration.length > 0) {
+        md += `### Insight Documents Generated\n`;
+        for (const insight of report.finalization.insightGeneration.slice(0, 10)) {
+          md += `- **${insight.entityName}** (significance: ${insight.significance})\n`;
+          if (insight.insightDocument.filePath) {
+            md += `  - File: ${insight.insightDocument.filePath}\n`;
+          }
+        }
+        md += `\n`;
+      }
+
+      md += `### Final Persistence\n`;
+      md += `- Entities Persisted: ${report.finalization.finalPersistence.entitiesPersisted}\n`;
+      md += `- Relations Persisted: ${report.finalization.finalPersistence.relationsPersisted}\n`;
+      md += `- Duplicates Removed: ${report.finalization.finalPersistence.duplicatesRemoved}\n\n`;
+    }
+
+    return md;
+  }
+
+  /**
+   * Generate a FULL trace report showing ALL content (not samples)
+   * This is a comprehensive report for debugging data flow issues
+   */
+  static generateFullTraceReport(report: UKBTraceReport): string {
+    let md = `# UKB Full Trace Report\n\n`;
+    md += `> **This report shows ALL content extracted at each step for debugging data flow.**\n\n`;
+    md += `**Workflow:** ${report.workflowName} (${report.workflowId})\n`;
+    md += `**Team:** ${report.team}\n`;
+    md += `**Status:** ${report.status}\n`;
+    md += `**Duration:** ${(report.durationMs / 1000 / 60).toFixed(1)} minutes\n`;
+    md += `**Date:** ${report.startTime}\n\n`;
+
+    // Executive Summary
+    md += `## Executive Summary\n\n`;
+    md += `| Metric | Count |\n|--------|-------|\n`;
+    md += `| Total Batches | ${report.summary.totalBatches} |\n`;
+    md += `| Total Commits | ${report.summary.totalCommits} |\n`;
+    md += `| Total Sessions | ${report.summary.totalSessions} |\n`;
+    md += `| Concepts Extracted | ${report.summary.totalConcepts} |\n`;
+    md += `| Observations Generated | ${report.summary.totalObservations} |\n`;
+    md += `| **Final Entities** | **${report.summary.finalEntities}** |\n`;
+    md += `| **Data Loss** | **${report.summary.dataLossPercentage}%** |\n\n`;
+
+    // Data Flow Visualization
+    md += `## Data Flow\n\n`;
+    md += `\`\`\`\n`;
+    md += `Commits (${report.summary.totalCommits}) + Sessions (${report.summary.totalSessions})\n`;
+    md += `  → Semantic Analysis → Concepts (${report.summary.totalConcepts})\n`;
+    md += `  → Observation Gen → Observations (${report.summary.totalObservations})\n`;
+    md += `  → Ontology + Dedup → Final Entities (${report.summary.finalEntities})\n`;
+    md += `\`\`\`\n\n`;
+
+    // ALL COMMITS across all batches
+    md += `## All Commit Messages (${report.summary.totalCommits} total)\n\n`;
+    md += `| Batch | Hash | Author | Date | Message (100 chars) |\n`;
+    md += `|-------|------|--------|------|---------------------|\n`;
+    let commitIndex = 0;
+    for (const batch of report.batches || []) {
+      for (const commit of batch.sourceData?.gitHistory?.commits || []) {
+        commitIndex++;
+        const truncMsg = commit.message.substring(0, 100).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+        md += `| ${batch.batchNumber} | ${commit.hash} | ${commit.author} | ${commit.date?.substring(0, 10) || ''} | ${truncMsg} |\n`;
+      }
+    }
+    md += `\n`;
+
+    // ALL SESSIONS across all batches
+    md += `## All Sessions (${report.summary.totalSessions} total)\n\n`;
+    md += `| Batch | Session ID | Date | Exchanges | Summary |\n`;
+    md += `|-------|------------|------|-----------|---------|`;
+    md += `\n`;
+    for (const batch of report.batches || []) {
+      for (const session of batch.sourceData?.vibeHistory?.sessions || []) {
+        const summary = ((session as any).summary || 'No summary').substring(0, 80).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+        const exchangeCount = (session as any).exchangeCount || 0;
+        md += `| ${batch.batchNumber} | ${session.sessionId?.substring(0, 20) || 'unknown'} | ${session.date?.substring(0, 10) || ''} | ${exchangeCount} | ${summary} |\n`;
+      }
+    }
+    md += `\n`;
+
+    // ALL CONCEPTS extracted
+    md += `## All Concepts Extracted (${report.summary.totalConcepts} total)\n\n`;
+    md += `| Batch | Concept Name | Type | Significance | Source | LLM |\n`;
+    md += `|-------|--------------|------|--------------|--------|-----|\n`;
+    for (const batch of report.batches || []) {
+      for (const concept of batch.conceptExtraction?.concepts || []) {
+        const llmUsed = batch.conceptExtraction.llmProvider ? 'Yes' : 'No';
+        md += `| ${batch.batchNumber} | ${concept.name} | ${concept.type} | ${concept.significance} | ${concept.sourceType} | ${llmUsed} |\n`;
+      }
+    }
+    md += `\n`;
+
+    // ALL OBSERVATIONS generated
+    md += `## All Observations Generated (${report.summary.totalObservations} total)\n\n`;
+    md += `| Batch | Entity Name | Type | Significance | Obs Count | LLM Synth |\n`;
+    md += `|-------|-------------|------|--------------|-----------|------------|\n`;
+    for (const batch of report.batches || []) {
+      for (const obs of batch.observationDerivation?.observations || []) {
+        const llmSynth = (obs as any).llmSynthesized ? 'Yes' : 'No';
+        const obsCount = (obs as any).observationCount || 0;
+        md += `| ${batch.batchNumber} | ${obs.entityName} | ${obs.observationType} | ${(obs as any).significance || 5} | ${obsCount} | ${llmSynth} |\n`;
+      }
+    }
+    md += `\n`;
+
+    // ALL CLASSIFICATIONS
+    md += `## All Ontology Classifications\n\n`;
+    md += `| Batch | Entity | Original Type | Classified As | Confidence | Method |\n`;
+    md += `|-------|--------|---------------|---------------|------------|--------|\n`;
+    for (const batch of report.batches || []) {
+      for (const cls of batch.ontologyClassification?.classifications || []) {
+        const confidence = ((cls.confidence || 0) * 100).toFixed(0) + '%';
+        const method = (cls as any).method || 'unknown';
+        md += `| ${batch.batchNumber} | ${cls.entityName} | ${cls.originalType} | ${cls.classifiedAs} | ${confidence} | ${method} |\n`;
+      }
+    }
+    md += `\n`;
+
+    // DATA LOSS ANALYSIS by step
+    md += `## Data Loss Analysis by Step\n\n`;
+    md += `| Step | Total Input | Total Output | Loss % |\n`;
+    md += `|------|-------------|--------------|--------|\n`;
+
+    // Aggregate data loss across all batches
+    const stepLoss: Record<string, { input: number; output: number }> = {};
+    for (const batch of report.batches || []) {
+      for (const loss of batch.dataLoss || []) {
+        if (!stepLoss[loss.stepName]) {
+          stepLoss[loss.stepName] = { input: 0, output: 0 };
+        }
+        stepLoss[loss.stepName].input += loss.inputCount;
+        stepLoss[loss.stepName].output += loss.outputCount;
+      }
+    }
+    for (const [step, data] of Object.entries(stepLoss)) {
+      const lossPercent = data.input > 0 ? Math.round((1 - data.output / data.input) * 100) : 0;
+      md += `| ${step} | ${data.input} | ${data.output} | ${lossPercent}% |\n`;
+    }
+    md += `\n`;
+
+    // Per-Batch Detailed Trace (Sample from first 3)
+    md += `## Sample Batch Trace (Batch 1)\n\n`;
+    const sampleBatch = report.batches?.[0];
+    if (sampleBatch) {
+      md += `### 1. Git History\n`;
+      md += `- Commits: ${sampleBatch.sourceData?.gitHistory?.commitsCount || 0}\n`;
+      const sampleCommit = sampleBatch.sourceData?.gitHistory?.commits?.[0];
+      if (sampleCommit) {
+        md += `- Sample: ${sampleCommit.message.substring(0, 80)}...\n`;
+      }
+      md += `\n`;
+
+      md += `### 2. Semantic Analysis\n`;
+      md += `- Entities Created: ${sampleBatch.conceptExtraction?.entitiesCreated || 0}\n`;
+      md += `- Relations: ${sampleBatch.conceptExtraction?.relationsCreated || 0}\n`;
+      md += `- LLM: ${sampleBatch.conceptExtraction?.llmProvider || 'none'}\n`;
+      md += `- Sample Concepts:\n`;
+      for (const concept of (sampleBatch.conceptExtraction?.concepts || []).slice(0, 3)) {
+        md += `  - ${concept.name} (${concept.type})\n`;
+      }
+      md += `\n`;
+
+      md += `### 3. Observation Generation\n`;
+      md += `- Observations: ${sampleBatch.observationDerivation?.totalObservations || 0}\n`;
+      md += `\n`;
+
+      md += `### 4. Ontology Classification\n`;
+      md += `- Classified: ${sampleBatch.ontologyClassification?.classified || 0}\n`;
+      md += `- Unclassified: ${sampleBatch.ontologyClassification?.unclassified || 0}\n`;
+      md += `- By Class: ${JSON.stringify(sampleBatch.ontologyClassification?.byClass || {})}\n`;
+    }
+    md += `\n`;
+
+    // QA Issues
+    if (report.qaReport?.criticalIssues?.length > 0) {
+      md += `## Critical QA Issues\n\n`;
+      for (const issue of report.qaReport.criticalIssues) {
+        md += `- **${issue.stepName}** [${issue.category}]: ${issue.message}\n`;
+      }
+      md += `\n`;
+    }
+
+    // Recommendations
+    if (report.qaReport?.recommendations?.length > 0) {
+      md += `## Recommendations\n\n`;
+      for (const rec of report.qaReport.recommendations) {
+        md += `- ${rec}\n`;
+      }
+    }
 
     return md;
   }

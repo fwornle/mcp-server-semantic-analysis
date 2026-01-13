@@ -387,28 +387,52 @@ export class CoordinatorAgent {
         };
       }
 
-      // CRITICAL: Preserve single-step debugging state from previous progress file
-      // This ensures the dashboard's single-step mode persists until explicitly disabled
-      if (preservedSingleStepState.singleStepMode !== undefined) {
-        progress.singleStepMode = preservedSingleStepState.singleStepMode;
-      }
-      if (preservedSingleStepState.stepPaused !== undefined) {
-        progress.stepPaused = preservedSingleStepState.stepPaused;
-      }
-      if (preservedSingleStepState.pausedAtStep !== undefined) {
-        progress.pausedAtStep = preservedSingleStepState.pausedAtStep;
-      }
-      if (preservedSingleStepState.pausedAt !== undefined) {
-        progress.pausedAt = preservedSingleStepState.pausedAt;
-      }
-      if (preservedSingleStepState.singleStepUpdatedAt !== undefined) {
-        progress.singleStepUpdatedAt = preservedSingleStepState.singleStepUpdatedAt;
-      }
-      if (preservedSingleStepState.singleStepTimeout !== undefined) {
-        progress.singleStepTimeout = preservedSingleStepState.singleStepTimeout;
-      }
-      if (preservedSingleStepState.resumeRequestedAt !== undefined) {
-        progress.resumeRequestedAt = preservedSingleStepState.resumeRequestedAt;
+      // CRITICAL: Re-read single-step state RIGHT BEFORE writing to prevent race condition
+      // The dashboard may have updated singleStepMode between our initial read and now
+      // This minimizes the race window to just the JSON stringify + write
+      if (fs.existsSync(progressPath)) {
+        try {
+          const freshProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+          // Always use the FRESHEST single-step state from the file
+          if (freshProgress.singleStepMode !== undefined) {
+            progress.singleStepMode = freshProgress.singleStepMode;
+          }
+          if (freshProgress.stepPaused !== undefined) {
+            progress.stepPaused = freshProgress.stepPaused;
+          }
+          if (freshProgress.pausedAtStep !== undefined) {
+            progress.pausedAtStep = freshProgress.pausedAtStep;
+          }
+          if (freshProgress.pausedAt !== undefined) {
+            progress.pausedAt = freshProgress.pausedAt;
+          }
+          if (freshProgress.singleStepUpdatedAt !== undefined) {
+            progress.singleStepUpdatedAt = freshProgress.singleStepUpdatedAt;
+          }
+          if (freshProgress.resumeRequestedAt !== undefined) {
+            progress.resumeRequestedAt = freshProgress.resumeRequestedAt;
+          }
+        } catch {
+          // Fall back to earlier preserved state if fresh read fails
+          if (preservedSingleStepState.singleStepMode !== undefined) {
+            progress.singleStepMode = preservedSingleStepState.singleStepMode;
+          }
+          if (preservedSingleStepState.stepPaused !== undefined) {
+            progress.stepPaused = preservedSingleStepState.stepPaused;
+          }
+          if (preservedSingleStepState.pausedAtStep !== undefined) {
+            progress.pausedAtStep = preservedSingleStepState.pausedAtStep;
+          }
+          if (preservedSingleStepState.pausedAt !== undefined) {
+            progress.pausedAt = preservedSingleStepState.pausedAt;
+          }
+          if (preservedSingleStepState.singleStepUpdatedAt !== undefined) {
+            progress.singleStepUpdatedAt = preservedSingleStepState.singleStepUpdatedAt;
+          }
+          if (preservedSingleStepState.resumeRequestedAt !== undefined) {
+            progress.resumeRequestedAt = preservedSingleStepState.resumeRequestedAt;
+          }
+        }
       }
 
       fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
@@ -476,12 +500,13 @@ export class CoordinatorAgent {
       progress.pausedAt = new Date().toISOString();
       fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
 
-      // Poll for resume signal (check every 500ms, max 30 minutes)
-      const maxWaitMs = 30 * 60 * 1000;
+      // Poll for resume signal (check every 500ms, wait indefinitely until user acts)
+      // Single-step mode persists until user explicitly disables it or advances
       const pollIntervalMs = 500;
-      const startTime = Date.now();
+      let lastLogTime = Date.now();
+      const logIntervalMs = 5 * 60 * 1000; // Log reminder every 5 minutes
 
-      while (Date.now() - startTime < maxWaitMs) {
+      while (true) {
         // Check for cancellation while paused
         if (this.isWorkflowCancelled()) {
           log('Workflow cancelled while paused', 'warning');
@@ -503,16 +528,15 @@ export class CoordinatorAgent {
           return;
         }
 
+        // Log periodic reminder that we're still paused (every 5 minutes)
+        if (Date.now() - lastLogTime > logIntervalMs) {
+          log(`Single-step mode: Still paused at step '${stepName}', waiting for user action...`, 'info');
+          lastLogTime = Date.now();
+        }
+
         // Wait before next poll
         await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
       }
-
-      // Timeout - disable single-step mode and continue
-      log('Single-step mode timeout (30 minutes), resuming workflow', 'warning');
-      progress.singleStepMode = false;
-      progress.stepPaused = false;
-      progress.singleStepTimeout = new Date().toISOString();
-      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
     } catch (error) {
       if (error instanceof Error && error.message.includes('WORKFLOW_CANCELLED')) {
         throw error; // Re-throw cancellation errors

@@ -1092,48 +1092,47 @@ Provide a JSON response with:
 
   /**
    * Pre-validation: Check if insight input is meaningful before creating entity
-   * Rejects garbage inputs like keyword-only definitions, generic statements, etc.
+   * Rejects only truly garbage inputs - relaxed to preserve more valid data
+   * QUALITY FIX: Made less aggressive to reduce data loss
    */
   private isValidInsightInput(insightText: string): { valid: boolean; reason?: string } {
-    // Reject empty or too short
-    if (!insightText || insightText.trim().length < 30) {
+    // Reject empty or extremely short (relaxed from 30 to 15)
+    if (!insightText || insightText.trim().length < 15) {
       return { valid: false, reason: 'Too short to be meaningful insight' };
     }
 
-    // Reject keyword-only definitions (e.g., "api: Handles external communication")
-    const keywordPattern = /^[a-zA-Z_-]+:\s+.{0,60}$/;
+    // Only reject very short keyword-only definitions (< 30 chars after colon)
+    // QUALITY FIX: Allow longer descriptions that happen to start with keyword:
+    const keywordPattern = /^[a-zA-Z_-]+:\s+.{0,30}$/;
     if (keywordPattern.test(insightText.trim())) {
-      return { valid: false, reason: 'Keyword-only definition, not a meaningful insight' };
+      return { valid: false, reason: 'Very short keyword-only definition' };
     }
 
-    // Reject generic/boilerplate patterns
+    // Reject generic/boilerplate patterns (only exact matches that are truly garbage)
     const genericPatterns = [
-      /^General\s/i,
-      /^No (theme|pattern|data|insight)/i,
-      /\(\d+\s*occurrences?\)/i,
+      /^No (theme|pattern|data|insight)$/i,  // Only exact "No theme", not "No theme found in..."
       /^Semantic insight$/i,
-      /^Unknown/i,
-      /^Undefined/i,
-      /^Various/i,
-      /^Multiple/i,
-      /^Miscellaneous/i,
+      /^Unknown$/i,
+      /^Undefined$/i,
+      /^N\/A$/i,
+      /^None$/i,
     ];
     for (const pattern of genericPatterns) {
       if (pattern.test(insightText.trim())) {
-        return { valid: false, reason: `Matches generic pattern: ${pattern}` };
+        return { valid: false, reason: `Matches garbage pattern: ${pattern}` };
       }
     }
 
-    // Reject insights that are just listing concepts without substance
+    // QUALITY FIX: Relaxed word count check from 8 to 4 words
     const wordCount = insightText.split(/\s+/).length;
-    if (wordCount < 8 && !insightText.includes('`') && !insightText.includes('()')) {
-      return { valid: false, reason: 'Too few words and no code references' };
+    if (wordCount < 4) {
+      return { valid: false, reason: 'Too few words (< 4)' };
     }
 
-    // Require minimum substance: either 100+ chars or contains code refs
-    const hasCodeRef = /[`\(\)\.\/]|function|class|method|import|export|const|let|var/i.test(insightText);
-    if (insightText.length < 100 && !hasCodeRef) {
-      return { valid: false, reason: 'Insufficient substance (< 100 chars, no code references)' };
+    // QUALITY FIX: Relaxed substance check - 40 chars OR contains meaningful keywords
+    const hasMeaningfulContent = /[`\(\)\.\/]|function|class|method|import|export|const|let|var|pattern|workflow|architecture|service|component|module|handler|manager|controller|provider|decorator|factory|adapter|strategy|observer|singleton|repository|entity|interface|type|enum/i.test(insightText);
+    if (insightText.length < 40 && !hasMeaningfulContent) {
+      return { valid: false, reason: 'Insufficient substance (< 40 chars, no meaningful keywords)' };
     }
 
     return { valid: true };

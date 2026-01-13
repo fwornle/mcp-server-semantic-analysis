@@ -2045,14 +2045,20 @@ export class CoordinatorAgent {
           const commitsDuration = Date.now() - extractCommitsStart.getTime();
           execution.results['extract_batch_commits'] = this.wrapWithTiming({ ...commits, batchId: batch.id }, extractCommitsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_commits', [], currentBatchProgress);
+          const totalCommits = commits?.commits?.length || 0;
+          const displayLimit = 5;
+          const shownCommits = commits?.commits?.slice(0, displayLimit).map((c: any) => ({
+            hash: c.hash?.substring(0, 7),
+            message: (c.message || '').substring(0, 80),
+            author: c.author || c.authorName,
+            date: c.date
+          })) || [];
           trackBatchStep('extract_batch_commits', 'completed', commitsDuration, {
-            commitsCount: commits?.commits?.length || 0,
-            commits: commits?.commits?.slice(0, 5).map((c: any) => ({
-              hash: c.hash?.substring(0, 7),
-              message: (c.message || '').substring(0, 80),
-              author: c.author || c.authorName,
-              date: c.date
-            }))
+            commitsCount: totalCommits,
+            commits: shownCommits,
+            // Show truncation indicator when commits exceed display limit
+            commitsShowing: totalCommits > displayLimit ? `${displayLimit} of ${totalCommits} (...)` : `${totalCommits} of ${totalCommits}`,
+            commitsTruncated: totalCommits > displayLimit
           });
 
           // CRITICAL: Immediately accumulate commits into dedicated array
@@ -2131,14 +2137,20 @@ export class CoordinatorAgent {
           const sessionsDuration = Date.now() - extractSessionsStart.getTime();
           execution.results['extract_batch_sessions'] = this.wrapWithTiming({ ...sessionResult, batchId: batch.id }, extractSessionsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_sessions', [], currentBatchProgress);
+          const totalSessions = sessionResult?.sessions?.length || 0;
+          const sessionDisplayLimit = 5;
+          const shownSessions = sessionResult?.sessions?.slice(0, sessionDisplayLimit).map((s: any) => ({
+            id: s.sessionId || s.id || s.filename,
+            date: s.date || s.startTime,
+            topic: (s.topic || s.title || s.summary || '').substring(0, 60),
+            toolCalls: s.toolCalls?.length || s.interactions?.length || 0
+          })) || [];
           trackBatchStep('extract_batch_sessions', 'completed', sessionsDuration, {
-            sessionsCount: sessionResult?.sessions?.length || 0,
-            sessions: sessionResult?.sessions?.slice(0, 5).map((s: any) => ({
-              id: s.sessionId || s.id || s.filename,
-              date: s.date || s.startTime,
-              topic: (s.topic || s.title || s.summary || '').substring(0, 60),
-              toolCalls: s.toolCalls?.length || s.interactions?.length || 0
-            }))
+            sessionsCount: totalSessions,
+            sessions: shownSessions,
+            // Show truncation indicator when sessions exceed display limit
+            sessionsShowing: totalSessions > sessionDisplayLimit ? `${sessionDisplayLimit} of ${totalSessions} (...)` : `${totalSessions} of ${totalSessions}`,
+            sessionsTruncated: totalSessions > sessionDisplayLimit
           });
 
           // CRITICAL: Immediately accumulate sessions into dedicated array
@@ -2385,17 +2397,18 @@ export class CoordinatorAgent {
           this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', [], currentBatchProgress);
           // Pass LLM metrics to batch step tracking for tracer visualization
           // Include entity NAMES not just counts for better trace visibility
+          const entityDisplayLimit = 5;
+          const shownEntityNames = batchEntities.slice(0, entityDisplayLimit).map(e => e.name);
           trackBatchStep('batch_semantic_analysis', 'completed', semanticDuration, {
             batchEntities: batchEntities.length,
             batchRelations: batchRelations.length,
-            // Show first 5 entity names for quick reference in trace
-            entityNames: batchEntities.slice(0, 5).map(e => e.name),
-            // Show entity types distribution
-            entityTypes: batchEntities.reduce((acc: Record<string, number>, e) => {
-              const type = e.type || 'unknown';
-              acc[type] = (acc[type] || 0) + 1;
-              return acc;
-            }, {}),
+            // Show entity names with truncation indicator
+            entityNames: shownEntityNames,
+            entitiesShowing: batchEntities.length > entityDisplayLimit
+              ? `${entityDisplayLimit} of ${batchEntities.length} (...)`
+              : `${batchEntities.length} of ${batchEntities.length}`,
+            // Note: Types are "Unclassified" here - ontology classification runs next
+            entityTypesNote: 'Types assigned by ontology classification step',
             // Indicate if rule-based fallback was used (no LLM metrics means fallback)
             llmUsed: semanticLlmMetrics.totalCalls > 0,
             // Pass actual error message for tracer visibility (e.g., "out of credit")
@@ -2474,16 +2487,25 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, observationStartTime);
               this.writeProgressFile(execution, workflow, 'generate_batch_observations', [], currentBatchProgress);
+              const obsDisplayLimit = 5;
+              const totalObs = batchObservations.length;
+              const shownObsNames = batchObservations.slice(0, obsDisplayLimit).map(o => o.name);
+              // Cleaner type distribution - group by observation type only
+              const obsTypeBreakdown = batchObservations.reduce((acc: Record<string, number>, o) => {
+                const type = o.observationType || 'entity-observation';
+                acc[type] = (acc[type] || 0) + 1;
+                return acc;
+              }, {});
               trackBatchStep('generate_batch_observations', 'completed', obsDuration, {
-                observationsCount: batchObservations.length,
-                // Show first 5 observation entity names
-                observationNames: batchObservations.slice(0, 5).map(o => o.name),
-                // Show observation types distribution
-                observationTypes: batchObservations.reduce((acc: Record<string, number>, o) => {
-                  const type = o.observationType || o.entityType || 'unknown';
-                  acc[type] = (acc[type] || 0) + 1;
-                  return acc;
-                }, {})
+                observationsCount: totalObs,
+                // Clear truncation indicator
+                observationsShowing: totalObs > obsDisplayLimit
+                  ? `${obsDisplayLimit} of ${totalObs} (...)`
+                  : `${totalObs} of ${totalObs}`,
+                // Entity names that observations were generated for
+                forEntities: shownObsNames,
+                // Breakdown by observation type (not entity type)
+                byType: obsTypeBreakdown
               });
 
               // CRITICAL: Accumulate observations for finalization phase
@@ -3051,6 +3073,22 @@ export class CoordinatorAgent {
         relationsCount: accumulatedKG.relations.length,
         batchCount: batchScheduler.getProgress().completedBatches
       });
+
+      // CRITICAL: Skip finalization if workflow was cancelled
+      if (execution.status === 'cancelled') {
+        log('Batch workflow: Skipping finalization phase - workflow was cancelled', 'warning', {
+          completedBatches: batchScheduler.getProgress().completedBatches,
+          totalBatches: totalBatchCount,
+          finalStepsSkipped: finalSteps.map(s => s.name)
+        });
+        // Write final progress file with cancelled status
+        this.writeProgressFile(execution, workflow, 'cancelled', [], {
+          currentBatch: batchCount,
+          totalBatches: totalBatchCount,
+          batchId: 'cancelled'
+        });
+        return execution;
+      }
 
       // PHASE 2: Run finalization steps
       log('Batch workflow: Running finalization phase', 'info', {

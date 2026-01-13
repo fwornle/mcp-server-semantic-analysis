@@ -207,8 +207,9 @@ export class ContentValidationAgent {
     this.enableDeepValidation = config?.enableDeepValidation ?? true;
     this.stalenessThresholdDays = config?.stalenessThresholdDays ?? 30;
     this.useGitBasedDetection = config?.useGitBasedDetection ?? true;
-    // Parallel workers: default 1 (sequential), max 20 for batch entity refresh
-    this.parallelWorkers = Math.min(Math.max(config?.parallelWorkers ?? 1, 1), 20);
+    // Parallel workers: default 10 for efficient batch processing, max 20
+    // Increased from 1 to 10 to better utilize parallelization for validation
+    this.parallelWorkers = Math.min(Math.max(config?.parallelWorkers ?? 10, 1), 20);
     // Team: derive from repository path basename if not provided
     this.team = config?.team || path.basename(this.repositoryPath);
     this.semanticAnalyzer = new SemanticAnalyzer();
@@ -687,8 +688,32 @@ export class ContentValidationAgent {
       result.totalEntities = entities.length;
       const entitiesToValidate = entities.slice(0, maxEntities);
 
+      // OPTIMIZATION: Pre-fetch git commits ONCE for all entities (major performance improvement)
+      // This avoids running analyzeGitHistory() for each entity, which was the main bottleneck
+      let prefetchedCommits: any[] = [];
+      if (this.useGitBasedDetection && entitiesToValidate.length > 0) {
+        // Initialize git history agent if not already done
+        if (!this.gitHistoryAgent) {
+          this.gitHistoryAgent = new GitHistoryAgent(this.repositoryPath);
+        }
+
+        const sinceDate = new Date(Date.now() - this.stalenessThresholdDays * 24 * 60 * 60 * 1000);
+        log(`Pre-fetching git commits since ${sinceDate.toISOString()} for batch validation of ${entitiesToValidate.length} entities`, 'info');
+
+        try {
+          const analysisResult = await this.gitHistoryAgent.analyzeGitHistory({
+            fromTimestamp: sinceDate.toISOString(),
+            checkpoint_enabled: false
+          });
+          prefetchedCommits = analysisResult.commits || [];
+          log(`Pre-fetched ${prefetchedCommits.length} commits for batch staleness detection`, 'info');
+        } catch (error) {
+          log(`Failed to pre-fetch git commits, will skip git-based validation`, 'warning', error);
+        }
+      }
+
       // Process entities in parallel batches with controlled concurrency
-      // Use parallelWorkers setting (default 1, max 20) for concurrent validation
+      // Use parallelWorkers setting (default 10, max 20) for concurrent validation
       const concurrencyLimit = Math.max(this.parallelWorkers, 3); // At least 3 for efficiency
 
       for (let i = 0; i < entitiesToValidate.length; i += concurrencyLimit) {
@@ -705,7 +730,8 @@ export class ContentValidationAgent {
             }
 
             try {
-              const report = await this.validateEntityAccuracy(entityName, team);
+              // Pass prefetchedCommits to avoid per-entity git calls
+              const report = await this.validateEntityAccuracy(entityName, team, prefetchedCommits);
               return { success: true, report, entityName };
             } catch (error) {
               log(`Error validating entity ${entityName}`, "error", error);
@@ -793,19 +819,28 @@ export class ContentValidationAgent {
 
       result.totalProjects = projectTeams.length;
 
-      for (const team of projectTeams) {
-        if (options?.progressCallback) {
-          options.progressCallback(team, 0, 0);
-        }
+      // OPTIMIZATION: Process projects in parallel (typically 1-3 projects)
+      // Each project's entities are already processed in parallel batches internally
+      const projectValidations = await Promise.all(
+        projectTeams.map(async (team) => {
+          if (options?.progressCallback) {
+            options.progressCallback(team, 0, 0);
+          }
 
-        const projectResult = await this.validateEntitiesByProject(team, {
-          maxEntities: options?.maxEntitiesPerProject,
-          skipHealthyEntities: options?.skipHealthyEntities,
-          progressCallback: options?.progressCallback
-            ? (current, total, _entityName) => options.progressCallback!(team, current, total)
-            : undefined
-        });
+          const projectResult = await this.validateEntitiesByProject(team, {
+            maxEntities: options?.maxEntitiesPerProject,
+            skipHealthyEntities: options?.skipHealthyEntities,
+            progressCallback: options?.progressCallback
+              ? (current, total, _entityName) => options.progressCallback!(team, current, total)
+              : undefined
+          });
 
+          return { team, projectResult };
+        })
+      );
+
+      // Aggregate results from parallel project validations
+      for (const { team, projectResult } of projectValidations) {
         result.totalEntities += projectResult.validatedEntities;
         result.totalInvalidEntities += projectResult.invalidEntities;
 
@@ -831,8 +866,11 @@ export class ContentValidationAgent {
 
   /**
    * Main entry point: Validate all content for an entity
+   * @param entityName - Name of the entity to validate
+   * @param team - Team/project namespace
+   * @param prefetchedCommits - Optional pre-fetched git commits to avoid per-entity git calls (major performance optimization)
    */
-  async validateEntityAccuracy(entityName: string, team: string): Promise<EntityValidationReport> {
+  async validateEntityAccuracy(entityName: string, team: string, prefetchedCommits?: any[]): Promise<EntityValidationReport> {
     log(`Starting validation for entity: ${entityName}`, "info");
 
     const report: EntityValidationReport = {
@@ -864,8 +902,9 @@ export class ContentValidationAgent {
       }
 
       // Git-based staleness detection (primary mechanism)
+      // Uses prefetchedCommits if provided to avoid expensive per-entity git calls
       if (this.useGitBasedDetection) {
-        const gitStaleness = await this.detectEntityGitStaleness(entity, team);
+        const gitStaleness = await this.detectEntityGitStaleness(entity, team, prefetchedCommits);
         report.gitStaleness = gitStaleness;
 
         if (gitStaleness.isStale) {

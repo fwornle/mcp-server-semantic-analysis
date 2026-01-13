@@ -483,8 +483,10 @@ export class CoordinatorAgent {
    * @param stepName - Name of the step that just completed
    */
   private async checkSingleStepPause(stepName: string): Promise<void> {
+    const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
+
+    // Initial setup - these errors should NOT cause workflow to continue
     try {
-      const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
       if (!fs.existsSync(progressPath)) return;
 
       const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
@@ -499,50 +501,69 @@ export class CoordinatorAgent {
       progress.pausedAtStep = stepName;
       progress.pausedAt = new Date().toISOString();
       fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
+    } catch (initError) {
+      // If we can't even read/write the file initially, log and return (don't pause)
+      log(`Single-step mode: Initial file access failed, skipping pause: ${initError}`, 'warning');
+      return;
+    }
 
-      // Poll for resume signal (check every 500ms, wait indefinitely until user acts)
-      // Single-step mode persists until user explicitly disables it or advances
-      const pollIntervalMs = 500;
-      let lastLogTime = Date.now();
-      const logIntervalMs = 5 * 60 * 1000; // Log reminder every 5 minutes
+    // Poll for resume signal (check every 500ms, wait indefinitely until user acts)
+    // Single-step mode persists until user explicitly disables it or advances
+    const pollIntervalMs = 500;
+    let lastLogTime = Date.now();
+    const logIntervalMs = 5 * 60 * 1000; // Log reminder every 5 minutes
+    let consecutiveReadErrors = 0;
+    const maxConsecutiveErrors = 10; // Allow up to 5 seconds of transient errors
 
-      while (true) {
-        // Check for cancellation while paused
-        if (this.isWorkflowCancelled()) {
-          log('Workflow cancelled while paused', 'warning');
-          throw new Error(`WORKFLOW_CANCELLED: paused at ${stepName}`);
-        }
+    while (true) {
+      // Check for cancellation while paused
+      if (this.isWorkflowCancelled()) {
+        log('Workflow cancelled while paused', 'warning');
+        throw new Error(`WORKFLOW_CANCELLED: paused at ${stepName}`);
+      }
 
-        // Re-read progress file to check for resume signal
-        const currentProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
-
-        // Check if single-step mode was disabled (user wants to continue freely)
-        if (!currentProgress.singleStepMode) {
-          log('Single-step mode disabled, resuming workflow', 'info');
+      // Re-read progress file to check for resume signal
+      // CRITICAL: Handle transient read errors gracefully - don't let them break single-step mode
+      let currentProgress: Record<string, any>;
+      try {
+        currentProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+        consecutiveReadErrors = 0; // Reset on successful read
+      } catch (readError) {
+        consecutiveReadErrors++;
+        if (consecutiveReadErrors >= maxConsecutiveErrors) {
+          // Too many consecutive errors - something is seriously wrong
+          log(`Single-step mode: ${maxConsecutiveErrors} consecutive file read errors, aborting pause (workflow will continue)`, 'error', {
+            stepName,
+            lastError: readError instanceof Error ? readError.message : String(readError)
+          });
           return;
         }
-
-        // Check if stepPaused was cleared (user clicked advance)
-        if (!currentProgress.stepPaused) {
-          log(`Single-step mode: Advancing from step '${stepName}'`, 'info');
-          return;
-        }
-
-        // Log periodic reminder that we're still paused (every 5 minutes)
-        if (Date.now() - lastLogTime > logIntervalMs) {
-          log(`Single-step mode: Still paused at step '${stepName}', waiting for user action...`, 'info');
-          lastLogTime = Date.now();
-        }
-
-        // Wait before next poll
+        // Transient error - wait and retry (DON'T continue the workflow!)
+        log(`Single-step mode: Transient file read error (${consecutiveReadErrors}/${maxConsecutiveErrors}), retrying...`, 'debug');
         await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+        continue;
       }
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('WORKFLOW_CANCELLED')) {
-        throw error; // Re-throw cancellation errors
+
+      // Check if single-step mode was disabled (user wants to continue freely)
+      if (!currentProgress.singleStepMode) {
+        log('Single-step mode disabled, resuming workflow', 'info');
+        return;
       }
-      log(`Single-step pause check failed: ${error}`, 'warning');
-      // Don't block workflow on single-step mode errors
+
+      // Check if stepPaused was cleared (user clicked advance)
+      if (!currentProgress.stepPaused) {
+        log(`Single-step mode: Advancing from step '${stepName}'`, 'info');
+        return;
+      }
+
+      // Log periodic reminder that we're still paused (every 5 minutes)
+      if (Date.now() - lastLogTime > logIntervalMs) {
+        log(`Single-step mode: Still paused at step '${stepName}', waiting for user action...`, 'info');
+        lastLogTime = Date.now();
+      }
+
+      // Wait before next poll
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
     }
   }
 

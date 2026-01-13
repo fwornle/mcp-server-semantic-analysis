@@ -3102,15 +3102,18 @@ export class PersistenceAgent {
 
       log(`Persisting ${entities.length} entities for team: ${team}`, 'info');
 
-      for (const entity of entities) {
-        try {
-          // Skip entities with empty or invalid names
-          if (!entity.name || entity.name.trim() === '') {
-            log('Skipping entity with empty name', 'warning');
-            result.failed++;
-            continue;
-          }
+      // Process entities in parallel batches for performance
+      const CONCURRENCY = 10; // Process 10 entities concurrently
+      const validEntities = entities.filter(e => e.name && e.name.trim() !== '');
+      const skippedCount = entities.length - validEntities.length;
+      if (skippedCount > 0) {
+        log(`Skipping ${skippedCount} entities with empty names`, 'warning');
+        result.failed += skippedCount;
+      }
 
+      // Helper to process a single entity
+      const processEntity = async (entity: typeof entities[0]): Promise<'created' | 'updated' | 'failed'> => {
+        try {
           // Check if entity already exists
           const existingEntity = await this.getEntity(entity.name, team);
 
@@ -3131,27 +3134,25 @@ export class PersistenceAgent {
               });
 
               if (updateResult.success) {
-                result.updated++;
-                log(`Updated entity: ${entity.name} with ${newObservations.length} new observations`, 'info');
+                log(`Updated entity: ${entity.name} with ${newObservations.length} new observations`, 'debug');
+                return 'updated';
               } else {
-                result.failed++;
                 log(`Failed to update entity: ${entity.name}`, 'warning');
+                return 'failed';
               }
             } else {
               // Entity exists but no new observations - count as updated (no-op)
-              result.updated++;
+              return 'updated';
             }
           } else {
             // Create new entity using storeEntityToGraph (direct GraphDB storage)
-            // Convert to SharedMemoryEntity format
             const currentDate = new Date().toISOString();
             const sharedMemoryEntity: SharedMemoryEntity = {
               id: `entity_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
               name: entity.name,
-              entityType: entity.entityType,  // Will be re-classified by storeEntityToGraph
+              entityType: entity.entityType,
               significance: entity.significance || 5,
               observations: entity.observations.map(obs => {
-                // Preserve structured observations (ObservationTemplate objects)
                 if (typeof obs === 'object' && obs !== null && 'type' in obs && 'content' in obs) {
                   const typedObs = obs as { type: string; content: string; date?: string; metadata?: Record<string, unknown> };
                   return {
@@ -3164,7 +3165,6 @@ export class PersistenceAgent {
                     }
                   };
                 }
-                // Convert plain strings to observation objects (fallback)
                 return {
                   type: 'insight',
                   content: String(obs),
@@ -3181,21 +3181,34 @@ export class PersistenceAgent {
               }
             };
 
-            try {
-              const nodeId = await this.storeEntityToGraph(sharedMemoryEntity);
-              result.created++;
-              log(`Created entity: ${entity.name} (nodeId: ${nodeId})`, 'info');
-            } catch (createError) {
-              result.failed++;
-              const errorMsg = createError instanceof Error ? createError.message : String(createError);
-              log(`Failed to create entity: ${entity.name} - ${errorMsg}`, 'warning');
-            }
+            const nodeId = await this.storeEntityToGraph(sharedMemoryEntity);
+            log(`Created entity: ${entity.name} (nodeId: ${nodeId})`, 'debug');
+            return 'created';
           }
         } catch (entityError) {
-          result.failed++;
           log(`Error processing entity ${entity.name}`, 'error', entityError);
+          return 'failed';
         }
+      };
+
+      // Process in parallel batches
+      const startTime = Date.now();
+      for (let i = 0; i < validEntities.length; i += CONCURRENCY) {
+        const batch = validEntities.slice(i, i + CONCURRENCY);
+        const batchResults = await Promise.all(batch.map(processEntity));
+
+        for (const r of batchResults) {
+          if (r === 'created') result.created++;
+          else if (r === 'updated') result.updated++;
+          else result.failed++;
+        }
+
+        // Progress log every batch
+        const progress = Math.min(100, Math.round(((i + batch.length) / validEntities.length) * 100));
+        log(`Persistence progress: ${progress}% (${i + batch.length}/${validEntities.length})`, 'info');
       }
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      log(`Persistence completed in ${elapsed}s`, 'info');
 
       result.success = result.failed === 0 || (result.created + result.updated) > 0;
       result.details = `Persisted entities: ${result.created} created, ${result.updated} updated, ${result.failed} failed`;

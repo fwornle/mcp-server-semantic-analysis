@@ -1998,7 +1998,15 @@ export class CoordinatorAgent {
           const commitsDuration = Date.now() - extractCommitsStart.getTime();
           execution.results['extract_batch_commits'] = this.wrapWithTiming({ ...commits, batchId: batch.id }, extractCommitsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_commits', [], currentBatchProgress);
-          trackBatchStep('extract_batch_commits', 'completed', commitsDuration, { commitsCount: commits?.commits?.length || 0 });
+          trackBatchStep('extract_batch_commits', 'completed', commitsDuration, {
+            commitsCount: commits?.commits?.length || 0,
+            commits: commits?.commits?.slice(0, 5).map((c: any) => ({
+              hash: c.hash?.substring(0, 7),
+              message: (c.message || '').substring(0, 80),
+              author: c.author || c.authorName,
+              date: c.date
+            }))
+          });
 
           // CRITICAL: Immediately accumulate commits into dedicated array
           // This ensures commits are preserved regardless of memory compaction or other operations
@@ -2076,7 +2084,15 @@ export class CoordinatorAgent {
           const sessionsDuration = Date.now() - extractSessionsStart.getTime();
           execution.results['extract_batch_sessions'] = this.wrapWithTiming({ ...sessionResult, batchId: batch.id }, extractSessionsStart);
           this.writeProgressFile(execution, workflow, 'extract_batch_sessions', [], currentBatchProgress);
-          trackBatchStep('extract_batch_sessions', 'completed', sessionsDuration, { sessionsCount: sessionResult?.sessions?.length || 0 });
+          trackBatchStep('extract_batch_sessions', 'completed', sessionsDuration, {
+            sessionsCount: sessionResult?.sessions?.length || 0,
+            sessions: sessionResult?.sessions?.slice(0, 5).map((s: any) => ({
+              id: s.sessionId || s.id || s.filename,
+              date: s.date || s.startTime,
+              topic: (s.topic || s.title || s.summary || '').substring(0, 60),
+              toolCalls: s.toolCalls?.length || s.interactions?.length || 0
+            }))
+          });
 
           // CRITICAL: Immediately accumulate sessions into dedicated array
           if (sessionResult?.sessions?.length > 0) {
@@ -2578,9 +2594,10 @@ export class CoordinatorAgent {
                 // Show ontology class distribution
                 byClass: classificationResult?.summary?.byClass || {},
                 // Show first 5 classified entity names with their classes
+                // ClassifiedObservation structure: { original: { name, ... }, ontologyMetadata: { ontologyClass, ... }, classified: bool }
                 classifiedEntities: classifiedEntities.slice(0, 5).map((c: any) => ({
-                  name: c.entity?.name || c.name || 'unknown',
-                  class: c.ontologyClass || c.entityType || 'unknown'
+                  name: c.original?.name || c.original?.entityName || c.name || 'unknown',
+                  class: c.ontologyMetadata?.ontologyClass || c.ontologyClass || 'unknown'
                 }))
               }, ontologyLlmUsage ? {
                 calls: classificationResult?.summary?.llmCalls || 0,
@@ -2716,9 +2733,23 @@ export class CoordinatorAgent {
           // Check for cancellation after KG operators
           this.checkCancellationOrThrow('kg_operators');
 
+          // Extract entity names for visibility in trace
+          const entityList = operatorResult?.entities || [];
+          const relationList = operatorResult?.relations || [];
           trackBatchStep('kg_operators', 'completed', operatorsTotalDuration, {
-            entitiesAfter: operatorResult?.entities?.length || 0,
-            relationsAfter: operatorResult?.relations?.length || 0
+            entitiesAfter: entityList.length,
+            relationsAfter: relationList.length,
+            // Show first 8 entity names with their types for better traceability
+            entities: entityList.slice(0, 8).map((e: any) => ({
+              name: e.name || e.entity_name || 'unknown',
+              type: e.entityType || e.entity_type || e.type || 'Entity'
+            })),
+            // Show sample relations (first 5)
+            relations: relationList.slice(0, 5).map((r: any) => ({
+              from: r.from || r.source,
+              to: r.to || r.target,
+              type: r.relationType || r.type || 'related_to'
+            }))
           });
 
           // Record KG operator steps for workflow report (only on first batch)

@@ -389,6 +389,7 @@ steps:
     phase: finalization
 
   # PHASE F5: Final Persistence (runs once after all batches)
+  # NOTE: Now parallelized with 10 concurrent entity writes for ~10x speedup
   - name: final_persist
     agent: persistence
     action: persistEntities
@@ -398,7 +399,7 @@ steps:
       # correlated_entities: "{{correlate_with_codebase.result.enriched}}"  # Disabled - correlation not implemented
       # historical_entities: "{{correlate_with_codebase.result.historical}}"  # Disabled - correlation not implemented
       team: "{{params.team}}"
-    timeout: 120
+    timeout: 300  # 5 minutes (parallelized processing handles large entity sets)
     dependencies:
       - transform_code_entities
     phase: finalization

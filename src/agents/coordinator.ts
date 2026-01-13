@@ -165,6 +165,17 @@ export class CoordinatorAgent {
       }
 
       // Also check if progress file was externally set to 'cancelled'
+      // AND preserve single-step debugging state across progress file updates
+      let preservedSingleStepState: {
+        singleStepMode?: boolean;
+        stepPaused?: boolean;
+        pausedAtStep?: string;
+        pausedAt?: string;
+        singleStepUpdatedAt?: string;
+        singleStepTimeout?: number;
+        resumeRequestedAt?: string;
+      } = {};
+
       if (fs.existsSync(progressPath)) {
         try {
           const currentProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
@@ -177,6 +188,18 @@ export class CoordinatorAgent {
             // Don't overwrite the cancelled status
             return;
           }
+
+          // CRITICAL: Preserve single-step debugging state across progress updates
+          // These fields are set by the dashboard API and must persist until explicitly cleared
+          preservedSingleStepState = {
+            singleStepMode: currentProgress.singleStepMode,
+            stepPaused: currentProgress.stepPaused,
+            pausedAtStep: currentProgress.pausedAtStep,
+            pausedAt: currentProgress.pausedAt,
+            singleStepUpdatedAt: currentProgress.singleStepUpdatedAt,
+            singleStepTimeout: currentProgress.singleStepTimeout,
+            resumeRequestedAt: currentProgress.resumeRequestedAt,
+          };
         } catch {
           // Ignore parse errors
         }
@@ -362,6 +385,30 @@ export class CoordinatorAgent {
           workflowModifications: multiAgentData.workflowModifications,
           retryHistory: multiAgentData.retryHistory,
         };
+      }
+
+      // CRITICAL: Preserve single-step debugging state from previous progress file
+      // This ensures the dashboard's single-step mode persists until explicitly disabled
+      if (preservedSingleStepState.singleStepMode !== undefined) {
+        progress.singleStepMode = preservedSingleStepState.singleStepMode;
+      }
+      if (preservedSingleStepState.stepPaused !== undefined) {
+        progress.stepPaused = preservedSingleStepState.stepPaused;
+      }
+      if (preservedSingleStepState.pausedAtStep !== undefined) {
+        progress.pausedAtStep = preservedSingleStepState.pausedAtStep;
+      }
+      if (preservedSingleStepState.pausedAt !== undefined) {
+        progress.pausedAt = preservedSingleStepState.pausedAt;
+      }
+      if (preservedSingleStepState.singleStepUpdatedAt !== undefined) {
+        progress.singleStepUpdatedAt = preservedSingleStepState.singleStepUpdatedAt;
+      }
+      if (preservedSingleStepState.singleStepTimeout !== undefined) {
+        progress.singleStepTimeout = preservedSingleStepState.singleStepTimeout;
+      }
+      if (preservedSingleStepState.resumeRequestedAt !== undefined) {
+        progress.resumeRequestedAt = preservedSingleStepState.resumeRequestedAt;
       }
 
       fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
@@ -2153,6 +2200,8 @@ export class CoordinatorAgent {
             architecturalDecisions: [],
             codeEvolution: []
           };
+          // Capture LLM errors for tracer visibility (e.g., "out of credit", "rate limit")
+          let llmErrorMessage: string | undefined;
           SemanticAnalyzer.resetStepMetrics();
           const semanticAnalysisStart = new Date();
 
@@ -2317,9 +2366,11 @@ export class CoordinatorAgent {
               });
             }
           } catch (analysisError) {
+            // Capture error message for tracer visibility (e.g., "out of credit", "rate limit exceeded")
+            llmErrorMessage = analysisError instanceof Error ? analysisError.message : String(analysisError);
             // Log analysis failure but continue with empty entities
             log(`Batch ${batch.id}: Semantic analysis failed, continuing with empty entities`, 'error', {
-              error: analysisError instanceof Error ? analysisError.message : String(analysisError)
+              error: llmErrorMessage
             });
           }
 
@@ -2346,7 +2397,9 @@ export class CoordinatorAgent {
               return acc;
             }, {}),
             // Indicate if rule-based fallback was used (no LLM metrics means fallback)
-            llmUsed: semanticLlmMetrics.totalCalls > 0
+            llmUsed: semanticLlmMetrics.totalCalls > 0,
+            // Pass actual error message for tracer visibility (e.g., "out of credit")
+            llmError: llmErrorMessage
           }, semanticLlmMetrics.totalCalls > 0 ? {
             calls: semanticLlmMetrics.totalCalls,
             tokens: semanticLlmMetrics.totalTokens,

@@ -15,6 +15,20 @@ import * as path from 'path';
 import { log } from '../logging.js';
 import type { BatchStats, OperatorResults } from '../agents/batch-scheduler.js';
 
+/**
+ * Detailed step output data for dashboard history view
+ * Contains the actual content (commits array, sessions array) not just counts
+ */
+export interface BatchStepOutput {
+  name: string;
+  status: string;
+  duration?: number;
+  outputs?: Record<string, any>;  // Full outputs including arrays of commits, sessions, etc.
+  tokensUsed?: number;
+  llmProvider?: string;
+  llmCalls?: number;
+}
+
 export interface BatchCheckpoint {
   batchId: string;
   batchNumber: number;
@@ -28,6 +42,8 @@ export interface BatchCheckpoint {
     end: string;
   };
   stats: BatchStats;
+  /** Detailed step outputs for history view - includes arrays of commits, sessions, etc. */
+  stepOutputs?: BatchStepOutput[];
 }
 
 export interface BatchCheckpointData {
@@ -183,14 +199,16 @@ export class BatchCheckpointManager {
   }
 
   /**
-   * Record a completed batch with its stats
+   * Record a completed batch with its stats and detailed step outputs
+   * @param stepOutputs - Optional array of detailed step outputs for history view
    */
   saveBatchCheckpoint(
     batchId: string,
     batchNumber: number,
     commitRange: { start: string; end: string },
     dateRange: { start: Date; end: Date },
-    stats: BatchStats
+    stats: BatchStats,
+    stepOutputs?: BatchStepOutput[]
   ): void {
     const data = this.load();
 
@@ -204,7 +222,8 @@ export class BatchCheckpointManager {
         start: dateRange.start.toISOString(),
         end: dateRange.end.toISOString()
       },
-      stats
+      stats,
+      stepOutputs
     };
 
     // Check if this batch was already recorded (re-run)

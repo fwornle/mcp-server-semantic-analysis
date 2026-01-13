@@ -2841,12 +2841,14 @@ export class CoordinatorAgent {
           // FIXED: Write progress BEFORE step runs so dashboard shows it as running
           this.writeProgressFile(execution, workflow, 'save_batch_checkpoint', ['save_batch_checkpoint'], currentBatchProgress);
 
+          // Pass detailed step outputs for history view (includes arrays of commits, sessions, etc.)
           checkpointManager.saveBatchCheckpoint(
             batch.id,
             batch.batchNumber,
             { start: batch.startCommit, end: batch.endCommit },
             { start: batch.startDate, end: batch.endDate },
-            stats
+            stats,
+            currentBatchIteration.steps  // Include detailed step outputs for history view
           );
 
           // Track save_batch_checkpoint step completion for dashboard visibility

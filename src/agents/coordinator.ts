@@ -2852,6 +2852,8 @@ export class CoordinatorAgent {
           const operatorsTotalDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();
           // Check for cancellation after KG operators
           this.checkCancellationOrThrow('kg_operators');
+          // Single-step pause after KG operators
+          await this.checkSingleStepPause('kg_operators');
 
           // Extract entity names for visibility in trace
           const entityList = operatorResult?.entities || [];
@@ -2934,6 +2936,8 @@ export class CoordinatorAgent {
 
           // Check for cancellation after batch QA
           this.checkCancellationOrThrow('batch_qa');
+          // Single-step pause after batch QA
+          await this.checkSingleStepPause('batch_qa');
 
           // Record batch_qa step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -2976,6 +2980,11 @@ export class CoordinatorAgent {
           execution.results['save_batch_checkpoint'] = this.wrapWithTiming({ result: { saved: true }, batchId: batch.id }, checkpointStartTime);
           this.writeProgressFile(execution, workflow, 'save_batch_checkpoint', [], currentBatchProgress);
           trackBatchStep('save_batch_checkpoint', 'completed', checkpointDuration);
+
+          // Check for cancellation after save_batch_checkpoint
+          this.checkCancellationOrThrow('save_batch_checkpoint');
+          // Single-step pause after batch checkpoint (end of batch cycle)
+          await this.checkSingleStepPause('save_batch_checkpoint');
 
           // Mark this batch iteration as complete
           currentBatchIteration.endTime = new Date();

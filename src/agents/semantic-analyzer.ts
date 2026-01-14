@@ -8,6 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import * as yaml from "js-yaml";
+import { isMockLLMEnabled, mockSemanticAnalysis } from "../mock/llm-mock-service.js";
 
 // ES module compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -142,6 +143,24 @@ export interface StepLLMMetrics {
 }
 
 export class SemanticAnalyzer {
+  // Static repository path for mock mode checking
+  private static repositoryPath: string = process.cwd();
+
+  /**
+   * Set the repository path for mock mode detection
+   */
+  static setRepositoryPath(path: string): void {
+    SemanticAnalyzer.repositoryPath = path;
+    log(`SemanticAnalyzer: repository path set to ${path}`, 'info');
+  }
+
+  /**
+   * Get current repository path
+   */
+  static getRepositoryPath(): string {
+    return SemanticAnalyzer.repositoryPath;
+  }
+
   // Static metrics tracking for workflow step aggregation
   private static currentStepMetrics: StepLLMMetrics = {
     totalCalls: 0,
@@ -427,6 +446,29 @@ export class SemanticAnalyzer {
    */
   private async analyzeWithTier(prompt: string, provider: string, model: string): Promise<AnalysisResult> {
     log(`analyzeWithTier: ${provider}/${model}`, 'info', { promptLength: prompt.length });
+
+    // Check for LLM mock mode - return mock response if enabled
+    if (isMockLLMEnabled(SemanticAnalyzer.repositoryPath)) {
+      log('LLM Mock mode enabled - returning mock response', 'info');
+      const mockResponse = await mockSemanticAnalysis(prompt, SemanticAnalyzer.repositoryPath);
+
+      // Track mock call in metrics
+      SemanticAnalyzer.currentStepMetrics.totalCalls++;
+      SemanticAnalyzer.currentStepMetrics.totalInputTokens += mockResponse.tokenUsage.inputTokens;
+      SemanticAnalyzer.currentStepMetrics.totalOutputTokens += mockResponse.tokenUsage.outputTokens;
+      SemanticAnalyzer.currentStepMetrics.totalTokens += mockResponse.tokenUsage.totalTokens;
+      if (!SemanticAnalyzer.currentStepMetrics.providers.includes('mock')) {
+        SemanticAnalyzer.currentStepMetrics.providers.push('mock');
+      }
+
+      return {
+        insights: mockResponse.content,
+        provider: 'mock',
+        confidence: 0.85,
+        model: 'mock-llm-v1',
+        tokenUsage: mockResponse.tokenUsage,
+      };
+    }
 
     switch (provider) {
       case 'groq':

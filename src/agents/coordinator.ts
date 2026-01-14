@@ -165,8 +165,8 @@ export class CoordinatorAgent {
       }
 
       // Also check if progress file was externally set to 'cancelled'
-      // AND preserve single-step debugging state across progress file updates
-      let preservedSingleStepState: {
+      // AND preserve single-step debugging state and mock LLM mode across progress file updates
+      let preservedDebugState: {
         singleStepMode?: boolean;
         stepPaused?: boolean;
         pausedAtStep?: string;
@@ -174,6 +174,10 @@ export class CoordinatorAgent {
         singleStepUpdatedAt?: string;
         singleStepTimeout?: number;
         resumeRequestedAt?: string;
+        // LLM Mock mode for frontend testing
+        mockLLM?: boolean;
+        mockLLMDelay?: number;
+        mockLLMUpdatedAt?: string;
       } = {};
 
       if (fs.existsSync(progressPath)) {
@@ -189,9 +193,9 @@ export class CoordinatorAgent {
             return;
           }
 
-          // CRITICAL: Preserve single-step debugging state across progress updates
+          // CRITICAL: Preserve debugging and testing state across progress updates
           // These fields are set by the dashboard API and must persist until explicitly cleared
-          preservedSingleStepState = {
+          preservedDebugState = {
             singleStepMode: currentProgress.singleStepMode,
             stepPaused: currentProgress.stepPaused,
             pausedAtStep: currentProgress.pausedAtStep,
@@ -199,6 +203,10 @@ export class CoordinatorAgent {
             singleStepUpdatedAt: currentProgress.singleStepUpdatedAt,
             singleStepTimeout: currentProgress.singleStepTimeout,
             resumeRequestedAt: currentProgress.resumeRequestedAt,
+            // LLM Mock mode
+            mockLLM: currentProgress.mockLLM,
+            mockLLMDelay: currentProgress.mockLLMDelay,
+            mockLLMUpdatedAt: currentProgress.mockLLMUpdatedAt,
           };
         } catch {
           // Ignore parse errors
@@ -387,13 +395,13 @@ export class CoordinatorAgent {
         };
       }
 
-      // CRITICAL: Re-read single-step state RIGHT BEFORE writing to prevent race condition
-      // The dashboard may have updated singleStepMode between our initial read and now
+      // CRITICAL: Re-read debug/test state RIGHT BEFORE writing to prevent race condition
+      // The dashboard may have updated singleStepMode or mockLLM between our initial read and now
       // This minimizes the race window to just the JSON stringify + write
       if (fs.existsSync(progressPath)) {
         try {
           const freshProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
-          // Always use the FRESHEST single-step state from the file
+          // Always use the FRESHEST debug/test state from the file
           if (freshProgress.singleStepMode !== undefined) {
             progress.singleStepMode = freshProgress.singleStepMode;
           }
@@ -412,25 +420,45 @@ export class CoordinatorAgent {
           if (freshProgress.resumeRequestedAt !== undefined) {
             progress.resumeRequestedAt = freshProgress.resumeRequestedAt;
           }
+          // LLM Mock mode fields
+          if (freshProgress.mockLLM !== undefined) {
+            progress.mockLLM = freshProgress.mockLLM;
+          }
+          if (freshProgress.mockLLMDelay !== undefined) {
+            progress.mockLLMDelay = freshProgress.mockLLMDelay;
+          }
+          if (freshProgress.mockLLMUpdatedAt !== undefined) {
+            progress.mockLLMUpdatedAt = freshProgress.mockLLMUpdatedAt;
+          }
         } catch {
           // Fall back to earlier preserved state if fresh read fails
-          if (preservedSingleStepState.singleStepMode !== undefined) {
-            progress.singleStepMode = preservedSingleStepState.singleStepMode;
+          if (preservedDebugState.singleStepMode !== undefined) {
+            progress.singleStepMode = preservedDebugState.singleStepMode;
           }
-          if (preservedSingleStepState.stepPaused !== undefined) {
-            progress.stepPaused = preservedSingleStepState.stepPaused;
+          if (preservedDebugState.stepPaused !== undefined) {
+            progress.stepPaused = preservedDebugState.stepPaused;
           }
-          if (preservedSingleStepState.pausedAtStep !== undefined) {
-            progress.pausedAtStep = preservedSingleStepState.pausedAtStep;
+          if (preservedDebugState.pausedAtStep !== undefined) {
+            progress.pausedAtStep = preservedDebugState.pausedAtStep;
           }
-          if (preservedSingleStepState.pausedAt !== undefined) {
-            progress.pausedAt = preservedSingleStepState.pausedAt;
+          if (preservedDebugState.pausedAt !== undefined) {
+            progress.pausedAt = preservedDebugState.pausedAt;
           }
-          if (preservedSingleStepState.singleStepUpdatedAt !== undefined) {
-            progress.singleStepUpdatedAt = preservedSingleStepState.singleStepUpdatedAt;
+          if (preservedDebugState.singleStepUpdatedAt !== undefined) {
+            progress.singleStepUpdatedAt = preservedDebugState.singleStepUpdatedAt;
           }
-          if (preservedSingleStepState.resumeRequestedAt !== undefined) {
-            progress.resumeRequestedAt = preservedSingleStepState.resumeRequestedAt;
+          if (preservedDebugState.resumeRequestedAt !== undefined) {
+            progress.resumeRequestedAt = preservedDebugState.resumeRequestedAt;
+          }
+          // LLM Mock mode fields
+          if (preservedDebugState.mockLLM !== undefined) {
+            progress.mockLLM = preservedDebugState.mockLLM;
+          }
+          if (preservedDebugState.mockLLMDelay !== undefined) {
+            progress.mockLLMDelay = preservedDebugState.mockLLMDelay;
+          }
+          if (preservedDebugState.mockLLMUpdatedAt !== undefined) {
+            progress.mockLLMUpdatedAt = preservedDebugState.mockLLMUpdatedAt;
           }
         }
       }

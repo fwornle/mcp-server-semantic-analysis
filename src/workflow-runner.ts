@@ -197,7 +197,39 @@ interface ProgressUpdate {
 
 function writeProgress(progressFile: string, update: ProgressUpdate): void {
   try {
-    fs.writeFileSync(progressFile, JSON.stringify(update, null, 2));
+    // CRITICAL: Preserve debug state fields that may have been set by the dashboard
+    // before the workflow started (singleStepMode, mockLLM, etc.)
+    let preservedDebugState: Record<string, any> = {};
+    if (fs.existsSync(progressFile)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(progressFile, 'utf-8'));
+        // Preserve all debug/test state fields
+        preservedDebugState = {
+          singleStepMode: existing.singleStepMode,
+          stepPaused: existing.stepPaused,
+          pausedAtStep: existing.pausedAtStep,
+          pausedAt: existing.pausedAt,
+          singleStepUpdatedAt: existing.singleStepUpdatedAt,
+          singleStepTimeout: existing.singleStepTimeout,
+          resumeRequestedAt: existing.resumeRequestedAt,
+          mockLLM: existing.mockLLM,
+          mockLLMDelay: existing.mockLLMDelay,
+          mockLLMUpdatedAt: existing.mockLLMUpdatedAt,
+        };
+        // Remove undefined values
+        for (const key of Object.keys(preservedDebugState)) {
+          if (preservedDebugState[key] === undefined) {
+            delete preservedDebugState[key];
+          }
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    // Merge preserved debug state with new update
+    const merged = { ...update, ...preservedDebugState };
+    fs.writeFileSync(progressFile, JSON.stringify(merged, null, 2));
   } catch (e) {
     console.error('Failed to write progress:', e);
   }
@@ -230,6 +262,17 @@ function writeProgressPreservingDetails(progressFile: string, update: ProgressUp
       stepsSkipped: existingData.stepsSkipped,
       stepsFailed: existingData.stepsFailed,
       batchProgress: existingData.batchProgress,
+      // CRITICAL: Preserve debug/test state fields
+      singleStepMode: existingData.singleStepMode,
+      stepPaused: existingData.stepPaused,
+      pausedAtStep: existingData.pausedAtStep,
+      pausedAt: existingData.pausedAt,
+      singleStepUpdatedAt: existingData.singleStepUpdatedAt,
+      singleStepTimeout: existingData.singleStepTimeout,
+      resumeRequestedAt: existingData.resumeRequestedAt,
+      mockLLM: existingData.mockLLM,
+      mockLLMDelay: existingData.mockLLMDelay,
+      mockLLMUpdatedAt: existingData.mockLLMUpdatedAt,
     };
 
     // Remove undefined/null fields

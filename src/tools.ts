@@ -381,6 +381,10 @@ export const TOOLS: Tool[] = [
           type: "boolean",
           description: "Run in background (default: true for long workflows like complete-analysis, incremental-analysis). Set to false only for quick workflows.",
         },
+        debug: {
+          type: "boolean",
+          description: "Enable debug mode: activates single-step mode and mock LLM responses from the start. Useful for testing UI visualization without real LLM calls.",
+        },
       },
       required: ["workflow_name"],
       additionalProperties: false,
@@ -976,7 +980,7 @@ async function handleCreateUkbEntity(args: any): Promise<any> {
 }
 
 async function handleExecuteWorkflow(args: any): Promise<any> {
-  const { workflow_name, parameters = {} } = args;
+  const { workflow_name, parameters = {}, debug = false } = args;
 
   // CRITICAL: Force async_mode=true for long-running workflows to prevent MCP timeout crashes
   // These workflows can take 10-20 minutes and will kill the MCP connection if run synchronously
@@ -1033,6 +1037,36 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
         killedPids: cleanup.killedPids,
         previousWorkflowId: cleanup.staleWorkflowId,
       });
+    }
+
+    // DEBUG MODE: Pre-set single-step mode and mock LLM in progress file BEFORE workflow starts
+    // This ensures the workflow sees these flags from the very first step
+    if (debug) {
+      const progressFile = path.join(repositoryPath, '.data', 'workflow-progress.json');
+      const dataDir = path.join(repositoryPath, '.data');
+      mkdirSync(dataDir, { recursive: true });
+
+      let existingProgress: Record<string, any> = {};
+      if (existsSync(progressFile)) {
+        try {
+          existingProgress = JSON.parse(readFileSync(progressFile, 'utf-8'));
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
+      const debugProgress = {
+        ...existingProgress,
+        singleStepMode: true,
+        stepPaused: false, // Will be set by first checkpoint
+        pausedAtStep: null,
+        singleStepUpdatedAt: new Date().toISOString(),
+        mockLLM: true,
+        mockLLMDelay: 500,
+        mockLLMUpdatedAt: new Date().toISOString(),
+      };
+      writeFileSync(progressFile, JSON.stringify(debugProgress, null, 2));
+      log(`Debug mode: Pre-set singleStepMode=true and mockLLM=true in progress file`, 'info');
     }
 
     // Store workflow info locally (for status queries before child writes progress)

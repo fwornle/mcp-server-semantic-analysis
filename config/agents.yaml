@@ -259,6 +259,7 @@ step_mappings:
   operator_dedup: kg_operators
   operator_pred: kg_operators
   operator_merge: kg_operators
+  generate_batch_observations: observation_generation
   batch_qa: quality_assurance
   save_batch_checkpoint: batch_checkpoint_manager
   final_persist: persistence

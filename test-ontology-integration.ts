@@ -12,9 +12,17 @@ import { PersistenceAgent } from './src/agents/persistence-agent.js';
 import { GraphDatabaseAdapter } from './src/storage/graph-database-adapter.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+// Derive the coding repo root from this file's location
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// This file is at: integrations/mcp-server-semantic-analysis/
+// Coding root is 2 levels up
+const DEFAULT_REPO_PATH = process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../..');
 
 // Test configuration
-const TEST_REPO_PATH = '/Users/q284340/Agentic/coding';
+const TEST_REPO_PATH = DEFAULT_REPO_PATH;
 const TEST_TIMEOUT = 30000; // 30 seconds
 
 // ANSI color codes for output

@@ -3,15 +3,24 @@
 // Simple test to isolate LLM diagram generation issue
 import { InsightGenerationAgent } from './dist/agents/insight-generation-agent.js';
 import { setupLogging } from './dist/logging.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Derive the coding repo root from this file's location
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// This file is at: integrations/mcp-server-semantic-analysis/
+// Coding root is 2 levels up
+const codingRoot = process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../..');
 
 // Setup logging
 setupLogging();
 
 async function testLLMGeneration() {
   console.log('🧪 Testing LLM diagram generation isolation...');
-  
+
   // Create agent with correct repository path
-  const agent = new InsightGenerationAgent('/Users/q284340/Agentic/coding');
+  const agent = new InsightGenerationAgent(codingRoot);
   
   // Test data with substantial content like debug script
   const testData = {

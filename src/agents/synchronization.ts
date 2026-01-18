@@ -2,6 +2,14 @@ import { log } from "../logging.js";
 import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { fileURLToPath } from "url";
+
+// Derive the coding repo root from this file's location
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// This file is at: integrations/mcp-server-semantic-analysis/src/agents/synchronization.ts
+// Coding root is 5 levels up
+const CODING_ROOT = process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../../../../..');
 
 export interface SyncTarget {
   name: string;
@@ -81,7 +89,7 @@ export class SynchronizationAgent {
       {
         name: "knowledge_export_coding",
         type: "knowledge_export_file",
-        path: "/Users/q284340/Agentic/coding/.data/knowledge-export/coding.json",
+        path: path.join(CODING_ROOT, '.data', 'knowledge-export', 'coding.json'),
         enabled: true,
         bidirectional: true,
       },

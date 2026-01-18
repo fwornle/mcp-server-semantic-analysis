@@ -12,7 +12,15 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { log } from '../logging.js';
+
+// Derive the coding repo root from this file's location
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// This file is at: integrations/mcp-server-semantic-analysis/src/utils/checkpoint-manager.ts
+// Coding root is 5 levels up
+const CODING_ROOT = process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../../../../..');
 
 export interface WorkflowCheckpoints {
   lastVibeAnalysis?: string;
@@ -202,13 +210,13 @@ const instances: Map<string, CheckpointManager> = new Map();
 
 /**
  * Get or create a CheckpointManager instance
- * @param repositoryPath - Path to the repository root (default: /Users/q284340/Agentic/coding)
+ * @param repositoryPath - Path to the repository root (default: derived from env or file location)
  * @param team - Team name for legacy checkpoint lookups (default: 'coding')
  */
 export function getCheckpointManager(repositoryPath?: string, team: string = 'coding'): CheckpointManager {
   if (!repositoryPath) {
-    // Use the coding repo path
-    repositoryPath = '/Users/q284340/Agentic/coding';
+    // Use the coding repo path (derived dynamically)
+    repositoryPath = CODING_ROOT;
   }
 
   const key = `${repositoryPath}:${team}`;

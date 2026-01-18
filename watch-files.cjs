@@ -3,7 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const insightsDir = '/Users/q284340/Agentic/coding/knowledge-management/insights';
+// Derive coding root from this file's location (2 levels up from integrations/mcp-server-semantic-analysis)
+const codingRoot = process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../..');
+const insightsDir = path.join(codingRoot, 'knowledge-management', 'insights');
 
 console.log('🔍 Starting file watcher for insights directory...');
 console.log('📁 Watching:', insightsDir);

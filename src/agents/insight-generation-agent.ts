@@ -2340,7 +2340,7 @@ ${analysisContext}
 **CRITICAL REQUIREMENTS (MUST FOLLOW EXACTLY):**
 1. Start with @startuml on the first line
 2. IMMEDIATELY after @startuml (on the SECOND line), include this EXACT line:
-   !include /Users/q284340/Agentic/coding/docs/puml/_standard-style.puml
+   !include ${this.standardStylePath}
 3. Do NOT define any skinparam settings - the style sheet handles all styling
 4. Use proper PlantUML syntax for the diagram type
 5. Make the diagram visually clear and informative
@@ -2350,7 +2350,7 @@ ${analysisContext}
 **Example structure:**
 \`\`\`
 @startuml
-!include /Users/q284340/Agentic/coding/docs/puml/_standard-style.puml
+!include ${this.standardStylePath}
 
 ' Your diagram content here (NO skinparam definitions)
 

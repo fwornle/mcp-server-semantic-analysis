@@ -599,6 +599,25 @@ export class CoordinatorAgent {
     }
   }
 
+  /**
+   * Enforce minimum step execution time in mock mode for better UI visualization.
+   * In mock mode, steps complete too fast for the workflow visualization to catch
+   * the "running" state. This ensures each step stays visible for at least 200ms.
+   * @param stepName - Name of the step (for logging)
+   * @param stepStartTime - When the step started (to calculate elapsed time)
+   */
+  private async enforceMinStepTimeInMockMode(stepName: string, stepStartTime: Date): Promise<void> {
+    const isMockMode = isMockLLMEnabled(this.repositoryPath);
+    if (!isMockMode) return;
+
+    const elapsed = Date.now() - stepStartTime.getTime();
+    if (elapsed < MOCK_MODE_MIN_STEP_TIME_MS) {
+      const delay = MOCK_MODE_MIN_STEP_TIME_MS - elapsed;
+      log(`Mock mode: Adding ${delay}ms delay for step '${stepName}' visibility`, 'debug');
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
   private initializeWorkflows(): void {
     // Try to load workflows from YAML (single source of truth)
     try {
@@ -2152,6 +2171,7 @@ export class CoordinatorAgent {
 
           // Check for cancellation after commit extraction
           this.checkCancellationOrThrow('extract_batch_commits');
+          await this.enforceMinStepTimeInMockMode('extract_batch_commits', extractCommitsStart);
           await this.checkSingleStepPause('extract_batch_commits');
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
@@ -2243,6 +2263,7 @@ export class CoordinatorAgent {
 
           // Check for cancellation after session extraction
           this.checkCancellationOrThrow('extract_batch_sessions');
+          await this.enforceMinStepTimeInMockMode('extract_batch_sessions', extractSessionsStart);
           await this.checkSingleStepPause('extract_batch_sessions');
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
@@ -2506,6 +2527,7 @@ export class CoordinatorAgent {
 
           // Check for cancellation after semantic analysis
           this.checkCancellationOrThrow('batch_semantic_analysis');
+          await this.enforceMinStepTimeInMockMode('batch_semantic_analysis', semanticAnalysisStart);
           await this.checkSingleStepPause('batch_semantic_analysis');
 
           // Record semantic analysis step for workflow report (only on first batch)
@@ -2607,6 +2629,7 @@ export class CoordinatorAgent {
 
               // Check for cancellation after observation generation
               this.checkCancellationOrThrow('generate_batch_observations');
+              await this.enforceMinStepTimeInMockMode('generate_batch_observations', observationStartTime);
               await this.checkSingleStepPause('generate_batch_observations');
 
               // Record step for workflow report (only on first batch)
@@ -2733,6 +2756,7 @@ export class CoordinatorAgent {
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
               // Check for cancellation after ontology classification
               this.checkCancellationOrThrow('classify_with_ontology');
+              await this.enforceMinStepTimeInMockMode('classify_with_ontology', ontologyClassificationStartTime);
               await this.checkSingleStepPause('classify_with_ontology');
 
               // Pass LLM metrics to batch step tracking for tracer visualization
@@ -2884,6 +2908,7 @@ export class CoordinatorAgent {
           const operatorsTotalDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();
           // Check for cancellation after KG operators
           this.checkCancellationOrThrow('kg_operators');
+          await this.enforceMinStepTimeInMockMode('kg_operators', operatorsStartTime);
           // Single-step pause after KG operators
           await this.checkSingleStepPause('kg_operators');
 
@@ -2968,6 +2993,7 @@ export class CoordinatorAgent {
 
           // Check for cancellation after batch QA
           this.checkCancellationOrThrow('batch_qa');
+          await this.enforceMinStepTimeInMockMode('batch_qa', qaStartTime);
           // Single-step pause after batch QA
           await this.checkSingleStepPause('batch_qa');
 
@@ -3015,6 +3041,7 @@ export class CoordinatorAgent {
 
           // Check for cancellation after save_batch_checkpoint
           this.checkCancellationOrThrow('save_batch_checkpoint');
+          await this.enforceMinStepTimeInMockMode('save_batch_checkpoint', checkpointStartTime);
           // Single-step pause after batch checkpoint (end of batch cycle)
           await this.checkSingleStepPause('save_batch_checkpoint');
 

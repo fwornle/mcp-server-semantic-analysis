@@ -2136,6 +2136,9 @@ export class CoordinatorAgent {
             batch.endCommit
           );
 
+          // Enforce minimum step time in mock mode BEFORE marking as completed
+          await this.enforceMinStepTimeInMockMode('extract_batch_commits', extractCommitsStart);
+
           // Track step completion for dashboard visibility
           // Flatten commits structure so summarizeStepResult can find commits array
           const commitsDuration = Date.now() - extractCommitsStart.getTime();
@@ -2171,7 +2174,6 @@ export class CoordinatorAgent {
 
           // Check for cancellation after commit extraction
           this.checkCancellationOrThrow('extract_batch_commits');
-          await this.enforceMinStepTimeInMockMode('extract_batch_commits', extractCommitsStart);
           await this.checkSingleStepPause('extract_batch_commits');
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
@@ -2229,6 +2231,9 @@ export class CoordinatorAgent {
             }))
           );
 
+          // Enforce minimum step time in mock mode BEFORE marking as completed
+          await this.enforceMinStepTimeInMockMode('extract_batch_sessions', extractSessionsStart);
+
           // Track step completion for dashboard visibility
           // Flatten sessions structure so summarizeStepResult can find sessions array
           const sessionsDuration = Date.now() - extractSessionsStart.getTime();
@@ -2263,7 +2268,6 @@ export class CoordinatorAgent {
 
           // Check for cancellation after session extraction
           this.checkCancellationOrThrow('extract_batch_sessions');
-          await this.enforceMinStepTimeInMockMode('extract_batch_sessions', extractSessionsStart);
           await this.checkSingleStepPause('extract_batch_sessions');
 
           // Record step for workflow report (only on first batch to avoid duplicate entries)
@@ -2484,6 +2488,9 @@ export class CoordinatorAgent {
             });
           }
 
+          // Enforce minimum step time in mock mode BEFORE marking as completed
+          await this.enforceMinStepTimeInMockMode('batch_semantic_analysis', semanticAnalysisStart);
+
           // Track semantic analysis step completion for dashboard visibility
           const semanticDuration = Date.now() - semanticAnalysisStart.getTime();
           // Capture LLM metrics from SemanticAnalyzer before wrapping
@@ -2527,7 +2534,6 @@ export class CoordinatorAgent {
 
           // Check for cancellation after semantic analysis
           this.checkCancellationOrThrow('batch_semantic_analysis');
-          await this.enforceMinStepTimeInMockMode('batch_semantic_analysis', semanticAnalysisStart);
           await this.checkSingleStepPause('batch_semantic_analysis');
 
           // Record semantic analysis step for workflow report (only on first batch)
@@ -2576,6 +2582,9 @@ export class CoordinatorAgent {
                 observationsCount: batchObservations.length,
                 averageSignificance: observationResult?.summary?.averageSignificance || 0
               });
+
+              // Enforce minimum step time in mock mode BEFORE marking as completed
+              await this.enforceMinStepTimeInMockMode('generate_batch_observations', observationStartTime);
 
               // Track observation generation step for dashboard visibility
               const obsDuration = Date.now() - observationStartTime.getTime();
@@ -2629,7 +2638,6 @@ export class CoordinatorAgent {
 
               // Check for cancellation after observation generation
               this.checkCancellationOrThrow('generate_batch_observations');
-              await this.enforceMinStepTimeInMockMode('generate_batch_observations', observationStartTime);
               await this.checkSingleStepPause('generate_batch_observations');
 
               // Record step for workflow report (only on first batch)
@@ -2731,6 +2739,9 @@ export class CoordinatorAgent {
                 });
               }
 
+              // Enforce minimum step time in mock mode BEFORE marking as completed
+              await this.enforceMinStepTimeInMockMode('classify_with_ontology', ontologyClassificationStartTime);
+
               // Track ontology classification step completion for dashboard visibility
               const ontologyDuration = Date.now() - ontologyClassificationStartTime.getTime();
               const ontologyLlmUsage = classificationResult?.summary?.llmUsage;
@@ -2756,7 +2767,6 @@ export class CoordinatorAgent {
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
               // Check for cancellation after ontology classification
               this.checkCancellationOrThrow('classify_with_ontology');
-              await this.enforceMinStepTimeInMockMode('classify_with_ontology', ontologyClassificationStartTime);
               await this.checkSingleStepPause('classify_with_ontology');
 
               // Pass LLM metrics to batch step tracking for tracer visualization
@@ -2895,6 +2905,9 @@ export class CoordinatorAgent {
           const operatorNames = ['conv', 'aggr', 'embed', 'dedup', 'pred', 'merge'] as const;
           const avgOpDuration = totalOperatorDuration / operatorNames.length;
 
+          // Enforce minimum step time in mock mode BEFORE marking as completed
+          await this.enforceMinStepTimeInMockMode('kg_operators', operatorsStartTime);
+
           // Create timing for each operator (use reported duration if available, otherwise estimate)
           execution.results['operator_conv'] = this.wrapWithTiming({ result: opResults.conv, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.conv?.duration || avgOpDuration)));
           execution.results['operator_aggr'] = this.wrapWithTiming({ result: opResults.aggr, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.aggr?.duration || avgOpDuration)));
@@ -2908,7 +2921,6 @@ export class CoordinatorAgent {
           const operatorsTotalDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();
           // Check for cancellation after KG operators
           this.checkCancellationOrThrow('kg_operators');
-          await this.enforceMinStepTimeInMockMode('kg_operators', operatorsStartTime);
           // Single-step pause after KG operators
           await this.checkSingleStepPause('kg_operators');
 
@@ -2985,6 +2997,9 @@ export class CoordinatorAgent {
           // Mark batch complete
           batchScheduler.completeBatch(batch.id, stats);
 
+          // Enforce minimum step time in mock mode BEFORE marking as completed
+          await this.enforceMinStepTimeInMockMode('batch_qa', qaStartTime);
+
           // Track batch_qa step (QA validation via stats calculation)
           const qaDuration = Date.now() - qaStartTime.getTime();
           execution.results['batch_qa'] = this.wrapWithTiming({ result: { stats, validated: true }, batchId: batch.id }, qaStartTime);
@@ -2993,7 +3008,6 @@ export class CoordinatorAgent {
 
           // Check for cancellation after batch QA
           this.checkCancellationOrThrow('batch_qa');
-          await this.enforceMinStepTimeInMockMode('batch_qa', qaStartTime);
           // Single-step pause after batch QA
           await this.checkSingleStepPause('batch_qa');
 
@@ -3033,6 +3047,9 @@ export class CoordinatorAgent {
             currentBatchIteration.steps  // Include detailed step outputs for history view
           );
 
+          // Enforce minimum step time in mock mode BEFORE marking as completed
+          await this.enforceMinStepTimeInMockMode('save_batch_checkpoint', checkpointStartTime);
+
           // Track save_batch_checkpoint step completion for dashboard visibility
           const checkpointDuration = Date.now() - checkpointStartTime.getTime();
           execution.results['save_batch_checkpoint'] = this.wrapWithTiming({ result: { saved: true }, batchId: batch.id }, checkpointStartTime);
@@ -3041,7 +3058,6 @@ export class CoordinatorAgent {
 
           // Check for cancellation after save_batch_checkpoint
           this.checkCancellationOrThrow('save_batch_checkpoint');
-          await this.enforceMinStepTimeInMockMode('save_batch_checkpoint', checkpointStartTime);
           // Single-step pause after batch checkpoint (end of batch cycle)
           await this.checkSingleStepPause('save_batch_checkpoint');
 

@@ -24,6 +24,10 @@ import { SemanticAnalyzer } from "./semantic-analyzer.js";
 import { SmartOrchestrator, createSmartOrchestrator, type StepResultWithMetadata } from "../orchestrator/smart-orchestrator.js";
 import { AgentResponse, AgentIssue, createIssue, createDefaultMetadata, createDefaultRouting, createAgentResponse } from "../types/agent-response.js";
 import { UKBTraceReportManager } from "../utils/ukb-trace-report.js";
+import { isMockLLMEnabled, getMockDelay } from "../mock/llm-mock-service.js";
+
+// Minimum step execution time in mock mode for UI visualization (200ms)
+const MOCK_MODE_MIN_STEP_TIME_MS = 200;
 
 export interface WorkflowDefinition {
   name: string;
@@ -3549,6 +3553,8 @@ export class CoordinatorAgent {
     step: WorkflowStep,
     globalParams: Record<string, any>
   ): Promise<any> {
+    const stepStartTime = Date.now();
+
     log(`Executing step: ${step.name}`, "info", {
       agent: step.agent,
       action: step.action,
@@ -3578,6 +3584,18 @@ export class CoordinatorAgent {
 
     try {
       const result = await Promise.race([executionPromise, timeoutPromise]);
+
+      // In mock mode, enforce minimum step execution time for better UI visualization
+      // This ensures the "running" state is visible in the workflow graph
+      const isMockMode = isMockLLMEnabled(this.repositoryPath);
+      if (isMockMode) {
+        const elapsed = Date.now() - stepStartTime;
+        if (elapsed < MOCK_MODE_MIN_STEP_TIME_MS) {
+          const delay = MOCK_MODE_MIN_STEP_TIME_MS - elapsed;
+          log(`Mock mode: Adding ${delay}ms delay for step visibility`, "debug", { step: step.name });
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
 
       // Store resolved parameters for potential QA retries (exclude internal _context)
       const { _context, ...resolvedParams } = stepParams;

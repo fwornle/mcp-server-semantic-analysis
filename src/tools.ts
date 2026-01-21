@@ -1026,6 +1026,36 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     parameters: resolvedParameters
   });
 
+  // DEBUG MODE: Pre-set single-step mode and mock LLM in progress file BEFORE workflow starts
+  // This must happen BEFORE async/sync branching so it applies to both execution paths
+  if (debug) {
+    const progressFile = path.join(repositoryPath, '.data', 'workflow-progress.json');
+    const dataDir = path.join(repositoryPath, '.data');
+    mkdirSync(dataDir, { recursive: true });
+
+    let existingProgress: Record<string, any> = {};
+    if (existsSync(progressFile)) {
+      try {
+        existingProgress = JSON.parse(readFileSync(progressFile, 'utf-8'));
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    const debugProgress = {
+      ...existingProgress,
+      singleStepMode: true,
+      stepPaused: false, // Will be set by first checkpoint
+      pausedAtStep: null,
+      singleStepUpdatedAt: new Date().toISOString(),
+      mockLLM: true,
+      mockLLMDelay: 500,
+      mockLLMUpdatedAt: new Date().toISOString(),
+    };
+    writeFileSync(progressFile, JSON.stringify(debugProgress, null, 2));
+    log(`Debug mode: Pre-set singleStepMode=true and mockLLM=true in progress file`, 'info');
+  }
+
   // If async_mode, spawn a SEPARATE PROCESS to run the workflow
   // This ensures workflow survives MCP disconnections
   if (async_mode) {
@@ -1037,36 +1067,6 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
         killedPids: cleanup.killedPids,
         previousWorkflowId: cleanup.staleWorkflowId,
       });
-    }
-
-    // DEBUG MODE: Pre-set single-step mode and mock LLM in progress file BEFORE workflow starts
-    // This ensures the workflow sees these flags from the very first step
-    if (debug) {
-      const progressFile = path.join(repositoryPath, '.data', 'workflow-progress.json');
-      const dataDir = path.join(repositoryPath, '.data');
-      mkdirSync(dataDir, { recursive: true });
-
-      let existingProgress: Record<string, any> = {};
-      if (existsSync(progressFile)) {
-        try {
-          existingProgress = JSON.parse(readFileSync(progressFile, 'utf-8'));
-        } catch {
-          // Ignore parse errors
-        }
-      }
-
-      const debugProgress = {
-        ...existingProgress,
-        singleStepMode: true,
-        stepPaused: false, // Will be set by first checkpoint
-        pausedAtStep: null,
-        singleStepUpdatedAt: new Date().toISOString(),
-        mockLLM: true,
-        mockLLMDelay: 500,
-        mockLLMUpdatedAt: new Date().toISOString(),
-      };
-      writeFileSync(progressFile, JSON.stringify(debugProgress, null, 2));
-      log(`Debug mode: Pre-set singleStepMode=true and mockLLM=true in progress file`, 'info');
     }
 
     // Store workflow info locally (for status queries before child writes progress)

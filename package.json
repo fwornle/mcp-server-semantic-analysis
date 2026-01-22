@@ -5,7 +5,9 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "mcp-server-semantic-analysis": "dist/index.js"
+    "mcp-server-semantic-analysis": "dist/index.js",
+    "mcp-server-semantic-analysis-sse": "dist/sse-server.js",
+    "mcp-server-semantic-analysis-proxy": "dist/stdio-proxy.js"
   },
   "files": [
     "dist",
@@ -15,7 +17,9 @@
     "build": "tsc && shx chmod +x dist/*.js",
     "watch": "tsc --watch",
     "dev": "npm run build && node dist/index.js",
-    "test": "npm run build && node dist/test.js"
+    "test": "npm run build && node dist/test.js",
+    "start:sse": "node dist/sse-server.js",
+    "start:proxy": "node dist/stdio-proxy.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.57.0",
@@ -24,6 +28,7 @@
     "@types/cheerio": "^0.22.35",
     "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",
+    "express": "^4.21.0",
     "graphology": "^0.25.4",
     "groq-sdk": "^0.36.0",
     "level": "^10.0.0",
@@ -31,6 +36,7 @@
     "yaml": "^2.8.2"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
     "shx": "^0.3.4",

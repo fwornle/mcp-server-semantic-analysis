@@ -188,6 +188,49 @@ claude-mcp
 # Use any of the 12 tools directly in Claude conversations
 ```
 
+### Docker Deployment (HTTP/SSE Mode)
+
+For containerized deployments, the server supports HTTP/SSE transport:
+
+```bash
+# Start as SSE server (Docker mode)
+npm run sse-server
+
+# Or directly:
+node dist/sse-server.js
+```
+
+**HTTP/SSE Endpoints:**
+- `GET /health` - Health check endpoint
+- `GET /sse` - Server-Sent Events connection
+- `POST /messages` - JSON-RPC message endpoint
+
+**Port Configuration:**
+- Default: `3848` (configurable via `SEMANTIC_ANALYSIS_SSE_PORT` or `SEMANTIC_ANALYSIS_PORT`)
+
+**Health Check:**
+```bash
+curl http://localhost:3848/health
+# {"status":"ok","server":"mcp-server-semantic-analysis"}
+```
+
+**Claude Code Integration (Docker Mode):**
+
+In Docker mode, Claude connects via a lightweight stdio proxy:
+```json
+{
+  "semantic-analysis": {
+    "command": "node",
+    "args": ["path/to/dist/stdio-proxy.js"],
+    "env": {
+      "SEMANTIC_ANALYSIS_SSE_URL": "http://localhost:3848"
+    }
+  }
+}
+```
+
+See the parent [Docker Deployment Guide](../../docker/README.md) for full containerization setup.
+
 ## 🔧 API Reference Summary
 
 ### Tool Categories

@@ -36,7 +36,7 @@
     "yaml": "^2.8.2"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
+    "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
     "shx": "^0.3.4",

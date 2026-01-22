@@ -10,8 +10,8 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { createServer } from "./server.js";
-import { log, logError } from "./utils/logging.js";
-import { setServerInstance } from "./tools/workflow.js";
+import { log, logError } from "./logging.js";
+import { setServerInstance } from "./tools.js";
 
 const PORT = parseInt(process.env.SEMANTIC_ANALYSIS_PORT || '3848', 10);
 

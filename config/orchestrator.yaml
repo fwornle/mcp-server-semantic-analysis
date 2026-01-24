@@ -1,0 +1,21 @@
+# Orchestrator Configuration
+# Controls SmartOrchestrator behavior, single-step debug mode, and mock settings
+
+orchestrator:
+  # SmartOrchestrator retry and concurrency settings
+  max_retries: 3
+  retry_threshold: 0.5        # Quality threshold below which to retry
+  skip_threshold: 0.3         # Quality threshold below which to skip
+  use_llm_routing: true       # Enable LLM-based step routing
+  max_concurrent_steps: 3     # Max parallel step execution
+  default_step_timeout: 120000  # Per-step timeout in ms (2 minutes)
+
+single_step_debug:
+  # Polling configuration for single-step (debug) mode
+  poll_interval_ms: 500       # How often to check for resume signal
+  log_interval_ms: 300000     # Log reminder interval (5 minutes)
+  max_consecutive_errors: 10  # Tolerate up to N transient read errors
+
+mock_mode:
+  # Mock LLM mode settings for UI visualization/testing
+  min_step_time_ms: 200       # Minimum step execution time in mock mode

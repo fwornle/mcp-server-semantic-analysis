@@ -124,6 +124,7 @@ steps:
     agent: semantic_analysis
     action: analyzeSemantics
     tier: premium  # Use high-quality model for semantic analysis
+    substeps: [sem_data_prep, sem_llm_analysis, sem_observation_gen, sem_entity_transform]
     parameters:
       git_commits: "{{extract_batch_commits.result.commits}}"
       vibe_sessions: "{{extract_batch_sessions.result.sessions}}"
@@ -145,6 +146,7 @@ steps:
     agent: observation_generation
     action: generateStructuredObservations
     tier: premium
+    substeps: [obs_llm_generate, obs_accumulate]
     parameters:
       semantic_analysis: "{{batch_semantic_analysis.result}}"
       git_analysis: "{{extract_batch_commits.result}}"
@@ -164,6 +166,7 @@ steps:
     agent: ontology_classification
     action: classifyObservations
     tier: standard
+    substeps: [onto_data_prep, onto_llm_classify, onto_apply_results]
     parameters:
       observations: "{{generate_batch_observations.result.observations}}"
       autoExtend: true

@@ -1,0 +1,9 @@
+# Workflow Runner Configuration
+# Controls the standalone workflow runner process behavior
+
+runner:
+  # Heartbeat interval - must be well under the 120s stale threshold
+  heartbeat_interval_ms: 30000    # 30 seconds
+
+  # Watchdog timer to prevent indefinite hangs
+  max_duration_ms: 7200000        # 2 hours maximum workflow duration

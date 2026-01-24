@@ -16,7 +16,7 @@ import { CodeGraphAgent } from "./code-graph-agent.js";
 import { DocumentationLinkerAgent } from "./documentation-linker-agent.js";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 import { WorkflowReportAgent, type StepReport } from "./workflow-report-agent.js";
-import { loadAllWorkflows, loadWorkflowFromYAML, getConfigDir } from "../utils/workflow-loader.js";
+import { loadAllWorkflows, loadWorkflowFromYAML, getConfigDir, loadOrchestratorConfig } from "../utils/workflow-loader.js";
 import { BatchScheduler, getBatchScheduler, type BatchWindow, type BatchStats } from "./batch-scheduler.js";
 import { KGOperators, createKGOperators, type KGEntity, type KGRelation, type BatchContext } from "./kg-operators.js";
 import { getBatchCheckpointManager } from "../utils/batch-checkpoint-manager.js";
@@ -26,8 +26,8 @@ import { AgentResponse, AgentIssue, createIssue, createDefaultMetadata, createDe
 import { UKBTraceReportManager } from "../utils/ukb-trace-report.js";
 import { isMockLLMEnabled, getMockDelay } from "../mock/llm-mock-service.js";
 
-// Minimum step execution time in mock mode for UI visualization (200ms)
-const MOCK_MODE_MIN_STEP_TIME_MS = 200;
+// Load mock mode minimum step time from config
+const MOCK_MODE_MIN_STEP_TIME_MS = loadOrchestratorConfig().mock_mode.min_step_time_ms;
 
 export interface WorkflowDefinition {
   name: string;
@@ -50,6 +50,7 @@ export interface WorkflowStep {
   phase?: 'initialization' | 'batch' | 'finalization'; // For iterative workflows
   operator?: string; // Tree-KG operator name (conv, aggr, embed, dedup, pred, merge)
   tier?: 'fast' | 'standard' | 'premium'; // Model tier override
+  substeps?: string[]; // Sub-step names reported during execution (for progress visibility)
 }
 
 export interface WorkflowExecution {
@@ -127,13 +128,14 @@ export class CoordinatorAgent {
     this.team = team;
     this.graphDB = new GraphDatabaseAdapter();
     this.reportAgent = new WorkflowReportAgent(repositoryPath);
+    const orchConfig = loadOrchestratorConfig().orchestrator;
     this.smartOrchestrator = createSmartOrchestrator({
-      maxRetries: 3,
-      retryThreshold: 0.5,
-      skipThreshold: 0.3,
-      useLLMRouting: true,
-      maxConcurrentSteps: 3,
-      defaultStepTimeout: 120000,
+      maxRetries: orchConfig.max_retries,
+      retryThreshold: orchConfig.retry_threshold,
+      skipThreshold: orchConfig.skip_threshold,
+      useLLMRouting: orchConfig.use_llm_routing,
+      maxConcurrentSteps: orchConfig.max_concurrent_steps,
+      defaultStepTimeout: orchConfig.default_step_timeout,
     });
     this.initializeWorkflows();
     // Note: Agents are initialized lazily when executeWorkflow is called
@@ -178,6 +180,7 @@ export class CoordinatorAgent {
         singleStepUpdatedAt?: string;
         singleStepTimeout?: number;
         resumeRequestedAt?: string;
+        stepIntoSubsteps?: boolean;  // When true, pause at sub-step boundaries too
         // LLM Mock mode for frontend testing
         mockLLM?: boolean;
         mockLLMDelay?: number;
@@ -207,6 +210,7 @@ export class CoordinatorAgent {
             singleStepUpdatedAt: currentProgress.singleStepUpdatedAt,
             singleStepTimeout: currentProgress.singleStepTimeout,
             resumeRequestedAt: currentProgress.resumeRequestedAt,
+            stepIntoSubsteps: currentProgress.stepIntoSubsteps,
             // LLM Mock mode
             mockLLM: currentProgress.mockLLM,
             mockLLMDelay: currentProgress.mockLLMDelay,
@@ -228,6 +232,8 @@ export class CoordinatorAgent {
         tokensUsed?: number;
         llmProvider?: string;
         llmCalls?: number;
+        isSubstep?: boolean;
+        parentStep?: string;
       }> = [];
 
       // Track which steps are currently running (from DAG executor)
@@ -236,6 +242,17 @@ export class CoordinatorAgent {
 
       // Get valid workflow step names to filter out non-step entries like 'accumulatedKG'
       const validStepNames = new Set(workflow.steps.map(s => s.name));
+      // Also include substeps defined in workflow YAML (e.g. sem_data_prep, onto_llm_classify)
+      // Track substep names separately so we can exclude them from progress counting
+      const substepNames = new Set<string>();
+      const substepParentMap = new Map<string, string>();
+      workflow.steps.forEach(s => {
+        if (s.substeps) s.substeps.forEach(sub => {
+          validStepNames.add(sub);
+          substepNames.add(sub);
+          substepParentMap.set(sub, s.name);
+        });
+      });
       // Also include batch-specific step names that are dynamically executed
       const batchStepNames = [
         'extract_batch_commits', 'extract_batch_sessions', 'batch_semantic_analysis',
@@ -264,6 +281,11 @@ export class CoordinatorAgent {
             tokensUsed: llmMetrics.totalTokens,
             llmProvider: llmMetrics.providers?.join(', ') || undefined,
             llmCalls: llmMetrics.totalCalls,
+          } : {}),
+          // Mark sub-steps so dashboard can identify them for visualization
+          ...(substepNames.has(stepName) ? {
+            isSubstep: true,
+            parentStep: substepParentMap.get(stepName),
           } : {})
         });
       }
@@ -279,9 +301,11 @@ export class CoordinatorAgent {
         }
       }
 
-      const completedSteps = stepsDetail.filter(s => s.status === 'completed').map(s => s.name);
-      const failedSteps = stepsDetail.filter(s => s.status === 'failed').map(s => s.name);
-      const skippedSteps = stepsDetail.filter(s => s.status === 'skipped').map(s => s.name);
+      // Exclude sub-steps from progress counting - they inflate completedSteps and
+      // cause the dashboard to prematurely think we're in finalization phase
+      const completedSteps = stepsDetail.filter(s => s.status === 'completed' && !substepNames.has(s.name)).map(s => s.name);
+      const failedSteps = stepsDetail.filter(s => s.status === 'failed' && !substepNames.has(s.name)).map(s => s.name);
+      const skippedSteps = stepsDetail.filter(s => s.status === 'skipped' && !substepNames.has(s.name)).map(s => s.name);
 
       // Build summary statistics from all step outputs
       const summaryStats: Record<string, any> = {
@@ -349,6 +373,12 @@ export class CoordinatorAgent {
       // Get all currently running steps
       const currentlyRunning = stepsDetail.filter(s => s.status === 'running').map(s => s.name);
 
+      // Count batch-phase steps (initialization + batch) vs finalization
+      // This replaces hardcoded BATCH_STEP_COUNT in the dashboard
+      const batchPhaseStepCount = workflow.steps.filter(
+        s => s.phase === 'batch' || s.phase === 'initialization'
+      ).length;
+
       const progress: Record<string, any> = {
         workflowName: workflow.name,
         executionId: execution.id,
@@ -358,6 +388,7 @@ export class CoordinatorAgent {
         startTime: execution.startTime.toISOString(),
         currentStep: currentStep || currentlyRunning[0] || null,
         totalSteps: workflow.steps.length,
+        batchPhaseStepCount,
         completedSteps: completedSteps.length,
         failedSteps: failedSteps.length,
         skippedSteps: skippedSteps.length,
@@ -424,6 +455,9 @@ export class CoordinatorAgent {
           if (freshProgress.resumeRequestedAt !== undefined) {
             progress.resumeRequestedAt = freshProgress.resumeRequestedAt;
           }
+          if (freshProgress.stepIntoSubsteps !== undefined) {
+            progress.stepIntoSubsteps = freshProgress.stepIntoSubsteps;
+          }
           // LLM Mock mode fields
           if (freshProgress.mockLLM !== undefined) {
             progress.mockLLM = freshProgress.mockLLM;
@@ -453,6 +487,9 @@ export class CoordinatorAgent {
           }
           if (preservedDebugState.resumeRequestedAt !== undefined) {
             progress.resumeRequestedAt = preservedDebugState.resumeRequestedAt;
+          }
+          if (preservedDebugState.stepIntoSubsteps !== undefined) {
+            progress.stepIntoSubsteps = preservedDebugState.stepIntoSubsteps;
           }
           // LLM Mock mode fields
           if (preservedDebugState.mockLLM !== undefined) {
@@ -513,8 +550,9 @@ export class CoordinatorAgent {
    * Check and handle single-step debugging mode
    * If enabled, pauses after current step and waits for user to advance
    * @param stepName - Name of the step that just completed
+   * @param isSubstep - If true, only pause when stepIntoSubsteps is enabled
    */
-  private async checkSingleStepPause(stepName: string): Promise<void> {
+  private async checkSingleStepPause(stepName: string, isSubstep: boolean = false): Promise<void> {
     const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
 
     // Initial setup - these errors should NOT cause workflow to continue
@@ -526,7 +564,10 @@ export class CoordinatorAgent {
       // Check if single-step mode is enabled
       if (!progress.singleStepMode) return;
 
-      log(`Single-step mode: Pausing after step '${stepName}'`, 'info');
+      // For sub-steps, only pause if stepIntoSubsteps is enabled
+      if (isSubstep && !progress.stepIntoSubsteps) return;
+
+      log(`Single-step mode: Pausing after ${isSubstep ? 'sub-step' : 'step'} '${stepName}'`, 'info');
 
       // Set paused state
       progress.stepPaused = true;
@@ -539,13 +580,13 @@ export class CoordinatorAgent {
       return;
     }
 
-    // Poll for resume signal (check every 500ms, wait indefinitely until user acts)
-    // Single-step mode persists until user explicitly disables it or advances
-    const pollIntervalMs = 500;
+    // Poll for resume signal - single-step mode persists until user explicitly disables it or advances
+    const debugConfig = loadOrchestratorConfig().single_step_debug;
+    const pollIntervalMs = debugConfig.poll_interval_ms;
     let lastLogTime = Date.now();
-    const logIntervalMs = 5 * 60 * 1000; // Log reminder every 5 minutes
+    const logIntervalMs = debugConfig.log_interval_ms;
     let consecutiveReadErrors = 0;
-    const maxConsecutiveErrors = 10; // Allow up to 5 seconds of transient errors
+    const maxConsecutiveErrors = debugConfig.max_consecutive_errors;
 
     while (true) {
       // Check for cancellation while paused
@@ -1954,7 +1995,6 @@ export class CoordinatorAgent {
 
       // Separate steps by phase
       const initSteps = workflow.steps.filter(s => s.phase === 'initialization' || !s.phase);
-      const batchSteps = workflow.steps.filter(s => s.phase === 'batch');
       const finalSteps = workflow.steps.filter(s => s.phase === 'finalization');
 
       // PHASE 0: Run initialization steps (plan_batches)
@@ -2359,6 +2399,15 @@ export class CoordinatorAgent {
                 patterns: { developmentThemes: [] }
               };
 
+              // Sub-step: data preparation complete
+              const semPrepEndTime = new Date();
+              execution.results['sem_data_prep'] = this.wrapWithTiming({
+                result: { commits: commits.commits.length, sessions: sessionResult.sessions.length },
+                batchId: batch.id
+              }, semanticAnalysisStart, semPrepEndTime);
+              this.writeProgressFile(execution, workflow, 'sem_llm_analysis', ['sem_llm_analysis'], currentBatchProgress);
+              await this.checkSingleStepPause('sem_data_prep', true);
+
               // Call semantic analysis (surface depth for batch efficiency)
               log(`Batch ${batch.id}: Running semantic analysis`, 'info', {
                 commits: commits.commits.length,
@@ -2370,6 +2419,19 @@ export class CoordinatorAgent {
                 vibeAnalysis,
                 { analysisDepth: 'surface' }
               );
+
+              // Sub-step: LLM analysis complete
+              const semLlmEndTime = new Date();
+              execution.results['sem_llm_analysis'] = this.wrapWithTiming({
+                result: {
+                  architecturalPatterns: semanticResult?.codeAnalysis?.architecturalPatterns?.length || 0,
+                  keyPatterns: semanticResult?.semanticInsights?.keyPatterns?.length || 0,
+                  confidence: semanticResult?.confidence || 0
+                },
+                batchId: batch.id
+              }, semPrepEndTime, semLlmEndTime);
+              this.writeProgressFile(execution, workflow, 'sem_observation_gen', ['sem_observation_gen'], currentBatchProgress);
+              await this.checkSingleStepPause('sem_llm_analysis', true);
 
               // DEBUG: Log what the semantic analysis returned
               log(`Batch ${batch.id}: Semantic analysis result`, 'info', {
@@ -2437,6 +2499,15 @@ export class CoordinatorAgent {
                 insightsForObservation  // Pass insights instead of raw semantic result
               );
 
+              // Sub-step: observation generation complete
+              const semObsEndTime = new Date();
+              execution.results['sem_observation_gen'] = this.wrapWithTiming({
+                result: { observationsCount: obsResult?.observations?.length || 0 },
+                batchId: batch.id
+              }, semLlmEndTime, semObsEndTime);
+              this.writeProgressFile(execution, workflow, 'sem_entity_transform', ['sem_entity_transform'], currentBatchProgress);
+              await this.checkSingleStepPause('sem_observation_gen', true);
+
               // Transform to KGEntity format
               // Note: persistence agent expects 'entityType', not 'type'
               if (obsResult?.observations && obsResult.observations.length > 0) {
@@ -2472,6 +2543,13 @@ export class CoordinatorAgent {
               } else {
                 log(`Batch ${batch!.id}: No observations generated`, 'warning');
               }
+
+              // Sub-step: entity transformation complete
+              const semTransformEndTime = new Date();
+              execution.results['sem_entity_transform'] = this.wrapWithTiming({
+                result: { entities: batchEntities.length, relations: batchRelations.length },
+                batchId: batch.id
+              }, semObsEndTime, semTransformEndTime);
             } else {
               log(`Batch ${batch!.id}: Skipping analysis - missing agents or no commits`, 'warning', {
                 hasSemanticAgent: !!semanticAgent,
@@ -2578,6 +2656,15 @@ export class CoordinatorAgent {
 
               batchObservations = observationResult?.observations || [];
 
+              // Sub-step: LLM observation generation complete
+              const obsLlmEndTime = new Date();
+              execution.results['obs_llm_generate'] = this.wrapWithTiming({
+                result: { observationsCount: batchObservations.length, averageSignificance: observationResult?.summary?.averageSignificance || 0 },
+                batchId: batch.id
+              }, observationStartTime, obsLlmEndTime);
+              this.writeProgressFile(execution, workflow, 'obs_accumulate', ['obs_accumulate'], currentBatchProgress);
+              await this.checkSingleStepPause('obs_llm_generate', true);
+
               log(`Batch ${batch.id}: Observation generation complete`, 'info', {
                 observationsCount: batchObservations.length,
                 averageSignificance: observationResult?.summary?.averageSignificance || 0
@@ -2624,6 +2711,13 @@ export class CoordinatorAgent {
                   totalAccumulated: allBatchObservations.length
                 });
               }
+
+              // Sub-step: accumulation complete
+              const obsAccumEndTime = new Date();
+              execution.results['obs_accumulate'] = this.wrapWithTiming({
+                result: { batchObservations: batchObservations.length, totalAccumulated: allBatchObservations.length },
+                batchId: batch.id
+              }, obsLlmEndTime, obsAccumEndTime);
 
               // Trace observations for this batch (non-critical - don't fail workflow if tracing fails)
               if (this.traceReport) {
@@ -2709,11 +2803,32 @@ export class CoordinatorAgent {
                 tags: [] as string[]
               }));
 
+              // Sub-step: data preparation complete
+              const ontoPrepEndTime = new Date();
+              execution.results['onto_data_prep'] = this.wrapWithTiming({
+                result: { entitiesForClassification: observationsForClassification.length },
+                batchId: batch.id
+              }, ontologyClassificationStartTime, ontoPrepEndTime);
+              this.writeProgressFile(execution, workflow, 'onto_llm_classify', ['onto_llm_classify'], currentBatchProgress);
+              await this.checkSingleStepPause('onto_data_prep', true);
+
               const classificationResult = await ontologyAgent.classifyObservations({
                 observations: observationsForClassification,
                 autoExtend: true,
                 minConfidence: 0.6
               });
+
+              // Sub-step: LLM classification complete
+              const ontoLlmEndTime = new Date();
+              execution.results['onto_llm_classify'] = this.wrapWithTiming({
+                result: {
+                  classified: classificationResult?.summary?.classifiedCount || 0,
+                  unclassified: classificationResult?.summary?.unclassifiedCount || 0
+                },
+                batchId: batch.id
+              }, ontoPrepEndTime, ontoLlmEndTime);
+              this.writeProgressFile(execution, workflow, 'onto_apply_results', ['onto_apply_results'], currentBatchProgress);
+              await this.checkSingleStepPause('onto_llm_classify', true);
 
               // Update batch entities with ontology classifications
               if (classificationResult?.classified && classificationResult.classified.length > 0) {
@@ -2738,6 +2853,17 @@ export class CoordinatorAgent {
                   byClass: classificationResult.summary?.byClass || {}
                 });
               }
+
+              // Sub-step: apply results complete
+              const ontoApplyEndTime = new Date();
+              execution.results['onto_apply_results'] = this.wrapWithTiming({
+                result: {
+                  classified: classificationResult?.summary?.classifiedCount || 0,
+                  entitiesUpdated: batchEntities.length,
+                  byClass: classificationResult?.summary?.byClass || {}
+                },
+                batchId: batch.id
+              }, ontoLlmEndTime, ontoApplyEndTime);
 
               // Enforce minimum step time in mock mode BEFORE marking as completed
               await this.enforceMinStepTimeInMockMode('classify_with_ontology', ontologyClassificationStartTime);

@@ -54,6 +54,7 @@ export interface StepYAML {
   phase?: 'initialization' | 'batch' | 'finalization';  // For iterative workflows
   operator?: string;  // Tree-KG operator name (conv, aggr, embed, dedup, pred, merge)
   tier?: 'fast' | 'standard' | 'premium';  // Model tier override
+  substeps?: string[];  // Sub-step names reported during execution (for progress visibility)
 }
 
 /** Edge definition for DAG visualization */
@@ -91,6 +92,52 @@ export interface AgentsYAML {
 export interface FullWorkflowDefinition {
   workflow: WorkflowYAML;
   agents: AgentsYAML;
+}
+
+// ============================================================================
+// Config YAML Interfaces
+// ============================================================================
+
+/** Orchestrator configuration from orchestrator.yaml */
+export interface OrchestratorConfig {
+  orchestrator: {
+    max_retries: number;
+    retry_threshold: number;
+    skip_threshold: number;
+    use_llm_routing: boolean;
+    max_concurrent_steps: number;
+    default_step_timeout: number;
+  };
+  single_step_debug: {
+    poll_interval_ms: number;
+    log_interval_ms: number;
+    max_consecutive_errors: number;
+  };
+  mock_mode: {
+    min_step_time_ms: number;
+  };
+}
+
+/** Workflow runner configuration from workflow-runner.yaml */
+export interface WorkflowRunnerConfig {
+  runner: {
+    heartbeat_interval_ms: number;
+    max_duration_ms: number;
+  };
+}
+
+/** Agent tuning configuration from agent-tuning.yaml */
+export interface AgentTuningConfig {
+  code_graph: {
+    memgraph_check_timeout_ms: number;
+    uv_process_timeout_ms: number;
+  };
+  documentation_linker: {
+    reference_batch_size: number;
+  };
+  deduplication: {
+    batch_size: number;
+  };
 }
 
 // ============================================================================
@@ -147,9 +194,10 @@ function convertStep(step: StepYAML): WorkflowStep {
     dependencies: step.dependencies,
     timeout: step.timeout,
     condition: step.condition,
-    phase: step.phase,      // For batch workflows
-    operator: step.operator, // Tree-KG operator
-    tier: step.tier,         // Model tier
+    phase: step.phase,        // For batch workflows
+    operator: step.operator,  // Tree-KG operator
+    tier: step.tier,          // Model tier
+    substeps: step.substeps,  // Sub-step names for progress visibility
   };
 }
 
@@ -268,6 +316,75 @@ export function validateWorkflow(workflowYAML: WorkflowYAML, agentsYAML: AgentsY
   }
 
   return errors;
+}
+
+// ============================================================================
+// Config Loaders
+// ============================================================================
+
+/** Cached configs to avoid repeated file reads */
+let _orchestratorConfig: OrchestratorConfig | null = null;
+let _workflowRunnerConfig: WorkflowRunnerConfig | null = null;
+let _agentTuningConfig: AgentTuningConfig | null = null;
+
+/**
+ * Load orchestrator.yaml configuration
+ */
+export function loadOrchestratorConfig(configDir?: string): OrchestratorConfig {
+  if (_orchestratorConfig) return _orchestratorConfig;
+  const dir = configDir || getConfigDir();
+  const configPath = path.join(dir, 'orchestrator.yaml');
+
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`Orchestrator configuration not found: ${configPath}`);
+  }
+
+  const content = fs.readFileSync(configPath, 'utf-8');
+  _orchestratorConfig = parse(content) as OrchestratorConfig;
+  return _orchestratorConfig;
+}
+
+/**
+ * Load workflow-runner.yaml configuration
+ */
+export function loadWorkflowRunnerConfig(configDir?: string): WorkflowRunnerConfig {
+  if (_workflowRunnerConfig) return _workflowRunnerConfig;
+  const dir = configDir || getConfigDir();
+  const configPath = path.join(dir, 'workflow-runner.yaml');
+
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`Workflow runner configuration not found: ${configPath}`);
+  }
+
+  const content = fs.readFileSync(configPath, 'utf-8');
+  _workflowRunnerConfig = parse(content) as WorkflowRunnerConfig;
+  return _workflowRunnerConfig;
+}
+
+/**
+ * Load agent-tuning.yaml configuration
+ */
+export function loadAgentTuningConfig(configDir?: string): AgentTuningConfig {
+  if (_agentTuningConfig) return _agentTuningConfig;
+  const dir = configDir || getConfigDir();
+  const configPath = path.join(dir, 'agent-tuning.yaml');
+
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`Agent tuning configuration not found: ${configPath}`);
+  }
+
+  const content = fs.readFileSync(configPath, 'utf-8');
+  _agentTuningConfig = parse(content) as AgentTuningConfig;
+  return _agentTuningConfig;
+}
+
+/**
+ * Clear cached configs (useful for testing or hot-reload)
+ */
+export function clearConfigCache(): void {
+  _orchestratorConfig = null;
+  _workflowRunnerConfig = null;
+  _agentTuningConfig = null;
 }
 
 // ============================================================================

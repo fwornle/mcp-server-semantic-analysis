@@ -12,6 +12,7 @@ import * as path from 'path';
 import { log } from '../logging.js';
 import type { CodeEntity } from './code-graph-agent.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
+import { loadAgentTuningConfig } from '../utils/workflow-loader.js';
 
 export interface DocumentationLink {
   id: string;
@@ -453,7 +454,7 @@ export class DocumentationLinkerAgent {
     }> = [];
 
     // Process in batches to avoid LLM overload
-    const batchSize = 10;
+    const batchSize = loadAgentTuningConfig().documentation_linker.reference_batch_size;
     const entityNames = availableEntities.slice(0, 100).map(e => e.name).join(', ');
 
     for (let i = 0; i < unresolvedReferences.length; i += batchSize) {

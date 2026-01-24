@@ -1,5 +1,6 @@
 import { log } from "../logging.js";
 import OpenAI from "openai";
+import { loadAgentTuningConfig } from "../utils/workflow-loader.js";
 
 export interface SimilarityConfig {
   embeddingModel?: string;
@@ -58,7 +59,7 @@ export class DeduplicationAgent {
     this.similarityConfig = {
       embeddingModel: "sentence-transformers/all-MiniLM-L6-v2",
       similarityThreshold: 0.85,
-      batchSize: 100,
+      batchSize: loadAgentTuningConfig().deduplication.batch_size,
     };
 
     this.mergingStrategy = {

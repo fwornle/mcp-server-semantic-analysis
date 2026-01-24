@@ -1,0 +1,16 @@
+# Agent Tuning Configuration
+# Default batch sizes, timeouts, and tuning parameters for individual agents
+
+code_graph:
+  # Memgraph connectivity check timeout
+  memgraph_check_timeout_ms: 5000       # 5 seconds
+  # UV process timeout for large codebases
+  uv_process_timeout_ms: 300000         # 5 minutes
+
+documentation_linker:
+  # Batch size for resolving unresolved references
+  reference_batch_size: 10
+
+deduplication:
+  # Similarity detection batch size
+  batch_size: 100

@@ -14,6 +14,7 @@ import * as net from 'net';
 import * as os from 'os';
 import { log } from '../logging.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
+import { loadAgentTuningConfig } from '../utils/workflow-loader.js';
 
 export interface CodeEntity {
   id: string;
@@ -156,7 +157,7 @@ export class CodeGraphAgent {
   private async checkMemgraphConnection(): Promise<{ connected: boolean; error?: string }> {
     return new Promise((resolve) => {
       const socket = new net.Socket();
-      const timeout = 5000; // 5 second timeout
+      const timeout = loadAgentTuningConfig().code_graph.memgraph_check_timeout_ms;
 
       socket.setTimeout(timeout);
 
@@ -920,7 +921,7 @@ export class CodeGraphAgent {
       log(`[CodeGraphAgent] Running: uv ${cliArgs.join(' ')}`, 'info');
       log(`[CodeGraphAgent] Working directory: ${this.codeGraphRagDir}`, 'debug');
 
-      const TIMEOUT_MS = 300000; // 5 minute timeout for large codebases
+      const TIMEOUT_MS = loadAgentTuningConfig().code_graph.uv_process_timeout_ms;
       let timedOut = false;
 
       const uvProcess = spawn('uv', cliArgs, {

@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CoordinatorAgent } from './agents/coordinator.js';
 import { log } from './logging.js';
+import { loadAllWorkflows, getConfigDir, loadWorkflowRunnerConfig } from './utils/workflow-loader.js';
 
 // ============================================================================
 // CRASH RECOVERY: Module-level state for signal handlers
@@ -157,13 +158,35 @@ process.on('exit', (code) => {
   }
 });
 
-// Batch step names for phase separation
-const BATCH_STEPS = new Set([
-  'plan_batches', 'extract_batch_commits', 'extract_batch_sessions',
-  'batch_semantic_analysis', 'generate_batch_observations', 'classify_with_ontology',
-  'operator_conv', 'operator_aggr', 'operator_embed', 'operator_dedup',
-  'operator_pred', 'operator_merge', 'batch_qa', 'save_batch_checkpoint'
-]);
+// Batch step names for phase separation - derived from workflow YAML definitions
+function getBatchStepNames(): Set<string> {
+  try {
+    const configDir = getConfigDir();
+    const workflows = loadAllWorkflows(configDir);
+    const batchWorkflow = workflows.get('batch-analysis');
+    if (batchWorkflow) {
+      const names = new Set<string>();
+      for (const step of batchWorkflow.steps) {
+        if (step.phase === 'batch' || step.phase === 'initialization') {
+          names.add(step.name);
+          if (step.substeps) {
+            step.substeps.forEach(sub => names.add(sub));
+          }
+        }
+      }
+      return names;
+    }
+  } catch {
+    // Fall back to empty set if YAML loading fails
+  }
+  return new Set();
+}
+// Lazy-initialize once
+let _batchSteps: Set<string> | null = null;
+function BATCH_STEPS(): Set<string> {
+  if (!_batchSteps) _batchSteps = getBatchStepNames();
+  return _batchSteps;
+}
 
 interface WorkflowConfig {
   workflowId: string;
@@ -316,7 +339,7 @@ async function updateTimingStatistics(
       const duration = step.duration || 0;
       stepDurations[step.name] = duration;
 
-      if (BATCH_STEPS.has(step.name)) {
+      if (BATCH_STEPS().has(step.name)) {
         batchDurationMs += duration;
       } else {
         finalizationDurationMs += duration;
@@ -498,11 +521,11 @@ async function main(): Promise<void> {
       // Log memory on EVERY heartbeat for crash investigation
       logMemoryUsage(`heartbeat #${heartbeatCount}`);
       log(`[WorkflowRunner] Heartbeat sent`, 'debug');
-    }, 30000); // 30 seconds - well under the 120s stale threshold
+    }, loadWorkflowRunnerConfig().runner.heartbeat_interval_ms);
     cleanupState.heartbeatInterval = heartbeatInterval;
 
-    // Start watchdog timer to prevent indefinite hangs (2 hours max)
-    const MAX_WORKFLOW_DURATION_MS = 2 * 60 * 60 * 1000; // 2 hours
+    // Start watchdog timer to prevent indefinite hangs
+    const MAX_WORKFLOW_DURATION_MS = loadWorkflowRunnerConfig().runner.max_duration_ms;
     const watchdogTimer = setTimeout(() => {
       log('[WorkflowRunner] Watchdog timeout - workflow exceeded max duration', 'error');
       gracefulCleanup(`Watchdog timeout: workflow exceeded ${MAX_WORKFLOW_DURATION_MS / 1000 / 60} minutes`, 1);

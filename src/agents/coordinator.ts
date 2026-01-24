@@ -641,22 +641,22 @@ export class CoordinatorAgent {
   }
 
   /**
-   * Enforce minimum step execution time in mock mode for better UI visualization.
-   * In mock mode, steps complete too fast for the workflow visualization to catch
-   * the "running" state. This ensures each step stays visible for at least 200ms.
+   * Enforce uniform step execution time in mock mode for better UI visualization.
+   * In mock mode, steps may complete at varying speeds (some have real I/O like
+   * file parsing, checkpoint writes). This adds a fixed delay AFTER each step
+   * completes to ensure uniform visual pacing in the dashboard.
    * @param stepName - Name of the step (for logging)
-   * @param stepStartTime - When the step started (to calculate elapsed time)
+   * @param stepStartTime - When the step started (for elapsed time tracking)
    */
   private async enforceMinStepTimeInMockMode(stepName: string, stepStartTime: Date): Promise<void> {
     const isMockMode = isMockLLMEnabled(this.repositoryPath);
     if (!isMockMode) return;
 
-    const elapsed = Date.now() - stepStartTime.getTime();
-    if (elapsed < MOCK_MODE_MIN_STEP_TIME_MS) {
-      const delay = MOCK_MODE_MIN_STEP_TIME_MS - elapsed;
-      log(`Mock mode: Adding ${delay}ms delay for step '${stepName}' visibility`, 'debug');
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
+    // Always add the configured delay for uniform visual pacing
+    // This replaces the old "minimum time" approach which caused non-uniform timing
+    // when some steps had real I/O (ontology parsing, checkpoint writes, etc.)
+    log(`Mock mode: Adding ${MOCK_MODE_MIN_STEP_TIME_MS}ms delay after step '${stepName}'`, 'debug');
+    await new Promise(resolve => setTimeout(resolve, MOCK_MODE_MIN_STEP_TIME_MS));
   }
 
   private initializeWorkflows(): void {

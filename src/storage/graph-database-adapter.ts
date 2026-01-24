@@ -21,7 +21,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // This file is at: integrations/mcp-server-semantic-analysis/src/storage/graph-database-adapter.ts
 // Coding root is 5 levels up
-const CODING_ROOT = process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../../../../..');
+const CODING_ROOT = process.env.CODING_ROOT || process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../../../..');;
 const DEFAULT_DB_PATH = path.join(CODING_ROOT, '.data', 'knowledge-graph');
 
 // Dynamic import to avoid TypeScript compilation issues

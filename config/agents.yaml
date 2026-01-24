@@ -277,6 +277,16 @@ step_mappings:
   generate_insights: insight_generation
   generate_observations: observation_generation
   classify_with_ontology: ontology_classification
+  # Runtime substeps (derived from workflow YAML substeps field)
+  sem_data_prep: semantic_analysis
+  sem_llm_analysis: semantic_analysis
+  sem_observation_gen: semantic_analysis
+  sem_entity_transform: semantic_analysis
+  obs_llm_generate: observation_generation
+  obs_accumulate: observation_generation
+  onto_data_prep: ontology_classification
+  onto_llm_classify: ontology_classification
+  onto_apply_results: ontology_classification
   index_codebase: code_graph
   index_recent_code: code_graph
   transform_code_entities: code_graph
@@ -291,3 +301,157 @@ step_mappings:
   deduplicate_incremental: deduplication
   validate_content: content_validation
   validate_content_incremental: content_validation
+
+# Runtime substep name → visual substep ID mapping
+# Maps the substep names from workflow YAML to their visual arc IDs in agent_substeps
+substep_id_mappings:
+  # semantic_analysis (4 runtime substeps → 4 visual arcs)
+  sem_data_prep: parse
+  sem_llm_analysis: extract
+  sem_observation_gen: relate
+  sem_entity_transform: enrich
+  batch_semantic_analysis: extract  # main step maps to primary substep
+  # observation_generation (2 runtime substeps → 2 visual arcs)
+  obs_llm_generate: generate
+  obs_accumulate: accumulate
+  generate_batch_observations: generate  # main step maps to primary substep
+  # ontology_classification (3 runtime substeps → 3 visual arcs)
+  onto_data_prep: match
+  onto_llm_classify: validate
+  onto_apply_results: extend
+  classify_with_ontology: match  # main step maps to primary substep
+  # kg_operators (separate workflow steps → visual arcs)
+  operator_conv: conv
+  operator_aggr: aggr
+  operator_embed: embed
+  operator_dedup: dedup
+  operator_pred: pred
+  operator_merge: merge
+  # code_graph
+  index_codebase: index
+  correlate_with_codebase: query
+  synthesize_code_insights: analyze
+  transform_code_entities: analyze
+  # persistence
+  persist_knowledge: persist
+  final_persist: persist
+
+# Agent visual substep definitions
+# Defines the sub-operations rendered as arcs around each agent node
+agent_substeps:
+  kg_operators:
+    - id: conv
+      name: Context Convolution
+      shortName: Conv
+      description: Extract conversational patterns and dialogue structures
+      llmUsage: premium
+    - id: aggr
+      name: Entity Aggregation
+      shortName: Aggr
+      description: Aggregate similar entities based on semantic similarity
+      llmUsage: standard
+    - id: embed
+      name: Embedding Generation
+      shortName: Emb
+      description: Generate vector embeddings for entities
+      llmUsage: none
+    - id: dedup
+      name: Deduplication
+      shortName: Dup
+      description: Remove duplicate entities using fuzzy matching
+      llmUsage: fast
+    - id: pred
+      name: Relation Prediction
+      shortName: Pred
+      description: Predict relationships between entities
+      llmUsage: premium
+    - id: merge
+      name: Graph Merge
+      shortName: Mrg
+      description: Merge new entities and relations into persistent KG
+      llmUsage: none
+
+  semantic_analysis:
+    - id: parse
+      name: Content Parsing
+      shortName: Prs
+      description: Parse raw content into structured segments
+      llmUsage: none
+    - id: extract
+      name: Entity Extraction
+      shortName: Ext
+      description: Extract named entities and technical concepts
+      llmUsage: standard
+    - id: relate
+      name: Relation Discovery
+      shortName: Rel
+      description: Discover relationships between extracted entities
+      llmUsage: standard
+    - id: enrich
+      name: Context Enrichment
+      shortName: Enr
+      description: Enrich entities with additional context and metadata
+      llmUsage: fast
+
+  observation_generation:
+    - id: generate
+      name: LLM Generate
+      shortName: Gen
+      description: Generate structured observations from semantic analysis
+      llmUsage: premium
+    - id: accumulate
+      name: Accumulate
+      shortName: Acc
+      description: Accumulate and deduplicate observations across batches
+      llmUsage: none
+
+  ontology_classification:
+    - id: match
+      name: Class Matching
+      shortName: Mch
+      description: Match entities to ontology classes
+      llmUsage: standard
+    - id: validate
+      name: Classification Validation
+      shortName: Val
+      description: Validate classifications against ontology constraints
+      llmUsage: fast
+    - id: extend
+      name: Ontology Auto-Extension
+      shortName: Ext
+      description: Suggest new ontology classes for unclassified entities
+      llmUsage: premium
+
+  code_graph:
+    - id: index
+      name: Index Codebase
+      shortName: Idx
+      description: AST parsing and indexing
+      llmUsage: none
+    - id: query
+      name: Query Graph
+      shortName: Qry
+      description: NL to Cypher queries
+      llmUsage: standard
+    - id: analyze
+      name: Analyze Code
+      shortName: Anl
+      description: LLM-powered code analysis
+      llmUsage: premium
+
+  quality_assurance:
+    - id: validate
+      name: Entity Validation
+      shortName: Val
+      description: Validate entity completeness and consistency
+      llmUsage: fast
+    - id: score
+      name: Quality Scoring
+      shortName: Scr
+      description: Calculate quality scores for entities
+      llmUsage: none
+    - id: report
+      name: QA Reporting
+      shortName: Rpt
+      description: Generate quality assurance reports
+      llmUsage: fast

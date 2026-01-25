@@ -263,9 +263,31 @@ export class CoordinatorAgent {
       ];
       batchStepNames.forEach(name => validStepNames.add(name));
 
+      // Get current batch ID for filtering - only show results from current batch
+      const currentBatchId = batchProgress?.batchId;
+      // Steps that are batch-specific and should be filtered by batchId
+      const batchSpecificSteps = new Set([
+        ...batchStepNames,
+        // Sub-steps are also batch-specific
+        'sem_data_prep', 'sem_llm_analysis', 'sem_observation_gen', 'sem_entity_transform',
+        'obs_llm_generate', 'obs_accumulate',
+        'onto_data_prep', 'onto_llm_classify', 'onto_apply_results',
+        'operator_conv', 'operator_aggr', 'operator_embed', 'operator_dedup', 'operator_pred', 'operator_merge',
+        'kg_operators', 'batch_qa', 'save_batch_checkpoint'
+      ]);
+
       for (const [stepName, result] of Object.entries(execution.results)) {
         // Skip non-workflow-step entries (e.g., 'accumulatedKG', internal state)
         if (!validStepNames.has(stepName)) continue;
+
+        // For batch-specific steps, only include if batchId matches current batch
+        // This prevents showing stale "completed" status from previous batches
+        if (currentBatchId && batchSpecificSteps.has(stepName)) {
+          const resultBatchId = result?.batchId;
+          if (resultBatchId && resultBatchId !== currentBatchId) {
+            continue; // Skip results from previous batches
+          }
+        }
 
         const timing = result?._timing as { duration?: number } | undefined;
         const llmMetrics = result?._llmMetrics as { totalCalls?: number; totalTokens?: number; providers?: string[] } | undefined;
@@ -300,6 +322,15 @@ export class CoordinatorAgent {
             status: 'running',
             startTime: new Date().toISOString(),
           });
+        }
+      }
+
+      // CRITICAL: When paused at a step, mark it as "running" instead of "completed"
+      // This ensures the dashboard shows the correct current step during single-step debugging
+      if (preservedDebugState.stepPaused && preservedDebugState.pausedAtStep) {
+        const pausedStep = stepsDetail.find(s => s.name === preservedDebugState.pausedAtStep);
+        if (pausedStep && pausedStep.status === 'completed') {
+          pausedStep.status = 'running';
         }
       }
 
@@ -381,8 +412,13 @@ export class CoordinatorAgent {
         s => s.phase === 'batch' || s.phase === 'initialization'
       ).length;
 
+      // Derive batch phase step names from YAML (for event-driven dashboard)
+      // Includes main steps and their substeps
+      const batchPhaseSteps = this.getBatchPhaseSteps(workflow);
+
       const progress: Record<string, any> = {
         workflowName: workflow.name,
+        workflowId: execution.id,  // Added for event-driven protocol
         executionId: execution.id,
         status: execution.status,
         team: this.team,
@@ -391,6 +427,7 @@ export class CoordinatorAgent {
         currentStep: currentStep || currentlyRunning[0] || null,
         totalSteps: workflow.steps.length,
         batchPhaseStepCount,
+        batchPhaseSteps,  // Added for event-driven dashboard
         completedSteps: completedSteps.length,
         failedSteps: failedSteps.length,
         skippedSteps: skippedSteps.length,
@@ -546,6 +583,70 @@ export class CoordinatorAgent {
       log(`Workflow cancelled during: ${context}`, 'warning');
       throw new Error(`WORKFLOW_CANCELLED: ${context}`);
     }
+  }
+
+  /**
+   * Derive batch-phase step names from workflow definition.
+   * These are steps with phase='batch' plus their substeps.
+   * Replaces hardcoded list to maintain YAML as single source of truth.
+   */
+  private getBatchPhaseSteps(workflow: WorkflowDefinition): string[] {
+    const batchPhaseSteps: string[] = [];
+
+    for (const step of workflow.steps) {
+      if (step.phase === 'batch') {
+        batchPhaseSteps.push(step.name);
+        // Also include any substeps defined for this step
+        if (step.substeps) {
+          batchPhaseSteps.push(...step.substeps);
+        }
+      }
+    }
+
+    return batchPhaseSteps;
+  }
+
+  /**
+   * Reset batch-phase steps to 'pending' status at the start of each batch.
+   * This ensures the dashboard shows fresh per-batch status instead of
+   * stale "completed" states from previous batches.
+   *
+   * The stepsDetail in writeProgressFile is built from execution.results,
+   * so we delete the results for batch-phase steps to reset them.
+   *
+   * @param execution - Current workflow execution
+   * @param workflow - Workflow definition (used to derive batch phase steps from YAML)
+   */
+  private resetBatchPhaseSteps(execution: WorkflowExecution, workflow?: WorkflowDefinition): void {
+    // Derive batch-phase steps from workflow YAML (single source of truth)
+    // Falls back to hardcoded list if workflow not provided (backward compatibility)
+    const batchPhaseSteps = workflow
+      ? this.getBatchPhaseSteps(workflow)
+      : [
+          // DEPRECATED: Hardcoded fallback - prefer workflow-derived list
+          'extract_batch_commits', 'extract_batch_sessions',
+          'batch_semantic_analysis', 'generate_batch_observations',
+          'classify_with_ontology', 'kg_operators', 'batch_qa', 'save_batch_checkpoint',
+          'sem_data_prep', 'sem_llm_analysis', 'sem_observation_gen', 'sem_entity_transform',
+          'obs_llm_generate', 'obs_accumulate',
+          'onto_data_prep', 'onto_llm_classify', 'onto_apply_results',
+          'operator_conv', 'operator_aggr', 'operator_embed', 'operator_dedup', 'operator_pred', 'operator_merge',
+        ];
+
+    // Delete results for batch-phase steps so they appear as "pending" in stepsDetail
+    let resetCount = 0;
+    for (const stepName of batchPhaseSteps) {
+      if (execution.results[stepName]) {
+        delete execution.results[stepName];
+        resetCount++;
+      }
+    }
+
+    log('Reset batch-phase steps for new batch', 'debug', {
+      stepsReset: resetCount,
+      totalBatchSteps: batchPhaseSteps.length,
+      derivedFromYAML: !!workflow
+    });
   }
 
   /**
@@ -2183,6 +2284,13 @@ export class CoordinatorAgent {
         batchScheduler.updateOperatorStatus(batch.id, 'pred', 'pending');
         batchScheduler.updateOperatorStatus(batch.id, 'merge', 'pending');
 
+        // Reset batch-phase steps to 'pending' for this new batch
+        // This ensures the dashboard shows fresh status per-batch instead of stale completed states
+        // NOTE: Combined with batchId filtering in writeProgressFile to prevent flashing
+        this.resetBatchPhaseSteps(execution, workflow);
+        // Immediately write progress after reset so dashboard sees consistent state
+        this.writeProgressFile(execution, workflow, 'extract_batch_commits', ['extract_batch_commits'], currentBatchProgress);
+
         try {
           // Extract commits for this batch
           const gitAgent = this.agents.get('git_history') as GitHistoryAgent;
@@ -2391,6 +2499,11 @@ export class CoordinatorAgent {
           // FIXED: Write progress BEFORE step runs so dashboard shows it as running
           this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', ['batch_semantic_analysis'], currentBatchProgress);
 
+          // Entry-point pause: When stepIntoSubsteps is enabled, pause BEFORE first sub-step runs
+          // This ensures "Into" button pauses at sem_data_prep entry, not after it completes
+          this.writeProgressFile(execution, workflow, 'sem_data_prep', ['sem_data_prep'], currentBatchProgress);
+          await this.checkSingleStepPause('sem_data_prep', true);
+
           try {
             // Get agents for analysis
             const semanticAgent = this.agents.get('semantic_analysis') as SemanticAnalysisAgent;
@@ -2582,6 +2695,8 @@ export class CoordinatorAgent {
                 result: { entities: batchEntities.length, relations: batchRelations.length },
                 batchId: batch.id
               }, semObsEndTime, semTransformEndTime);
+              // Pause after sem_entity_transform sub-step (last semantic analysis sub-step)
+              await this.checkSingleStepPause('sem_entity_transform', true);
             } else {
               log(`Batch ${batch!.id}: Skipping analysis - missing agents or no commits`, 'warning', {
                 hasSemanticAgent: !!semanticAgent,
@@ -2674,6 +2789,10 @@ export class CoordinatorAgent {
           // FIXED: Write progress BEFORE step runs so dashboard shows it as running
           this.writeProgressFile(execution, workflow, 'generate_batch_observations', ['generate_batch_observations'], currentBatchProgress);
 
+          // Entry-point pause: When stepIntoSubsteps is enabled, pause BEFORE first sub-step runs
+          this.writeProgressFile(execution, workflow, 'obs_llm_generate', ['obs_llm_generate'], currentBatchProgress);
+          await this.checkSingleStepPause('obs_llm_generate', true);
+
           if (observationAgent) {
             try {
               log(`Batch ${batch.id}: Generating structured observations`, 'info', {
@@ -2755,6 +2874,8 @@ export class CoordinatorAgent {
                 result: { batchObservations: batchObservations.length, totalAccumulated: allBatchObservations.length },
                 batchId: batch.id
               }, obsLlmEndTime, obsAccumEndTime);
+              // Pause after obs_accumulate sub-step (last observation generation sub-step)
+              await this.checkSingleStepPause('obs_accumulate', true);
 
               // Trace observations for this batch (non-critical - don't fail workflow if tracing fails)
               if (this.traceReport) {
@@ -2822,6 +2943,10 @@ export class CoordinatorAgent {
 
           // FIXED: Write progress BEFORE step runs so dashboard shows it as running
           this.writeProgressFile(execution, workflow, 'classify_with_ontology', ['classify_with_ontology'], currentBatchProgress);
+
+          // Entry-point pause: When stepIntoSubsteps is enabled, pause BEFORE first sub-step runs
+          this.writeProgressFile(execution, workflow, 'onto_data_prep', ['onto_data_prep'], currentBatchProgress);
+          await this.checkSingleStepPause('onto_data_prep', true);
 
           const ontologyAgent = this.agents.get('ontology_classification') as OntologyClassificationAgent;
 
@@ -2907,6 +3032,8 @@ export class CoordinatorAgent {
                 },
                 batchId: batch.id
               }, ontoLlmEndTime, ontoApplyEndTime);
+              // Pause after onto_apply_results sub-step (last ontology sub-step)
+              await this.checkSingleStepPause('onto_apply_results', true);
 
               // Enforce minimum step time in mock mode BEFORE marking as completed
               await this.enforceMinStepTimeInMockMode('classify_with_ontology', ontologyClassificationStartTime);
@@ -3035,6 +3162,10 @@ export class CoordinatorAgent {
           // FIXED: Write progress BEFORE step runs so dashboard shows it as running
           this.writeProgressFile(execution, workflow, 'kg_operators', ['kg_operators'], currentBatchProgress);
 
+          // Entry-point pause for first KG operator sub-step (if stepping into sub-steps)
+          this.writeProgressFile(execution, workflow, 'operator_conv', ['operator_conv'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_conv', true);
+
           const operatorResult = await kgOperators.applyAll(
             batchEntities,
             batchRelations,
@@ -3078,13 +3209,35 @@ export class CoordinatorAgent {
           await this.enforceMinStepTimeInMockMode('kg_operators', operatorsStartTime);
 
           // Create timing for each operator (use reported duration if available, otherwise estimate)
+          // Each operator sub-step gets individual pause call for single-step mode
           execution.results['operator_conv'] = this.wrapWithTiming({ result: opResults.conv, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.conv?.duration || avgOpDuration)));
+          this.writeProgressFile(execution, workflow, 'operator_aggr', ['operator_aggr'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_conv', true);
+          await this.enforceSubstepVisibilityDelay('operator_aggr');
+
           execution.results['operator_aggr'] = this.wrapWithTiming({ result: opResults.aggr, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.aggr?.duration || avgOpDuration)));
+          this.writeProgressFile(execution, workflow, 'operator_embed', ['operator_embed'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_aggr', true);
+          await this.enforceSubstepVisibilityDelay('operator_embed');
+
           execution.results['operator_embed'] = this.wrapWithTiming({ result: opResults.embed, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.embed?.duration || avgOpDuration)));
+          this.writeProgressFile(execution, workflow, 'operator_dedup', ['operator_dedup'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_embed', true);
+          await this.enforceSubstepVisibilityDelay('operator_dedup');
+
           execution.results['operator_dedup'] = this.wrapWithTiming({ result: opResults.dedup, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.dedup?.duration || avgOpDuration)));
+          this.writeProgressFile(execution, workflow, 'operator_pred', ['operator_pred'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_dedup', true);
+          await this.enforceSubstepVisibilityDelay('operator_pred');
+
           execution.results['operator_pred'] = this.wrapWithTiming({ result: opResults.pred, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.pred?.duration || avgOpDuration)));
+          this.writeProgressFile(execution, workflow, 'operator_merge', ['operator_merge'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_pred', true);
+          await this.enforceSubstepVisibilityDelay('operator_merge');
+
           execution.results['operator_merge'] = this.wrapWithTiming({ result: opResults.merge, batchId: batch.id }, operatorsStartTime, operatorsEndTime);
           this.writeProgressFile(execution, workflow, 'operator_merge', [], currentBatchProgress);
+          await this.checkSingleStepPause('operator_merge', true);
 
           // Track KG operators in batch iteration (aggregate as single step for cleaner visualization)
           const operatorsTotalDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();

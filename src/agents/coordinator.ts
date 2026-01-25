@@ -1749,6 +1749,13 @@ export class CoordinatorAgent {
             const remainingRunning = Array.from(runningSteps.keys());
             this.writeProgressFile(execution, workflow, undefined, remainingRunning);
 
+            // Single-step mode: pause after step completion (covers initialization phase steps)
+            // Batch-phase steps have their own checkSingleStepPause calls inline
+            await this.checkSingleStepPause(completedResult.name);
+
+            // Mock mode: add delay for uniform visual pacing during initialization steps
+            await this.enforceMinStepTimeInMockMode(completedResult.name, new Date());
+
             // QA Enforcement: Check quality assurance results using SmartOrchestrator
             if (completedResult.name === 'quality_assurance' && completedResult.result) {
               const qaFailures = this.validateQualityAssuranceResults(completedResult.result);
@@ -2035,6 +2042,11 @@ export class CoordinatorAgent {
             warnings: [],
             errors: []
           });
+
+          // Single-step mode: pause after plan_batches initialization step
+          await this.checkSingleStepPause('plan_batches');
+          // Mock mode: add delay for visual pacing
+          await this.enforceMinStepTimeInMockMode('plan_batches', planStartTime);
         }
       }
 
@@ -3396,6 +3408,11 @@ export class CoordinatorAgent {
             duration: `${stepEndTime.getTime() - stepStartTime.getTime()}ms`,
             qaScore: qaCheckpoint.score
           });
+
+          // Single-step mode: pause after finalization step completion
+          await this.checkSingleStepPause(step.name);
+          // Mock mode: add delay for uniform visual pacing
+          await this.enforceMinStepTimeInMockMode(step.name, stepStartTime);
 
           // Record finalization step for workflow report
           this.reportAgent.recordStep({

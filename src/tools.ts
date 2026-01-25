@@ -1044,6 +1044,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
 
     const debugProgress = {
       ...existingProgress,
+      status: 'starting', // Override stale terminal status to prevent SSE handler skipping
       singleStepMode: true,
       stepPaused: false, // Will be set by first checkpoint
       pausedAtStep: null,

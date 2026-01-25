@@ -115,6 +115,7 @@ export interface OrchestratorConfig {
   };
   mock_mode: {
     min_step_time_ms: number;
+    min_substep_time_ms: number;
   };
 }
 

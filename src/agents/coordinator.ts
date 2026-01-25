@@ -26,8 +26,10 @@ import { AgentResponse, AgentIssue, createIssue, createDefaultMetadata, createDe
 import { UKBTraceReportManager } from "../utils/ukb-trace-report.js";
 import { isMockLLMEnabled, getMockDelay } from "../mock/llm-mock-service.js";
 
-// Load mock mode minimum step time from config
-const MOCK_MODE_MIN_STEP_TIME_MS = loadOrchestratorConfig().mock_mode.min_step_time_ms;
+// Load mock mode timing configs
+const mockModeConfig = loadOrchestratorConfig().mock_mode;
+const MOCK_MODE_MIN_STEP_TIME_MS = mockModeConfig.min_step_time_ms;
+const MOCK_MODE_MIN_SUBSTEP_TIME_MS = mockModeConfig.min_substep_time_ms;
 
 export interface WorkflowDefinition {
   name: string;
@@ -657,6 +659,21 @@ export class CoordinatorAgent {
     // when some steps had real I/O (ontology parsing, checkpoint writes, etc.)
     log(`Mock mode: Adding ${MOCK_MODE_MIN_STEP_TIME_MS}ms delay after step '${stepName}'`, 'debug');
     await new Promise(resolve => setTimeout(resolve, MOCK_MODE_MIN_STEP_TIME_MS));
+  }
+
+  /**
+   * Enforce minimum sub-step visibility time in mock mode.
+   * This ensures sub-steps are visible in the dashboard for at least a brief moment
+   * before the next sub-step starts, allowing the UI to show each state.
+   * Called AFTER writeProgressFile marks a sub-step as running.
+   * @param substepName - Name of the sub-step now running
+   */
+  private async enforceSubstepVisibilityDelay(substepName: string): Promise<void> {
+    const isMockMode = isMockLLMEnabled(this.repositoryPath);
+    if (!isMockMode) return;
+
+    log(`Mock mode: Adding ${MOCK_MODE_MIN_SUBSTEP_TIME_MS}ms visibility delay for sub-step '${substepName}'`, 'debug');
+    await new Promise(resolve => setTimeout(resolve, MOCK_MODE_MIN_SUBSTEP_TIME_MS));
   }
 
   private initializeWorkflows(): void {
@@ -2419,6 +2436,7 @@ export class CoordinatorAgent {
               }, semanticAnalysisStart, semPrepEndTime);
               this.writeProgressFile(execution, workflow, 'sem_llm_analysis', ['sem_llm_analysis'], currentBatchProgress);
               await this.checkSingleStepPause('sem_data_prep', true);
+              await this.enforceSubstepVisibilityDelay('sem_llm_analysis');
 
               // Call semantic analysis (surface depth for batch efficiency)
               log(`Batch ${batch.id}: Running semantic analysis`, 'info', {
@@ -2444,6 +2462,7 @@ export class CoordinatorAgent {
               }, semPrepEndTime, semLlmEndTime);
               this.writeProgressFile(execution, workflow, 'sem_observation_gen', ['sem_observation_gen'], currentBatchProgress);
               await this.checkSingleStepPause('sem_llm_analysis', true);
+              await this.enforceSubstepVisibilityDelay('sem_observation_gen');
 
               // DEBUG: Log what the semantic analysis returned
               log(`Batch ${batch.id}: Semantic analysis result`, 'info', {
@@ -2519,6 +2538,7 @@ export class CoordinatorAgent {
               }, semLlmEndTime, semObsEndTime);
               this.writeProgressFile(execution, workflow, 'sem_entity_transform', ['sem_entity_transform'], currentBatchProgress);
               await this.checkSingleStepPause('sem_observation_gen', true);
+              await this.enforceSubstepVisibilityDelay('sem_entity_transform');
 
               // Transform to KGEntity format
               // Note: persistence agent expects 'entityType', not 'type'
@@ -2660,6 +2680,10 @@ export class CoordinatorAgent {
                 entityCount: batchEntities.length
               });
 
+              // Sub-step: Mark obs_llm_generate as running
+              this.writeProgressFile(execution, workflow, 'obs_llm_generate', ['obs_llm_generate'], currentBatchProgress);
+              await this.enforceSubstepVisibilityDelay('obs_llm_generate');
+
               const observationResult = await observationAgent.generateStructuredObservations(
                 enrichedGitAnalysisForObs,  // git analysis with architecturalDecisions and codeEvolution from semantic analysis
                 { sessions: sessionResult?.sessions || [] },  // vibe analysis - wrapped in expected format
@@ -2676,6 +2700,7 @@ export class CoordinatorAgent {
               }, observationStartTime, obsLlmEndTime);
               this.writeProgressFile(execution, workflow, 'obs_accumulate', ['obs_accumulate'], currentBatchProgress);
               await this.checkSingleStepPause('obs_llm_generate', true);
+              await this.enforceSubstepVisibilityDelay('obs_accumulate');
 
               log(`Batch ${batch.id}: Observation generation complete`, 'info', {
                 observationsCount: batchObservations.length,
@@ -2806,6 +2831,10 @@ export class CoordinatorAgent {
                 entityCount: batchEntities.length
               });
 
+              // Sub-step: Mark onto_data_prep as running
+              this.writeProgressFile(execution, workflow, 'onto_data_prep', ['onto_data_prep'], currentBatchProgress);
+              await this.enforceSubstepVisibilityDelay('onto_data_prep');
+
               // Transform batch entities to observation format for classification
               const observationsForClassification = batchEntities.map(entity => ({
                 name: entity.name,
@@ -2823,6 +2852,7 @@ export class CoordinatorAgent {
               }, ontologyClassificationStartTime, ontoPrepEndTime);
               this.writeProgressFile(execution, workflow, 'onto_llm_classify', ['onto_llm_classify'], currentBatchProgress);
               await this.checkSingleStepPause('onto_data_prep', true);
+              await this.enforceSubstepVisibilityDelay('onto_llm_classify');
 
               const classificationResult = await ontologyAgent.classifyObservations({
                 observations: observationsForClassification,
@@ -2841,6 +2871,7 @@ export class CoordinatorAgent {
               }, ontoPrepEndTime, ontoLlmEndTime);
               this.writeProgressFile(execution, workflow, 'onto_apply_results', ['onto_apply_results'], currentBatchProgress);
               await this.checkSingleStepPause('onto_llm_classify', true);
+              await this.enforceSubstepVisibilityDelay('onto_apply_results');
 
               // Update batch entities with ontology classifications
               if (classificationResult?.classified && classificationResult.classified.length > 0) {

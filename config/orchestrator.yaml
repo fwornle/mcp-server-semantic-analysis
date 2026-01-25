@@ -19,3 +19,4 @@ single_step_debug:
 mock_mode:
   # Mock LLM mode settings for UI visualization/testing
   min_step_time_ms: 200       # Minimum step execution time in mock mode
+  min_substep_time_ms: 150    # Minimum sub-step visibility time in mock mode (for dashboard)

@@ -2593,7 +2593,7 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, semPrepEndTime, semLlmEndTime);
               this.writeProgressFile(execution, workflow, 'sem_observation_gen', ['sem_observation_gen'], currentBatchProgress);
-              await this.checkSingleStepPause('sem_llm_analysis', true);
+              await this.checkSingleStepPause('sem_observation_gen', true);
               await this.enforceSubstepVisibilityDelay('sem_observation_gen');
 
               // DEBUG: Log what the semantic analysis returned
@@ -2669,7 +2669,7 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, semLlmEndTime, semObsEndTime);
               this.writeProgressFile(execution, workflow, 'sem_entity_transform', ['sem_entity_transform'], currentBatchProgress);
-              await this.checkSingleStepPause('sem_observation_gen', true);
+              await this.checkSingleStepPause('sem_entity_transform', true);
               await this.enforceSubstepVisibilityDelay('sem_entity_transform');
 
               // Transform to KGEntity format
@@ -2714,8 +2714,7 @@ export class CoordinatorAgent {
                 result: { entities: batchEntities.length, relations: batchRelations.length },
                 batchId: batch.id
               }, semObsEndTime, semTransformEndTime);
-              // Pause after sem_entity_transform sub-step (last semantic analysis sub-step)
-              await this.checkSingleStepPause('sem_entity_transform', true);
+              // NOTE: Pause already happens at line 2672 when sem_entity_transform is written to progress
             } else {
               log(`Batch ${batch!.id}: Skipping analysis - missing agents or no commits`, 'warning', {
                 hasSemanticAgent: !!semanticAgent,
@@ -3021,7 +3020,7 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, ontoPrepEndTime, ontoLlmEndTime);
               this.writeProgressFile(execution, workflow, 'onto_apply_results', ['onto_apply_results'], currentBatchProgress);
-              await this.checkSingleStepPause('onto_llm_classify', true);
+              await this.checkSingleStepPause('onto_apply_results', true);
               await this.enforceSubstepVisibilityDelay('onto_apply_results');
 
               // Update batch entities with ontology classifications
@@ -3058,8 +3057,7 @@ export class CoordinatorAgent {
                 },
                 batchId: batch.id
               }, ontoLlmEndTime, ontoApplyEndTime);
-              // Pause after onto_apply_results sub-step (last ontology sub-step)
-              await this.checkSingleStepPause('onto_apply_results', true);
+              // NOTE: Pause already happens at line 3024 when onto_apply_results is written to progress
 
               // Enforce minimum step time in mock mode BEFORE marking as completed
               await this.enforceMinStepTimeInMockMode('classify_with_ontology', ontologyClassificationStartTime);
@@ -3241,32 +3239,32 @@ export class CoordinatorAgent {
           // Each operator sub-step gets individual pause call for single-step mode
           execution.results['operator_conv'] = this.wrapWithTiming({ result: opResults.conv, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.conv?.duration || avgOpDuration)));
           this.writeProgressFile(execution, workflow, 'operator_aggr', ['operator_aggr'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_conv', true);
+          await this.checkSingleStepPause('operator_aggr', true);
           await this.enforceSubstepVisibilityDelay('operator_aggr');
 
           execution.results['operator_aggr'] = this.wrapWithTiming({ result: opResults.aggr, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.aggr?.duration || avgOpDuration)));
           this.writeProgressFile(execution, workflow, 'operator_embed', ['operator_embed'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_aggr', true);
+          await this.checkSingleStepPause('operator_embed', true);
           await this.enforceSubstepVisibilityDelay('operator_embed');
 
           execution.results['operator_embed'] = this.wrapWithTiming({ result: opResults.embed, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.embed?.duration || avgOpDuration)));
           this.writeProgressFile(execution, workflow, 'operator_dedup', ['operator_dedup'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_embed', true);
+          await this.checkSingleStepPause('operator_dedup', true);
           await this.enforceSubstepVisibilityDelay('operator_dedup');
 
           execution.results['operator_dedup'] = this.wrapWithTiming({ result: opResults.dedup, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.dedup?.duration || avgOpDuration)));
           this.writeProgressFile(execution, workflow, 'operator_pred', ['operator_pred'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_dedup', true);
+          await this.checkSingleStepPause('operator_pred', true);
           await this.enforceSubstepVisibilityDelay('operator_pred');
 
           execution.results['operator_pred'] = this.wrapWithTiming({ result: opResults.pred, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.pred?.duration || avgOpDuration)));
           this.writeProgressFile(execution, workflow, 'operator_merge', ['operator_merge'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_pred', true);
+          await this.checkSingleStepPause('operator_merge', true);
           await this.enforceSubstepVisibilityDelay('operator_merge');
 
           execution.results['operator_merge'] = this.wrapWithTiming({ result: opResults.merge, batchId: batch.id }, operatorsStartTime, operatorsEndTime);
           this.writeProgressFile(execution, workflow, 'operator_merge', [], currentBatchProgress);
-          await this.checkSingleStepPause('operator_merge', true);
+          // NOTE: Pause already happens at line 3262 when operator_merge is written to progress as running
 
           // Track KG operators in batch iteration (aggregate as single step for cleaner visualization)
           const operatorsTotalDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();

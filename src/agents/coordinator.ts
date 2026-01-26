@@ -321,6 +321,11 @@ export class CoordinatorAgent {
             name: stepName,
             status: 'running',
             startTime: new Date().toISOString(),
+            // Mark sub-steps so dashboard can identify them for visualization
+            ...(substepNames.has(stepName) ? {
+              isSubstep: true,
+              parentStep: substepParentMap.get(stepName),
+            } : {})
           });
         }
       }
@@ -2509,8 +2514,12 @@ export class CoordinatorAgent {
           // FIXED: Write progress BEFORE step runs so dashboard shows it as running
           this.writeProgressFile(execution, workflow, 'batch_semantic_analysis', ['batch_semantic_analysis'], currentBatchProgress);
 
-          // Entry-point pause: When stepIntoSubsteps is enabled, pause BEFORE first sub-step runs
-          // This ensures "Into" button pauses at sem_data_prep entry, not after it completes
+          // Pre-step pause: Pause BEFORE running sub-steps (not after)
+          // This lets user decide: "Step" (run all sub-steps) or "Into" (step through sub-steps one by one)
+          await this.checkSingleStepPause('batch_semantic_analysis');
+
+          // Entry-point pause: When stepIntoSubsteps is enabled, pause at FIRST sub-step
+          // Only triggers if user clicked "Into" at the pre-step pause above
           this.writeProgressFile(execution, workflow, 'sem_data_prep', ['sem_data_prep'], currentBatchProgress);
           await this.checkSingleStepPause('sem_data_prep', true);
 
@@ -2769,7 +2778,8 @@ export class CoordinatorAgent {
 
           // Check for cancellation after semantic analysis
           this.checkCancellationOrThrow('batch_semantic_analysis');
-          await this.checkSingleStepPause('batch_semantic_analysis');
+          // NOTE: Pre-step pause now happens BEFORE sub-steps run (see above)
+          // No post-completion pause needed here - workflow continues to next step
 
           // Record semantic analysis step for workflow report (only on first batch)
           if (batch.id === 'batch-001') {
@@ -2799,7 +2809,10 @@ export class CoordinatorAgent {
           // FIXED: Write progress BEFORE step runs so dashboard shows it as running
           this.writeProgressFile(execution, workflow, 'generate_batch_observations', ['generate_batch_observations'], currentBatchProgress);
 
-          // Entry-point pause: When stepIntoSubsteps is enabled, pause BEFORE first sub-step runs
+          // Pre-step pause: Pause BEFORE running sub-steps
+          await this.checkSingleStepPause('generate_batch_observations');
+
+          // Entry-point pause: When stepIntoSubsteps is enabled, pause at FIRST sub-step
           this.writeProgressFile(execution, workflow, 'obs_llm_generate', ['obs_llm_generate'], currentBatchProgress);
           await this.checkSingleStepPause('obs_llm_generate', true);
 
@@ -2900,7 +2913,7 @@ export class CoordinatorAgent {
 
               // Check for cancellation after observation generation
               this.checkCancellationOrThrow('generate_batch_observations');
-              await this.checkSingleStepPause('generate_batch_observations');
+              // NOTE: Pre-step pause now happens BEFORE sub-steps run (see above)
 
               // Record step for workflow report (only on first batch)
               if (batch.id === 'batch-001') {
@@ -2954,7 +2967,10 @@ export class CoordinatorAgent {
           // FIXED: Write progress BEFORE step runs so dashboard shows it as running
           this.writeProgressFile(execution, workflow, 'classify_with_ontology', ['classify_with_ontology'], currentBatchProgress);
 
-          // Entry-point pause: When stepIntoSubsteps is enabled, pause BEFORE first sub-step runs
+          // Pre-step pause: Pause BEFORE running sub-steps
+          await this.checkSingleStepPause('classify_with_ontology');
+
+          // Entry-point pause: When stepIntoSubsteps is enabled, pause at FIRST sub-step
           this.writeProgressFile(execution, workflow, 'onto_data_prep', ['onto_data_prep'], currentBatchProgress);
           await this.checkSingleStepPause('onto_data_prep', true);
 
@@ -3073,7 +3089,7 @@ export class CoordinatorAgent {
               this.writeProgressFile(execution, workflow, 'classify_with_ontology', [], currentBatchProgress);
               // Check for cancellation after ontology classification
               this.checkCancellationOrThrow('classify_with_ontology');
-              await this.checkSingleStepPause('classify_with_ontology');
+              // NOTE: Pre-step pause now happens BEFORE sub-steps run (see above)
 
               // Pass LLM metrics to batch step tracking for tracer visualization
               const ontologyModels = ontologyLlmUsage?.modelsUsed || [];
@@ -3172,6 +3188,9 @@ export class CoordinatorAgent {
           // FIXED: Write progress BEFORE step runs so dashboard shows it as running
           this.writeProgressFile(execution, workflow, 'kg_operators', ['kg_operators'], currentBatchProgress);
 
+          // Pre-step pause: Pause BEFORE running sub-steps
+          await this.checkSingleStepPause('kg_operators');
+
           // Entry-point pause for first KG operator sub-step (if stepping into sub-steps)
           this.writeProgressFile(execution, workflow, 'operator_conv', ['operator_conv'], currentBatchProgress);
           await this.checkSingleStepPause('operator_conv', true);
@@ -3253,8 +3272,7 @@ export class CoordinatorAgent {
           const operatorsTotalDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();
           // Check for cancellation after KG operators
           this.checkCancellationOrThrow('kg_operators');
-          // Single-step pause after KG operators
-          await this.checkSingleStepPause('kg_operators');
+          // NOTE: Pre-step pause now happens BEFORE sub-steps run (see above)
 
           // Extract entity names for visibility in trace
           const entityList = operatorResult?.entities || [];

@@ -243,9 +243,43 @@ export class GitHistoryAgent {
    * @returns Commits in chronological order (oldest first)
    */
   async extractCommitsForBatch(
-    startCommit: string,
-    endCommit: string
+    startCommitOrParams: string | { startCommit?: string; endCommit?: string },
+    endCommit?: string
   ): Promise<{ commits: GitCommit[], filteredCount: number }> {
+    // Handle both calling patterns:
+    // 1. Direct call: extractCommitsForBatch(startSha, endSha)
+    // 2. Generic executor: extractCommitsForBatch({startCommit: sha, endCommit: sha})
+    let actualStartCommit: string | undefined;
+    let actualEndCommit: string | undefined;
+
+    if (typeof startCommitOrParams === 'object' && startCommitOrParams !== null) {
+      // Called via generic executor with parameters object
+      actualStartCommit = startCommitOrParams.startCommit;
+      actualEndCommit = startCommitOrParams.endCommit;
+      log('extractCommitsForBatch called with parameters object', 'debug', {
+        hasStartCommit: !!actualStartCommit,
+        hasEndCommit: !!actualEndCommit
+      });
+    } else {
+      // Called directly with positional arguments
+      actualStartCommit = startCommitOrParams;
+      actualEndCommit = endCommit;
+    }
+
+    // Validate arguments
+    if (!actualStartCommit || !actualEndCommit) {
+      const error = `extractCommitsForBatch requires valid commit SHAs. Got startCommit=${actualStartCommit}, endCommit=${actualEndCommit}`;
+      log(error, 'error', {
+        startCommitType: typeof startCommitOrParams,
+        endCommitType: typeof endCommit,
+        startCommitValue: String(startCommitOrParams).substring(0, 50)
+      });
+      throw new Error(error);
+    }
+
+    const startCommit = actualStartCommit;
+    const resolvedEndCommit = actualEndCommit;
+
     try {
       // Check if startCommit is the initial commit (has no parent)
       let isInitialCommit = false;
@@ -268,10 +302,10 @@ export class GitHistoryAgent {
       let gitCommand: string;
       if (isInitialCommit) {
         // For initial commit, we need to include it explicitly
-        // Get commits from startCommit to endCommit inclusive
-        gitCommand = `git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --reverse ${endCommit} --not $(git rev-list --max-parents=0 HEAD)^ 2>/dev/null || git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --reverse ${endCommit}`;
+        // Get commits from startCommit to resolvedEndCommit inclusive
+        gitCommand = `git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --reverse ${resolvedEndCommit} --not $(git rev-list --max-parents=0 HEAD)^ 2>/dev/null || git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --reverse ${resolvedEndCommit}`;
       } else {
-        gitCommand = `git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --reverse ${startCommit}^..${endCommit}`;
+        gitCommand = `git log --pretty=format:"%H|%an|%ad|%s" --date=iso --numstat --reverse ${startCommit}^..${resolvedEndCommit}`;
       }
 
       const output = execSync(gitCommand, {
@@ -287,7 +321,7 @@ export class GitHistoryAgent {
       if (isInitialCommit && result.commits.length > 0) {
         // Get list of commits in range to filter
         const rangeOutput = execSync(
-          `git rev-list --reverse ${startCommit}^..${endCommit} 2>/dev/null || git rev-list --reverse ${endCommit}`,
+          `git rev-list --reverse ${startCommit}^..${resolvedEndCommit} 2>/dev/null || git rev-list --reverse ${resolvedEndCommit}`,
           { cwd: this.repositoryPath, encoding: 'utf8', shell: '/bin/bash' }
         ).trim().split('\n').filter(Boolean);
 
@@ -301,7 +335,7 @@ export class GitHistoryAgent {
 
       log('Extracted commits for batch', 'info', {
         startCommit: startCommit.substring(0, 7),
-        endCommit: endCommit.substring(0, 7),
+        endCommit: resolvedEndCommit.substring(0, 7),
         commitCount: result.commits.length,
         filteredCount: result.filteredCount,
         isInitialCommit
@@ -310,7 +344,7 @@ export class GitHistoryAgent {
       return result;
 
     } catch (error) {
-      log('Failed to extract batch commits', 'error', { startCommit, endCommit, error });
+      log('Failed to extract batch commits', 'error', { startCommit, endCommit: resolvedEndCommit, error });
       throw new Error(`Git batch extraction failed: ${error}`);
     }
   }

@@ -229,6 +229,7 @@ function writeProgress(progressFile: string, update: ProgressUpdate): void {
         // Preserve all debug/test state fields
         preservedDebugState = {
           singleStepMode: existing.singleStepMode,
+          stepIntoSubsteps: existing.stepIntoSubsteps,
           stepPaused: existing.stepPaused,
           pausedAtStep: existing.pausedAtStep,
           pausedAt: existing.pausedAt,
@@ -287,6 +288,7 @@ function writeProgressPreservingDetails(progressFile: string, update: ProgressUp
       batchProgress: existingData.batchProgress,
       // CRITICAL: Preserve debug/test state fields
       singleStepMode: existingData.singleStepMode,
+      stepIntoSubsteps: existingData.stepIntoSubsteps,
       stepPaused: existingData.stepPaused,
       pausedAtStep: existingData.pausedAtStep,
       pausedAt: existingData.pausedAt,
@@ -474,9 +476,14 @@ async function main(): Promise<void> {
       },
       'incremental-analysis': {
         target: 'batch-analysis',
-        defaults: { fullAnalysis: false, resumeFromCheckpoint: true }
+        // Fresh start each time - incremental means "since last analysis timestamp", not "resume crashed workflow"
+        defaults: { fullAnalysis: false, forceCleanStart: true, resumeFromCheckpoint: true }
       },
-      'batch-analysis': { target: 'batch-analysis', defaults: {} }
+      'batch-analysis': {
+        target: 'batch-analysis',
+        // Fresh start by default - use complete-analysis for crash recovery behavior
+        defaults: { forceCleanStart: true, resumeFromCheckpoint: true }
+      }
     };
 
     const mapping = workflowMapping[workflowName];

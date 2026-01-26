@@ -672,11 +672,21 @@ export class CoordinatorAgent {
 
       log(`Single-step mode: Pausing after ${isSubstep ? 'sub-step' : 'step'} '${stepName}'`, 'info');
 
-      // Set paused state
-      progress.stepPaused = true;
-      progress.pausedAtStep = stepName;
-      progress.pausedAt = new Date().toISOString();
-      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
+      // CRITICAL: Do a fresh read before writing to avoid race condition with server
+      // The server may have set stepIntoSubsteps=true between our initial read and now
+      // We must preserve any debug state changes made by the dashboard
+      let freshProgress = progress;
+      try {
+        freshProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+      } catch {
+        // Fall back to initial read if fresh read fails
+      }
+
+      // Set paused state while preserving other fields
+      freshProgress.stepPaused = true;
+      freshProgress.pausedAtStep = stepName;
+      freshProgress.pausedAt = new Date().toISOString();
+      fs.writeFileSync(progressPath, JSON.stringify(freshProgress, null, 2));
     } catch (initError) {
       // If we can't even read/write the file initially, log and return (don't pause)
       log(`Single-step mode: Initial file access failed, skipping pause: ${initError}`, 'warning');
@@ -2548,7 +2558,7 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, semanticAnalysisStart, semPrepEndTime);
               this.writeProgressFile(execution, workflow, 'sem_llm_analysis', ['sem_llm_analysis'], currentBatchProgress);
-              await this.checkSingleStepPause('sem_data_prep', true);
+              await this.checkSingleStepPause('sem_llm_analysis', true);
               await this.enforceSubstepVisibilityDelay('sem_llm_analysis');
 
               // Call semantic analysis (surface depth for batch efficiency)
@@ -2818,7 +2828,7 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, observationStartTime, obsLlmEndTime);
               this.writeProgressFile(execution, workflow, 'obs_accumulate', ['obs_accumulate'], currentBatchProgress);
-              await this.checkSingleStepPause('obs_llm_generate', true);
+              await this.checkSingleStepPause('obs_accumulate', true);
               await this.enforceSubstepVisibilityDelay('obs_accumulate');
 
               log(`Batch ${batch.id}: Observation generation complete`, 'info', {
@@ -2976,7 +2986,7 @@ export class CoordinatorAgent {
                 batchId: batch.id
               }, ontologyClassificationStartTime, ontoPrepEndTime);
               this.writeProgressFile(execution, workflow, 'onto_llm_classify', ['onto_llm_classify'], currentBatchProgress);
-              await this.checkSingleStepPause('onto_data_prep', true);
+              await this.checkSingleStepPause('onto_llm_classify', true);
               await this.enforceSubstepVisibilityDelay('onto_llm_classify');
 
               const classificationResult = await ontologyAgent.classifyObservations({

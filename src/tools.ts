@@ -998,9 +998,14 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     },
     'incremental-analysis': {
       target: 'batch-analysis',
-      defaults: { fullAnalysis: false, resumeFromCheckpoint: true }
+      // Fresh start each time - incremental means "since last analysis timestamp", not "resume crashed workflow"
+      defaults: { fullAnalysis: false, forceCleanStart: true, resumeFromCheckpoint: true }
     },
-    'batch-analysis': { target: 'batch-analysis', defaults: {} }
+    'batch-analysis': {
+      target: 'batch-analysis',
+      // Fresh start by default - use complete-analysis for crash recovery behavior
+      defaults: { forceCleanStart: true, resumeFromCheckpoint: true }
+    }
   };
 
   const mapping = workflowMapping[workflow_name];
@@ -1046,6 +1051,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       ...existingProgress,
       status: 'starting', // Override stale terminal status to prevent SSE handler skipping
       singleStepMode: true,
+      stepIntoSubsteps: true, // Pause at sub-step boundaries too
       stepPaused: false, // Will be set by first checkpoint
       pausedAtStep: null,
       singleStepUpdatedAt: new Date().toISOString(),
@@ -1054,7 +1060,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       mockLLMUpdatedAt: new Date().toISOString(),
     };
     writeFileSync(progressFile, JSON.stringify(debugProgress, null, 2));
-    log(`Debug mode: Pre-set singleStepMode=true and mockLLM=true in progress file`, 'info');
+    log(`Debug mode: Pre-set singleStepMode=true, stepIntoSubsteps=true, mockLLM=true in progress file`, 'info');
   }
 
   // If async_mode, spawn a SEPARATE PROCESS to run the workflow

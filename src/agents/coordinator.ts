@@ -2714,7 +2714,10 @@ export class CoordinatorAgent {
                 result: { entities: batchEntities.length, relations: batchRelations.length },
                 batchId: batch.id
               }, semObsEndTime, semTransformEndTime);
-              // NOTE: Pause already happens at line 2672 when sem_entity_transform is written to progress
+              // Post-completion pause: After LAST substep completes, pause to let user see completion
+              // before moving to the next macro step (only when stepIntoSubsteps is enabled)
+              this.writeProgressFile(execution, workflow, 'sem_entity_transform', [], currentBatchProgress);
+              await this.checkSingleStepPause('sem_entity_transform', true);
             } else {
               log(`Batch ${batch!.id}: Skipping analysis - missing agents or no commits`, 'warning', {
                 hasSemanticAgent: !!semanticAgent,
@@ -2896,7 +2899,9 @@ export class CoordinatorAgent {
                 result: { batchObservations: batchObservations.length, totalAccumulated: allBatchObservations.length },
                 batchId: batch.id
               }, obsLlmEndTime, obsAccumEndTime);
-              // Pause after obs_accumulate sub-step (last observation generation sub-step)
+              // Post-completion pause: After LAST substep completes, pause to let user see completion
+              // before moving to the next macro step (only when stepIntoSubsteps is enabled)
+              this.writeProgressFile(execution, workflow, 'obs_accumulate', [], currentBatchProgress);
               await this.checkSingleStepPause('obs_accumulate', true);
 
               // Trace observations for this batch (non-critical - don't fail workflow if tracing fails)
@@ -3057,7 +3062,10 @@ export class CoordinatorAgent {
                 },
                 batchId: batch.id
               }, ontoLlmEndTime, ontoApplyEndTime);
-              // NOTE: Pause already happens at line 3024 when onto_apply_results is written to progress
+              // Post-completion pause: After LAST substep completes, pause to let user see completion
+              // before moving to the next macro step (only when stepIntoSubsteps is enabled)
+              this.writeProgressFile(execution, workflow, 'onto_apply_results', [], currentBatchProgress);
+              await this.checkSingleStepPause('onto_apply_results', true);
 
               // Enforce minimum step time in mock mode BEFORE marking as completed
               await this.enforceMinStepTimeInMockMode('classify_with_ontology', ontologyClassificationStartTime);
@@ -3193,20 +3201,106 @@ export class CoordinatorAgent {
           this.writeProgressFile(execution, workflow, 'operator_conv', ['operator_conv'], currentBatchProgress);
           await this.checkSingleStepPause('operator_conv', true);
 
-          const operatorResult = await kgOperators.applyAll(
-            batchEntities,
-            batchRelations,
-            batchContext,
+          // Execute KG operators INDIVIDUALLY with pauses between each
+          // This allows single-step mode to pause between each operator
+          let currentEntities = [...batchEntities];
+          let currentRelations = [...batchRelations];
+          const opResults: any = {
+            conv: { processed: 0, duration: 0 },
+            aggr: { core: 0, nonCore: 0, duration: 0 },
+            embed: { embedded: 0, duration: 0 },
+            dedup: { merged: 0, duration: 0 },
+            pred: { edgesAdded: 0, duration: 0 },
+            merge: { entitiesAdded: 0, duration: 0 }
+          };
+
+          // 1. CONV: Context Convolution
+          await this.enforceSubstepVisibilityDelay('operator_conv');
+          const convStart = Date.now();
+          currentEntities = await kgOperators.contextConvolution(currentEntities, batchContext);
+          opResults.conv.processed = currentEntities.length;
+          opResults.conv.duration = Date.now() - convStart;
+          execution.results['operator_conv'] = this.wrapWithTiming({ result: opResults.conv, batchId: batch.id }, operatorsStartTime, new Date());
+
+          // Pause at operator_aggr (before executing)
+          this.writeProgressFile(execution, workflow, 'operator_aggr', ['operator_aggr'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_aggr', true);
+          await this.enforceSubstepVisibilityDelay('operator_aggr');
+
+          // 2. AGGR: Entity Aggregation
+          const aggrStart = Date.now();
+          const aggregated = await kgOperators.entityAggregation(currentEntities);
+          opResults.aggr.core = aggregated.core.length;
+          opResults.aggr.nonCore = aggregated.nonCore.length;
+          opResults.aggr.duration = Date.now() - aggrStart;
+          currentEntities = [...aggregated.core, ...aggregated.nonCore];
+          execution.results['operator_aggr'] = this.wrapWithTiming({ result: opResults.aggr, batchId: batch.id }, new Date(aggrStart), new Date());
+
+          // Pause at operator_embed (before executing)
+          this.writeProgressFile(execution, workflow, 'operator_embed', ['operator_embed'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_embed', true);
+          await this.enforceSubstepVisibilityDelay('operator_embed');
+
+          // 3. EMBED: Node Embedding
+          const embedStart = Date.now();
+          currentEntities = await kgOperators.nodeEmbedding(currentEntities);
+          opResults.embed.embedded = currentEntities.filter((e: any) => e.embedding).length;
+          opResults.embed.duration = Date.now() - embedStart;
+          execution.results['operator_embed'] = this.wrapWithTiming({ result: opResults.embed, batchId: batch.id }, new Date(embedStart), new Date());
+
+          // Pause at operator_dedup (before executing)
+          this.writeProgressFile(execution, workflow, 'operator_dedup', ['operator_dedup'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_dedup', true);
+          await this.enforceSubstepVisibilityDelay('operator_dedup');
+
+          // 4. DEDUP: Deduplication
+          const dedupStart = Date.now();
+          const deduped = await kgOperators.deduplication(currentEntities, accumulatedKG);
+          opResults.dedup.merged = deduped.merged;
+          opResults.dedup.duration = Date.now() - dedupStart;
+          currentEntities = deduped.entities;
+          execution.results['operator_dedup'] = this.wrapWithTiming({ result: opResults.dedup, batchId: batch.id }, new Date(dedupStart), new Date());
+
+          // Pause at operator_pred (before executing)
+          this.writeProgressFile(execution, workflow, 'operator_pred', ['operator_pred'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_pred', true);
+          await this.enforceSubstepVisibilityDelay('operator_pred');
+
+          // 5. PRED: Edge Prediction
+          const predStart = Date.now();
+          const predicted = await kgOperators.edgePrediction(currentEntities, accumulatedKG);
+          currentRelations = [...currentRelations, ...predicted.edges];
+          opResults.pred.edgesAdded = predicted.edges.length;
+          opResults.pred.duration = Date.now() - predStart;
+          execution.results['operator_pred'] = this.wrapWithTiming({ result: opResults.pred, batchId: batch.id }, new Date(predStart), new Date());
+
+          // Pause at operator_merge (before executing)
+          this.writeProgressFile(execution, workflow, 'operator_merge', ['operator_merge'], currentBatchProgress);
+          await this.checkSingleStepPause('operator_merge', true);
+          await this.enforceSubstepVisibilityDelay('operator_merge');
+
+          // 6. MERGE: Structure Merge
+          const mergeStart = Date.now();
+          const merged = await kgOperators.structureMerge(
+            { entities: currentEntities, relations: currentRelations },
             accumulatedKG
           );
+          opResults.merge.entitiesAdded = merged.added.entities;
+          opResults.merge.duration = Date.now() - mergeStart;
+          execution.results['operator_merge'] = this.wrapWithTiming({ result: opResults.merge, batchId: batch.id }, new Date(mergeStart), new Date());
+
           const operatorsEndTime = new Date();
 
-          // Update accumulated KG (including git/vibe analysis for finalization insight generation)
+          // Post-completion pause: After LAST substep completes, pause to let user see completion
+          this.writeProgressFile(execution, workflow, 'operator_merge', [], currentBatchProgress);
+          await this.checkSingleStepPause('operator_merge', true);
+
+          // Update accumulated KG with final results
           const newCommitsCount = commits?.commits?.length || 0;
           const previousCommitsCount = accumulatedKG.gitAnalysis.commits.length;
           accumulatedKG = {
-            entities: operatorResult.entities,
-            relations: operatorResult.relations,
+            entities: merged.entities,
+            relations: merged.relations,
             gitAnalysis: {
               commits: [...accumulatedKG.gitAnalysis.commits, ...(commits?.commits || [])],
               architecturalDecisions: accumulatedKG.gitAnalysis.architecturalDecisions,
@@ -3225,46 +3319,8 @@ export class CoordinatorAgent {
             sampleNewCommit: commits?.commits?.[0]?.hash?.substring(0, 7) || 'none'
           });
 
-          // Track operator steps completion for dashboard visibility
-          // Each operator gets individual timing based on the overall duration divided by operator count
-          const opResults = operatorResult.operatorResults;
-          const totalOperatorDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();
-          const operatorNames = ['conv', 'aggr', 'embed', 'dedup', 'pred', 'merge'] as const;
-          const avgOpDuration = totalOperatorDuration / operatorNames.length;
-
-          // Enforce minimum step time in mock mode BEFORE marking as completed
+          // Enforce minimum step time in mock mode
           await this.enforceMinStepTimeInMockMode('kg_operators', operatorsStartTime);
-
-          // Create timing for each operator (use reported duration if available, otherwise estimate)
-          // Each operator sub-step gets individual pause call for single-step mode
-          execution.results['operator_conv'] = this.wrapWithTiming({ result: opResults.conv, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.conv?.duration || avgOpDuration)));
-          this.writeProgressFile(execution, workflow, 'operator_aggr', ['operator_aggr'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_aggr', true);
-          await this.enforceSubstepVisibilityDelay('operator_aggr');
-
-          execution.results['operator_aggr'] = this.wrapWithTiming({ result: opResults.aggr, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.aggr?.duration || avgOpDuration)));
-          this.writeProgressFile(execution, workflow, 'operator_embed', ['operator_embed'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_embed', true);
-          await this.enforceSubstepVisibilityDelay('operator_embed');
-
-          execution.results['operator_embed'] = this.wrapWithTiming({ result: opResults.embed, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.embed?.duration || avgOpDuration)));
-          this.writeProgressFile(execution, workflow, 'operator_dedup', ['operator_dedup'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_dedup', true);
-          await this.enforceSubstepVisibilityDelay('operator_dedup');
-
-          execution.results['operator_dedup'] = this.wrapWithTiming({ result: opResults.dedup, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.dedup?.duration || avgOpDuration)));
-          this.writeProgressFile(execution, workflow, 'operator_pred', ['operator_pred'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_pred', true);
-          await this.enforceSubstepVisibilityDelay('operator_pred');
-
-          execution.results['operator_pred'] = this.wrapWithTiming({ result: opResults.pred, batchId: batch.id }, operatorsStartTime, new Date(operatorsStartTime.getTime() + (opResults.pred?.duration || avgOpDuration)));
-          this.writeProgressFile(execution, workflow, 'operator_merge', ['operator_merge'], currentBatchProgress);
-          await this.checkSingleStepPause('operator_merge', true);
-          await this.enforceSubstepVisibilityDelay('operator_merge');
-
-          execution.results['operator_merge'] = this.wrapWithTiming({ result: opResults.merge, batchId: batch.id }, operatorsStartTime, operatorsEndTime);
-          this.writeProgressFile(execution, workflow, 'operator_merge', [], currentBatchProgress);
-          // NOTE: Pause already happens at line 3262 when operator_merge is written to progress as running
 
           // Track KG operators in batch iteration (aggregate as single step for cleaner visualization)
           const operatorsTotalDuration = operatorsEndTime.getTime() - operatorsStartTime.getTime();
@@ -3273,8 +3329,8 @@ export class CoordinatorAgent {
           // NOTE: Pre-step pause now happens BEFORE sub-steps run (see above)
 
           // Extract entity names for visibility in trace
-          const entityList = operatorResult?.entities || [];
-          const relationList = operatorResult?.relations || [];
+          const entityList = merged?.entities || [];
+          const relationList = merged?.relations || [];
           trackBatchStep('kg_operators', 'completed', operatorsTotalDuration, {
             entitiesAfter: entityList.length,
             relationsAfter: relationList.length,
@@ -3335,10 +3391,10 @@ export class CoordinatorAgent {
             commits: commits.commits.length,
             sessions: sessionResult.sessions.length,
             tokensUsed: 0, // Would be tracked from LLM calls
-            entitiesCreated: operatorResult.operatorResults.merge.entitiesAdded,
+            entitiesCreated: opResults.merge.entitiesAdded,
             entitiesUpdated: 0,
-            relationsAdded: operatorResult.operatorResults.pred.edgesAdded,
-            operatorResults: operatorResult.operatorResults,
+            relationsAdded: opResults.pred.edgesAdded,
+            operatorResults: opResults,
             duration: batchDuration
           };
 

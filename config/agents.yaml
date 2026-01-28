@@ -306,20 +306,19 @@ step_mappings:
 # Maps the substep names from workflow YAML to their visual arc IDs in agent_substeps
 substep_id_mappings:
   # semantic_analysis (4 runtime substeps → 4 visual arcs)
+  # NOTE: Parent steps (batch_semantic_analysis) intentionally NOT mapped.
+  # When paused at parent, no substep has started, so none should highlight.
   sem_data_prep: parse
   sem_llm_analysis: extract
   sem_observation_gen: relate
   sem_entity_transform: enrich
-  batch_semantic_analysis: extract  # main step maps to primary substep
   # observation_generation (2 runtime substeps → 2 visual arcs)
   obs_llm_generate: generate
   obs_accumulate: accumulate
-  generate_batch_observations: generate  # main step maps to primary substep
   # ontology_classification (3 runtime substeps → 3 visual arcs)
   onto_data_prep: match
   onto_llm_classify: validate
   onto_apply_results: extend
-  classify_with_ontology: match  # main step maps to primary substep
   # kg_operators (separate workflow steps → visual arcs)
   operator_conv: conv
   operator_aggr: aggr
@@ -332,9 +331,6 @@ substep_id_mappings:
   correlate_with_codebase: query
   synthesize_code_insights: analyze
   transform_code_entities: analyze
-  # persistence
-  persist_knowledge: persist
-  final_persist: persist
 
 # Agent visual substep definitions
 # Defines the sub-operations rendered as arcs around each agent node

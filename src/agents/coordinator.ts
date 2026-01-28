@@ -667,31 +667,40 @@ export class CoordinatorAgent {
     try {
       if (!fs.existsSync(progressPath)) return;
 
-      const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+      // CRITICAL: Read progress file and check conditions
+      // For substeps, we do a fresh read to catch stepIntoSubsteps changes from the dashboard
+      // (user might have clicked "Into" just before we got here)
+      let progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
 
       // Check if single-step mode is enabled
       if (!progress.singleStepMode) return;
 
       // For sub-steps, only pause if stepIntoSubsteps is enabled
-      if (isSubstep && !progress.stepIntoSubsteps) return;
+      // Do a fresh read FIRST to catch any recent dashboard changes (race condition fix)
+      if (isSubstep) {
+        // Small delay to let any in-flight file writes complete
+        await new Promise(resolve => setTimeout(resolve, 50));
+        try {
+          const freshProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+          if (!freshProgress.stepIntoSubsteps) {
+            log(`Single-step mode: Skipping sub-step '${stepName}' (stepIntoSubsteps=false)`, 'debug');
+            return;
+          }
+          // Use fresh progress for setting paused state
+          progress = freshProgress;
+        } catch {
+          // Fall back to initial read
+          if (!progress.stepIntoSubsteps) return;
+        }
+      }
 
       log(`Single-step mode: Pausing after ${isSubstep ? 'sub-step' : 'step'} '${stepName}'`, 'info');
 
-      // CRITICAL: Do a fresh read before writing to avoid race condition with server
-      // The server may have set stepIntoSubsteps=true between our initial read and now
-      // We must preserve any debug state changes made by the dashboard
-      let freshProgress = progress;
-      try {
-        freshProgress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
-      } catch {
-        // Fall back to initial read if fresh read fails
-      }
-
       // Set paused state while preserving other fields
-      freshProgress.stepPaused = true;
-      freshProgress.pausedAtStep = stepName;
-      freshProgress.pausedAt = new Date().toISOString();
-      fs.writeFileSync(progressPath, JSON.stringify(freshProgress, null, 2));
+      progress.stepPaused = true;
+      progress.pausedAtStep = stepName;
+      progress.pausedAt = new Date().toISOString();
+      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
     } catch (initError) {
       // If we can't even read/write the file initially, log and return (don't pause)
       log(`Single-step mode: Initial file access failed, skipping pause: ${initError}`, 'warning');

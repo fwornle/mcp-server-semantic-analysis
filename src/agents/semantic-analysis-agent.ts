@@ -93,35 +93,43 @@ export class SemanticAnalysisAgent {
     const codeGraph = options.codeGraphAnalysis;
     const docData = options.docAnalysis;
 
-    // ULTRA DEBUG: Write input data to trace file
+    // ULTRA DEBUG: Write input data to trace file (optional, failures are non-fatal)
     const fs = await import('fs');
-    const traceFile = `${process.cwd()}/logs/semantic-analysis-trace-${Date.now()}.json`;
-    await fs.promises.writeFile(traceFile, JSON.stringify({
-      timestamp: new Date().toISOString(),
-      phase: 'INPUT_DATA',
-      gitAnalysis: {
-        hasData: !!gitAnalysis,
-        commitsCount: gitAnalysis?.commits?.length || 0,
-        firstCommit: gitAnalysis?.commits?.[0] || null,
-        lastCommit: gitAnalysis?.commits?.[gitAnalysis?.commits?.length - 1] || null,
-        fullData: gitAnalysis
-      },
-      vibeAnalysis: {
-        hasData: !!vibeAnalysis,
-        sessionsCount: vibeAnalysis?.sessions?.length || 0,
-        firstSession: vibeAnalysis?.sessions?.[0] || null,
-        fullData: vibeAnalysis
-      },
-      codeGraphAnalysis: {
-        hasData: !!codeGraph,
-        entitiesCount: codeGraph?.statistics?.totalEntities || 0,
-        relationshipsCount: codeGraph?.statistics?.totalRelationships || 0,
-        languages: Object.keys(codeGraph?.statistics?.languageDistribution || {}),
-        skipped: codeGraph?.skipped || false
-      },
-      options
-    }, null, 2));
-    log(`🔍 TRACE: Input data written to ${traceFile}`, 'info');
+    const logsDir = `${process.cwd()}/logs`;
+    const traceFile = `${logsDir}/semantic-analysis-trace-${Date.now()}.json`;
+    try {
+      // Ensure logs directory exists
+      await fs.promises.mkdir(logsDir, { recursive: true });
+      await fs.promises.writeFile(traceFile, JSON.stringify({
+        timestamp: new Date().toISOString(),
+        phase: 'INPUT_DATA',
+        gitAnalysis: {
+          hasData: !!gitAnalysis,
+          commitsCount: gitAnalysis?.commits?.length || 0,
+          firstCommit: gitAnalysis?.commits?.[0] || null,
+          lastCommit: gitAnalysis?.commits?.[gitAnalysis?.commits?.length - 1] || null,
+          fullData: gitAnalysis
+        },
+        vibeAnalysis: {
+          hasData: !!vibeAnalysis,
+          sessionsCount: vibeAnalysis?.sessions?.length || 0,
+          firstSession: vibeAnalysis?.sessions?.[0] || null,
+          fullData: vibeAnalysis
+        },
+        codeGraphAnalysis: {
+          hasData: !!codeGraph,
+          entitiesCount: codeGraph?.statistics?.totalEntities || 0,
+          relationshipsCount: codeGraph?.statistics?.totalRelationships || 0,
+          languages: Object.keys(codeGraph?.statistics?.languageDistribution || {}),
+          skipped: codeGraph?.skipped || false
+        },
+        options
+      }, null, 2));
+      log(`🔍 TRACE: Input data written to ${traceFile}`, 'info');
+    } catch (traceError) {
+      // Non-fatal: trace file write failure should not abort analysis
+      log(`Trace file write failed (non-fatal): ${traceError}`, 'debug');
+    }
 
     log('Starting comprehensive semantic analysis', 'info', {
       gitCommits: gitAnalysis?.commits?.length || 0,

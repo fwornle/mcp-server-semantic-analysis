@@ -253,6 +253,7 @@ step_mappings:
   extract_batch_commits: git_history
   extract_batch_sessions: vibe_history
   batch_semantic_analysis: semantic_analysis
+  kg_operators: kg_operators
   operator_conv: kg_operators
   operator_aggr: kg_operators
   operator_embed: kg_operators

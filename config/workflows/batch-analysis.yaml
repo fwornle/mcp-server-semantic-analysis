@@ -177,11 +177,12 @@ steps:
     phase: batch
     operator: classify
 
-  # PHASE 3: Tree-KG Operators (applied in sequence)
-  - name: operator_conv
+  # PHASE 3: Tree-KG Operators (applied in sequence as substeps)
+  - name: kg_operators
     agent: kg_operators
-    action: contextConvolution
-    tier: premium  # Context enrichment needs quality
+    action: applyOperators
+    tier: standard  # Mixed tiers handled internally per operator
+    substeps: [operator_conv, operator_aggr, operator_embed, operator_dedup, operator_pred, operator_merge]
     parameters:
       entities: "{{classify_with_ontology.result.classified}}"
       batchContext:
@@ -190,78 +191,12 @@ steps:
         endDate: "{{currentBatch.endDate}}"
         commits: "{{extract_batch_commits.result.commits}}"
         sessions: "{{extract_batch_sessions.result.sessions}}"
-    timeout: 60
+      accumulatedKG: "{{accumulatedKG}}"
+      weights: "{{params.operatorWeights}}"
+    timeout: 390  # Sum of individual operator timeouts
     dependencies:
       - classify_with_ontology
     phase: batch
-    operator: conv
-
-  - name: operator_aggr
-    agent: kg_operators
-    action: entityAggregation
-    tier: standard
-    parameters:
-      entities: "{{operator_conv.result}}"
-    timeout: 30
-    dependencies:
-      - operator_conv
-    phase: batch
-    operator: aggr
-
-  - name: operator_embed
-    agent: kg_operators
-    action: nodeEmbedding
-    tier: fast  # Just embedding API calls
-    parameters:
-      entities: "{{operator_aggr.result.core}}"
-      nonCoreEntities: "{{operator_aggr.result.nonCore}}"
-    timeout: 120
-    dependencies:
-      - operator_aggr
-    phase: batch
-    operator: embed
-
-  - name: operator_dedup
-    agent: kg_operators
-    action: deduplication
-    tier: standard
-    parameters:
-      entities: "{{operator_embed.result}}"
-      accumulatedKG: "{{accumulatedKG}}"
-    timeout: 60
-    dependencies:
-      - operator_embed
-    phase: batch
-    operator: dedup
-
-  - name: operator_pred
-    agent: kg_operators
-    action: edgePrediction
-    tier: premium  # Edge prediction needs reasoning
-    parameters:
-      entities: "{{operator_dedup.result.entities}}"
-      accumulatedKG: "{{accumulatedKG}}"
-      weights: "{{params.operatorWeights}}"
-    timeout: 90
-    dependencies:
-      - operator_dedup
-    phase: batch
-    operator: pred
-
-  - name: operator_merge
-    agent: kg_operators
-    action: structureMerge
-    tier: standard
-    parameters:
-      batchResults:
-        entities: "{{operator_dedup.result.entities}}"
-        relations: "{{operator_pred.result.edges}}"
-      accumulatedKG: "{{accumulatedKG}}"
-    timeout: 30
-    dependencies:
-      - operator_pred
-    phase: batch
-    operator: merge
 
   # PHASE 4: Batch Quality Check
   - name: batch_qa
@@ -269,7 +204,7 @@ steps:
     action: validateBatch
     tier: premium  # Accurate QA requires good model
     parameters:
-      mergeResult: "{{operator_merge.result}}"
+      mergeResult: "{{kg_operators.result}}"
       batchId: "{{currentBatch.id}}"
     timeout: 60
     dependencies:

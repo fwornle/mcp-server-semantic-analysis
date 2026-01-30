@@ -256,17 +256,6 @@ export class CoordinatorAgent {
         });
       });
 
-      // KG operators are individual workflow steps but should display as substeps of 'kg_operators'
-      // This ensures they show in the substep visualization in free-running mode
-      const kgOperatorSteps = ['operator_conv', 'operator_aggr', 'operator_embed', 'operator_dedup', 'operator_pred', 'operator_merge'];
-      kgOperatorSteps.forEach(op => {
-        validStepNames.add(op);
-        substepNames.add(op);
-        substepParentMap.set(op, 'kg_operators');
-      });
-      // Also add the parent 'kg_operators' as a valid step name
-      validStepNames.add('kg_operators');
-
       // Also include batch-specific step names that are dynamically executed
       const batchStepNames = [
         'extract_batch_commits', 'extract_batch_sessions', 'batch_semantic_analysis',
@@ -457,6 +446,9 @@ export class CoordinatorAgent {
         summary: summaryStats,
         lastUpdate: new Date().toISOString(),
         elapsedSeconds: Math.round((Date.now() - execution.startTime.getTime()) / 1000),
+        // Substep metadata for dashboard visualization
+        substepNames: Array.from(substepNames),
+        substepParentMap: Object.fromEntries(substepParentMap),
       };
 
       // Add batch progress info if available (for batch workflows)

@@ -774,6 +774,29 @@ export class SemanticAnalyzer {
   async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
     const { context, analysisType = "general", provider = "auto", tier, taskType } = options;
 
+    // Check for mock mode BEFORE making any LLM calls
+    if (isMockLLMEnabled(SemanticAnalyzer.repositoryPath)) {
+      log('LLM Mock mode enabled - returning mock analyzeContent response', 'info');
+      const mockResponse = await mockSemanticAnalysis(content, SemanticAnalyzer.repositoryPath);
+
+      // Track mock call in metrics
+      SemanticAnalyzer.currentStepMetrics.totalCalls++;
+      SemanticAnalyzer.currentStepMetrics.totalInputTokens += mockResponse.tokenUsage.inputTokens;
+      SemanticAnalyzer.currentStepMetrics.totalOutputTokens += mockResponse.tokenUsage.outputTokens;
+      SemanticAnalyzer.currentStepMetrics.totalTokens += mockResponse.tokenUsage.totalTokens;
+      if (!SemanticAnalyzer.currentStepMetrics.providers.includes('mock')) {
+        SemanticAnalyzer.currentStepMetrics.providers.push('mock');
+      }
+
+      return {
+        insights: mockResponse.content,
+        provider: 'mock',
+        confidence: 0.85,
+        model: 'mock-llm-v1',
+        tokenUsage: mockResponse.tokenUsage,
+      };
+    }
+
     // Determine effective tier (explicit tier > taskType lookup > default)
     const effectiveTier = tier || this.getTierForTask(taskType as TaskType) || 'standard';
 

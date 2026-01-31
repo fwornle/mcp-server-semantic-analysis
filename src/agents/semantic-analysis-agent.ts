@@ -7,6 +7,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { log } from '../logging.js';
 import type { IntelligentQueryResult } from './code-graph-agent.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
+import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 
 export interface CodeFile {
   path: string;
@@ -816,6 +817,34 @@ export class SemanticAnalysisAgent {
     codeGraph?: any
   ): Promise<SemanticAnalysisResult['semanticInsights']> {
     try {
+      // Check for mock mode BEFORE making any LLM calls
+      if (isMockLLMEnabled(this.repositoryPath)) {
+        log('LLM Mock mode enabled - returning mock semantic insights', 'info');
+        const mockDelay = getMockDelay(this.repositoryPath);
+        await new Promise(resolve => setTimeout(resolve, mockDelay));
+
+        // Return realistic mock insights
+        return {
+          keyPatterns: [
+            'MockPattern: Component-based architecture with React hooks | Example: `useSelector`, `useDispatch` | DO: Use typed selectors | DON\'T: Access store directly',
+            'MockPattern: Service layer abstraction | Example: `ApiService.fetch()` | DO: Centralize API calls | DON\'T: Scatter fetch calls'
+          ],
+          architecturalDecisions: [
+            'MockDecision: Redux Toolkit for state management | Rationale: Reduced boilerplate, better TypeScript support',
+            'MockDecision: Feature-based folder structure | Rationale: Better code organization and maintainability'
+          ],
+          technicalDebt: [
+            'MockDebt: Legacy callback props in OldComponent | Priority: medium | Fix: Migrate to hooks'
+          ],
+          innovativeApproaches: [
+            'MockApproach: Custom hook composition for complex state logic'
+          ],
+          learnings: [
+            'MockLearning: AsyncThunkErrorHandling | Insight: Use rejectWithValue for typed errors | Example: `createAsyncThunk`'
+          ]
+        };
+      }
+
       const analysisPrompt = this.buildAnalysisPrompt(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis, codeGraph);
 
       // ULTRA DEBUG: Write LLM prompt to trace file
@@ -1695,6 +1724,21 @@ QUALITY RULES:
       contextType: typeof context
     });
 
+    // Check for mock mode BEFORE making any LLM calls
+    if (isMockLLMEnabled(this.repositoryPath)) {
+      log('LLM Mock mode enabled - returning mock analyzeContent response', 'info');
+      const mockDelay = getMockDelay(this.repositoryPath);
+      await new Promise(resolve => setTimeout(resolve, mockDelay));
+
+      return {
+        insights: `Mock analysis of content (${content.length} chars). Analysis type: ${analysisType || 'general'}. ` +
+          'Key findings: Component structure follows best practices. ' +
+          'Recommendations: Consider adding type annotations for better maintainability.',
+        provider: 'mock',
+        confidence: 0.85
+      };
+    }
+
     try {
       // Build the full prompt with context if provided
       let fullPrompt = content;
@@ -2043,6 +2087,26 @@ QUALITY RULES:
     relatedEntities: string[];
     semanticScore: number;
   }>> {
+    // Check for mock mode BEFORE making any LLM calls
+    if (isMockLLMEnabled(this.repositoryPath)) {
+      log('LLM Mock mode enabled - returning mock docstring analysis', 'info');
+      const mockDelay = getMockDelay(this.repositoryPath);
+      await new Promise(resolve => setTimeout(resolve, mockDelay));
+
+      // Return mock analysis for each entity
+      return entities.map(entity => ({
+        entityId: entity.id,
+        entityName: entity.name,
+        purpose: `Mock purpose for ${entity.type} ${entity.name}: Handles ${entity.type}-specific logic`,
+        parameters: ['param1: Mock parameter description', 'options: Configuration object'],
+        returnValue: 'Mock return value description',
+        usagePatterns: [`Use ${entity.name} for standard ${entity.type} operations`, 'Follow existing patterns in the codebase'],
+        warnings: [],
+        relatedEntities: [],
+        semanticScore: 0.75
+      }));
+    }
+
     const prompt = `Analyze these code docstrings and extract semantic information for each.
 
 For each entity, provide:
@@ -2140,6 +2204,22 @@ Respond with a JSON array where each element has:
     warnings: string[];
     linkedEntities: string[];
   } | null> {
+    // Check for mock mode BEFORE making any LLM calls
+    if (isMockLLMEnabled(this.repositoryPath)) {
+      log('LLM Mock mode enabled - returning mock document prose analysis', 'info');
+      const mockDelay = getMockDelay(this.repositoryPath);
+      await new Promise(resolve => setTimeout(resolve, mockDelay));
+
+      return {
+        documentPath: docPath,
+        summary: `Mock summary: Documentation covers ${links.length} code entities with usage patterns and examples.`,
+        tutorials: ['Mock tutorial: Follow the setup guide', 'Mock tutorial: Configure settings'],
+        bestPractices: ['Mock practice: Use consistent naming', 'Mock practice: Add error handling'],
+        warnings: [],
+        linkedEntities: links.map(l => l.codeReference)
+      };
+    }
+
     // Collect context snippets from links
     const contextSnippets = links
       .filter(l => l.context && l.context.length > 50)

@@ -17,6 +17,7 @@ import Groq from "groq-sdk";
 import { log } from "../logging.js";
 import type { GitCommit, GitFileChange } from "./git-history-agent.js";
 import { EmbeddingCache, getSharedEmbeddingCache } from "../utils/embedding-cache.js";
+import { isMockLLMEnabled, getMockDelay } from "../mock/llm-mock-service.js";
 
 // ============================================================================
 // Interfaces
@@ -561,6 +562,20 @@ export class GitStalenessDetector {
     pairs: Array<{ commit: GitCommit; entity: GraphEntity; currentScore: number }>
   ): Promise<Map<string, number>> {
     const results = new Map<string, number>();
+
+    // Check for mock mode BEFORE making any LLM calls
+    if (isMockLLMEnabled(process.cwd())) {
+      log("LLM Mock mode enabled - returning mock LLM correlation scores", "info");
+      const mockDelay = getMockDelay(process.cwd());
+      await new Promise(resolve => setTimeout(resolve, mockDelay));
+
+      // Return mock correlation scores (mid-range to indicate uncertain match)
+      for (const pair of pairs) {
+        const key = `${pair.commit.hash}-${pair.entity.name}`;
+        results.set(key, 0.5 + Math.random() * 0.3); // Random score between 0.5-0.8
+      }
+      return results;
+    }
 
     if (!this.groqClient) {
       log("Groq client not available, skipping TIER 3 LLM correlation", "warning");

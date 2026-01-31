@@ -1033,9 +1033,11 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
 
   // DEBUG MODE: Pre-set single-step mode and mock LLM in progress file BEFORE workflow starts
   // This must happen BEFORE async/sync branching so it applies to both execution paths
+  log(`Debug mode parameter: ${debug}`, 'info');
   if (debug) {
     // In Docker, use CODING_ROOT if available (container path differs from host path)
     const effectiveRepoPath = process.env.CODING_ROOT || repositoryPath;
+    log(`Debug mode active - writing to ${effectiveRepoPath}/.data/workflow-progress.json`, 'info');
     const progressFile = path.join(effectiveRepoPath, '.data', 'workflow-progress.json');
     const dataDir = path.join(effectiveRepoPath, '.data');
     mkdirSync(dataDir, { recursive: true });
@@ -1068,9 +1070,13 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
   // If async_mode, spawn a SEPARATE PROCESS to run the workflow
   // This ensures workflow survives MCP disconnections
   if (async_mode) {
+    // In Docker, use CODING_ROOT if available (container path differs from host path)
+    // This must be consistent for ALL paths to work correctly
+    const effectiveRepoPath = process.env.CODING_ROOT || repositoryPath;
+
     // CRITICAL: Clean up any existing running workflows before starting a new one
     // This prevents multiple workflows from conflicting on the shared progress file
-    const cleanup = await cleanupExistingWorkflows(repositoryPath);
+    const cleanup = await cleanupExistingWorkflows(effectiveRepoPath);
     if (cleanup.cleaned) {
       log(`Cleaned up existing workflow before starting new one`, 'info', {
         killedPids: cleanup.killedPids,
@@ -1083,27 +1089,27 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       id: workflowId,
       workflowName: workflow_name,
       startTime: new Date(),
-      repositoryPath,
+      repositoryPath: effectiveRepoPath,  // Use effective path
       parameters: resolvedParameters,
       status: 'running',
     };
     runningWorkflows.set(workflowId, workflowInfo);
 
     // Create config file for the workflow runner
-    const configDir = path.join(repositoryPath, '.data', 'workflow-configs');
+    const configDir = path.join(effectiveRepoPath, '.data', 'workflow-configs');
     mkdirSync(configDir, { recursive: true });
 
     const configFile = path.join(configDir, `${workflowId}.json`);
     // CRITICAL: Use workflow-progress.json (not workflow-runner-progress.json)
     // The dashboard and Coordinator both read/write workflow-progress.json
     // The heartbeat must write to the same file for status to stay synchronized
-    const progressFile = path.join(repositoryPath, '.data', 'workflow-progress.json');
+    const progressFile = path.join(effectiveRepoPath, '.data', 'workflow-progress.json');
     const pidFile = path.join(configDir, `${workflowId}.pid`);
 
     const config = {
       workflowId,
       workflowName: workflow_name,
-      repositoryPath,
+      repositoryPath: effectiveRepoPath,  // Use effective path
       parameters: resolvedParameters,
       progressFile,
       pidFile,
@@ -1115,7 +1121,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     const runnerScript = path.join(__dirname, 'workflow-runner.js');
 
     // Create log file for workflow runner output (captures crashes, errors, debug info)
-    const logsDir = path.join(repositoryPath, '.data', 'workflow-logs');
+    const logsDir = path.join(effectiveRepoPath, '.data', 'workflow-logs');
     mkdirSync(logsDir, { recursive: true });
     const logFilePath = path.join(logsDir, `${workflowId}.log`);
 
@@ -1131,7 +1137,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       const logFd = openSync(logFilePath, 'a');
 
       const child = spawn('node', [runnerScript, configFile], {
-        cwd: repositoryPath,
+        cwd: effectiveRepoPath,  // Use effective path for Docker compatibility
         detached: true,  // Run independently of parent
         stdio: ['ignore', logFd, logFd],  // Redirect stdout/stderr to log file
         env: {

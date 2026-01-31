@@ -774,8 +774,12 @@ export class SemanticAnalyzer {
   async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
     const { context, analysisType = "general", provider = "auto", tier, taskType } = options;
 
+    // DEBUG: Log mock check inputs
+    const mockEnabled = isMockLLMEnabled(SemanticAnalyzer.repositoryPath);
+    log(`[MOCK-CHECK] repositoryPath=${SemanticAnalyzer.repositoryPath}, CODING_ROOT=${process.env.CODING_ROOT}, mockEnabled=${mockEnabled}`, 'info');
+
     // Check for mock mode BEFORE making any LLM calls
-    if (isMockLLMEnabled(SemanticAnalyzer.repositoryPath)) {
+    if (mockEnabled) {
       log('LLM Mock mode enabled - returning mock analyzeContent response', 'info');
       const mockResponse = await mockSemanticAnalysis(content, SemanticAnalyzer.repositoryPath);
 

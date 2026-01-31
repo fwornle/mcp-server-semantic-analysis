@@ -18,7 +18,7 @@ import {
 import { OntologyManager } from "./ontology/OntologyManager.js";
 import { OntologyValidator } from "./ontology/OntologyValidator.js";
 import fs from "fs/promises";
-import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync, readdirSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync, readdirSync, appendFileSync } from "fs";
 import path from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
@@ -1074,6 +1074,9 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     // This must be consistent for ALL paths to work correctly
     const effectiveRepoPath = process.env.CODING_ROOT || repositoryPath;
 
+    // DEBUG: Trace path resolution
+    appendFileSync('/tmp/tools-debug.log', `[${new Date().toISOString()}] async_mode: CODING_ROOT=${process.env.CODING_ROOT}, repositoryPath=${repositoryPath}, effectiveRepoPath=${effectiveRepoPath}\n`);
+
     // CRITICAL: Clean up any existing running workflows before starting a new one
     // This prevents multiple workflows from conflicting on the shared progress file
     const cleanup = await cleanupExistingWorkflows(effectiveRepoPath);
@@ -1113,6 +1116,12 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       parameters: resolvedParameters,
       progressFile,
       pidFile,
+      // DEBUG: trace path resolution
+      _debug: {
+        CODING_ROOT: process.env.CODING_ROOT || 'NOT_SET',
+        originalRepositoryPath: repositoryPath,
+        effectiveRepoPath: effectiveRepoPath,
+      }
     };
 
     writeFileSync(configFile, JSON.stringify(config, null, 2));

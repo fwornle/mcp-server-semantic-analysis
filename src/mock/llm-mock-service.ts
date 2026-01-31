@@ -54,17 +54,24 @@ export function isMockLLMEnabled(repositoryPath: string): boolean {
 }
 
 /**
- * Get mock delay from config (default 500ms for realistic UI testing)
+ * Get mock delay from config (uses orchestrator.yaml default, overridable via progress file)
  */
 export function getMockDelay(repositoryPath: string): number {
-  try {
-    const progressPath = path.join(repositoryPath, '.data', 'workflow-progress.json');
-    if (!fs.existsSync(progressPath)) return 500;
+  // Default from orchestrator.yaml mock_mode.default_llm_delay_ms (250ms)
+  const DEFAULT_MOCK_DELAY = 250;
 
-    const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
-    return progress.mockLLMDelay ?? 500;
+  try {
+    // Check if progress file has an override
+    const progressPath = path.join(repositoryPath, '.data', 'workflow-progress.json');
+    if (fs.existsSync(progressPath)) {
+      const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+      if (progress.mockLLMDelay !== undefined && progress.mockLLMDelay !== null) {
+        return progress.mockLLMDelay;
+      }
+    }
+    return DEFAULT_MOCK_DELAY;
   } catch {
-    return 500;
+    return DEFAULT_MOCK_DELAY;
   }
 }
 

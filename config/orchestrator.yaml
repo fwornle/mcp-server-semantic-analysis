@@ -18,5 +18,29 @@ single_step_debug:
 
 mock_mode:
   # Mock LLM mode settings for UI visualization/testing
-  min_step_time_ms: 200       # Minimum step execution time in mock mode
-  min_substep_time_ms: 150    # Minimum sub-step visibility time in mock mode (for dashboard)
+  # DEBUG: Increased values to debug visualization timing
+  min_step_time_ms: 1000      # Minimum step execution time in mock mode (1 second)
+  min_substep_time_ms: 800    # Minimum sub-step visibility time in mock mode (0.8 seconds)
+  default_llm_delay_ms: 500   # Simulated LLM call duration in mock mode (0.5 seconds)
+
+# Visualization settings for the dashboard workflow graph
+visualization:
+  # Timing settings for substep display
+  substep_collapse_delay_ms: 800    # Time to show completed substeps before collapsing (ms)
+  substep_min_active_time_ms: 200   # Minimum time to show substep as active (dark blue)
+  substep_min_completed_time_ms: 300  # Minimum time to show substep as completed (green) before moving on
+
+  # Colors (CSS color values)
+  colors:
+    # Substep arc colors
+    substep_pending: "#93c5fd"      # Light blue - not yet run
+    substep_active: "#1d4ed8"       # Dark blue - currently running
+    substep_completed: "#22c55e"    # Green - finished
+    substep_failed: "#ef4444"       # Red - failed
+    substep_skipped: "#9ca3af"      # Gray - skipped
+
+    # Agent node colors
+    agent_pending: "#e0e7ff"        # Light indigo - not yet run
+    agent_running: "#3b82f6"        # Blue - currently running
+    agent_completed: "#22c55e"      # Green - finished
+    agent_failed: "#ef4444"         # Red - failed

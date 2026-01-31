@@ -1031,13 +1031,19 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     parameters: resolvedParameters
   });
 
-  // DEBUG MODE: Pre-set single-step mode and mock LLM in progress file BEFORE workflow starts
+  // DEBUG/MOCK MODE: Pre-set settings in progress file BEFORE workflow starts
   // This must happen BEFORE async/sync branching so it applies to both execution paths
-  log(`Debug mode parameter: ${debug}`, 'info');
-  if (debug) {
+  // Honor BOTH the top-level 'debug' flag AND individual settings in 'parameters'
+  const wantsMockLLM = debug || resolvedParameters?.mockLLM === true;
+  const wantsSingleStep = debug || resolvedParameters?.singleStepMode === true;
+  const wantsStepIntoSubsteps = debug || resolvedParameters?.stepIntoSubsteps === true;
+
+  log(`Debug settings: debug=${debug}, mockLLM=${wantsMockLLM}, singleStepMode=${wantsSingleStep}, stepIntoSubsteps=${wantsStepIntoSubsteps}`, 'info');
+
+  if (wantsMockLLM || wantsSingleStep || wantsStepIntoSubsteps) {
     // In Docker, use CODING_ROOT if available (container path differs from host path)
     const effectiveRepoPath = process.env.CODING_ROOT || repositoryPath;
-    log(`Debug mode active - writing to ${effectiveRepoPath}/.data/workflow-progress.json`, 'info');
+    log(`Writing debug settings to ${effectiveRepoPath}/.data/workflow-progress.json`, 'info');
     const progressFile = path.join(effectiveRepoPath, '.data', 'workflow-progress.json');
     const dataDir = path.join(effectiveRepoPath, '.data');
     mkdirSync(dataDir, { recursive: true });
@@ -1051,20 +1057,29 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       }
     }
 
-    const debugProgress = {
+    const debugProgress: Record<string, any> = {
       ...existingProgress,
       status: 'starting', // Override stale terminal status to prevent SSE handler skipping
-      singleStepMode: true,
-      stepIntoSubsteps: true, // Pause at sub-step boundaries too
-      stepPaused: false, // Will be set by first checkpoint
-      pausedAtStep: null,
-      singleStepUpdatedAt: new Date().toISOString(),
-      mockLLM: true,
-      mockLLMDelay: 500,
-      mockLLMUpdatedAt: new Date().toISOString(),
     };
+
+    // Only set the flags that were explicitly requested
+    if (wantsSingleStep) {
+      debugProgress.singleStepMode = true;
+      debugProgress.stepPaused = false; // Will be set by first checkpoint
+      debugProgress.pausedAtStep = null;
+      debugProgress.singleStepUpdatedAt = new Date().toISOString();
+    }
+    if (wantsStepIntoSubsteps) {
+      debugProgress.stepIntoSubsteps = true;
+    }
+    if (wantsMockLLM) {
+      debugProgress.mockLLM = true;
+      debugProgress.mockLLMDelay = resolvedParameters?.mockLLMDelay ?? 500;
+      debugProgress.mockLLMUpdatedAt = new Date().toISOString();
+    }
+
     writeFileSync(progressFile, JSON.stringify(debugProgress, null, 2));
-    log(`Debug mode: Pre-set singleStepMode=true, stepIntoSubsteps=true, mockLLM=true in progress file`, 'info');
+    log(`Pre-set debug settings: singleStepMode=${wantsSingleStep}, stepIntoSubsteps=${wantsStepIntoSubsteps}, mockLLM=${wantsMockLLM}`, 'info');
   }
 
   // If async_mode, spawn a SEPARATE PROCESS to run the workflow

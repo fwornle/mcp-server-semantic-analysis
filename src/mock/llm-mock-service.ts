@@ -40,10 +40,13 @@ export interface MockEmbeddingResponse {
 
 /**
  * Check if LLM mock mode is enabled by reading the progress file
+ * Handles Docker environment where CODING_ROOT=/coding differs from host path
  */
 export function isMockLLMEnabled(repositoryPath: string): boolean {
   try {
-    const progressPath = path.join(repositoryPath, '.data', 'workflow-progress.json');
+    // In Docker, use CODING_ROOT if available; otherwise use provided path
+    const effectivePath = process.env.CODING_ROOT || repositoryPath;
+    const progressPath = path.join(effectivePath, '.data', 'workflow-progress.json');
     if (!fs.existsSync(progressPath)) return false;
 
     const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
@@ -61,8 +64,10 @@ export function getMockDelay(repositoryPath: string): number {
   const DEFAULT_MOCK_DELAY = 250;
 
   try {
+    // In Docker, use CODING_ROOT if available; otherwise use provided path
+    const effectivePath = process.env.CODING_ROOT || repositoryPath;
     // Check if progress file has an override
-    const progressPath = path.join(repositoryPath, '.data', 'workflow-progress.json');
+    const progressPath = path.join(effectivePath, '.data', 'workflow-progress.json');
     if (fs.existsSync(progressPath)) {
       const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
       if (progress.mockLLMDelay !== undefined && progress.mockLLMDelay !== null) {

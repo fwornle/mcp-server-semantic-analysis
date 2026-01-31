@@ -1034,8 +1034,10 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
   // DEBUG MODE: Pre-set single-step mode and mock LLM in progress file BEFORE workflow starts
   // This must happen BEFORE async/sync branching so it applies to both execution paths
   if (debug) {
-    const progressFile = path.join(repositoryPath, '.data', 'workflow-progress.json');
-    const dataDir = path.join(repositoryPath, '.data');
+    // In Docker, use CODING_ROOT if available (container path differs from host path)
+    const effectiveRepoPath = process.env.CODING_ROOT || repositoryPath;
+    const progressFile = path.join(effectiveRepoPath, '.data', 'workflow-progress.json');
+    const dataDir = path.join(effectiveRepoPath, '.data');
     mkdirSync(dataDir, { recursive: true });
 
     let existingProgress: Record<string, any> = {};

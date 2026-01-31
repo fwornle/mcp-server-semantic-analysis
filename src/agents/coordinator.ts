@@ -1523,6 +1523,9 @@ export class CoordinatorAgent {
     try {
       log("Initializing 10-agent semantic analysis system with GraphDB", "info");
 
+      // Set the repository path for SemanticAnalyzer mock mode detection
+      SemanticAnalyzer.setRepositoryPath(this.repositoryPath);
+
       // Initialize the graph database adapter
       await this.graphDB.initialize();
       log("GraphDB initialized successfully", "info");
@@ -1534,7 +1537,7 @@ export class CoordinatorAgent {
       const vibeHistoryAgent = new VibeHistoryAgent(this.repositoryPath, this.team);
       this.agents.set("vibe_history", vibeHistoryAgent);
 
-      const semanticAnalysisAgent = new SemanticAnalysisAgent();
+      const semanticAnalysisAgent = new SemanticAnalysisAgent(this.repositoryPath);
       this.agents.set("semantic_analysis", semanticAnalysisAgent);
 
       const webSearchAgent = new WebSearchAgent();
@@ -1543,7 +1546,7 @@ export class CoordinatorAgent {
       const insightGenerationAgent = new InsightGenerationAgent(this.repositoryPath);
       this.agents.set("insight_generation", insightGenerationAgent);
 
-      const observationGenerationAgent = new ObservationGenerationAgent();
+      const observationGenerationAgent = new ObservationGenerationAgent(this.repositoryPath, this.team);
       this.agents.set("observation_generation", observationGenerationAgent);
 
       // Ontology Classification Agent for classifying observations against ontology

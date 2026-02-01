@@ -15,7 +15,12 @@ import OpenAI from "openai";
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
+import { fileURLToPath } from "url";
 import { log } from "../logging.js";
+
+// ES module compatible __dirname
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Get DMR host and port from environment (set in .env.ports)
 // DMR_HOST: Use 'host.docker.internal' on Windows, 'localhost' on macOS/Linux

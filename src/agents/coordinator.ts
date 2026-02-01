@@ -217,6 +217,8 @@ export class CoordinatorAgent {
             mockLLM: currentProgress.mockLLM,
             mockLLMDelay: currentProgress.mockLLMDelay,
             mockLLMUpdatedAt: currentProgress.mockLLMUpdatedAt,
+            // LLM mode selection (mock/local/public)
+            llmState: currentProgress.llmState,
           };
         } catch {
           // Ignore parse errors
@@ -519,6 +521,10 @@ export class CoordinatorAgent {
           if (freshProgress.mockLLMUpdatedAt !== undefined) {
             progress.mockLLMUpdatedAt = freshProgress.mockLLMUpdatedAt;
           }
+          // CRITICAL: Preserve llmState for mock/local/public mode selection
+          if (freshProgress.llmState !== undefined) {
+            progress.llmState = freshProgress.llmState;
+          }
         } catch {
           // Fall back to earlier preserved state if fresh read fails
           if (preservedDebugState.singleStepMode !== undefined) {
@@ -551,6 +557,10 @@ export class CoordinatorAgent {
           }
           if (preservedDebugState.mockLLMUpdatedAt !== undefined) {
             progress.mockLLMUpdatedAt = preservedDebugState.mockLLMUpdatedAt;
+          }
+          // CRITICAL: Preserve llmState for mock/local/public mode selection
+          if (preservedDebugState.llmState !== undefined) {
+            progress.llmState = preservedDebugState.llmState;
           }
         }
       }
@@ -2288,7 +2298,15 @@ export class CoordinatorAgent {
           status: 'completed' | 'failed' | 'skipped',
           duration?: number,
           outputs?: Record<string, any>,
-          llmMetrics?: { calls?: number; tokens?: number; provider?: string; model?: string }
+          llmMetrics?: {
+            calls?: number;
+            tokens?: number;
+            provider?: string;
+            model?: string;
+            intendedMode?: 'mock' | 'local' | 'public';
+            actualMode?: 'mock' | 'local' | 'public';
+            modeFallback?: boolean;
+          }
         ) => {
           currentBatchIteration.steps.push({
             name: stepName,
@@ -2300,6 +2318,10 @@ export class CoordinatorAgent {
               llmCalls: llmMetrics.calls,
               tokensUsed: llmMetrics.tokens,
               llmProvider: llmMetrics.model || llmMetrics.provider, // Prefer model over provider
+              // LLM mode tracking for visibility
+              llmIntendedMode: llmMetrics.intendedMode,
+              llmActualMode: llmMetrics.actualMode,
+              llmModeFallback: llmMetrics.modeFallback,
             } : {})
           });
         };
@@ -2788,7 +2810,11 @@ export class CoordinatorAgent {
             tokens: semanticLlmMetrics.totalTokens,
             // Get first model from calls array for display
             model: semanticLlmMetrics.calls?.[0]?.model,
-            provider: semanticLlmMetrics.providers?.[0]
+            provider: semanticLlmMetrics.providers?.[0],
+            // LLM mode tracking for visibility in traces
+            intendedMode: semanticLlmMetrics.intendedMode,
+            actualMode: semanticLlmMetrics.actualMode,
+            modeFallback: semanticLlmMetrics.modeFallback
           } : undefined);
 
           // Trace semantic analysis for this batch

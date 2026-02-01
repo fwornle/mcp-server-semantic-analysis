@@ -443,6 +443,7 @@ export class BatchScheduler {
 
   /**
    * Save current progress to file (for dashboard)
+   * IMPORTANT: Preserves debug state fields (mockLLM, singleStepMode, etc.)
    */
   private saveProgress(): void {
     if (!this.plan) return;
@@ -453,8 +454,21 @@ export class BatchScheduler {
         fs.mkdirSync(dataDir, { recursive: true });
       }
 
+      // Read existing progress to preserve debug state fields
+      let existingData: Record<string, any> = {};
+      if (fs.existsSync(this.progressPath)) {
+        try {
+          existingData = JSON.parse(fs.readFileSync(this.progressPath, 'utf8'));
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
       const progress = this.getProgress();
       const progressData = {
+        // Preserve ALL existing fields first (including debug state)
+        ...existingData,
+        // Then overlay batch-specific fields
         currentBatch: progress.currentBatch ? {
           id: progress.currentBatch.id,
           commitRange: {

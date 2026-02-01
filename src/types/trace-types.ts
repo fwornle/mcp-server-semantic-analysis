@@ -15,6 +15,10 @@ export interface LLMUsageTrace {
   latencyMs?: number;
   fallbackToRegex: boolean;
   fallbackReason?: string;
+  // Mode tracking for visibility
+  intendedMode?: 'mock' | 'local' | 'public';  // What user/config requested
+  actualMode?: 'mock' | 'local' | 'public';    // What was actually used
+  modeFallback?: boolean;                        // True if fallback occurred
 }
 
 /**

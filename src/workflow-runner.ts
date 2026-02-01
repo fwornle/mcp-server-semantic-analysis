@@ -239,6 +239,8 @@ function writeProgress(progressFile: string, update: ProgressUpdate): void {
           mockLLM: existing.mockLLM,
           mockLLMDelay: existing.mockLLMDelay,
           mockLLMUpdatedAt: existing.mockLLMUpdatedAt,
+          // CRITICAL: Preserve llmState for mock/local/public mode selection
+          llmState: existing.llmState,
         };
         // Remove undefined values
         for (const key of Object.keys(preservedDebugState)) {
@@ -298,6 +300,8 @@ function writeProgressPreservingDetails(progressFile: string, update: ProgressUp
       mockLLM: existingData.mockLLM,
       mockLLMDelay: existingData.mockLLMDelay,
       mockLLMUpdatedAt: existingData.mockLLMUpdatedAt,
+      // CRITICAL: Preserve llmState for mock/local/public mode selection
+      llmState: existingData.llmState,
     };
 
     // Remove undefined/null fields

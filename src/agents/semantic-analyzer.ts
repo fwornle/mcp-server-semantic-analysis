@@ -132,6 +132,10 @@ export interface StepLLMMetrics {
   totalTokens: number;
   providers: string[];
   calls: LLMCallMetrics[];
+  // LLM mode tracking for visibility
+  intendedMode?: 'mock' | 'local' | 'public';  // What user selected
+  actualMode?: 'mock' | 'local' | 'public';    // What was actually used (after fallbacks)
+  modeFallback?: boolean;                        // True if actual differs from intended
   // Fallback tracking for data loss analysis
   fallbacks: Array<{
     timestamp: number;
@@ -205,6 +209,8 @@ export class SemanticAnalyzer {
    * Reset metrics tracking (call at start of each workflow step)
    */
   static resetStepMetrics(): void {
+    // Get intended mode for this step
+    const intendedMode = SemanticAnalyzer.getLLMModeForAgent();
     SemanticAnalyzer.currentStepMetrics = {
       totalCalls: 0,
       totalInputTokens: 0,
@@ -212,9 +218,27 @@ export class SemanticAnalyzer {
       totalTokens: 0,
       providers: [],
       calls: [],
+      intendedMode,
+      actualMode: undefined,  // Set when first LLM call completes
+      modeFallback: false,
       fallbacks: [],
       fallbackCount: 0,
     };
+  }
+
+  /**
+   * Record the actual mode used for LLM calls
+   */
+  private static recordActualMode(mode: 'mock' | 'local' | 'public'): void {
+    if (!SemanticAnalyzer.currentStepMetrics.actualMode) {
+      SemanticAnalyzer.currentStepMetrics.actualMode = mode;
+      // Check if fallback occurred
+      if (SemanticAnalyzer.currentStepMetrics.intendedMode &&
+          SemanticAnalyzer.currentStepMetrics.intendedMode !== mode) {
+        SemanticAnalyzer.currentStepMetrics.modeFallback = true;
+        log(`LLM mode fallback: intended=${SemanticAnalyzer.currentStepMetrics.intendedMode}, actual=${mode}`, 'warning');
+      }
+    }
   }
 
   /**
@@ -487,6 +511,7 @@ export class SemanticAnalyzer {
       const mockResponse = await mockSemanticAnalysis(prompt, SemanticAnalyzer.repositoryPath);
 
       // Track mock call in metrics
+      SemanticAnalyzer.recordActualMode('mock');
       SemanticAnalyzer.currentStepMetrics.totalCalls++;
       SemanticAnalyzer.currentStepMetrics.totalInputTokens += mockResponse.tokenUsage.inputTokens;
       SemanticAnalyzer.currentStepMetrics.totalOutputTokens += mockResponse.tokenUsage.outputTokens;
@@ -519,6 +544,7 @@ export class SemanticAnalyzer {
           });
 
           // Track DMR call in metrics
+          SemanticAnalyzer.recordActualMode('local');
           SemanticAnalyzer.currentStepMetrics.totalCalls++;
           SemanticAnalyzer.currentStepMetrics.totalInputTokens += dmrResponse.tokenUsage.inputTokens;
           SemanticAnalyzer.currentStepMetrics.totalOutputTokens += dmrResponse.tokenUsage.outputTokens;
@@ -544,6 +570,7 @@ export class SemanticAnalyzer {
       if (this.ollamaClient) {
         try {
           log('Using Ollama for local LLM inference', 'info');
+          SemanticAnalyzer.recordActualMode('local');
           return await this.analyzeWithOllama(prompt, model);
         } catch (ollamaError: any) {
           log(`Ollama call failed: ${ollamaError.message}, falling back to public mode`, 'warning');
@@ -553,6 +580,9 @@ export class SemanticAnalyzer {
       // No local LLM available - fall through to public mode
       log('No local LLM available (DMR/Ollama), falling back to public mode', 'warning');
     }
+
+    // Public mode (or fallback from local): record as public
+    SemanticAnalyzer.recordActualMode('public');
 
     // Public mode (or fallback from local): use cloud APIs
     switch (provider) {

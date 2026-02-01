@@ -1076,6 +1076,13 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       debugProgress.mockLLM = true;
       debugProgress.mockLLMDelay = resolvedParameters?.mockLLMDelay ?? 500;
       debugProgress.mockLLMUpdatedAt = new Date().toISOString();
+      // CRITICAL: Also set llmState.globalMode to 'mock' for full mock mode
+      // This ensures getLLMMode() returns 'mock' for all agents
+      debugProgress.llmState = {
+        globalMode: 'mock',
+        perAgentOverrides: existingProgress.llmState?.perAgentOverrides || {},
+        updatedAt: new Date().toISOString()
+      };
     }
 
     writeFileSync(progressFile, JSON.stringify(debugProgress, null, 2));

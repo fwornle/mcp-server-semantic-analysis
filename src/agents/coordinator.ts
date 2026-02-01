@@ -283,7 +283,10 @@ export class CoordinatorAgent {
 
         // For batch-specific steps, only include if batchId matches current batch
         // This prevents showing stale "completed" status from previous batches
-        if (currentBatchId && batchSpecificSteps.has(stepName)) {
+        // EXCEPTION: During finalization phase, show batch steps from the last batch
+        // so the final visualization has "everything green"
+        const isFinalizationPhase = currentBatchId?.startsWith('finalization-');
+        if (currentBatchId && batchSpecificSteps.has(stepName) && !isFinalizationPhase) {
           const resultBatchId = result?.batchId;
           if (resultBatchId && resultBatchId !== currentBatchId) {
             continue; // Skip results from previous batches

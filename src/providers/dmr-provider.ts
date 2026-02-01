@@ -17,11 +17,14 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { log } from "../logging.js";
 
-// Get DMR port from environment (set in .env.ports as DMR_PORT)
+// Get DMR host and port from environment (set in .env.ports)
+// DMR_HOST: Use 'host.docker.internal' on Windows, 'localhost' on macOS/Linux
+const DMR_HOST = process.env.DMR_HOST || "localhost";
 const DMR_PORT = process.env.DMR_PORT || "12434";
 
 // DMR configuration interface
 export interface DMRConfig {
+  host: string;
   port: number;
   baseUrl: string;
   defaultModel: string;
@@ -48,10 +51,11 @@ export interface DMRResponse {
   };
 }
 
-// Default configuration (uses DMR_PORT from environment)
+// Default configuration (uses DMR_HOST and DMR_PORT from environment)
 const DEFAULT_CONFIG: DMRConfig = {
+  host: DMR_HOST,
   port: parseInt(DMR_PORT, 10),
-  baseUrl: `http://localhost:${DMR_PORT}/engines/v1`,
+  baseUrl: `http://${DMR_HOST}:${DMR_PORT}/engines/v1`,
   defaultModel: "ai/llama3.2",
   modelOverrides: {},
   timeout: 120000,

@@ -12,8 +12,12 @@ dmr:
   # Port from .env.ports (DMR_PORT), defaults to 12434
   port: ${DMR_PORT:-12434}
 
-  # Base URL template (port substituted at runtime)
-  baseUrl: http://localhost:${DMR_PORT:-12434}/engines/v1
+  # Host for DMR - use host.docker.internal on Windows, localhost on macOS/Linux
+  # Set DMR_HOST env var to override (e.g., DMR_HOST=host.docker.internal)
+  host: ${DMR_HOST:-localhost}
+
+  # Base URL template (host and port substituted at runtime)
+  baseUrl: http://${DMR_HOST:-localhost}:${DMR_PORT:-12434}/engines/v1
 
   # Default model to use when not overridden
   # Format: namespace/name:variant (e.g., ai/llama3.2:3B-Q4_K_M)

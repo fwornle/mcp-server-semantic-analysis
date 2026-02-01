@@ -202,12 +202,7 @@ export class QualityAssuranceAgent {
 
     try {
       // Debug log for all validations
-      console.error(`[QA DEBUG] Starting step-specific validation for: ${stepName}`, {
-        hasStepResult: !!stepResult,
-        stepResultType: typeof stepResult,
-        isSemanticAnalysis: stepName === 'semantic_analysis'
-      });
-      log(`Starting step-specific validation for: ${stepName}`, 'info', {
+      log(`Starting step-specific validation for: ${stepName}`, 'debug', {
         hasStepResult: !!stepResult,
         stepResultType: typeof stepResult,
         isSemanticAnalysis: stepName === 'semantic_analysis'

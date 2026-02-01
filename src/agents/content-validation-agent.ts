@@ -21,16 +21,11 @@ import type { InsightGenerationAgent } from "./insight-generation-agent.js";
 import { GitHistoryAgent } from "./git-history-agent.js";
 import { VibeHistoryAgent } from "./vibe-history-agent.js";
 import { GitStalenessDetector, CommitEntityCorrelation } from "./git-staleness-detector.js";
+import { log as centralLog } from "../logging.js";
 
-// Simple logger
+// Simple logger wrapper for content validation
 const log = (message: string, level: string = "info", data?: any) => {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] [ContentValidationAgent] [${level.toUpperCase()}] ${message}`;
-  if (data) {
-    console.error(logMessage, JSON.stringify(data, null, 2));
-  } else {
-    console.error(logMessage);
-  }
+  centralLog(`[ContentValidationAgent] ${message}`, level as any, data);
 };
 
 // Validation result interfaces

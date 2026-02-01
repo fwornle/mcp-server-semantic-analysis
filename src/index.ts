@@ -89,7 +89,7 @@ process.on('beforeExit', (code) => {
 // Handle process 'exit' to ensure final logging
 process.on('exit', (code) => {
   // Note: only synchronous operations work here
-  console.error(`[${new Date().toISOString()}] Process exiting with code: ${code}`);
+  log(`Process exiting with code: ${code}`, 'info');
 });
 
 // Log startup info
@@ -172,7 +172,6 @@ async function runServer() {
     const errorMsg = error instanceof Error ? error.message : String(error);
     const stack = error instanceof Error ? error.stack : undefined;
     log(`Failed to start server: ${errorMsg}`, "error", { stack });
-    console.error(errorMsg);
     process.exit(1);
   }
 }
@@ -180,6 +179,5 @@ async function runServer() {
 runServer().catch((error) => {
   const errorMsg = error instanceof Error ? error.message : String(error);
   logError(error instanceof Error ? error : new Error(errorMsg), 'Server startup failed');
-  console.error(errorMsg);
   process.exit(1);
 });

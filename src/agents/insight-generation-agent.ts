@@ -972,7 +972,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         log(`Code graph analysis was skipped: ${codeGraphResults.warning || 'unknown reason'}`, 'warning');
       }
     } catch (error) {
-      console.error('Error extracting code graph patterns:', error);
+      log('Error extracting code graph patterns', 'error', error);
     }
 
     // Generate REAL architectural patterns based on actual code analysis
@@ -995,7 +995,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         patterns.push(...architecturalPatterns);
       }
     } catch (error) {
-      console.error('Error extracting architectural patterns:', error);
+      log('Error extracting architectural patterns', 'error', error);
     }
 
     // Analyze code changes for implementation patterns  
@@ -1005,7 +1005,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         patterns.push(...implementationPatterns);
       }
     } catch (error) {
-      console.error('Error extracting implementation patterns:', error);
+      log('Error extracting implementation patterns', 'error', error);
     }
 
     // Analyze semantic code structure for design patterns
@@ -1015,7 +1015,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         patterns.push(...designPatterns);
       }
     } catch (error) {
-      console.error('Error extracting design patterns:', error);
+      log('Error extracting design patterns', 'error', error);
     }
 
     // Only analyze conversation patterns if they relate to actual code solutions
@@ -1025,7 +1025,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         patterns.push(...codeSolutionPatterns);
       }
     } catch (error) {
-      console.error('Error extracting solution patterns:', error);
+      log('Error extracting solution patterns', 'error', error);
     }
 
     // Extract patterns from documentation semantics (LLM-analyzed docstrings and prose)
@@ -1036,7 +1036,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         log(`Extracted ${docPatterns.length} patterns from documentation semantics`, 'info');
       }
     } catch (error) {
-      console.error('Error extracting documentation patterns:', error);
+      log('Error extracting documentation patterns', 'error', error);
     }
 
     // Extract patterns from LLM-powered code synthesis (CGR integration)
@@ -1047,7 +1047,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         log(`Extracted ${synthesisPatterns.length} patterns from code synthesis (${codeSynthesisResults.length} entities analyzed)`, 'info');
       }
     } catch (error) {
-      console.error('Error extracting synthesis patterns:', error);
+      log('Error extracting synthesis patterns', 'error', error);
     }
 
     // Extract patterns from accumulated observations (batch-generated insights)
@@ -1058,7 +1058,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         log(`Extracted ${observationPatterns.length} patterns from ${observations.length} observations`, 'info');
       }
     } catch (error) {
-      console.error('Error extracting observation patterns:', error);
+      log('Error extracting observation patterns', 'error', error);
     }
 
     // Analyze and summarize patterns
@@ -1638,7 +1638,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
       relations    // NEW: Pass relations
     });
 
-    console.error('✅ generateInsightContent completed, content length:', content.length);
+    log(`generateInsightContent completed, content length: ${content.length}`, 'debug');
 
     // Save the document with tracing
     FilenameTracer.trace('FILE_WRITE_INPUT', 'generateInsightDocument',
@@ -1676,7 +1676,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
       );
     } catch (writeError: any) {
       // If MD file write fails, clean up orphan diagram files
-      console.error('❌ Failed to write MD file, cleaning up diagram files...');
+      log('Failed to write MD file, cleaning up diagram files...', 'error');
       await this.cleanupOrphanDiagrams(diagrams);
       throw writeError;
     }
@@ -1719,18 +1719,18 @@ Best practices, rules, and conventions for using this correctly. What should dev
       if (diagram.success && diagram.pngFile) {
         try {
           await fs.promises.unlink(diagram.pngFile);
-          console.error(`  Cleaned up: ${diagram.pngFile}`);
+          log(`Cleaned up: ${diagram.pngFile}`, 'debug');
           // Also try to clean up the PUML source file
           if (diagram.pumlFile) {
             try {
               await fs.promises.unlink(diagram.pumlFile);
-              console.error(`  Cleaned up: ${diagram.pumlFile}`);
+              log(`Cleaned up: ${diagram.pumlFile}`, 'debug');
             } catch {
               // PUML file may not exist, ignore
             }
           }
         } catch (err) {
-          console.error(`  Failed to clean up ${diagram.pngFile}:`, err);
+          log(`Failed to clean up ${diagram.pngFile}`, 'error', err);
         }
       }
     }
@@ -2006,14 +2006,13 @@ Best practices, rules, and conventions for using this correctly. What should dev
       });
       
       // 🚨 SPECIAL WORKFLOW DEBUG: Log a more detailed breakdown
-      console.error(`🔥 WORKFLOW DEBUG: generateLLMEnhancedDiagram for ${type}`);
-      console.error(`🔥 Data keys: ${Object.keys(data || {}).join(', ')}`);
-      console.error(`🔥 Pattern catalog: ${data.patternCatalog ? 'EXISTS' : 'MISSING'}`);
-      console.error(`🔥 Git analysis: ${data.gitAnalysis ? 'EXISTS' : 'MISSING'}`);
-      console.error(`🔥 Semantic analyzer: ${this.semanticAnalyzer ? 'EXISTS' : 'MISSING'}`);
-      if (data.gitAnalysis) {
-        console.error(`🔥 Git commits: ${data.gitAnalysis.commits?.length || 'NO COMMITS'}`);
-      }
+      log(`WORKFLOW DEBUG: generateLLMEnhancedDiagram for ${type}`, 'debug', {
+        dataKeys: Object.keys(data || {}).join(', '),
+        patternCatalog: data.patternCatalog ? 'EXISTS' : 'MISSING',
+        gitAnalysis: data.gitAnalysis ? 'EXISTS' : 'MISSING',
+        semanticAnalyzer: this.semanticAnalyzer ? 'EXISTS' : 'MISSING',
+        gitCommits: data.gitAnalysis?.commits?.length || 'NO COMMITS'
+      });
 
       const diagramPrompt = this.buildDiagramPrompt(type, data);
       log(`🔍 DEBUG: Built diagram prompt (${diagramPrompt.length} chars)`, 'debug');
@@ -4896,7 +4895,7 @@ ${data.appendices || 'Additional metadata and references.'}
         return problemElements.join('. ') + '.';
       }
     } catch (error) {
-      console.error('Failed to generate structured problem statement, using fallback', { error: error instanceof Error ? error.message : String(error) });
+      log('Failed to generate structured problem statement, using fallback', 'warning', { error: error instanceof Error ? error.message : String(error) });
     }
 
     // Fallback to structured analysis if LLM fails

@@ -132,14 +132,14 @@ app.post('/messages', async (req: Request, res: Response) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Semantic Analysis SSE Server listening on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+  log(`Semantic Analysis SSE Server listening on port ${PORT}`, 'info');
+  log(`Health check: http://localhost:${PORT}/health`, 'info');
+  log(`SSE endpoint: http://localhost:${PORT}/sse`, 'info');
 });
 
 // Handle shutdown
 process.on('SIGINT', async () => {
-  console.log('Shutting down server...');
+  log('Shutting down server...', 'info');
   // Clean up all heartbeat intervals
   for (const sessionId in heartbeatIntervals) {
     clearInterval(heartbeatIntervals[sessionId]);
@@ -151,15 +151,15 @@ process.on('SIGINT', async () => {
       await transports[sessionId].close();
       delete transports[sessionId];
     } catch (error) {
-      console.error(`Error closing transport for session ${sessionId}:`, error);
+      log(`Error closing transport for session ${sessionId}`, 'error', error);
     }
   }
-  console.log('Server shutdown complete');
+  log('Server shutdown complete', 'info');
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  console.log('Received SIGTERM, shutting down...');
+  log('Received SIGTERM, shutting down...', 'info');
   // Clean up all heartbeat intervals
   for (const sessionId in heartbeatIntervals) {
     clearInterval(heartbeatIntervals[sessionId]);
@@ -171,7 +171,7 @@ process.on('SIGTERM', async () => {
       await transports[sessionId].close();
       delete transports[sessionId];
     } catch (error) {
-      console.error(`Error closing transport for session ${sessionId}:`, error);
+      log(`Error closing transport for session ${sessionId}`, 'error', error);
     }
   }
   process.exit(0);

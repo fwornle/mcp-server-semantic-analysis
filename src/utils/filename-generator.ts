@@ -3,6 +3,8 @@
  * NO OTHER CODE should manipulate filenames - use this utility only
  */
 
+import { log } from '../logging.js';
+
 export interface FileNaming {
   filename: string;  // Clean filename for .md files
   entityName: string; // Name for knowledge base entities
@@ -26,24 +28,24 @@ export class FilenameGenerator {
     
     let baseName: string;
     
-    console.error('FilenameGenerator DEBUG:', {
+    log('FilenameGenerator', 'debug', {
       topPatternName: topPattern?.name,
       hasPatterns: patternCatalog?.patterns?.length,
       allPatternNames: patternCatalog?.patterns?.map((p: any) => p.name)
     });
-    
+
     if (topPattern?.name) {
       // CRITICAL: Fix corrupted input at source
-      console.error('Fixing corrupted pattern name:', topPattern.name);
+      log(`Fixing corrupted pattern name: ${topPattern.name}`, 'debug');
       baseName = this.fixCorruptedPatternName(topPattern.name);
-      console.error('Fixed to:', baseName);
+      log(`Fixed to: ${baseName}`, 'debug');
     } else if (gitAnalysis?.summary?.focusAreas?.[0]) {
       baseName = this.toCamelCase(gitAnalysis.summary.focusAreas[0]) + 'Pattern';
     } else {
       baseName = 'SemanticAnalysisPattern';
     }
     
-    console.error('Final filename:', baseName);
+    log(`Final filename: ${baseName}`, 'debug');
     
     return {
       filename: baseName,

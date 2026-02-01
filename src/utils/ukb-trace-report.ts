@@ -12,6 +12,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { log } from '../logging.js';
 
 // ============================================================================
 // Interfaces
@@ -285,7 +286,7 @@ export class UKBTraceReportManager {
     this.report.startTime = new Date().toISOString();
     this.report.status = 'completed';
 
-    console.error(`[UKBTraceReport] Started workflow ${workflowId}`);
+    log(`[UKBTraceReport] Started workflow ${workflowId}`, 'info')
   }
 
   // ============================================================================
@@ -349,7 +350,7 @@ export class UKBTraceReportManager {
       architecturalDecisions: gitResult?.architecturalDecisions || []
     };
 
-    console.error(`[UKBTraceReport] Batch ${batchId}: ${commits.length} commits, ${batch.sourceData.gitHistory.codeFilesDiscovered.length} files`);
+    log(`[UKBTraceReport] Batch ${batchId}: ${commits.length} commits, ${batch.sourceData.gitHistory.codeFilesDiscovered.length} files`, 'info')
   }
 
   traceVibeHistory(batchId: string, vibeResult: any): void {
@@ -373,7 +374,7 @@ export class UKBTraceReportManager {
       vibesExtracted: this.extractVibes(sessions)  // All vibes, no slice
     };
 
-    console.error(`[UKBTraceReport] Batch ${batchId}: ${sessions.length} sessions, ${batch.sourceData.vibeHistory.vibesExtracted.length} vibes`);
+    log(`[UKBTraceReport] Batch ${batchId}: ${sessions.length} sessions, ${batch.sourceData.vibeHistory.vibesExtracted.length} vibes`, 'info')
   }
 
   /**
@@ -415,7 +416,7 @@ export class UKBTraceReportManager {
     const inputItems = batch.sourceData.gitHistory.commitsCount + batch.sourceData.vibeHistory.sessionsCount;
     this.trackDataLoss(batch, 'semantic_analysis', inputItems, entities.length);
 
-    console.error(`[UKBTraceReport] Batch ${batchId}: ${entities.length} entities, ${semanticResult?.relations?.length || 0} relations`);
+    log(`[UKBTraceReport] Batch ${batchId}: ${entities.length} entities, ${semanticResult?.relations?.length || 0} relations`, 'info')
   }
 
   traceObservations(batchId: string, observationResult: any): void {
@@ -460,7 +461,7 @@ export class UKBTraceReportManager {
     // Track data loss from entities to observations
     this.trackDataLoss(batch, 'observation_generation', batch.conceptExtraction.entitiesCreated, observations.length);
 
-    console.error(`[UKBTraceReport] Batch ${batchId}: ${observations.length} observations`);
+    log(`[UKBTraceReport] Batch ${batchId}: ${observations.length} observations`, 'info')
   }
 
   traceOntologyClassification(batchId: string, classificationResult: any, llmCalls: number, tokensUsed: number): void {
@@ -494,7 +495,7 @@ export class UKBTraceReportManager {
       tokensUsed
     };
 
-    console.error(`[UKBTraceReport] Batch ${batchId}: ${classified.length} classified, byClass: ${JSON.stringify(byClass)}`);
+    log(`[UKBTraceReport] Batch ${batchId}: ${classified.length} classified, byClass: ${JSON.stringify(byClass)}`, 'info')
   }
 
   traceQAIssue(batchId: string | undefined, stepName: string, issue: Omit<QAIssue, 'stepName' | 'batchId'>): void {
@@ -542,7 +543,7 @@ export class UKBTraceReportManager {
       languageDistribution: stats.languageDistribution || {}
     };
 
-    console.error(`[UKBTraceReport] CodeGraph: ${stats.totalEntities || 0} entities`);
+    log(`[UKBTraceReport] CodeGraph: ${stats.totalEntities || 0} entities`, 'info')
   }
 
   traceInsightGeneration(insightResult: any): void {
@@ -572,7 +573,7 @@ export class UKBTraceReportManager {
     const insightsCount = insights.length;
     this.trackFinalizationLoss('insight_generation', patternsCount, insightsCount);
 
-    console.error(`[UKBTraceReport] Insights: ${insights.length} documents from ${patternsCount} patterns`);
+    log(`[UKBTraceReport] Insights: ${insights.length} documents from ${patternsCount} patterns`, 'info')
   }
 
   tracePersistence(persistResult: any): void {
@@ -711,7 +712,7 @@ export class UKBTraceReportManager {
     const filepath = path.join(this.reportsDir, filename);
 
     fs.writeFileSync(filepath, JSON.stringify(this.report, null, 2));
-    console.error(`[UKBTraceReport] Report saved to ${filepath}`);
+    log(`[UKBTraceReport] Report saved to ${filepath}`, 'info')
 
     // Also save a "latest" symlink-style copy
     const latestPath = path.join(this.reportsDir, 'latest-trace.json');
@@ -818,7 +819,7 @@ export class UKBTraceReportManager {
         return JSON.parse(fs.readFileSync(latestPath, 'utf-8'));
       }
     } catch (e) {
-      console.error(`[UKBTraceReport] Failed to load latest report: ${e}`);
+      log(`[UKBTraceReport] Failed to load latest report: ${e}`, 'warning')
     }
 
     return null;

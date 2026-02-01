@@ -84,7 +84,7 @@ export class ContentAgnosticAnalyzer {
     const limitedGitAnalysis = this.limitAnalysisScope(gitAnalysis);
     const limitedVibeAnalysis = this.limitAnalysisScope(vibeAnalysis);
     
-    console.error('🔍 DEBUG: Analysis scope limited - commits:', limitedGitAnalysis?.commits?.length, 'vibe sessions:', limitedVibeAnalysis?.sessions?.length);
+    log(`Analysis scope limited - commits: ${limitedGitAnalysis?.commits?.length}, vibe sessions: ${limitedVibeAnalysis?.sessions?.length}`, 'debug');
     
     // Get cached repository context (fast operation)
     this.repositoryContext = await this.contextManager.getRepositoryContext();
@@ -112,7 +112,7 @@ export class ContentAgnosticAnalyzer {
       const significance = this.calculateRealSignificance(mainProblem, actualSolution, measuredOutcome);
       const confidence = this.calculateConfidence(correlations, limitedGitAnalysis, semanticAnalysis);
       
-      console.error('✨ Content-agnostic analysis completed in', Date.now() - startTime, 'ms');
+      log(`Content-agnostic analysis completed in ${Date.now() - startTime}ms`, 'info');
 
       return {
         problem: mainProblem,
@@ -122,7 +122,7 @@ export class ContentAgnosticAnalyzer {
         confidence
       };
     } catch (error) {
-      console.error('❌ ContentAgnosticAnalyzer error after', Date.now() - startTime, 'ms:', error);
+      log(`ContentAgnosticAnalyzer error after ${Date.now() - startTime}ms`, 'error', error);
       throw error;
     }
   }
@@ -314,19 +314,20 @@ export class ContentAgnosticAnalyzer {
     const complexity = semanticAnalysis?.codeAnalysis?.averageComplexity || 15;
     const codeIssues = semanticAnalysis?.codeAnalysis?.codeQuality?.issues || [];
 
-    console.error('🔍 DEBUG extractProblemFromCodeOptimized:');
-    console.error('  - Code issues from semantic analysis:', `(${codeIssues.length})`, codeIssues);
-    console.error('  - Code quality score:', codeQuality);
+    log('extractProblemFromCodeOptimized', 'debug', {
+      codeIssuesCount: codeIssues.length,
+      codeIssues,
+      codeQualityScore: codeQuality
+    });
 
     // Check if we're getting the generic "13 files have high complexity" issue
     const genericIssue = codeIssues.find((issue: string) => issue.includes('files have high complexity'));
     if (genericIssue) {
-      console.error('⚠️  WARNING: Found generic issue text:', genericIssue);
-      console.error('  This should be replaced with repository-specific analysis!');
+      log(`Found generic issue text: ${genericIssue}. This should be replaced with repository-specific analysis!`, 'warning');
 
       // Generate repository-specific analysis using git changes
       if (gitAnalysis && gitAnalysis.commits) {
-        console.error('🔍 DEBUG: Attempting repository-specific analysis...');
+        log('Attempting repository-specific analysis...', 'debug');
         return this.generateRepositorySpecificProblem(gitAnalysis, semanticAnalysis);
       }
     }
@@ -365,7 +366,7 @@ export class ContentAgnosticAnalyzer {
       });
     }
 
-    console.error('🔍 Repository-specific analysis:', `${allFiles.length} files from ${totalCommits} commits`);
+    log(`Repository-specific analysis: ${allFiles.length} files from ${totalCommits} commits`, 'debug');
 
     if (allFiles.length > 0) {
       const fileTypes = this.categorizeFileChanges(allFiles);
@@ -609,10 +610,9 @@ export class ContentAgnosticAnalyzer {
       });
     }
     
-    console.error(`🔍 DEBUG extractImplementationDetails: Found ${allFiles.length} files from ${gitChanges.commits?.length || 0} commits`);
-    if (allFiles.length > 0) {
-      console.error(`🔍 First few files:`, allFiles.slice(0, 3).map((f: any) => typeof f === 'string' ? f : f.path || f));
-    }
+    log(`extractImplementationDetails: Found ${allFiles.length} files from ${gitChanges.commits?.length || 0} commits`, 'debug', {
+      firstFewFiles: allFiles.length > 0 ? allFiles.slice(0, 3).map((f: any) => typeof f === 'string' ? f : f.path || f) : []
+    });
     
     // Analyze file changes for implementation specifics
     if (allFiles.length > 0) {
@@ -763,10 +763,10 @@ export class ContentAgnosticAnalyzer {
 
   // Helper methods for analysis
   private createTimeWindows(vibeSessions: any[], commits: any[]): any[] {
-    console.error('🔍 Creating time windows for correlation analysis...');
-    
+    log('Creating time windows for correlation analysis...', 'debug');
+
     if (!vibeSessions || !commits) {
-      console.error('❌ No vibe sessions or commits data available');
+      log('No vibe sessions or commits data available', 'warning');
       return [];
     }
 
@@ -778,7 +778,7 @@ export class ContentAgnosticAnalyzer {
     const allVibeDates = vibeSessions.map(s => new Date(s.date || s.timestamp || Date.now())).filter(d => !isNaN(d.getTime()));
     
     if (allCommitDates.length === 0 && allVibeDates.length === 0) {
-      console.error('❌ No valid dates found in commits or vibe sessions');
+      log('No valid dates found in commits or vibe sessions', 'warning');
       return [];
     }
 
@@ -798,7 +798,7 @@ export class ContentAgnosticAnalyzer {
   }
 
   private analyzeTimeWindow(window: any): VibeGitCorrelation {
-    console.error('🔍 Analyzing time window for correlations...');
+    log('Analyzing time window for correlations...', 'debug');
     
     const { vibeSessions, commits } = window;
     

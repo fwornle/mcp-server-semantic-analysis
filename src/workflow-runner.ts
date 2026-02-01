@@ -71,7 +71,7 @@ async function gracefulCleanup(reason: string, exitCode: number = 1): Promise<vo
       fs.writeFileSync(cleanupState.progressFile, JSON.stringify(update, null, 2));
       log('[WorkflowRunner] Final progress written', 'info');
     } catch (e) {
-      console.error('[WorkflowRunner] Failed to write final progress:', e);
+      log('[WorkflowRunner] Failed to write final progress', 'error', e);
     }
   }
 
@@ -255,7 +255,7 @@ function writeProgress(progressFile: string, update: ProgressUpdate): void {
     const merged = { ...update, ...preservedDebugState };
     fs.writeFileSync(progressFile, JSON.stringify(merged, null, 2));
   } catch (e) {
-    console.error('Failed to write progress:', e);
+    log('[WorkflowRunner] Failed to write progress', 'error', e);
   }
 }
 
@@ -309,7 +309,7 @@ function writeProgressPreservingDetails(progressFile: string, update: ProgressUp
 
     fs.writeFileSync(progressFile, JSON.stringify(merged, null, 2));
   } catch (e) {
-    console.error('Failed to write progress:', e);
+    log('[WorkflowRunner] Failed to write progress', 'error', e);
   }
 }
 
@@ -397,23 +397,22 @@ async function updateTimingStatistics(
 function logMemoryUsage(context: string): void {
   const mem = process.memoryUsage();
   const formatMB = (bytes: number) => `${Math.round(bytes / 1024 / 1024)}MB`;
-  console.log(`[${new Date().toISOString()}] MEMORY (${context}): heap=${formatMB(mem.heapUsed)}/${formatMB(mem.heapTotal)}, rss=${formatMB(mem.rss)}, external=${formatMB(mem.external)}`);
+  log(`MEMORY (${context}): heap=${formatMB(mem.heapUsed)}/${formatMB(mem.heapTotal)}, rss=${formatMB(mem.rss)}, external=${formatMB(mem.external)}`, 'debug');
 }
 
 async function main(): Promise<void> {
   const configPath = process.argv[2];
 
-  // Startup banner to log file
-  console.log(`\n${'='.repeat(80)}`);
-  console.log(`[${new Date().toISOString()}] WORKFLOW RUNNER STARTING`);
-  console.log(`PID: ${process.pid}`);
-  console.log(`Node: ${process.version}`);
-  console.log(`Config: ${configPath}`);
+  // Startup banner
+  log(`${'='.repeat(60)}`, 'info');
+  log(`WORKFLOW RUNNER STARTING`, 'info');
+  log(`PID: ${process.pid}, Node: ${process.version}`, 'info');
+  log(`Config: ${configPath}`, 'info');
   logMemoryUsage('startup');
-  console.log(`${'='.repeat(80)}\n`);
+  log(`${'='.repeat(60)}`, 'info');
 
   if (!configPath) {
-    console.error('Usage: workflow-runner <config-file-path>');
+    process.stderr.write('Usage: workflow-runner <config-file-path>\n');
     process.exit(1);
   }
 
@@ -423,7 +422,7 @@ async function main(): Promise<void> {
     const configContent = fs.readFileSync(configPath, 'utf-8');
     config = JSON.parse(configContent);
   } catch (e) {
-    console.error('Failed to read config file:', e);
+    log('Failed to read config file', 'error', e);
     process.exit(1);
   }
 
@@ -627,6 +626,6 @@ async function main(): Promise<void> {
 
 // Run main
 main().catch(e => {
-  console.error('Fatal error in workflow runner:', e);
+  log('Fatal error in workflow runner', 'error', e);
   process.exit(1);
 });

@@ -3,6 +3,8 @@
  * Tracks every filename operation to find corruption source
  */
 
+import { log } from '../logging.js';
+
 interface FilenameTrace {
   step: string;
   location: string;
@@ -29,17 +31,19 @@ class FilenameTracer {
     };
 
     this.traces.push(trace);
-    
-    console.error(`🔍 FILENAME TRACE [${step}] at ${location}:`);
-    console.error(`   INPUT:  ${trace.input}`);
-    console.error(`   OUTPUT: ${trace.output}`);
-    console.error(`   STACK:  ${trace.stackTrace.split('\n')[0]}`);
-    
+
+    log(`FILENAME TRACE [${step}] at ${location}`, 'debug', {
+      input: trace.input,
+      output: trace.output,
+      stack: trace.stackTrace.split('\n')[0]
+    });
+
     // Detect corruption immediately
     if (typeof output === 'string' && output.includes('documentationupdates')) {
-      console.error(`🚨 CORRUPTION DETECTED at ${location}!`);
-      console.error(`   Corrupted output: ${output}`);
-      console.error(`   Full stack: ${trace.stackTrace}`);
+      log(`CORRUPTION DETECTED at ${location}!`, 'error', {
+        corruptedOutput: output,
+        fullStack: trace.stackTrace
+      });
     }
   }
 
@@ -55,17 +59,15 @@ class FilenameTracer {
   }
 
   static printSummary() {
-    console.error('\n📋 FILENAME TRACE SUMMARY:');
-    console.error(`Total traces: ${this.traces.length}`);
-    
+    log(`FILENAME TRACE SUMMARY: Total traces: ${this.traces.length}`, 'info');
+
     const corrupted = this.getCorruptionTraces();
     if (corrupted.length > 0) {
-      console.error(`🚨 CORRUPTION FOUND in ${corrupted.length} traces:`);
-      corrupted.forEach((trace, i) => {
-        console.error(`  ${i + 1}. ${trace.step} at ${trace.location}: ${trace.output}`);
+      log(`CORRUPTION FOUND in ${corrupted.length} traces`, 'error', {
+        traces: corrupted.map((trace, i) => `${i + 1}. ${trace.step} at ${trace.location}: ${trace.output}`)
       });
     } else {
-      console.error('✅ No corruption detected in traces');
+      log('No corruption detected in traces', 'info');
     }
   }
 

@@ -7,6 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { log } from '../logging.js';
 
 // LLM mode types
 export type LLMMode = 'mock' | 'local' | 'public';
@@ -170,7 +171,7 @@ export function setGlobalLLMMode(repositoryPath: string, mode: LLMMode): void {
 
     fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2), 'utf8');
   } catch (error) {
-    console.error('Failed to set global LLM mode:', error);
+    log('Failed to set global LLM mode', 'error', error);
   }
 }
 
@@ -201,7 +202,7 @@ export function setAgentLLMMode(repositoryPath: string, agentId: string, mode: L
 
     fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2), 'utf8');
   } catch (error) {
-    console.error('Failed to set agent LLM mode:', error);
+    log('Failed to set agent LLM mode', 'error', error);
   }
 }
 
@@ -223,7 +224,7 @@ export function clearAgentLLMOverride(repositoryPath: string, agentId: string): 
       fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2), 'utf8');
     }
   } catch (error) {
-    console.error('Failed to clear agent LLM override:', error);
+    log('Failed to clear agent LLM override', 'error', error);
   }
 }
 

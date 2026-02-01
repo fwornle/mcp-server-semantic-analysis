@@ -13,6 +13,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { parse } from 'yaml';
 import type { WorkflowDefinition, WorkflowStep } from '../agents/coordinator.js';
+import { log } from '../logging.js';
 
 // ES module compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -232,7 +233,7 @@ export function loadAllWorkflows(configDir?: string): Map<string, WorkflowDefini
   const workflows = new Map<string, WorkflowDefinition>();
 
   if (!fs.existsSync(workflowsDir)) {
-    console.error(`Workflows directory not found: ${workflowsDir}`);
+    log(`Workflows directory not found: ${workflowsDir}`, 'warning');
     return workflows;
   }
 
@@ -243,9 +244,9 @@ export function loadAllWorkflows(configDir?: string): Map<string, WorkflowDefini
     try {
       const definition = loadWorkflowFromYAML(workflowName, dir);
       workflows.set(workflowName, definition);
-      console.error(`Loaded workflow: ${workflowName}`);
+      log(`Loaded workflow: ${workflowName}`, 'info');
     } catch (error) {
-      console.error(`Failed to load workflow ${workflowName}:`, error);
+      log(`Failed to load workflow ${workflowName}`, 'error', error);
     }
   }
 

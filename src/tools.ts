@@ -2055,16 +2055,16 @@ function generateArchitectureDiagram(title: string, analysis: any): string {
   let components = [];
   
   // Debug: log what we received
-  console.error(`🎨 PlantUML generateArchitectureDiagram called:`, {
+  log(`PlantUML generateArchitectureDiagram called`, 'debug', {
     title,
-    hasAnalysis: !!analysis, 
+    hasAnalysis: !!analysis,
     hasSemanticInsights: !!analysis?.semanticInsights,
     hasPatterns: !!analysis?.semanticInsights?.patterns,
     hasCommits: !!analysis?.commits,
     hasArchDecisions: !!analysis?.architecturalDecisions,
     analysisKeys: analysis ? Object.keys(analysis) : []
   });
-  
+
   log(`generateArchitectureDiagram called with analysis:`, 'debug', { 
     hasAnalysis: !!analysis, 
     hasSemanticInsights: !!analysis?.semanticInsights,

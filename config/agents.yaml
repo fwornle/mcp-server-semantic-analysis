@@ -7,6 +7,11 @@
 # - standard: Balanced quality/cost (Groq llama-3.3-70b-versatile, Claude Haiku)
 # - premium: High quality, higher cost (Claude Sonnet, GPT-4o)
 
+# LLM Modes (per-agent or global):
+# - mock: Fake responses for testing (fast, no API costs)
+# - local: Docker Model Runner (llama.cpp, localhost:12434)
+# - public: Cloud APIs (Groq/Anthropic/OpenAI based on tier)
+
 # Orchestrator - Special node that coordinates all agents
 orchestrator:
   id: orchestrator
@@ -50,6 +55,7 @@ agents:
     usesLLM: true
     llmModel: "Multi-tier: fast/standard/premium per operator"
     tier: standard  # Default tier, operators override individually
+    defaultLLMMode: public  # mock | local | public
     operator_tiers:
       conv: premium    # Context enrichment needs quality
       aggr: standard   # Role assignment is straightforward
@@ -84,6 +90,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: standard
+    defaultLLMMode: public  # mock | local | public
     techStack: "Git CLI + SemanticAnalyzer"
     phase: 1
     row: 0
@@ -97,6 +104,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: standard
+    defaultLLMMode: public  # mock | local | public
     techStack: SemanticAnalyzer
     phase: 1
     row: 0
@@ -110,6 +118,7 @@ agents:
     usesLLM: true
     llmModel: "External: code-graph-rag (OpenAI/Anthropic/Ollama)"
     tier: standard
+    defaultLLMMode: public  # mock | local | public
     techStack: "Tree-sitter + Memgraph + pydantic_ai"
     phase: 6       # FINALIZATION phase (after batch loop)
     row: 6         # After checkpoint (row 5), before persistence (row 7)
@@ -123,6 +132,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: standard
+    defaultLLMMode: public  # mock | local | public
     techStack: "Regex + glob patterns + SemanticAnalyzer"
     phase: 1
     row: 0
@@ -136,6 +146,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: premium
+    defaultLLMMode: public  # mock | local | public
     techStack: "Direct LLM clients"
     phase: 2
     row: 1
@@ -149,6 +160,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile (optional)"
     tier: fast
+    defaultLLMMode: public  # mock | local | public
     techStack: "DuckDuckGo/Google APIs + SemanticAnalyzer"
     phase: 2.5
     row: 2
@@ -162,6 +174,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: premium
+    defaultLLMMode: public  # mock | local | public
     techStack: SemanticAnalyzer
     phase: 8        # FINALIZATION: After persistence (phase 7)
     row: 8          # After persistence (row 7)
@@ -175,6 +188,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: premium
+    defaultLLMMode: public  # mock | local | public
     techStack: SemanticAnalyzer
     phase: 8.5      # FINALIZATION: After insight (phase 8) - used in incremental workflow
     row: 8.5        # After insight (row 8) - used in incremental workflow
@@ -188,6 +202,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: standard
+    defaultLLMMode: public  # mock | local | public
     techStack: "OntologyClassifier + SemanticAnalyzer"
     phase: 2.5       # After semantic (phase 2), before KG-Ops (phase 3)
     row: 2           # After semantic (row 1), before KG-Ops (row 3)
@@ -201,6 +216,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: premium
+    defaultLLMMode: public  # mock | local | public
     techStack: "SemanticAnalyzer + Semantic Value Filter"
     phase: 4         # After KG-Ops (phase 3), before checkpoint (phase 5)
     row: 4           # After KG-Ops (row 3), before checkpoint (row 5)
@@ -240,6 +256,7 @@ agents:
     usesLLM: true
     llmModel: "Groq: llama-3.3-70b-versatile"
     tier: standard
+    defaultLLMMode: public  # mock | local | public
     techStack: SemanticAnalyzer
     phase: 10
     row: 10         # After deduplication (row 9)

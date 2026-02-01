@@ -8,6 +8,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+// LLM mode types
+export type LLMMode = 'mock' | 'local' | 'public';
+
+// LLM state stored in progress file
+export interface LLMState {
+  globalMode: LLMMode;
+  perAgentOverrides: Record<string, LLMMode>;
+  updatedAt?: string;
+}
+
 // Mock configuration stored in progress file
 export interface MockLLMConfig {
   enabled: boolean;
@@ -53,6 +63,167 @@ export function isMockLLMEnabled(repositoryPath: string): boolean {
     return progress.mockLLM === true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Get the LLM mode for a specific agent
+ * Priority: per-agent override > global mode > agent default from YAML > 'public'
+ */
+export function getLLMMode(repositoryPath: string, agentId?: string): LLMMode {
+  try {
+    // In Docker, use CODING_ROOT if available; otherwise use provided path
+    const effectivePath = process.env.CODING_ROOT || repositoryPath;
+    const progressPath = path.join(effectivePath, '.data', 'workflow-progress.json');
+
+    if (!fs.existsSync(progressPath)) {
+      return 'public';  // Default mode
+    }
+
+    const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+
+    // Check llmState structure first (new approach)
+    const llmState = progress.llmState as LLMState | undefined;
+
+    if (llmState) {
+      // Check per-agent override first
+      if (agentId && llmState.perAgentOverrides?.[agentId]) {
+        return llmState.perAgentOverrides[agentId];
+      }
+
+      // Use global mode
+      if (llmState.globalMode) {
+        return llmState.globalMode;
+      }
+    }
+
+    // Fallback: Check legacy mockLLM flag for backward compatibility
+    if (progress.mockLLM === true) {
+      return 'mock';
+    }
+
+    return 'public';
+  } catch {
+    return 'public';
+  }
+}
+
+/**
+ * Get the full LLM state from progress file
+ */
+export function getLLMState(repositoryPath: string): LLMState {
+  try {
+    const effectivePath = process.env.CODING_ROOT || repositoryPath;
+    const progressPath = path.join(effectivePath, '.data', 'workflow-progress.json');
+
+    if (!fs.existsSync(progressPath)) {
+      return { globalMode: 'public', perAgentOverrides: {} };
+    }
+
+    const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+
+    // Check llmState structure
+    const llmState = progress.llmState as LLMState | undefined;
+
+    if (llmState) {
+      return {
+        globalMode: llmState.globalMode || 'public',
+        perAgentOverrides: llmState.perAgentOverrides || {},
+        updatedAt: llmState.updatedAt,
+      };
+    }
+
+    // Fallback: Check legacy mockLLM flag
+    if (progress.mockLLM === true) {
+      return { globalMode: 'mock', perAgentOverrides: {} };
+    }
+
+    return { globalMode: 'public', perAgentOverrides: {} };
+  } catch {
+    return { globalMode: 'public', perAgentOverrides: {} };
+  }
+}
+
+/**
+ * Set the global LLM mode
+ */
+export function setGlobalLLMMode(repositoryPath: string, mode: LLMMode): void {
+  try {
+    const effectivePath = process.env.CODING_ROOT || repositoryPath;
+    const progressPath = path.join(effectivePath, '.data', 'workflow-progress.json');
+
+    let progress: Record<string, any> = {};
+    if (fs.existsSync(progressPath)) {
+      progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+    }
+
+    // Initialize llmState if not present
+    if (!progress.llmState) {
+      progress.llmState = { globalMode: 'public', perAgentOverrides: {} };
+    }
+
+    progress.llmState.globalMode = mode;
+    progress.llmState.updatedAt = new Date().toISOString();
+
+    // Also update legacy mockLLM flag for backward compatibility
+    progress.mockLLM = mode === 'mock';
+
+    fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2), 'utf8');
+  } catch (error) {
+    console.error('Failed to set global LLM mode:', error);
+  }
+}
+
+/**
+ * Set the LLM mode for a specific agent
+ */
+export function setAgentLLMMode(repositoryPath: string, agentId: string, mode: LLMMode): void {
+  try {
+    const effectivePath = process.env.CODING_ROOT || repositoryPath;
+    const progressPath = path.join(effectivePath, '.data', 'workflow-progress.json');
+
+    let progress: Record<string, any> = {};
+    if (fs.existsSync(progressPath)) {
+      progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+    }
+
+    // Initialize llmState if not present
+    if (!progress.llmState) {
+      progress.llmState = { globalMode: 'public', perAgentOverrides: {} };
+    }
+
+    if (!progress.llmState.perAgentOverrides) {
+      progress.llmState.perAgentOverrides = {};
+    }
+
+    progress.llmState.perAgentOverrides[agentId] = mode;
+    progress.llmState.updatedAt = new Date().toISOString();
+
+    fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2), 'utf8');
+  } catch (error) {
+    console.error('Failed to set agent LLM mode:', error);
+  }
+}
+
+/**
+ * Clear the LLM mode override for a specific agent (revert to global)
+ */
+export function clearAgentLLMOverride(repositoryPath: string, agentId: string): void {
+  try {
+    const effectivePath = process.env.CODING_ROOT || repositoryPath;
+    const progressPath = path.join(effectivePath, '.data', 'workflow-progress.json');
+
+    if (!fs.existsSync(progressPath)) return;
+
+    const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
+
+    if (progress.llmState?.perAgentOverrides?.[agentId]) {
+      delete progress.llmState.perAgentOverrides[agentId];
+      progress.llmState.updatedAt = new Date().toISOString();
+      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2), 'utf8');
+    }
+  } catch (error) {
+    console.error('Failed to clear agent LLM override:', error);
   }
 }
 
@@ -560,6 +731,11 @@ export async function mockLLMCall(
 export default {
   isMockLLMEnabled,
   getMockDelay,
+  getLLMMode,
+  getLLMState,
+  setGlobalLLMMode,
+  setAgentLLMMode,
+  clearAgentLLMOverride,
   mockLLMCall,
   mockEmbedding,
   mockSemanticAnalysis,

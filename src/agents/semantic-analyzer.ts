@@ -8,7 +8,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import * as yaml from "js-yaml";
-import { isMockLLMEnabled, mockSemanticAnalysis } from "../mock/llm-mock-service.js";
+import { isMockLLMEnabled, mockSemanticAnalysis, getLLMMode, type LLMMode } from "../mock/llm-mock-service.js";
+import { callDMRWithPrompt, checkDMRAvailability, getModelForAgent } from "../providers/dmr-provider.js";
 
 // ES module compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -146,6 +147,9 @@ export class SemanticAnalyzer {
   // Static repository path for mock mode checking
   private static repositoryPath: string = process.cwd();
 
+  // Static current agent ID for per-agent LLM mode selection
+  private static currentAgentId: string | null = null;
+
   /**
    * Set the repository path for mock mode detection
    */
@@ -159,6 +163,30 @@ export class SemanticAnalyzer {
    */
   static getRepositoryPath(): string {
     return SemanticAnalyzer.repositoryPath;
+  }
+
+  /**
+   * Set the current agent ID for per-agent LLM mode selection
+   */
+  static setCurrentAgentId(agentId: string | null): void {
+    SemanticAnalyzer.currentAgentId = agentId;
+    log(`SemanticAnalyzer: current agent set to ${agentId}`, 'debug');
+  }
+
+  /**
+   * Get current agent ID
+   */
+  static getCurrentAgentId(): string | null {
+    return SemanticAnalyzer.currentAgentId;
+  }
+
+  /**
+   * Get the LLM mode for the current agent
+   * Returns: 'mock' | 'local' | 'public'
+   */
+  static getLLMModeForAgent(agentId?: string): LLMMode {
+    const effectiveAgentId = agentId || SemanticAnalyzer.currentAgentId;
+    return getLLMMode(SemanticAnalyzer.repositoryPath, effectiveAgentId || undefined);
   }
 
   // Static metrics tracking for workflow step aggregation
@@ -443,12 +471,18 @@ export class SemanticAnalyzer {
 
   /**
    * Analyze with specific provider and model (tier-based routing)
+   * Now supports per-agent LLM mode: mock | local | public
    */
   private async analyzeWithTier(prompt: string, provider: string, model: string): Promise<AnalysisResult> {
-    log(`analyzeWithTier: ${provider}/${model}`, 'info', { promptLength: prompt.length });
+    // Check LLM mode for current agent (priority: per-agent > global > 'public')
+    const llmMode = SemanticAnalyzer.getLLMModeForAgent();
+    log(`analyzeWithTier: mode=${llmMode}, provider=${provider}/${model}`, 'info', {
+      promptLength: prompt.length,
+      agentId: SemanticAnalyzer.currentAgentId,
+    });
 
-    // Check for LLM mock mode - return mock response if enabled
-    if (isMockLLMEnabled(SemanticAnalyzer.repositoryPath)) {
+    // Handle mode-based routing
+    if (llmMode === 'mock') {
       log('LLM Mock mode enabled - returning mock response', 'info');
       const mockResponse = await mockSemanticAnalysis(prompt, SemanticAnalyzer.repositoryPath);
 
@@ -470,6 +504,57 @@ export class SemanticAnalyzer {
       };
     }
 
+    if (llmMode === 'local') {
+      // Try Docker Model Runner (DMR) first, then Ollama as fallback
+      log('Using local LLM mode (DMR preferred, Ollama fallback)', 'info');
+
+      // Try DMR first
+      try {
+        const dmrAvailable = await checkDMRAvailability();
+        if (dmrAvailable) {
+          const dmrModel = getModelForAgent(SemanticAnalyzer.currentAgentId || undefined);
+          const dmrResponse = await callDMRWithPrompt(prompt, {
+            agentId: SemanticAnalyzer.currentAgentId || undefined,
+            model: dmrModel,
+          });
+
+          // Track DMR call in metrics
+          SemanticAnalyzer.currentStepMetrics.totalCalls++;
+          SemanticAnalyzer.currentStepMetrics.totalInputTokens += dmrResponse.tokenUsage.inputTokens;
+          SemanticAnalyzer.currentStepMetrics.totalOutputTokens += dmrResponse.tokenUsage.outputTokens;
+          SemanticAnalyzer.currentStepMetrics.totalTokens += dmrResponse.tokenUsage.totalTokens;
+          if (!SemanticAnalyzer.currentStepMetrics.providers.includes('dmr')) {
+            SemanticAnalyzer.currentStepMetrics.providers.push('dmr');
+          }
+
+          return {
+            insights: dmrResponse.content,
+            provider: 'dmr',
+            confidence: 0.80,  // Local models have slightly lower confidence
+            model: dmrResponse.model,
+            tokenUsage: dmrResponse.tokenUsage,
+          };
+        }
+        log('DMR not available, trying Ollama...', 'warning');
+      } catch (error: any) {
+        log(`DMR call failed: ${error.message}, trying Ollama...`, 'warning');
+      }
+
+      // Fallback to Ollama if DMR fails
+      if (this.ollamaClient) {
+        try {
+          log('Using Ollama for local LLM inference', 'info');
+          return await this.analyzeWithOllama(prompt, model);
+        } catch (ollamaError: any) {
+          log(`Ollama call failed: ${ollamaError.message}, falling back to public mode`, 'warning');
+        }
+      }
+
+      // No local LLM available - fall through to public mode
+      log('No local LLM available (DMR/Ollama), falling back to public mode', 'warning');
+    }
+
+    // Public mode (or fallback from local): use cloud APIs
     switch (provider) {
       case 'groq':
         return this.analyzeWithGroq(prompt, model);
@@ -774,12 +859,12 @@ export class SemanticAnalyzer {
   async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
     const { context, analysisType = "general", provider = "auto", tier, taskType } = options;
 
-    // DEBUG: Log mock check inputs
-    const mockEnabled = isMockLLMEnabled(SemanticAnalyzer.repositoryPath);
-    log(`[MOCK-CHECK] repositoryPath=${SemanticAnalyzer.repositoryPath}, CODING_ROOT=${process.env.CODING_ROOT}, mockEnabled=${mockEnabled}`, 'info');
+    // Get LLM mode for current agent
+    const llmMode = SemanticAnalyzer.getLLMModeForAgent();
+    log(`[LLM-MODE] mode=${llmMode}, agentId=${SemanticAnalyzer.currentAgentId}, CODING_ROOT=${process.env.CODING_ROOT}`, 'info');
 
-    // Check for mock mode BEFORE making any LLM calls
-    if (mockEnabled) {
+    // Handle mode-based routing BEFORE making any LLM calls
+    if (llmMode === 'mock') {
       log('LLM Mock mode enabled - returning mock analyzeContent response', 'info');
       const mockResponse = await mockSemanticAnalysis(content, SemanticAnalyzer.repositoryPath);
 
@@ -800,6 +885,47 @@ export class SemanticAnalyzer {
         tokenUsage: mockResponse.tokenUsage,
       };
     }
+
+    // Handle local mode (Docker Model Runner)
+    if (llmMode === 'local') {
+      log('Using Docker Model Runner (local mode) for analyzeContent', 'info');
+      try {
+        const dmrAvailable = await checkDMRAvailability();
+        if (dmrAvailable) {
+          const dmrModel = getModelForAgent(SemanticAnalyzer.currentAgentId || undefined);
+          const prompt = this.buildAnalysisPrompt(content, context, analysisType);
+          const dmrResponse = await callDMRWithPrompt(prompt, {
+            agentId: SemanticAnalyzer.currentAgentId || undefined,
+            model: dmrModel,
+          });
+
+          // Track DMR call in metrics
+          SemanticAnalyzer.currentStepMetrics.totalCalls++;
+          SemanticAnalyzer.currentStepMetrics.totalInputTokens += dmrResponse.tokenUsage.inputTokens;
+          SemanticAnalyzer.currentStepMetrics.totalOutputTokens += dmrResponse.tokenUsage.outputTokens;
+          SemanticAnalyzer.currentStepMetrics.totalTokens += dmrResponse.tokenUsage.totalTokens;
+          if (!SemanticAnalyzer.currentStepMetrics.providers.includes('dmr')) {
+            SemanticAnalyzer.currentStepMetrics.providers.push('dmr');
+          }
+
+          return {
+            insights: dmrResponse.content,
+            provider: 'dmr',
+            confidence: 0.80,
+            model: dmrResponse.model,
+            tokenUsage: dmrResponse.tokenUsage,
+          };
+        } else {
+          log('DMR not available, falling back to public mode', 'warning');
+          // Fall through to public mode below
+        }
+      } catch (error: any) {
+        log(`DMR call failed: ${error.message}, falling back to public mode`, 'warning');
+        // Fall through to public mode below
+      }
+    }
+
+    // Public mode (or fallback from local)
 
     // Determine effective tier (explicit tier > taskType lookup > default)
     const effectiveTier = tier || this.getTierForTask(taskType as TaskType) || 'standard';

@@ -1,0 +1,58 @@
+# Docker Model Runner (DMR) Configuration
+# Local LLM provider using llama.cpp backend via Docker Desktop
+#
+# Port configured in: .env.ports (DMR_PORT=12434)
+# Enable DMR: docker desktop enable model-runner --tcp ${DMR_PORT}
+# Pull models: docker model pull ai/llama3.2
+# List models: curl http://localhost:${DMR_PORT}/engines/v1/models
+#
+# API: OpenAI-compatible at http://localhost:${DMR_PORT}/engines/v1
+
+dmr:
+  # Port from .env.ports (DMR_PORT), defaults to 12434
+  port: ${DMR_PORT:-12434}
+
+  # Base URL template (port substituted at runtime)
+  baseUrl: http://localhost:${DMR_PORT:-12434}/engines/v1
+
+  # Default model to use when not overridden
+  # Format: namespace/name:variant (e.g., ai/llama3.2:3B-Q4_K_M)
+  defaultModel: ai/llama3.2
+
+  # Per-agent model overrides
+  # Use smaller models for faster agents, larger for quality-critical ones
+  modelOverrides:
+    # Fast tier agents - use 3B model
+    git_history: ai/llama3.2:3B-Q4_K_M
+    vibe_history: ai/llama3.2:3B-Q4_K_M
+    web_search: ai/llama3.2:3B-Q4_K_M
+    documentation_linker: ai/llama3.2:3B-Q4_K_M
+
+    # Standard tier agents - use 7B coder model
+    semantic_analysis: ai/qwen2.5-coder:7B-Q4_K_M
+    ontology_classification: ai/qwen2.5-coder:7B-Q4_K_M
+    content_validation: ai/qwen2.5-coder:7B-Q4_K_M
+
+    # Premium tier agents - use larger model for quality
+    insight_generation: ai/llama3.2
+    observation_generation: ai/llama3.2
+    quality_assurance: ai/llama3.2
+    kg_operators: ai/qwen2.5-coder:7B-Q4_K_M
+
+  # Timeout for local inference (ms) - longer than cloud APIs
+  timeout: 120000
+
+  # Maximum tokens for generation
+  maxTokens: 4096
+
+  # Temperature for generation
+  temperature: 0.7
+
+  # Connection settings
+  connection:
+    # Retry attempts for connection failures
+    maxRetries: 3
+    # Delay between retries (ms)
+    retryDelay: 1000
+    # Health check interval (ms)
+    healthCheckInterval: 30000

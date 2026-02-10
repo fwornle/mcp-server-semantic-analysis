@@ -1,15 +1,10 @@
-import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
-import Groq from "groq-sdk";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import axios, { AxiosInstance } from "axios";
 import { log } from "../logging.js";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
-import * as yaml from "js-yaml";
 import { isMockLLMEnabled, mockSemanticAnalysis, getLLMMode, type LLMMode } from "../mock/llm-mock-service.js";
-import { callDMRWithPrompt, checkDMRAvailability, getModelForAgent } from "../providers/dmr-provider.js";
+import { LLMService } from "../../../../lib/llm/dist/index.js";
+import type { LLMCompletionResult, MockServiceInterface } from "../../../../lib/llm/dist/types.js";
 
 // ES module compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -44,8 +39,8 @@ export interface AnalysisOptions {
   context?: string;
   analysisType?: "general" | "code" | "patterns" | "architecture" | "diagram" | "classification" | "raw" | "passthrough";
   provider?: "groq" | "gemini" | "anthropic" | "openai" | "ollama" | "custom" | "auto";
-  tier?: ModelTier;      // Explicit tier selection
-  taskType?: TaskType;   // Task type for automatic tier selection
+  tier?: ModelTier;
+  taskType?: TaskType;
 }
 
 export interface CodeAnalysisOptions {
@@ -91,30 +86,6 @@ export interface PatternExtractionResult {
   summary: string;
 }
 
-// Tier configuration interface
-interface TierConfig {
-  providers: {
-    [provider: string]: {
-      fast?: string;
-      standard?: string;
-      premium?: string;
-    };
-  };
-  provider_priority: {
-    fast: string[];
-    standard: string[];
-    premium: string[];
-  };
-  task_tiers: {
-    fast: string[];
-    standard: string[];
-    premium: string[];
-  };
-  agent_overrides: {
-    [agent: string]: ModelTier;
-  };
-}
-
 // Global LLM call metrics tracking (shared across all SemanticAnalyzer instances)
 export interface LLMCallMetrics {
   provider: string;
@@ -132,11 +103,9 @@ export interface StepLLMMetrics {
   totalTokens: number;
   providers: string[];
   calls: LLMCallMetrics[];
-  // LLM mode tracking for visibility
-  intendedMode?: 'mock' | 'local' | 'public';  // What user selected
-  actualMode?: 'mock' | 'local' | 'public';    // What was actually used (after fallbacks)
-  modeFallback?: boolean;                        // True if actual differs from intended
-  // Fallback tracking for data loss analysis
+  intendedMode?: 'mock' | 'local' | 'public';
+  actualMode?: 'mock' | 'local' | 'public';
+  modeFallback?: boolean;
   fallbacks: Array<{
     timestamp: number;
     reason: string;
@@ -154,40 +123,24 @@ export class SemanticAnalyzer {
   // Static current agent ID for per-agent LLM mode selection
   private static currentAgentId: string | null = null;
 
-  /**
-   * Set the repository path for mock mode detection
-   */
   static setRepositoryPath(path: string): void {
     SemanticAnalyzer.repositoryPath = path;
     log(`SemanticAnalyzer: repository path set to ${path}`, 'info');
   }
 
-  /**
-   * Get current repository path
-   */
   static getRepositoryPath(): string {
     return SemanticAnalyzer.repositoryPath;
   }
 
-  /**
-   * Set the current agent ID for per-agent LLM mode selection
-   */
   static setCurrentAgentId(agentId: string | null): void {
     SemanticAnalyzer.currentAgentId = agentId;
     log(`SemanticAnalyzer: current agent set to ${agentId}`, 'debug');
   }
 
-  /**
-   * Get current agent ID
-   */
   static getCurrentAgentId(): string | null {
     return SemanticAnalyzer.currentAgentId;
   }
 
-  /**
-   * Get the LLM mode for the current agent
-   * Returns: 'mock' | 'local' | 'public'
-   */
   static getLLMModeForAgent(agentId?: string): LLMMode {
     const effectiveAgentId = agentId || SemanticAnalyzer.currentAgentId;
     return getLLMMode(SemanticAnalyzer.repositoryPath, effectiveAgentId || undefined);
@@ -205,11 +158,7 @@ export class SemanticAnalyzer {
     fallbackCount: 0,
   };
 
-  /**
-   * Reset metrics tracking (call at start of each workflow step)
-   */
   static resetStepMetrics(): void {
-    // Get intended mode for this step
     const intendedMode = SemanticAnalyzer.getLLMModeForAgent();
     SemanticAnalyzer.currentStepMetrics = {
       totalCalls: 0,
@@ -219,20 +168,16 @@ export class SemanticAnalyzer {
       providers: [],
       calls: [],
       intendedMode,
-      actualMode: undefined,  // Set when first LLM call completes
+      actualMode: undefined,
       modeFallback: false,
       fallbacks: [],
       fallbackCount: 0,
     };
   }
 
-  /**
-   * Record the actual mode used for LLM calls
-   */
   private static recordActualMode(mode: 'mock' | 'local' | 'public'): void {
     if (!SemanticAnalyzer.currentStepMetrics.actualMode) {
       SemanticAnalyzer.currentStepMetrics.actualMode = mode;
-      // Check if fallback occurred
       if (SemanticAnalyzer.currentStepMetrics.intendedMode &&
           SemanticAnalyzer.currentStepMetrics.intendedMode !== mode) {
         SemanticAnalyzer.currentStepMetrics.modeFallback = true;
@@ -241,10 +186,6 @@ export class SemanticAnalyzer {
     }
   }
 
-  /**
-   * Record a fallback to regex/template when LLM fails
-   * Call this from agents when they fall back from LLM to regex extraction
-   */
   static recordFallback(options: {
     reason: string;
     failedProviders: string[];
@@ -262,16 +203,10 @@ export class SemanticAnalyzer {
     });
   }
 
-  /**
-   * Get accumulated metrics for current step (call at end of each workflow step)
-   */
   static getStepMetrics(): StepLLMMetrics {
     return { ...SemanticAnalyzer.currentStepMetrics };
   }
 
-  /**
-   * Record an LLM call's metrics
-   */
   private static recordCallMetrics(result: AnalysisResult): void {
     if (result.tokenUsage) {
       const metrics: LLMCallMetrics = {
@@ -295,10 +230,6 @@ export class SemanticAnalyzer {
     }
   }
 
-  /**
-   * Record LLM metrics from external agents (e.g., SemanticAnalysisAgent)
-   * This allows other agents to contribute to the step-level metrics tracking
-   */
   static recordMetricsFromExternal(metrics: {
     provider: string;
     model: string;
@@ -307,11 +238,7 @@ export class SemanticAnalyzer {
     totalTokens: number;
   }): void {
     const callMetrics: LLMCallMetrics = {
-      provider: metrics.provider,
-      model: metrics.model,
-      inputTokens: metrics.inputTokens,
-      outputTokens: metrics.outputTokens,
-      totalTokens: metrics.totalTokens,
+      ...metrics,
       timestamp: Date.now(),
     };
 
@@ -328,19 +255,11 @@ export class SemanticAnalyzer {
     log(`Recorded external LLM call: ${metrics.provider}/${metrics.model} - ${metrics.totalTokens} tokens`, 'debug');
   }
 
-  private groqClient: Groq | null = null;
-  private geminiClient: GoogleGenerativeAI | null = null;
-  private customClient: OpenAI | null = null;
-  private anthropicClient: Anthropic | null = null;
-  private openaiClient: OpenAI | null = null;
-  private ollamaClient: AxiosInstance | null = null;
-  private ollamaModel: string = 'llama3.2:latest';
+  // LLM Service instance
+  private llmService: LLMService;
+  private llmInitialized = false;
 
-  // Tier configuration
-  private tierConfig: TierConfig | null = null;
-
-  // PERFORMANCE OPTIMIZATION: Request batching for improved throughput
-  // Configurable via LLM_BATCH_SIZE env var (default: 20, min: 1, max: 50)
+  // PERFORMANCE OPTIMIZATION: Request batching
   private batchQueue: Array<{
     prompt: string;
     options: AnalysisOptions;
@@ -354,85 +273,87 @@ export class SemanticAnalyzer {
   private readonly BATCH_TIMEOUT = 100; // ms
 
   constructor() {
-    this.initializeClients();
-    this.loadTierConfig();
+    // Create LLM service with mode resolver and mock service wiring
+    this.llmService = new LLMService();
+
+    // Wire mode resolver: delegates to static getLLMModeForAgent()
+    this.llmService.setModeResolver((agentId) =>
+      SemanticAnalyzer.getLLMModeForAgent(agentId || undefined)
+    );
+
+    // Wire mock service: delegates to existing mockSemanticAnalysis()
+    this.llmService.setMockService({
+      mockLLMCall: async (agentType: string, prompt: string, repositoryPath: string): Promise<LLMCompletionResult> => {
+        const mockResult = await mockSemanticAnalysis(prompt, repositoryPath);
+        return {
+          content: mockResult.content,
+          provider: 'mock',
+          model: 'mock-llm-v1',
+          tokens: {
+            input: mockResult.tokenUsage.inputTokens,
+            output: mockResult.tokenUsage.outputTokens,
+            total: mockResult.tokenUsage.totalTokens,
+          },
+          mock: true,
+          local: true,
+        };
+      },
+    });
+
+    this.llmService.setRepositoryPath(SemanticAnalyzer.repositoryPath);
+
+    semanticDebugLog('SemanticAnalyzer constructed with LLMService');
   }
 
   /**
-   * Load tier configuration from YAML file
+   * Ensure LLM service is initialized
    */
-  private loadTierConfig(): void {
-    try {
-      // Try multiple possible locations for the config
-      const possiblePaths = [
-        path.join(process.cwd(), 'config', 'model-tiers.yaml'),
-        path.join(process.cwd(), 'integrations', 'mcp-server-semantic-analysis', 'config', 'model-tiers.yaml'),
-        path.join(__dirname, '..', '..', 'config', 'model-tiers.yaml'),
-      ];
-
-      for (const configPath of possiblePaths) {
-        if (fs.existsSync(configPath)) {
-          const configContent = fs.readFileSync(configPath, 'utf8');
-          this.tierConfig = yaml.load(configContent) as TierConfig;
-          log(`Loaded model tier config from ${configPath}`, 'info');
-          return;
-        }
-      }
-
-      log('No model-tiers.yaml found, using default tier mappings', 'warning');
-      // Set default tier config
-      this.tierConfig = this.getDefaultTierConfig();
-    } catch (error) {
-      log('Failed to load tier config, using defaults', 'warning', error);
-      this.tierConfig = this.getDefaultTierConfig();
+  private async ensureInitialized(): Promise<void> {
+    if (!this.llmInitialized) {
+      await this.llmService.initialize();
+      this.llmInitialized = true;
+      semanticDebugLog('LLMService initialized', {
+        providers: this.llmService.getAvailableProviders(),
+      });
     }
   }
 
   /**
-   * Get default tier configuration
-   * Provider priority: Groq (cheap/fast) > Anthropic > OpenAI > Ollama (local fallback)
+   * Convert LLMCompletionResult to AnalysisResult format
    */
-  private getDefaultTierConfig(): TierConfig {
+  private toAnalysisResult(result: LLMCompletionResult): AnalysisResult {
+    // Determine confidence based on provider
+    let confidence = 0.85;
+    if (result.provider === 'anthropic') confidence = 0.9;
+    if (result.provider === 'gemini') confidence = 0.88;
+    if (result.provider === 'openai') confidence = 0.85;
+    if (result.provider === 'dmr' || result.provider === 'ollama') confidence = 0.80;
+    if (result.provider === 'mock') confidence = 0.85;
+
+    // Record actual mode
+    if (result.mock) {
+      SemanticAnalyzer.recordActualMode('mock');
+    } else if (result.local) {
+      SemanticAnalyzer.recordActualMode('local');
+    } else {
+      SemanticAnalyzer.recordActualMode('public');
+    }
+
     return {
-      providers: {
-        groq: {
-          fast: 'llama-3.1-8b-instant',
-          standard: 'llama-3.3-70b-versatile',
-        },
-        anthropic: {
-          standard: 'claude-3-5-haiku-latest',
-          premium: 'claude-sonnet-4-20250514',
-        },
-        openai: {
-          standard: 'gpt-4o-mini',
-          premium: 'gpt-4o',
-        },
-        ollama: {
-          fast: 'llama3.2:latest',
-          standard: 'llama3.2:latest',
-          premium: 'llama3.2:latest',
-        },
-      },
-      provider_priority: {
-        fast: ['groq', 'ollama'],
-        standard: ['groq', 'anthropic', 'openai', 'ollama'],
-        premium: ['anthropic', 'openai', 'groq', 'ollama'],
-      },
-      task_tiers: {
-        fast: ['git_file_extraction', 'commit_message_parsing', 'file_pattern_matching', 'basic_classification'],
-        standard: ['git_history_analysis', 'vibe_history_analysis', 'semantic_code_analysis', 'documentation_linking', 'ontology_classification'],
-        premium: ['insight_generation', 'observation_generation', 'pattern_recognition', 'quality_assurance_review', 'deep_code_analysis'],
-      },
-      agent_overrides: {
-        insight_generation: 'premium',
-        observation_generation: 'premium',
-        quality_assurance: 'premium',
+      insights: result.content,
+      provider: result.provider,
+      confidence,
+      model: result.model,
+      tokenUsage: {
+        inputTokens: result.tokens.input,
+        outputTokens: result.tokens.output,
+        totalTokens: result.tokens.total,
       },
     };
   }
 
   /**
-   * Determine tier from task type
+   * Determine tier from task type (public method used by external agents)
    */
   getTierForTask(taskType?: TaskType): ModelTier {
     if (!taskType) return 'standard';
@@ -443,556 +364,39 @@ export class SemanticAnalyzer {
       return envTier;
     }
 
-    // Check task-specific env override (e.g., INSIGHT_GENERATION_TIER=premium)
-    const taskEnvKey = `${taskType.toUpperCase()}_TIER`;
-    const taskEnvTier = process.env[taskEnvKey]?.toLowerCase() as ModelTier;
-    if (taskEnvTier && ['fast', 'standard', 'premium'].includes(taskEnvTier)) {
-      return taskEnvTier;
-    }
-
-    // Look up in config
-    if (this.tierConfig?.task_tiers) {
-      for (const [tier, tasks] of Object.entries(this.tierConfig.task_tiers)) {
-        if (tasks.includes(taskType)) {
-          return tier as ModelTier;
-        }
-      }
-    }
-
-    return 'standard'; // Default
+    // Delegate to LLM service registry
+    return this.llmService.getTierForTask(taskType) || 'standard';
   }
 
-  /**
-   * Get provider and model for a specific tier
-   */
-  private getProviderForTier(tier: ModelTier): { provider: string; model: string } | null {
-    // Provider priority for tier, fallback chain: Groq > Anthropic > OpenAI > Ollama
-    const providerPriority = this.tierConfig?.provider_priority[tier] || ['groq', 'anthropic', 'openai', 'ollama'];
-
-    for (const providerName of providerPriority) {
-      // Check if client is available
-      const clientAvailable =
-        (providerName === 'groq' && this.groqClient) ||
-        (providerName === 'anthropic' && this.anthropicClient) ||
-        (providerName === 'openai' && this.openaiClient) ||
-        (providerName === 'gemini' && this.geminiClient) ||
-        (providerName === 'ollama' && this.ollamaClient);
-
-      if (!clientAvailable) continue;
-
-      // Get model for this provider and tier
-      const providerConfig = this.tierConfig?.providers[providerName];
-      const model = providerConfig?.[tier] || providerConfig?.standard;
-
-      if (model) {
-        log(`Selected ${providerName}/${model} for tier ${tier}`, 'info');
-        return { provider: providerName, model };
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Analyze with specific provider and model (tier-based routing)
-   * Now supports per-agent LLM mode: mock | local | public
-   */
-  private async analyzeWithTier(prompt: string, provider: string, model: string): Promise<AnalysisResult> {
-    // Check LLM mode for current agent (priority: per-agent > global > 'public')
-    const llmMode = SemanticAnalyzer.getLLMModeForAgent();
-    log(`analyzeWithTier: mode=${llmMode}, provider=${provider}/${model}`, 'info', {
-      promptLength: prompt.length,
-      agentId: SemanticAnalyzer.currentAgentId,
-    });
-
-    // Handle mode-based routing
-    if (llmMode === 'mock') {
-      log('LLM Mock mode enabled - returning mock response', 'info');
-      const mockResponse = await mockSemanticAnalysis(prompt, SemanticAnalyzer.repositoryPath);
-
-      // Track mock call in metrics
-      SemanticAnalyzer.recordActualMode('mock');
-      SemanticAnalyzer.currentStepMetrics.totalCalls++;
-      SemanticAnalyzer.currentStepMetrics.totalInputTokens += mockResponse.tokenUsage.inputTokens;
-      SemanticAnalyzer.currentStepMetrics.totalOutputTokens += mockResponse.tokenUsage.outputTokens;
-      SemanticAnalyzer.currentStepMetrics.totalTokens += mockResponse.tokenUsage.totalTokens;
-      if (!SemanticAnalyzer.currentStepMetrics.providers.includes('mock')) {
-        SemanticAnalyzer.currentStepMetrics.providers.push('mock');
-      }
-
-      return {
-        insights: mockResponse.content,
-        provider: 'mock',
-        confidence: 0.85,
-        model: 'mock-llm-v1',
-        tokenUsage: mockResponse.tokenUsage,
-      };
-    }
-
-    if (llmMode === 'local') {
-      // Try Docker Model Runner (DMR) first, then Ollama as fallback
-      log('Using local LLM mode (DMR preferred, Ollama fallback)', 'info');
-
-      // Try DMR first
-      try {
-        const dmrAvailable = await checkDMRAvailability();
-        if (dmrAvailable) {
-          const dmrModel = getModelForAgent(SemanticAnalyzer.currentAgentId || undefined);
-          const dmrResponse = await callDMRWithPrompt(prompt, {
-            agentId: SemanticAnalyzer.currentAgentId || undefined,
-            model: dmrModel,
-          });
-
-          // Track DMR call in metrics
-          SemanticAnalyzer.recordActualMode('local');
-          SemanticAnalyzer.currentStepMetrics.totalCalls++;
-          SemanticAnalyzer.currentStepMetrics.totalInputTokens += dmrResponse.tokenUsage.inputTokens;
-          SemanticAnalyzer.currentStepMetrics.totalOutputTokens += dmrResponse.tokenUsage.outputTokens;
-          SemanticAnalyzer.currentStepMetrics.totalTokens += dmrResponse.tokenUsage.totalTokens;
-          if (!SemanticAnalyzer.currentStepMetrics.providers.includes('dmr')) {
-            SemanticAnalyzer.currentStepMetrics.providers.push('dmr');
-          }
-
-          return {
-            insights: dmrResponse.content,
-            provider: 'dmr',
-            confidence: 0.80,  // Local models have slightly lower confidence
-            model: dmrResponse.model,
-            tokenUsage: dmrResponse.tokenUsage,
-          };
-        }
-        log('DMR not available, trying Ollama...', 'warning');
-      } catch (error: any) {
-        log(`DMR call failed: ${error.message}, trying Ollama...`, 'warning');
-      }
-
-      // Fallback to Ollama if DMR fails
-      if (this.ollamaClient) {
-        try {
-          log('Using Ollama for local LLM inference', 'info');
-          SemanticAnalyzer.recordActualMode('local');
-          return await this.analyzeWithOllama(prompt, model);
-        } catch (ollamaError: any) {
-          log(`Ollama call failed: ${ollamaError.message}, falling back to public mode`, 'warning');
-        }
-      }
-
-      // No local LLM available - fall through to public mode
-      log('No local LLM available (DMR/Ollama), falling back to public mode', 'warning');
-    }
-
-    // Public mode (or fallback from local): record as public
-    SemanticAnalyzer.recordActualMode('public');
-
-    // Public mode (or fallback from local): use cloud APIs
-    switch (provider) {
-      case 'groq':
-        return this.analyzeWithGroq(prompt, model);
-      case 'anthropic':
-        return this.analyzeWithAnthropic(prompt, model);
-      case 'openai':
-        return this.analyzeWithOpenAI(prompt, model);
-      case 'gemini':
-        return this.analyzeWithGemini(prompt);
-      case 'custom':
-        return this.analyzeWithCustom(prompt);
-      case 'ollama':
-        return this.analyzeWithOllama(prompt, model);
-      default:
-        throw new Error(`Unknown provider for tier: ${provider}`);
-    }
-  }
-
-  // Request timeout for LLM API calls (30 seconds)
-  private static readonly LLM_TIMEOUT_MS = 30000;
-
-  private initializeClients(): void {
-    // Priority order: (1) Groq (default), (2) Gemini, (3) Custom API, (4) Anthropic, (5) OpenAI
-    semanticDebugLog('initializeClients called', { cwd: process.cwd() });
-
-    // Initialize Groq client (highest priority - cheap, low-latency)
-    const groqKey = process.env.GROQ_API_KEY;
-    semanticDebugLog('Checking Groq API key', { hasKey: !!groqKey, keyLength: groqKey?.length || 0 });
-    if (groqKey && groqKey !== "your-groq-api-key") {
-      this.groqClient = new Groq({
-        apiKey: groqKey,
-        timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
-      });
-      log("Groq client initialized (default provider)", "info");
-      semanticDebugLog('Groq client initialized');
-    }
-
-    // Initialize Gemini client (second priority - cheap, good quality)
-    // Note: Gemini SDK doesn't support timeout in constructor, handled per-request
-    const googleKey = process.env.GOOGLE_API_KEY;
-    semanticDebugLog('Checking Google API key', { hasKey: !!googleKey, keyLength: googleKey?.length || 0 });
-    if (googleKey && googleKey !== "your-google-api-key") {
-      this.geminiClient = new GoogleGenerativeAI(googleKey);
-      log("Gemini client initialized (fallback #1)", "info");
-      semanticDebugLog('Gemini client initialized');
-    }
-
-    // Initialize Custom OpenAI-compatible client (third priority)
-    const customBaseUrl = process.env.OPENAI_BASE_URL;
-    const customKey = process.env.OPENAI_API_KEY;
-    semanticDebugLog('Checking Custom OpenAI key', { hasBaseUrl: !!customBaseUrl, hasKey: !!customKey });
-    if (customBaseUrl && customKey && customKey !== "your-openai-api-key") {
-      this.customClient = new OpenAI({
-        apiKey: customKey,
-        baseURL: customBaseUrl,
-        timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
-      });
-      log("Custom OpenAI-compatible client initialized (fallback #2)", "info", { baseURL: customBaseUrl });
-      semanticDebugLog('Custom OpenAI client initialized', { baseURL: customBaseUrl });
-    }
-
-    // Initialize Anthropic client (fourth priority)
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
-    semanticDebugLog('Checking Anthropic API key', { hasKey: !!anthropicKey, keyLength: anthropicKey?.length || 0 });
-    if (anthropicKey && anthropicKey !== "your-anthropic-api-key") {
-      this.anthropicClient = new Anthropic({
-        apiKey: anthropicKey,
-        timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
-      });
-      log("Anthropic client initialized (fallback #3)", "info");
-      semanticDebugLog('Anthropic client initialized');
-    }
-
-    // Initialize OpenAI client (fifth priority - only if no custom base URL)
-    const openaiKey = process.env.OPENAI_API_KEY;
-    semanticDebugLog('Checking OpenAI API key', { hasKey: !!openaiKey, hasCustomUrl: !!customBaseUrl });
-    if (openaiKey && openaiKey !== "your-openai-api-key" && !customBaseUrl) {
-      this.openaiClient = new OpenAI({
-        apiKey: openaiKey,
-        timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
-      });
-      log("OpenAI client initialized (fallback #4)", "info");
-      semanticDebugLog('OpenAI client initialized');
-    }
-
-    // Initialize Ollama client (last resort fallback - local, no API key needed)
-    // OLLAMA_BASE_URL defaults to http://localhost:11434 if not set
-    const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-    this.ollamaModel = process.env.OLLAMA_MODEL || 'llama3.2:latest';
-    semanticDebugLog('Checking Ollama availability', { baseUrl: ollamaBaseUrl, model: this.ollamaModel });
-
-    // Try to connect to Ollama (async check, but we set up client optimistically)
-    this.ollamaClient = axios.create({
-      baseURL: ollamaBaseUrl,
-      timeout: SemanticAnalyzer.LLM_TIMEOUT_MS,
-      headers: { 'Content-Type': 'application/json' }
-    });
-
-    // Verify Ollama is running by checking the API
-    this.verifyOllamaConnection(ollamaBaseUrl);
-
-    const clientsAvailable = {
-      groq: !!this.groqClient,
-      gemini: !!this.geminiClient,
-      custom: !!this.customClient,
-      anthropic: !!this.anthropicClient,
-      openai: !!this.openaiClient,
-      ollama: !!this.ollamaClient
-    };
-    semanticDebugLog('Clients initialized', clientsAvailable);
-
-    if (!this.groqClient && !this.geminiClient && !this.customClient && !this.anthropicClient && !this.openaiClient && !this.ollamaClient) {
-      log("No LLM clients available - check API keys or install Ollama", "warning");
-      semanticDebugLog('WARNING: No LLM clients available!');
-    }
-  }
-
-  /**
-   * Verify Ollama is running and available
-   */
-  private async verifyOllamaConnection(baseUrl: string): Promise<void> {
-    try {
-      const response = await axios.get(`${baseUrl}/api/tags`, { timeout: 5000 });
-      if (response.status === 200) {
-        const models = response.data?.models || [];
-        const modelNames = models.map((m: any) => m.name);
-        log(`Ollama available with ${models.length} models: ${modelNames.join(', ')}`, 'info');
-        semanticDebugLog('Ollama connected', { models: modelNames });
-
-        // Check if desired model is available
-        if (!modelNames.includes(this.ollamaModel)) {
-          log(`Ollama model '${this.ollamaModel}' not found. Available: ${modelNames.join(', ')}`, 'warning');
-        }
-      }
-    } catch (error: any) {
-      log(`Ollama not available at ${baseUrl}: ${error.message}`, 'warning');
-      semanticDebugLog('Ollama connection failed', { error: error.message });
-      // Set client to null if Ollama is not running
-      this.ollamaClient = null;
-    }
-  }
-
-  /**
-   * Analyze content using Ollama (local LLM)
-   */
-  private async analyzeWithOllama(prompt: string, model?: string): Promise<AnalysisResult> {
-    if (!this.ollamaClient) {
-      throw new Error('Ollama client not available - ensure Ollama is running');
-    }
-
-    const useModel = model || this.ollamaModel;
-    log(`Analyzing with Ollama/${useModel}`, 'info', { promptLength: prompt.length });
-
-    const startTime = Date.now();
-    try {
-      const response = await this.ollamaClient.post('/api/generate', {
-        model: useModel,
-        prompt: prompt,
-        stream: false,
-        options: {
-          temperature: 0.7,
-          num_predict: 2048,  // max tokens
-        }
-      });
-
-      const content = response.data?.response || '';
-      const duration = Date.now() - startTime;
-
-      // Ollama provides some metrics
-      const promptTokens = response.data?.prompt_eval_count || 0;
-      const completionTokens = response.data?.eval_count || 0;
-
-      log(`Ollama analysis completed in ${duration}ms`, 'info', {
-        model: useModel,
-        promptTokens,
-        completionTokens
-      });
-
-      return {
-        insights: content,
-        provider: 'ollama',
-        confidence: 0.75,  // Local Ollama models have moderate confidence
-        model: useModel,
-        tokenUsage: {
-          inputTokens: promptTokens,
-          outputTokens: completionTokens,
-          totalTokens: promptTokens + completionTokens
-        }
-      };
-    } catch (error: any) {
-      log(`Ollama analysis failed: ${error.message}`, 'error');
-      throw error;
-    }
-  }
-
-  // PERFORMANCE OPTIMIZATION: Batch processing methods
-  private async processBatch(): Promise<void> {
-    if (this.batchQueue.length === 0) return;
-    
-    const currentBatch = this.batchQueue.splice(0, this.BATCH_SIZE);
-    log(`Processing batch of ${currentBatch.length} requests`, 'info');
-    
-    try {
-      // Process batch requests in parallel
-      const batchPromises = currentBatch.map(async (item) => {
-        try {
-          const result = await this.analyzeContentDirectly(item.prompt, item.options);
-          item.resolve(result);
-        } catch (error) {
-          item.reject(error);
-        }
-      });
-      
-      await Promise.all(batchPromises);
-      log(`Completed batch processing of ${currentBatch.length} requests`, 'info');
-      
-    } catch (error) {
-      log(`Batch processing failed`, 'error', error);
-      // Reject all remaining items in this batch
-      currentBatch.forEach(item => item.reject(error));
-    }
-    
-    // Schedule next batch if queue has items
-    if (this.batchQueue.length > 0) {
-      this.scheduleBatch();
-    }
-  }
-  
-  private scheduleBatch(): void {
-    if (this.batchTimer) return; // Already scheduled
-    
-    this.batchTimer = setTimeout(() => {
-      this.batchTimer = null;
-      this.processBatch();
-    }, this.BATCH_TIMEOUT);
-  }
-  
-  // New method for direct analysis (used by batch processor)
-  private async analyzeContentDirectly(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
-    const { context, analysisType = "general", provider = "auto" } = options;
-    const prompt = this.buildAnalysisPrompt(content, context, analysisType);
-
-    // Use existing provider selection logic
-    if (provider === "groq" && this.groqClient) {
-      return await this.analyzeWithGroq(prompt);
-    } else if (provider === "gemini" && this.geminiClient) {
-      return await this.analyzeWithGemini(prompt);
-    } else if (provider === "custom" && this.customClient) {
-      return await this.analyzeWithCustom(prompt);
-    } else if (provider === "anthropic" && this.anthropicClient) {
-      return await this.analyzeWithAnthropic(prompt);
-    } else if (provider === "openai" && this.openaiClient) {
-      return await this.analyzeWithOpenAI(prompt);
-    } else if (provider === "ollama" && this.ollamaClient) {
-      return await this.analyzeWithOllama(prompt);
-    } else if (provider === "auto") {
-      // Auto mode with fallback cascade: Groq > Gemini > Custom > Anthropic > OpenAI > Ollama
-      const providers = [
-        { name: 'groq', client: this.groqClient, method: this.analyzeWithGroq.bind(this) },
-        { name: 'gemini', client: this.geminiClient, method: this.analyzeWithGemini.bind(this) },
-        { name: 'custom', client: this.customClient, method: this.analyzeWithCustom.bind(this) },
-        { name: 'anthropic', client: this.anthropicClient, method: this.analyzeWithAnthropic.bind(this) },
-        { name: 'openai', client: this.openaiClient, method: this.analyzeWithOpenAI.bind(this) },
-        { name: 'ollama', client: this.ollamaClient, method: this.analyzeWithOllama.bind(this) }
-      ];
-
-      const errors: Array<{ provider: string; error: any }> = [];
-
-      for (const { name, client, method } of providers) {
-        if (!client) continue;
-
-        try {
-          log(`Attempting analysis with ${name}`, 'info');
-          const result = await method(prompt);
-          if (errors.length > 0) {
-            log(`Successfully fell back to ${name} after ${errors.length} failure(s)`, 'info', {
-              failedProviders: errors.map(e => e.provider)
-            });
-          }
-          // Record metrics for step-level aggregation
-          SemanticAnalyzer.recordCallMetrics(result);
-          return result;
-        } catch (error: any) {
-          const isRateLimit = error?.status === 429 || error?.message?.includes('rate limit');
-          log(`${name} analysis failed${isRateLimit ? ' (rate limit)' : ''}`, 'warning', {
-            error: error?.message,
-            status: error?.status
-          });
-          errors.push({ provider: name, error });
-          // Continue to next provider
-        }
-      }
-
-      // All providers failed - NO MOCK FALLBACK
-      log('All LLM providers failed', 'error', { errors });
-      throw new Error(`All LLM providers failed (no mock fallback). Install Ollama for local fallback. Errors: ${errors.map(e => `${e.provider}: ${e.error?.message || 'Unknown error'}`).join('; ')}`);
-    }
-
-    throw new Error("No available LLM provider - specify a valid provider or use 'auto'");
-  }
+  // --- Core Analysis Methods ---
 
   async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
-    const { context, analysisType = "general", provider = "auto", tier, taskType } = options;
+    const { context, analysisType = "general", tier, taskType } = options;
 
-    // Get LLM mode for current agent
+    await this.ensureInitialized();
+
     const llmMode = SemanticAnalyzer.getLLMModeForAgent();
-    log(`[LLM-MODE] mode=${llmMode}, agentId=${SemanticAnalyzer.currentAgentId}, CODING_ROOT=${process.env.CODING_ROOT}`, 'info');
+    log(`[LLM-MODE] mode=${llmMode}, agentId=${SemanticAnalyzer.currentAgentId}`, 'info');
 
-    // Handle mode-based routing BEFORE making any LLM calls
-    if (llmMode === 'mock') {
-      log('LLM Mock mode enabled - returning mock analyzeContent response', 'info');
-      const mockResponse = await mockSemanticAnalysis(content, SemanticAnalyzer.repositoryPath);
+    const prompt = this.buildAnalysisPrompt(content, context, analysisType);
 
-      // Track mock call in metrics
-      SemanticAnalyzer.currentStepMetrics.totalCalls++;
-      SemanticAnalyzer.currentStepMetrics.totalInputTokens += mockResponse.tokenUsage.inputTokens;
-      SemanticAnalyzer.currentStepMetrics.totalOutputTokens += mockResponse.tokenUsage.outputTokens;
-      SemanticAnalyzer.currentStepMetrics.totalTokens += mockResponse.tokenUsage.totalTokens;
-      if (!SemanticAnalyzer.currentStepMetrics.providers.includes('mock')) {
-        SemanticAnalyzer.currentStepMetrics.providers.push('mock');
-      }
-
-      return {
-        insights: mockResponse.content,
-        provider: 'mock',
-        confidence: 0.85,
-        model: 'mock-llm-v1',
-        tokenUsage: mockResponse.tokenUsage,
-      };
-    }
-
-    // Handle local mode (Docker Model Runner)
-    if (llmMode === 'local') {
-      log('Using Docker Model Runner (local mode) for analyzeContent', 'info');
-      try {
-        const dmrAvailable = await checkDMRAvailability();
-        if (dmrAvailable) {
-          const dmrModel = getModelForAgent(SemanticAnalyzer.currentAgentId || undefined);
-          const prompt = this.buildAnalysisPrompt(content, context, analysisType);
-          const dmrResponse = await callDMRWithPrompt(prompt, {
-            agentId: SemanticAnalyzer.currentAgentId || undefined,
-            model: dmrModel,
-          });
-
-          // Track DMR call in metrics
-          SemanticAnalyzer.currentStepMetrics.totalCalls++;
-          SemanticAnalyzer.currentStepMetrics.totalInputTokens += dmrResponse.tokenUsage.inputTokens;
-          SemanticAnalyzer.currentStepMetrics.totalOutputTokens += dmrResponse.tokenUsage.outputTokens;
-          SemanticAnalyzer.currentStepMetrics.totalTokens += dmrResponse.tokenUsage.totalTokens;
-          if (!SemanticAnalyzer.currentStepMetrics.providers.includes('dmr')) {
-            SemanticAnalyzer.currentStepMetrics.providers.push('dmr');
-          }
-
-          return {
-            insights: dmrResponse.content,
-            provider: 'dmr',
-            confidence: 0.80,
-            model: dmrResponse.model,
-            tokenUsage: dmrResponse.tokenUsage,
-          };
-        } else {
-          log('DMR not available, falling back to public mode', 'warning');
-          // Fall through to public mode below
-        }
-      } catch (error: any) {
-        log(`DMR call failed: ${error.message}, falling back to public mode`, 'warning');
-        // Fall through to public mode below
-      }
-    }
-
-    // Public mode (or fallback from local)
-
-    // Determine effective tier (explicit tier > taskType lookup > default)
+    // Determine effective tier
     const effectiveTier = tier || this.getTierForTask(taskType as TaskType) || 'standard';
 
-    log(`Analyzing content with ${provider} provider, tier: ${effectiveTier}`, "info", {
+    log(`Analyzing content, tier: ${effectiveTier}`, "info", {
       contentLength: content.length,
       analysisType,
       tier: effectiveTier,
       taskType,
-      hasContext: !!context,
-      groqClient: !!this.groqClient,
-      geminiClient: !!this.geminiClient,
-      customClient: !!this.customClient,
-      anthropicClient: !!this.anthropicClient,
-      openaiClient: !!this.openaiClient,
     });
 
-    const prompt = this.buildAnalysisPrompt(content, context, analysisType);
-
-    // If tier is specified (or derived from taskType), use tier-based selection
-    if ((tier || taskType) && provider === "auto") {
-      const tierSelection = this.getProviderForTier(effectiveTier);
-      if (tierSelection) {
-        log(`Using tier-based selection: ${tierSelection.provider}/${tierSelection.model} for tier ${effectiveTier}`, 'info');
-        return this.analyzeWithTier(prompt, tierSelection.provider, tierSelection.model);
-      }
-    }
-
     // PERFORMANCE OPTIMIZATION: Use batching for non-urgent requests
-    // For diagram generation and similar tasks, use batching to improve throughput
     const shouldBatch = analysisType === "diagram" || analysisType === "patterns";
-    
+
     if (shouldBatch) {
       return new Promise<AnalysisResult>((resolve, reject) => {
         this.batchQueue.push({ prompt, options, resolve, reject });
-        
-        // If we have enough items for a batch, process immediately
+
         if (this.batchQueue.length >= this.BATCH_SIZE) {
           if (this.batchTimer) {
             clearTimeout(this.batchTimer);
@@ -1000,107 +404,30 @@ export class SemanticAnalyzer {
           }
           this.processBatch();
         } else {
-          // Otherwise, schedule processing
           this.scheduleBatch();
         }
       });
     }
 
-    let result: AnalysisResult;
-
-    // Determine which provider to use with correct precedence:
-    // 1. If specific provider requested, use it
-    // 2. If auto: Groq → Gemini → Custom → Anthropic → OpenAI
-    if (provider === "groq") {
-      if (!this.groqClient) {
-        throw new Error("Groq client not available");
-      }
-      result = await this.analyzeWithGroq(prompt);
-    } else if (provider === "gemini") {
-      if (!this.geminiClient) {
-        throw new Error("Gemini client not available");
-      }
-      result = await this.analyzeWithGemini(prompt);
-    } else if (provider === "custom") {
-      if (!this.customClient) {
-        throw new Error("Custom client not available");
-      }
-      result = await this.analyzeWithCustom(prompt);
-    } else if (provider === "anthropic") {
-      if (!this.anthropicClient) {
-        throw new Error("Anthropic client not available");
-      }
-      result = await this.analyzeWithAnthropic(prompt);
-    } else if (provider === "openai") {
-      if (!this.openaiClient) {
-        throw new Error("OpenAI client not available");
-      }
-      result = await this.analyzeWithOpenAI(prompt);
-    } else if (provider === "auto") {
-      // Auto mode with fallback cascade: try each provider in order until one succeeds
-      // Priority: Groq (cheap/fast) > Gemini > Custom > Anthropic > OpenAI > Ollama (local fallback)
-      log("Entering auto mode provider selection with fallback", "info", {
-        hasGroq: !!this.groqClient,
-        hasGemini: !!this.geminiClient,
-        hasCustom: !!this.customClient,
-        hasAnthropic: !!this.anthropicClient,
-        hasOpenAI: !!this.openaiClient,
-        hasOllama: !!this.ollamaClient
+    // Single request: delegate to LLM service
+    try {
+      const result = await this.llmService.complete({
+        messages: [{ role: 'user', content: prompt }],
+        tier: effectiveTier,
+        taskType: taskType,
+        agentId: SemanticAnalyzer.currentAgentId || undefined,
       });
 
-      const providers = [
-        { name: 'groq', client: this.groqClient, method: this.analyzeWithGroq.bind(this) },
-        { name: 'gemini', client: this.geminiClient, method: this.analyzeWithGemini.bind(this) },
-        { name: 'custom', client: this.customClient, method: this.analyzeWithCustom.bind(this) },
-        { name: 'anthropic', client: this.anthropicClient, method: this.analyzeWithAnthropic.bind(this) },
-        { name: 'openai', client: this.openaiClient, method: this.analyzeWithOpenAI.bind(this) },
-        { name: 'ollama', client: this.ollamaClient, method: this.analyzeWithOllama.bind(this) }
-      ];
+      const analysisResult = this.toAnalysisResult(result);
 
-      const errors: Array<{ provider: string; error: any }> = [];
+      // Record metrics for step-level aggregation
+      SemanticAnalyzer.recordCallMetrics(analysisResult);
 
-      for (const { name, client, method } of providers) {
-        if (!client) continue;
-
-        try {
-          log(`Attempting analysis with ${name}`, 'info');
-          result = await method(prompt);
-          if (errors.length > 0) {
-            log(`Successfully fell back to ${name} after ${errors.length} failure(s)`, 'info', {
-              failedProviders: errors.map(e => e.provider)
-            });
-          }
-          break; // Success - exit loop
-        } catch (error: any) {
-          const isRateLimit = error?.status === 429 || error?.message?.includes('rate limit');
-          log(`${name} analysis failed${isRateLimit ? ' (rate limit)' : ''}`, 'warning', {
-            error: error?.message,
-            status: error?.status
-          });
-          errors.push({ provider: name, error });
-          // Continue to next provider
-        }
-      }
-
-      // Check if we got a result
-      if (!result!) {
-        log('All LLM providers failed', 'error', { errors });
-        throw new Error(`All LLM providers failed. Errors: ${errors.map(e => `${e.provider}: ${e.error?.message || 'Unknown error'}`).join('; ')}`);
-      }
-    } else {
-      throw new Error(`Unknown provider: ${provider}`);
+      return analysisResult;
+    } catch (error: any) {
+      log('All LLM providers failed', 'error', { error: error.message });
+      throw new Error(`All LLM providers failed. Errors: ${error.message}`);
     }
-
-    log("SemanticAnalyzer result before return", "info", {
-      hasResult: !!result,
-      resultType: typeof result,
-      resultKeys: result ? Object.keys(result) : null
-    });
-
-    // Record metrics for step-level aggregation
-    SemanticAnalyzer.recordCallMetrics(result);
-
-    return result;
   }
 
   async analyzeCode(code: string, options: CodeAnalysisOptions = {}): Promise<CodeAnalysisResult> {
@@ -1115,7 +442,6 @@ export class SemanticAnalyzer {
     const prompt = this.buildCodeAnalysisPrompt(code, language, filePath, focus);
     const result = await this.analyzeContent(prompt, {
       analysisType: "code",
-      provider: "auto",
     });
 
     return this.parseCodeAnalysisResult(result.insights);
@@ -1133,11 +459,67 @@ export class SemanticAnalyzer {
     const prompt = this.buildPatternExtractionPrompt(source, patternTypes, context);
     const result = await this.analyzeContent(prompt, {
       analysisType: "patterns",
-      provider: "auto",
     });
 
     return this.parsePatternExtractionResult(result.insights);
   }
+
+  // --- Batch Processing ---
+
+  private async processBatch(): Promise<void> {
+    if (this.batchQueue.length === 0) return;
+
+    const currentBatch = this.batchQueue.splice(0, this.BATCH_SIZE);
+    log(`Processing batch of ${currentBatch.length} requests`, 'info');
+
+    try {
+      const batchPromises = currentBatch.map(async (item) => {
+        try {
+          const result = await this.analyzeContentDirectly(item.prompt, item.options);
+          item.resolve(result);
+        } catch (error) {
+          item.reject(error);
+        }
+      });
+
+      await Promise.all(batchPromises);
+      log(`Completed batch processing of ${currentBatch.length} requests`, 'info');
+    } catch (error) {
+      log(`Batch processing failed`, 'error', error);
+      currentBatch.forEach(item => item.reject(error));
+    }
+
+    if (this.batchQueue.length > 0) {
+      this.scheduleBatch();
+    }
+  }
+
+  private scheduleBatch(): void {
+    if (this.batchTimer) return;
+
+    this.batchTimer = setTimeout(() => {
+      this.batchTimer = null;
+      this.processBatch();
+    }, this.BATCH_TIMEOUT);
+  }
+
+  private async analyzeContentDirectly(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
+    await this.ensureInitialized();
+
+    const { context, analysisType = "general" } = options;
+    const prompt = this.buildAnalysisPrompt(content, context, analysisType);
+
+    const result = await this.llmService.complete({
+      messages: [{ role: 'user', content: prompt }],
+      agentId: SemanticAnalyzer.currentAgentId || undefined,
+    });
+
+    const analysisResult = this.toAnalysisResult(result);
+    SemanticAnalyzer.recordCallMetrics(analysisResult);
+    return analysisResult;
+  }
+
+  // --- Prompt Building ---
 
   private buildAnalysisPrompt(content: string, context?: string, analysisType: string = "general"): string {
     let prompt = "";
@@ -1213,8 +595,6 @@ Generate the PlantUML diagram now:`;
       case "raw":
       case "passthrough":
       case "classification":
-        // Pass through unchanged - caller has already formatted the prompt
-        // Used by OntologyClassifier for structured JSON classification responses
         prompt = context ? `${context}\n\n${content}` : content;
         break;
 
@@ -1261,253 +641,9 @@ For each pattern found, provide:
 5. Usage recommendations`;
   }
 
-  private async analyzeWithGroq(prompt: string, model?: string): Promise<AnalysisResult> {
-    const selectedModel = model || "llama-3.3-70b-versatile";
-    log("analyzeWithGroq called", "info", {
-      hasClient: !!this.groqClient,
-      promptLength: prompt.length,
-      model: selectedModel
-    });
-
-    if (!this.groqClient) {
-      throw new Error("Groq client not initialized");
-    }
-
-    try {
-      log(`Making Groq API call with model ${selectedModel}`, "info");
-      const response = await this.groqClient.chat.completions.create({
-        model: selectedModel,
-        max_tokens: 4096,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7
-      });
-
-      log("Groq API response received", "info", {
-        hasChoices: !!response.choices,
-        choicesLength: response.choices?.length
-      });
-
-      const content = response.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error("No content in Groq response");
-      }
-
-      // Capture token usage from response
-      const usage = response.usage;
-      const result: AnalysisResult = {
-        insights: content,
-        provider: "groq",
-        confidence: 0.85,
-        model: selectedModel,
-        tokenUsage: usage ? {
-          inputTokens: usage.prompt_tokens || 0,
-          outputTokens: usage.completion_tokens || 0,
-          totalTokens: usage.total_tokens || 0,
-        } : undefined,
-      };
-
-      log("analyzeWithGroq returning result", "info", {
-        hasInsights: !!result.insights,
-        insightsLength: result.insights?.length,
-        provider: result.provider,
-        tokenUsage: result.tokenUsage,
-      });
-
-      return result;
-    } catch (error) {
-      log("Groq analysis failed", "error", error);
-      throw error;
-    }
-  }
-
-  private async analyzeWithGemini(prompt: string): Promise<AnalysisResult> {
-    log("analyzeWithGemini called", "info", {
-      hasClient: !!this.geminiClient,
-      promptLength: prompt.length
-    });
-
-    if (!this.geminiClient) {
-      throw new Error("Gemini client not initialized");
-    }
-
-    try {
-      log("Making Gemini API call", "info");
-      const model = this.geminiClient.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
-      const response = await model.generateContent(prompt);
-      const text = response.response.text();
-
-      log("Gemini API response received", "info", {
-        hasText: !!text,
-        textLength: text?.length
-      });
-
-      if (!text) {
-        throw new Error("No content in Gemini response");
-      }
-
-      // Capture token usage from response if available (Gemini uses usageMetadata)
-      const usageMetadata = response.response.usageMetadata;
-      const result: AnalysisResult = {
-        insights: text,
-        provider: "gemini",
-        confidence: 0.88,
-        model: "gemini-2.0-flash-exp",
-        tokenUsage: usageMetadata ? {
-          inputTokens: usageMetadata.promptTokenCount || 0,
-          outputTokens: usageMetadata.candidatesTokenCount || 0,
-          totalTokens: usageMetadata.totalTokenCount || 0,
-        } : undefined,
-      };
-
-      log("analyzeWithGemini returning result", "info", {
-        hasInsights: !!result.insights,
-        insightsLength: result.insights?.length,
-        provider: result.provider,
-        tokenUsage: result.tokenUsage,
-      });
-
-      return result;
-    } catch (error) {
-      log("Gemini analysis failed", "error", error);
-      throw error;
-    }
-  }
-
-  private async analyzeWithAnthropic(prompt: string, model?: string): Promise<AnalysisResult> {
-    const selectedModel = model || "claude-sonnet-4-20250514";
-    log("analyzeWithAnthropic called", "info", {
-      hasClient: !!this.anthropicClient,
-      promptLength: prompt.length,
-      model: selectedModel
-    });
-
-    if (!this.anthropicClient) {
-      throw new Error("Anthropic client not initialized");
-    }
-
-    try {
-      log(`Making Anthropic API call with model ${selectedModel}`, "info");
-      const response = await this.anthropicClient.messages.create({
-        model: selectedModel,
-        max_tokens: 4096,
-        messages: [{ role: "user", content: prompt }],
-      });
-      
-      log("Anthropic API response received", "info", {
-        hasContent: !!response.content,
-        contentLength: response.content?.length,
-        firstContentType: response.content?.[0]?.type
-      });
-
-      const content = response.content[0];
-      if (content.type !== "text") {
-        throw new Error("Unexpected response type from Anthropic");
-      }
-
-      // Capture token usage from response
-      const usage = response.usage;
-      const result: AnalysisResult = {
-        insights: content.text,
-        provider: "anthropic",
-        confidence: 0.9,
-        model: selectedModel,
-        tokenUsage: usage ? {
-          inputTokens: usage.input_tokens || 0,
-          outputTokens: usage.output_tokens || 0,
-          totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
-        } : undefined,
-      };
-
-      log("analyzeWithAnthropic returning result", "info", {
-        hasInsights: !!result.insights,
-        insightsLength: result.insights?.length,
-        provider: result.provider,
-        tokenUsage: result.tokenUsage,
-      });
-
-      return result;
-    } catch (error) {
-      log("Anthropic analysis failed", "error", error);
-      throw error;
-    }
-  }
-
-  private async analyzeWithOpenAI(prompt: string, model?: string): Promise<AnalysisResult> {
-    const selectedModel = model || "gpt-4o";
-    if (!this.openaiClient) {
-      throw new Error("OpenAI client not initialized");
-    }
-
-    try {
-      log(`Making OpenAI API call with model ${selectedModel}`, "info");
-      const response = await this.openaiClient.chat.completions.create({
-        model: selectedModel,
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 4000,
-      });
-
-      const content = response.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error("No content in OpenAI response");
-      }
-
-      // Capture token usage from response
-      const usage = response.usage;
-      return {
-        insights: content,
-        provider: "openai",
-        confidence: 0.85,
-        model: selectedModel,
-        tokenUsage: usage ? {
-          inputTokens: usage.prompt_tokens || 0,
-          outputTokens: usage.completion_tokens || 0,
-          totalTokens: usage.total_tokens || 0,
-        } : undefined,
-      };
-    } catch (error) {
-      log("OpenAI analysis failed", "error", error);
-      throw error;
-    }
-  }
-
-  private async analyzeWithCustom(prompt: string): Promise<AnalysisResult> {
-    if (!this.customClient) {
-      throw new Error("Custom client not initialized");
-    }
-
-    try {
-      const response = await this.customClient.chat.completions.create({
-        model: "gpt-4", // Default model, can be overridden by corporate config
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 4000,
-      });
-
-      const content = response.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error("No content in custom provider response");
-      }
-
-      // Capture token usage from response
-      const usage = response.usage;
-      return {
-        insights: content,
-        provider: "custom",
-        confidence: 0.9,
-        model: "gpt-4",
-        tokenUsage: usage ? {
-          inputTokens: usage.prompt_tokens || 0,
-          outputTokens: usage.completion_tokens || 0,
-          totalTokens: usage.total_tokens || 0,
-        } : undefined,
-      };
-    } catch (error) {
-      log("Custom provider analysis failed", "error", error);
-      throw error;
-    }
-  }
+  // --- Result Parsing ---
 
   private parseCodeAnalysisResult(insights: string): CodeAnalysisResult {
-    // Basic parsing - in production, this would be more sophisticated
     const lines = insights.split("\n");
     const findings: string[] = [];
     const recommendations: string[] = [];
@@ -1523,36 +659,25 @@ For each pattern found, provide:
         currentSection = "patterns";
       } else if (line.trim() && currentSection) {
         switch (currentSection) {
-          case "findings":
-            findings.push(line.trim());
-            break;
-          case "recommendations":
-            recommendations.push(line.trim());
-            break;
-          case "patterns":
-            patterns.push(line.trim());
-            break;
+          case "findings": findings.push(line.trim()); break;
+          case "recommendations": recommendations.push(line.trim()); break;
+          case "patterns": patterns.push(line.trim()); break;
         }
       }
     }
 
-    return {
-      analysis: insights,
-      findings,
-      recommendations,
-      patterns,
-    };
+    return { analysis: insights, findings, recommendations, patterns };
   }
 
   private parsePatternExtractionResult(insights: string): PatternExtractionResult {
     const patterns: Pattern[] = [];
     const lines = insights.split("\n");
-    
+
     let currentPattern: Partial<Pattern> | null = null;
-    
+
     for (const line of lines) {
       const trimmed = line.trim();
-      
+
       if (trimmed.match(/^(Pattern|Name):\s*(.+)/i)) {
         if (currentPattern?.name) {
           patterns.push(this.finalizePattern(currentPattern));
@@ -1570,7 +695,7 @@ For each pattern found, provide:
         }
       }
     }
-    
+
     if (currentPattern?.name) {
       patterns.push(this.finalizePattern(currentPattern));
     }
@@ -1591,11 +716,10 @@ For each pattern found, provide:
     };
   }
 
+  // --- Utility Methods ---
+
   async generateEmbedding(text: string): Promise<number[]> {
-    // For now, return a mock embedding - in production, use actual embedding model
     log("Generating embedding for text", "info", { textLength: text.length });
-    
-    // Mock embedding - replace with actual embedding generation
     const mockEmbedding = Array(384).fill(0).map(() => Math.random());
     return mockEmbedding;
   }
@@ -1616,26 +740,16 @@ Identify:
 
     const result = await this.analyzeContent(prompt, { analysisType: "general" });
 
-    // Parse the response to determine if there's unique value
     const hasUniqueValue = result.insights.toLowerCase().includes("unique") ||
                           result.insights.toLowerCase().includes("new information");
 
-    return {
-      hasUniqueValue,
-      differences: [result.insights],
-    };
+    return { hasUniqueValue, differences: [result.insights] };
   }
 
   // ============================================================================
   // MULTI-AGENT SYSTEM: AgentResponse Envelope Methods
-  // These methods return the standard AgentResponse envelope for the new
-  // multi-agent routing system. Existing methods are preserved for compatibility.
   // ============================================================================
 
-  /**
-   * Analyze content and return result wrapped in AgentResponse envelope
-   * This is the primary method for the multi-agent system
-   */
   async analyzeContentWithEnvelope(
     content: string,
     options: AnalysisOptions & {
@@ -1695,7 +809,6 @@ Identify:
     let modelUsed: string | undefined;
 
     try {
-      // Validate input
       const inputValidation = this.validateInput(content, options);
       if (!inputValidation.valid) {
         issues.push({
@@ -1707,24 +820,19 @@ Identify:
         });
       }
 
-      // Check upstream context
       if (options.upstreamConfidence !== undefined && options.upstreamConfidence < 0.5) {
         warnings.push(`Upstream confidence is low (${options.upstreamConfidence.toFixed(2)}), results may be affected`);
       }
 
-      // Perform analysis
       const result = await this.analyzeContent(content, options);
       modelUsed = result.provider;
 
-      // Calculate confidence
       const confidenceBreakdown = this.calculateSemanticConfidence(content, result, options);
       const overallConfidence = this.computeOverallConfidence(confidenceBreakdown);
 
-      // Detect issues in result
       const resultIssues = this.detectResultIssues(result, confidenceBreakdown);
       issues.push(...resultIssues);
 
-      // Generate routing suggestions
       const routing = this.generateRoutingSuggestions(overallConfidence, issues, options);
 
       const processingTimeMs = Date.now() - startTime;
@@ -1790,28 +898,19 @@ Identify:
     }
   }
 
-  /**
-   * Validate input content and options
-   */
   private validateInput(content: string, options: AnalysisOptions): { valid: boolean; message?: string } {
     if (!content || content.trim().length === 0) {
       return { valid: false, message: 'Content is empty' };
     }
-
     if (content.length > 100000) {
       return { valid: false, message: 'Content exceeds maximum length (100KB)' };
     }
-
     if (content.length < 10) {
       return { valid: false, message: 'Content is too short for meaningful analysis' };
     }
-
     return { valid: true };
   }
 
-  /**
-   * Calculate confidence breakdown for semantic analysis
-   */
   private calculateSemanticConfidence(
     content: string,
     result: AnalysisResult,
@@ -1822,22 +921,18 @@ Identify:
     upstreamInfluence: number;
     processingQuality: number;
   } {
-    // Data completeness: based on input quality
     let dataCompleteness = 0.8;
     if (content.length > 1000) dataCompleteness = 0.9;
     if (content.length > 5000) dataCompleteness = 1.0;
     if (content.length < 100) dataCompleteness = 0.5;
 
-    // Semantic coherence: based on result quality
-    let semanticCoherence = result.confidence; // Use existing confidence
-    if (result.insights.length < 50) semanticCoherence *= 0.7; // Short response
+    let semanticCoherence = result.confidence;
+    if (result.insights.length < 50) semanticCoherence *= 0.7;
     if (result.insights.toLowerCase().includes('error')) semanticCoherence *= 0.8;
     if (result.insights.toLowerCase().includes('unable to')) semanticCoherence *= 0.7;
 
-    // Upstream influence: from context
     const upstreamInfluence = options.upstreamConfidence ?? 1.0;
 
-    // Processing quality: based on provider reliability
     let processingQuality = 0.85;
     if (result.provider === 'groq') processingQuality = 0.9;
     if (result.provider === 'anthropic') processingQuality = 0.95;
@@ -1852,9 +947,6 @@ Identify:
     };
   }
 
-  /**
-   * Compute overall confidence from breakdown
-   */
   private computeOverallConfidence(breakdown: {
     dataCompleteness: number;
     semanticCoherence: number;
@@ -1876,9 +968,6 @@ Identify:
     );
   }
 
-  /**
-   * Detect issues in the analysis result
-   */
   private detectResultIssues(
     result: AnalysisResult,
     confidence: { dataCompleteness: number; semanticCoherence: number; processingQuality: number }
@@ -1899,7 +988,6 @@ Identify:
       suggestedFix?: string;
     }> = [];
 
-    // Check for empty or very short insights
     if (!result.insights || result.insights.length < 20) {
       issues.push({
         severity: 'warning',
@@ -1911,7 +999,6 @@ Identify:
       });
     }
 
-    // Check for low confidence
     if (result.confidence < 0.5) {
       issues.push({
         severity: 'warning',
@@ -1923,7 +1010,6 @@ Identify:
       });
     }
 
-    // Check semantic coherence
     if (confidence.semanticCoherence < 0.5) {
       issues.push({
         severity: 'warning',
@@ -1935,7 +1021,6 @@ Identify:
       });
     }
 
-    // Check for error indicators in response
     const errorPhrases = ['unable to analyze', 'cannot determine', 'insufficient information', 'error occurred'];
     for (const phrase of errorPhrases) {
       if (result.insights.toLowerCase().includes(phrase)) {
@@ -1953,9 +1038,6 @@ Identify:
     return issues;
   }
 
-  /**
-   * Generate routing suggestions based on analysis results
-   */
   private generateRoutingSuggestions(
     confidence: number,
     issues: Array<{ severity: string; retryable: boolean; message: string }>,
@@ -1987,7 +1069,6 @@ Identify:
       escalationNeeded: false,
     };
 
-    // If confidence is very low, suggest retry
     if (confidence < 0.4) {
       const retryableIssues = issues.filter(i => i.retryable);
       if (retryableIssues.length > 0) {
@@ -1999,14 +1080,12 @@ Identify:
       }
     }
 
-    // Check for critical issues needing escalation
     const criticalNonRetryable = issues.filter(i => i.severity === 'critical' && !i.retryable);
     if (criticalNonRetryable.length > 0) {
       routing.escalationNeeded = true;
       routing.escalationReason = criticalNonRetryable.map(i => i.message).join('; ');
     }
 
-    // Suggest next steps based on analysis type
     if (confidence > 0.7) {
       if (options.analysisType === 'code') {
         routing.suggestedNextSteps.push('ontology_classification', 'insight_generation');
@@ -2015,9 +1094,8 @@ Identify:
       }
     }
 
-    // Skip recommendations for low confidence
     if (confidence < 0.3) {
-      routing.skipRecommendations.push('insight_generation'); // Skip if base analysis failed
+      routing.skipRecommendations.push('insight_generation');
     }
 
     return routing;

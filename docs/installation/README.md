@@ -29,7 +29,7 @@ export GROQ_API_KEY="your-groq-api-key"
 ```bash
 export GOOGLE_API_KEY="your-google-api-key"
 ```
-- Uses: gemini-2.0-flash-exp
+- Uses: gemini-2.5-flash
 - Benefits: Low cost, fast, good quality
 
 #### Anthropic Claude (Optional Fallback #2)

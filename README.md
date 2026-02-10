@@ -43,7 +43,7 @@ This MCP server integrates seamlessly with Coding Agent to provide advanced sema
 
 ### 🔗 Integration Capabilities
 - **Coding Agent Integration** - Full MCP compatibility
-- **6-Tier LLM Provider Chain** - Groq (1st) → Gemini (2nd) → Custom LLM (3rd) → Anthropic Claude (4th) → OpenAI GPT (5th) → Ollama (local fallback)
+- **Tier-based LLM Routing via lib/llm/** - 8 providers with intelligent tier-based routing (Fast/Standard/Premium) - Groq, Anthropic, OpenAI, Gemini, GitHub Models, DMR, Ollama, Mock
 - **OpenAI Embeddings** - text-embedding-3-small for semantic similarity and deduplication
 - **Graph Database Persistence** - Graphology (in-memory) + LevelDB (persistent storage) at `.data/knowledge-graph/`
 - **Knowledge Base Support** - UKB/VKB integration with automatic graph export to .data/knowledge-export/*.json

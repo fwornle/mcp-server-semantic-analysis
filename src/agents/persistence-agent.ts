@@ -324,7 +324,7 @@ export class PersistenceAgent {
 
   /**
    * Classify an entity using the ontology system
-   * Returns the classified entity type or falls back to 'TransferablePattern'
+   * Returns the classified entity type from the ontology system
    *
    * @param entityName - The name/title of the entity
    * @param entityContent - The content/observations to classify
@@ -1692,7 +1692,7 @@ export class PersistenceAgent {
         const gitEntity: SharedMemoryEntity = {
           id: `git_analysis_${Date.now()}`,
           name: 'GitDevelopmentEvolution',
-          entityType: 'DevelopmentInsight',
+          entityType: 'Revision',
           significance: Math.min(8, Math.max(3, gitAnalysis.commits.length / 5)), // Scale based on commits
           observations: [
             {

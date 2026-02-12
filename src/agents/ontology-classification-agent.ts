@@ -587,21 +587,36 @@ export class OntologyClassificationAgent {
     const entityType = observation.entityType?.toLowerCase() || '';
     const name = observation.name?.toLowerCase() || '';
 
-    // Pattern matching for common types
+    // Pattern matching for common types (mapped to six-facet upper ontology)
+    if (entityType.includes('service') || entityType.includes('component') || name.includes('component')) {
+      return 'Service';
+    }
     if (entityType.includes('pattern') || name.includes('pattern')) {
-      return 'Pattern';
+      return 'Service';
     }
-    if (entityType.includes('insight') || name.includes('insight')) {
-      return 'Insight';
+    if (entityType.includes('file') || entityType.includes('artifact') || name.includes('artifact')) {
+      return 'File';
     }
-    if (entityType.includes('decision') || name.includes('decision')) {
-      return 'Decision';
+    if (entityType.includes('config') || name.includes('config')) {
+      return 'Config';
     }
-    if (entityType.includes('workflow') || name.includes('workflow')) {
-      return 'Workflow';
+    if (entityType.includes('contract') || entityType.includes('integration') || name.includes('contract')) {
+      return 'Contract';
     }
-    if (entityType.includes('component') || name.includes('component')) {
-      return 'SystemComponent';
+    if (entityType.includes('fault') || name.includes('fault') || name.includes('error')) {
+      return 'Fault';
+    }
+    if (entityType.includes('limitation') || entityType.includes('constraint') || entityType.includes('insight')) {
+      return 'Limitation';
+    }
+    if (entityType.includes('decision') || entityType.includes('revision') || name.includes('revision')) {
+      return 'Revision';
+    }
+    if (entityType.includes('workflow') || entityType.includes('feature') || name.includes('feature')) {
+      return 'Feature';
+    }
+    if (entityType.includes('process') || entityType.includes('execution')) {
+      return 'Process';
     }
 
     return undefined;
@@ -664,29 +679,38 @@ export class OntologyClassificationAgent {
   private determineParentClass(className: string): string {
     const lowerName = className.toLowerCase();
 
+    if (lowerName.includes('component') || lowerName.includes('module') || lowerName.includes('service')) {
+      return 'Service';
+    }
     if (lowerName.includes('pattern') || lowerName.includes('practice')) {
-      return 'Pattern';
+      return 'Service';
     }
-    if (lowerName.includes('insight') || lowerName.includes('observation')) {
-      return 'Insight';
-    }
-    if (lowerName.includes('decision') || lowerName.includes('choice')) {
-      return 'Decision';
-    }
-    if (lowerName.includes('workflow') || lowerName.includes('process')) {
-      return 'Workflow';
-    }
-    if (lowerName.includes('component') || lowerName.includes('module')) {
-      return 'SystemComponent';
+    if (lowerName.includes('file') || lowerName.includes('artifact') || lowerName.includes('document')) {
+      return 'File';
     }
     if (lowerName.includes('config') || lowerName.includes('setting')) {
-      return 'ConfigurationData';
+      return 'Config';
     }
-    if (lowerName.includes('metric') || lowerName.includes('measure')) {
-      return 'QualityMetric';
+    if (lowerName.includes('contract') || lowerName.includes('metric') || lowerName.includes('measure') || lowerName.includes('integration')) {
+      return 'Contract';
+    }
+    if (lowerName.includes('fault') || lowerName.includes('error') || lowerName.includes('failure')) {
+      return 'Fault';
+    }
+    if (lowerName.includes('limitation') || lowerName.includes('constraint') || lowerName.includes('insight') || lowerName.includes('observation')) {
+      return 'Limitation';
+    }
+    if (lowerName.includes('decision') || lowerName.includes('choice') || lowerName.includes('revision')) {
+      return 'Revision';
+    }
+    if (lowerName.includes('workflow') || lowerName.includes('feature')) {
+      return 'Feature';
+    }
+    if (lowerName.includes('process') || lowerName.includes('execution') || lowerName.includes('context')) {
+      return 'Process';
     }
 
-    return 'Entity';
+    return 'Service';
   }
 
   /**

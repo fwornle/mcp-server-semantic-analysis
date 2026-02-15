@@ -5,7 +5,7 @@
  * Uses a three-tier matching strategy:
  *   TIER 1: Fast file-path matching (free, ~1ms)
  *   TIER 2: Hybrid keyword + embedding matching (cached)
- *   TIER 3: LLM correlation via Groq (batched, ~$0.01/100)
+ *   TIER 3: LLM correlation via LLMService (batched, provider auto-selected)
  *
  * Inspired by Graphiti's bi-temporal model for tracking knowledge freshness.
  */
@@ -13,8 +13,8 @@
 import * as path from "path";
 import * as crypto from "crypto";
 import OpenAI from "openai";
-import Groq from "groq-sdk";
 import { log } from "../logging.js";
+import { LLMService } from '../../../../lib/llm/dist/index.js';
 import type { GitCommit, GitFileChange } from "./git-history-agent.js";
 import { EmbeddingCache, getSharedEmbeddingCache } from "../utils/embedding-cache.js";
 import { isMockLLMEnabled, getMockDelay } from "../mock/llm-mock-service.js";
@@ -77,8 +77,9 @@ export interface StalenessConfig {
 
 export class GitStalenessDetector {
   private config: StalenessConfig;
-  private groqClient: Groq | null = null;
-  private openaiClient: OpenAI | null = null;
+  private llmService: LLMService;
+  private llmInitialized: boolean = false;
+  private openaiClient: OpenAI | null = null;  // Kept for embeddings (LLMService doesn't support embeddings)
   private embeddingCache: EmbeddingCache;
 
   // Patterns for extracting references from observations
@@ -100,21 +101,25 @@ export class GitStalenessDetector {
 
     // Use shared disk-backed embedding cache
     this.embeddingCache = getSharedEmbeddingCache();
+    this.llmService = new LLMService();
     this.initializeClients();
   }
 
-  private initializeClients(): void {
-    // Initialize Groq for TIER 3 LLM correlation
-    const groqKey = process.env.GROQ_API_KEY;
-    if (groqKey && groqKey !== "your-groq-api-key") {
-      this.groqClient = new Groq({
-        apiKey: groqKey,
-        timeout: 30000,
-      });
-      log("GitStalenessDetector: Groq client initialized for TIER 3", "info");
+  private async ensureLLMInitialized(): Promise<void> {
+    if (!this.llmInitialized) {
+      await this.llmService.initialize();
+      this.llmInitialized = true;
+      const providers = this.llmService.getAvailableProviders();
+      log(`GitStalenessDetector: LLMService initialized with providers: ${providers.join(', ')}`, 'info');
     }
+  }
 
-    // Initialize OpenAI for embeddings (TIER 2)
+  private initializeClients(): void {
+    // LLMService handles TIER 3 LLM correlation (replaces direct Groq client)
+    // It will be lazily initialized on first use via ensureLLMInitialized()
+
+    // Initialize OpenAI for embeddings (TIER 2) - kept as direct client
+    // since LLMService doesn't support embedding generation
     const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey && openaiKey !== "your-openai-api-key") {
       this.openaiClient = new OpenAI({
@@ -195,8 +200,8 @@ export class GitStalenessDetector {
       }
     }
 
-    // TIER 3: LLM correlation for uncertain cases
-    if (uncertainPairs.length > 0 && this.groqClient) {
+    // TIER 3: LLM correlation for uncertain cases (via LLMService)
+    if (uncertainPairs.length > 0) {
       log(`Running TIER 3 LLM correlation for ${uncertainPairs.length} uncertain pairs`, "info");
       const llmResults = await this.matchByLLM(uncertainPairs);
 
@@ -555,7 +560,7 @@ export class GitStalenessDetector {
   }
 
   // ============================================================================
-  // TIER 3: LLM Correlation (Groq)
+  // TIER 3: LLM Correlation (via LLMService)
   // ============================================================================
 
   private async matchByLLM(
@@ -577,8 +582,10 @@ export class GitStalenessDetector {
       return results;
     }
 
-    if (!this.groqClient) {
-      log("Groq client not available, skipping TIER 3 LLM correlation", "warning");
+    try {
+      await this.ensureLLMInitialized();
+    } catch (initError) {
+      log("LLMService initialization failed, skipping TIER 3 LLM correlation", "warning", initError);
       return results;
     }
 
@@ -589,23 +596,24 @@ export class GitStalenessDetector {
       try {
         const prompt = this.buildCorrelationPrompt(batch);
 
-        const response = await this.groqClient.chat.completions.create({
-          model: "llama-3.3-70b-versatile",
+        const result = await this.llmService.complete({
           messages: [
             {
-              role: "system",
+              role: 'system',
               content: "You are an expert at analyzing code changes and their impact on documentation. Respond only with valid JSON.",
             },
             {
-              role: "user",
+              role: 'user',
               content: prompt,
             },
           ],
+          taskType: 'staleness_correlation',
+          agentId: 'git_staleness_detector',
+          maxTokens: 1000,
           temperature: 0.1,
-          max_tokens: 1000,
         });
 
-        const content = response.choices[0]?.message?.content || "";
+        const content = result.content;
         const scores = this.parseLLMResponse(content, batch);
 
         for (const [key, score] of scores) {

@@ -629,7 +629,10 @@ async function main(): Promise<void> {
 }
 
 // Run main
-main().catch(e => {
+main().then(() => {
+  log('[WorkflowRunner] Main function completed, exiting', 'info');
+  process.exit(0);
+}).catch(e => {
   log('Fatal error in workflow runner', 'error', e);
   process.exit(1);
 });

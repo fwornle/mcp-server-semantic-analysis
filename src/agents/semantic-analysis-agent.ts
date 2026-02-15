@@ -1,13 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
-import Groq from "groq-sdk";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { log } from '../logging.js';
 import type { IntelligentQueryResult } from './code-graph-agent.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
+import { LLMService } from '../../../../lib/llm/dist/index.js';
 
 export interface CodeFile {
   path: string;
@@ -67,15 +64,22 @@ export interface SemanticAnalysisResult {
 }
 
 export class SemanticAnalysisAgent {
-  private groqClient: Groq | null = null;
-  private geminiClient: GoogleGenerativeAI | null = null;
-  private anthropicClient: Anthropic | null = null;
-  private openaiClient: OpenAI | null = null;
+  private llmService: LLMService;
+  private llmInitialized: boolean = false;
   private repositoryPath: string;
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
-    this.initializeClients();
+    this.llmService = new LLMService();
+  }
+
+  private async ensureLLMInitialized(): Promise<void> {
+    if (!this.llmInitialized) {
+      await this.llmService.initialize();
+      this.llmInitialized = true;
+      const providers = this.llmService.getAvailableProviders();
+      log(`SemanticAnalysisAgent LLMService initialized with providers: ${providers.join(', ')}`, 'info');
+    }
   }
 
   async analyzeGitAndVibeData(
@@ -199,50 +203,6 @@ export class SemanticAnalysisAgent {
 
   // Request timeout for LLM API calls (30 seconds)
   private static readonly LLM_TIMEOUT_MS = 30000;
-
-  private initializeClients(): void {
-    // Initialize Groq client (primary/default - cheap, fast)
-    const groqKey = process.env.GROQ_API_KEY;
-    if (groqKey && groqKey !== "your-groq-api-key") {
-      this.groqClient = new Groq({
-        apiKey: groqKey,
-        timeout: SemanticAnalysisAgent.LLM_TIMEOUT_MS,
-      });
-      log("Groq client initialized for semantic analysis (default provider)", "info");
-    }
-
-    // Initialize Gemini client (fallback #1 - cheap, good quality)
-    // Note: Gemini SDK doesn't support timeout in constructor, handled per-request
-    const googleKey = process.env.GOOGLE_API_KEY;
-    if (googleKey && googleKey !== "your-google-api-key") {
-      this.geminiClient = new GoogleGenerativeAI(googleKey);
-      log("Gemini client initialized for semantic analysis (fallback #1)", "info");
-    }
-
-    // Initialize Anthropic client (fallback #2)
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
-    if (anthropicKey && anthropicKey !== "your-anthropic-api-key") {
-      this.anthropicClient = new Anthropic({
-        apiKey: anthropicKey,
-        timeout: SemanticAnalysisAgent.LLM_TIMEOUT_MS,
-      });
-      log("Anthropic client initialized for semantic analysis (fallback #2)", "info");
-    }
-
-    // Initialize OpenAI client (fallback #3)
-    const openaiKey = process.env.OPENAI_API_KEY;
-    if (openaiKey && openaiKey !== "your-openai-api-key") {
-      this.openaiClient = new OpenAI({
-        apiKey: openaiKey,
-        timeout: SemanticAnalysisAgent.LLM_TIMEOUT_MS,
-      });
-      log("OpenAI client initialized for semantic analysis (fallback #3)", "info");
-    }
-
-    if (!this.groqClient && !this.geminiClient && !this.anthropicClient && !this.openaiClient) {
-      log("No LLM clients available for semantic analysis", "warning");
-    }
-  }
 
   private extractFilesFromGitHistory(
     gitAnalysis: any,
@@ -793,16 +753,15 @@ export class SemanticAnalysisAgent {
     crossAnalysis: any,
     codeGraph?: any
   ): Promise<SemanticAnalysisResult['semanticInsights']> {
-    // LLM is REQUIRED for quality semantic analysis - NO FALLBACK
-    if (!this.groqClient && !this.geminiClient && !this.anthropicClient && !this.openaiClient) {
+    // Ensure LLMService is initialized
+    await this.ensureLLMInitialized();
+
+    const providers = this.llmService.getAvailableProviders();
+    if (providers.length === 0) {
       throw new Error(
-        `SemanticAnalysisAgent: No LLM clients available - cannot generate quality insights.\n\n` +
-        `At least one LLM provider API key must be configured:\n` +
-        `  - GROQ_API_KEY (recommended - fast and free tier available)\n` +
-        `  - GOOGLE_API_KEY (Gemini - good quality)\n` +
-        `  - ANTHROPIC_API_KEY (Claude - high quality)\n` +
-        `  - OPENAI_API_KEY (GPT - reliable)\n\n` +
-        `Set one or more of these environment variables and restart the analysis.`
+        `SemanticAnalysisAgent: No LLM providers available - cannot generate quality insights.\n\n` +
+        `Configure at least one provider via API keys or subscription CLI.\n` +
+        `See config/llm-providers.yaml for provider priority configuration.`
       );
     }
 
@@ -853,107 +812,31 @@ export class SemanticAnalysisAgent {
       await fs2.promises.writeFile(promptTraceFile, `=== LLM PROMPT ===\n${analysisPrompt}\n\n=== END PROMPT ===\n`);
       log(`🔍 TRACE: LLM prompt written to ${promptTraceFile}`, 'info');
 
-      let response: string;
+      // Use unified LLM service with automatic provider chain and fallback
+      const result = await this.llmService.complete({
+        messages: [{ role: 'user', content: analysisPrompt }],
+        taskType: 'semantic_code_analysis',
+        agentId: 'semantic_analysis',
+        maxTokens: 4096,
+        temperature: 0.7,
+      });
 
-      // Try Groq first (default, cheap, low-latency)
-      if (this.groqClient) {
-        try {
-          response = await this.callGroqWithRetry(analysisPrompt);
-        } catch (groqError: any) {
-          log('Groq call failed, trying Gemini fallback', 'warning', {
-            error: groqError.message,
-            status: groqError.status
-          });
+      const response = result.content;
 
-          // If Groq fails due to rate limiting, try Gemini
-          if (this.geminiClient && this.isRateLimitError(groqError)) {
-            try {
-              response = await this.callGeminiWithRetry(analysisPrompt);
-            } catch (geminiError: any) {
-              log('Gemini fallback failed, trying Anthropic', 'warning', {
-                error: geminiError.message,
-                status: geminiError.status
-              });
+      // Record LLM metrics for workflow tracking
+      SemanticAnalyzer.recordMetricsFromExternal({
+        provider: result.provider,
+        model: result.model,
+        inputTokens: result.tokens.input,
+        outputTokens: result.tokens.output,
+        totalTokens: result.tokens.total,
+      });
 
-              // If Gemini also fails, try Anthropic
-              if (this.anthropicClient && this.isRateLimitError(geminiError)) {
-                try {
-                  response = await this.callAnthropicWithRetry(analysisPrompt);
-                } catch (anthropicError: any) {
-                  log('Anthropic fallback failed, trying OpenAI', 'warning', {
-                    error: anthropicError.message,
-                    status: anthropicError.status
-                  });
-
-                  // If Anthropic fails, try OpenAI as last resort
-                  if (this.openaiClient && this.isRateLimitError(anthropicError)) {
-                    response = await this.callOpenAIWithRetry(analysisPrompt);
-                  } else {
-                    throw anthropicError;
-                  }
-                }
-              } else {
-                throw geminiError;
-              }
-            }
-          } else {
-            throw groqError;
-          }
-        }
-      } else if (this.geminiClient) {
-        // Fallback #1: Gemini if Groq not available
-        try {
-          response = await this.callGeminiWithRetry(analysisPrompt);
-        } catch (geminiError: any) {
-          log('Gemini call failed, trying Anthropic fallback', 'warning', {
-            error: geminiError.message,
-            status: geminiError.status
-          });
-
-          // If Gemini fails due to rate limiting, try Anthropic
-          if (this.anthropicClient && this.isRateLimitError(geminiError)) {
-            try {
-              response = await this.callAnthropicWithRetry(analysisPrompt);
-            } catch (anthropicError: any) {
-              log('Anthropic fallback failed, trying OpenAI', 'warning', {
-                error: anthropicError.message,
-                status: anthropicError.status
-              });
-
-              // If Anthropic fails, try OpenAI as last resort
-              if (this.openaiClient && this.isRateLimitError(anthropicError)) {
-                response = await this.callOpenAIWithRetry(analysisPrompt);
-              } else {
-                throw anthropicError;
-              }
-            }
-          } else {
-            throw geminiError;
-          }
-        }
-      } else if (this.anthropicClient) {
-        // Fallback #2: Anthropic if neither Groq nor Gemini available
-        try {
-          response = await this.callAnthropicWithRetry(analysisPrompt);
-        } catch (anthropicError: any) {
-          log('Anthropic call failed, trying OpenAI fallback', 'warning', {
-            error: anthropicError.message,
-            status: anthropicError.status
-          });
-
-          // If Anthropic fails due to rate limiting, try OpenAI
-          if (this.openaiClient && this.isRateLimitError(anthropicError)) {
-            response = await this.callOpenAIWithRetry(analysisPrompt);
-          } else {
-            throw anthropicError;
-          }
-        }
-      } else if (this.openaiClient) {
-        // Fallback #3: OpenAI if no other providers available
-        response = await this.callOpenAIWithRetry(analysisPrompt);
-      } else {
-        throw new Error('No LLM client available');
-      }
+      log(`LLM call successful via ${result.provider}/${result.model}`, 'info', {
+        responseLength: response.length,
+        tokens: result.tokens.total,
+        latencyMs: result.latencyMs,
+      });
 
       // ULTRA DEBUG: Write LLM response to trace file
       const fs3 = await import('fs');
@@ -978,309 +861,6 @@ export class SemanticAnalysisAgent {
       log('LLM insight generation failed, falling back to rule-based', 'warning', error);
       return this.generateRuleBasedInsights(codeFiles, gitAnalysis, vibeAnalysis, crossAnalysis);
     }
-  }
-
-  /**
-   * Check if an error is a rate limit error
-   */
-  private isRateLimitError(error: any): boolean {
-    return error.status === 429 || 
-           error.message?.includes('rate_limit') ||
-           error.message?.includes('Rate limit') ||
-           error.error?.error?.type === 'rate_limit_error';
-  }
-
-  /**
-   * Sleep for a given number of milliseconds
-   */
-  private async sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Call Groq with exponential backoff retry
-   * Using llama-3.3-70b-versatile: cheap, low-latency model
-   */
-  private async callGroqWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
-    let lastError: any;
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        log(`Calling Groq API (attempt ${attempt + 1}/${maxRetries})`, 'info');
-
-        const result = await this.groqClient!.chat.completions.create({
-          model: "llama-3.3-70b-versatile", // Cheap, low-latency model
-          max_tokens: 4096,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.7
-        });
-
-        const response = result.choices[0]?.message?.content || '';
-        const usage = result.usage;
-
-        // Record LLM metrics for workflow tracking
-        if (usage) {
-          SemanticAnalyzer.recordMetricsFromExternal({
-            provider: 'groq',
-            model: 'llama-3.3-70b-versatile',
-            inputTokens: usage.prompt_tokens || 0,
-            outputTokens: usage.completion_tokens || 0,
-            totalTokens: usage.total_tokens || 0,
-          });
-        }
-
-        log(`Groq API call successful`, 'info', {
-          responseLength: response.length,
-          attempt: attempt + 1,
-          model: "llama-3.3-70b-versatile",
-          tokens: usage?.total_tokens
-        });
-
-        return response;
-
-      } catch (error: any) {
-        lastError = error;
-
-        if (this.isRateLimitError(error)) {
-          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
-          log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
-            attempt: attempt + 1,
-            maxRetries,
-            status: error.status,
-            backoffMs
-          });
-
-          if (attempt < maxRetries - 1) {
-            await this.sleep(backoffMs);
-            continue;
-          }
-        }
-
-        // For non-rate-limit errors, don't retry
-        log(`Groq API call failed`, 'error', {
-          attempt: attempt + 1,
-          error: error.message,
-          status: error.status
-        });
-        break;
-      }
-    }
-
-    throw lastError;
-  }
-
-  /**
-   * Call Gemini with exponential backoff retry
-   * Using gemini-2.0-flash-exp: cheap, fast model with good quality
-   */
-  private async callGeminiWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
-    let lastError: any;
-
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        log(`Calling Gemini API (attempt ${attempt + 1}/${maxRetries})`, 'info');
-
-        const model = this.geminiClient!.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
-
-        // Wrap Gemini call with timeout since SDK doesn't support it natively
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error(`Gemini API timeout after ${SemanticAnalysisAgent.LLM_TIMEOUT_MS}ms`)), SemanticAnalysisAgent.LLM_TIMEOUT_MS);
-        });
-
-        const result = await Promise.race([
-          model.generateContent(prompt),
-          timeoutPromise
-        ]);
-        const response = result.response.text();
-        const usageMetadata = result.response.usageMetadata;
-
-        // Record LLM metrics for workflow tracking
-        if (usageMetadata) {
-          SemanticAnalyzer.recordMetricsFromExternal({
-            provider: 'gemini',
-            model: 'gemini-2.0-flash-exp',
-            inputTokens: usageMetadata.promptTokenCount || 0,
-            outputTokens: usageMetadata.candidatesTokenCount || 0,
-            totalTokens: usageMetadata.totalTokenCount || 0,
-          });
-        }
-
-        log(`Gemini API call successful`, 'info', {
-          responseLength: response.length,
-          attempt: attempt + 1,
-          model: "gemini-2.0-flash-exp",
-          tokens: usageMetadata?.totalTokenCount
-        });
-
-        return response;
-
-      } catch (error: any) {
-        lastError = error;
-
-        if (this.isRateLimitError(error)) {
-          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
-          log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
-            attempt: attempt + 1,
-            maxRetries,
-            status: error.status,
-            backoffMs
-          });
-
-          if (attempt < maxRetries - 1) {
-            await this.sleep(backoffMs);
-            continue;
-          }
-        }
-
-        // For non-rate-limit errors, don't retry
-        log(`Gemini API call failed`, 'error', {
-          attempt: attempt + 1,
-          error: error.message,
-          status: error.status
-        });
-        break;
-      }
-    }
-
-    throw lastError;
-  }
-
-  /**
-   * Call Anthropic with exponential backoff retry
-   */
-  private async callAnthropicWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
-    let lastError: any;
-    
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        log(`Calling Anthropic API (attempt ${attempt + 1}/${maxRetries})`, 'info');
-        
-        const result = await this.anthropicClient!.messages.create({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 4096,
-          messages: [{ role: "user", content: prompt }]
-        });
-        
-        const response = result.content[0].type === 'text' ? result.content[0].text : '';
-        const usage = result.usage;
-
-        // Record LLM metrics for workflow tracking
-        if (usage) {
-          SemanticAnalyzer.recordMetricsFromExternal({
-            provider: 'anthropic',
-            model: 'claude-sonnet-4-20250514',
-            inputTokens: usage.input_tokens || 0,
-            outputTokens: usage.output_tokens || 0,
-            totalTokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
-          });
-        }
-
-        log(`Anthropic API call successful`, 'info', {
-          responseLength: response.length,
-          attempt: attempt + 1,
-          tokens: usage ? usage.input_tokens + usage.output_tokens : undefined
-        });
-
-        return response;
-
-      } catch (error: any) {
-        lastError = error;
-
-        if (this.isRateLimitError(error)) {
-          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
-          log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
-            attempt: attempt + 1,
-            maxRetries,
-            status: error.status,
-            backoffMs
-          });
-
-          if (attempt < maxRetries - 1) {
-            await this.sleep(backoffMs);
-            continue;
-          }
-        }
-        
-        // For non-rate-limit errors, don't retry
-        log(`Anthropic API call failed`, 'error', {
-          attempt: attempt + 1,
-          error: error.message,
-          status: error.status
-        });
-        break;
-      }
-    }
-    
-    throw lastError;
-  }
-
-  /**
-   * Call OpenAI with exponential backoff retry
-   */
-  private async callOpenAIWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
-    let lastError: any;
-    
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        log(`Calling OpenAI API (attempt ${attempt + 1}/${maxRetries})`, 'info');
-        
-        const result = await this.openaiClient!.chat.completions.create({
-          model: "gpt-4",
-          max_tokens: 2000,
-          messages: [{ role: "user", content: prompt }]
-        });
-        
-        const response = result.choices[0]?.message?.content || '';
-        const usage = result.usage;
-
-        // Record LLM metrics for workflow tracking
-        if (usage) {
-          SemanticAnalyzer.recordMetricsFromExternal({
-            provider: 'openai',
-            model: 'gpt-4',
-            inputTokens: usage.prompt_tokens || 0,
-            outputTokens: usage.completion_tokens || 0,
-            totalTokens: usage.total_tokens || 0,
-          });
-        }
-
-        log(`OpenAI API call successful`, 'info', {
-          responseLength: response.length,
-          attempt: attempt + 1,
-          tokens: usage?.total_tokens
-        });
-
-        return response;
-
-      } catch (error: any) {
-        lastError = error;
-
-        if (this.isRateLimitError(error)) {
-          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000); // Max 30 seconds
-          log(`Rate limited, retrying in ${backoffMs}ms`, 'warning', {
-            attempt: attempt + 1,
-            maxRetries,
-            status: error.status,
-            backoffMs
-          });
-
-          if (attempt < maxRetries - 1) {
-            await this.sleep(backoffMs);
-            continue;
-          }
-        }
-        
-        // For non-rate-limit errors, don't retry
-        log(`OpenAI API call failed`, 'error', {
-          attempt: attempt + 1,
-          error: error.message,
-          status: error.status
-        });
-        break;
-      }
-    }
-    
-    throw lastError;
   }
 
   private buildAnalysisPrompt(
@@ -1746,38 +1326,34 @@ QUALITY RULES:
         fullPrompt = `${context.context}\n\n${content}`;
       }
 
-      // Call LLM with the actual prompt using the same logic as generateLLMInsights
-      let response: string;
+      // Call LLM via unified LLMService
+      await this.ensureLLMInitialized();
+      const result = await this.llmService.complete({
+        messages: [{ role: 'user', content: fullPrompt }],
+        taskType: 'content_analysis',
+        agentId: 'semantic_analysis',
+        maxTokens: 4096,
+        temperature: 0.7,
+      });
 
-      if (this.groqClient) {
-        try {
-          response = await this.callGroqWithRetry(fullPrompt);
-        } catch (groqError: any) {
-          if (this.geminiClient && this.isRateLimitError(groqError)) {
-            response = await this.callGeminiWithRetry(fullPrompt);
-          } else if (this.anthropicClient) {
-            response = await this.callAnthropicWithRetry(fullPrompt);
-          } else {
-            throw groqError;
-          }
-        }
-      } else if (this.geminiClient) {
-        response = await this.callGeminiWithRetry(fullPrompt);
-      } else if (this.anthropicClient) {
-        response = await this.callAnthropicWithRetry(fullPrompt);
-      } else if (this.openaiClient) {
-        response = await this.callOpenAIWithRetry(fullPrompt);
-      } else {
-        throw new Error('No LLM client available');
-      }
+      const response = result.content;
+
+      SemanticAnalyzer.recordMetricsFromExternal({
+        provider: result.provider,
+        model: result.model,
+        inputTokens: result.tokens.input,
+        outputTokens: result.tokens.output,
+        totalTokens: result.tokens.total,
+      });
 
       log('LLM analysis completed successfully', 'info', {
-        responseLength: response.length
+        responseLength: response.length,
+        provider: result.provider,
       });
 
       return {
         insights: response,
-        provider: this.groqClient ? 'groq' : this.geminiClient ? 'gemini' : this.anthropicClient ? 'anthropic' : 'openai',
+        provider: result.provider,
         confidence: 0.8
       };
 
@@ -2139,19 +1715,24 @@ Respond with a JSON array where each element has:
 }`;
 
     try {
-      let response: string;
+      await this.ensureLLMInitialized();
+      const result = await this.llmService.complete({
+        messages: [{ role: 'user', content: prompt }],
+        taskType: 'docstring_analysis',
+        agentId: 'semantic_analysis',
+        maxTokens: 4096,
+        temperature: 0.3,
+      });
 
-      if (this.groqClient) {
-        response = await this.callGroqWithRetry(prompt);
-      } else if (this.geminiClient) {
-        response = await this.callGeminiWithRetry(prompt);
-      } else if (this.anthropicClient) {
-        response = await this.callAnthropicWithRetry(prompt);
-      } else if (this.openaiClient) {
-        response = await this.callOpenAIWithRetry(prompt);
-      } else {
-        throw new Error('No LLM client available for docstring analysis');
-      }
+      const response = result.content;
+
+      SemanticAnalyzer.recordMetricsFromExternal({
+        provider: result.provider,
+        model: result.model,
+        inputTokens: result.tokens.input,
+        outputTokens: result.tokens.output,
+        totalTokens: result.tokens.total,
+      });
 
       // Parse JSON response
       const jsonMatch = response.match(/\[[\s\S]*\]/);
@@ -2248,19 +1829,24 @@ Extract and respond with JSON:
 }`;
 
     try {
-      let response: string;
+      await this.ensureLLMInitialized();
+      const result = await this.llmService.complete({
+        messages: [{ role: 'user', content: prompt }],
+        taskType: 'document_analysis',
+        agentId: 'semantic_analysis',
+        maxTokens: 2048,
+        temperature: 0.3,
+      });
 
-      if (this.groqClient) {
-        response = await this.callGroqWithRetry(prompt);
-      } else if (this.geminiClient) {
-        response = await this.callGeminiWithRetry(prompt);
-      } else if (this.anthropicClient) {
-        response = await this.callAnthropicWithRetry(prompt);
-      } else if (this.openaiClient) {
-        response = await this.callOpenAIWithRetry(prompt);
-      } else {
-        return null;
-      }
+      const response = result.content;
+
+      SemanticAnalyzer.recordMetricsFromExternal({
+        provider: result.provider,
+        model: result.model,
+        inputTokens: result.tokens.input,
+        outputTokens: result.tokens.output,
+        totalTokens: result.tokens.total,
+      });
 
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {

@@ -2652,7 +2652,7 @@ export class CoordinatorAgent {
               const enrichedGitAnalysis = {
                 ...gitAnalysis,
                 architecturalDecisions: (semanticResult?.codeAnalysis?.architecturalPatterns || []).map((p: any) => ({
-                  type: p.name || 'ArchitecturalDecision',
+                  type: (p.name || 'ArchitecturalDecision').replace(/[-_]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim().split(/\s+/).map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(''),
                   description: p.description || '',
                   files: p.files || [],
                   impact: p.confidence > 0.7 ? 'high' : p.confidence > 0.4 ? 'medium' : 'low',

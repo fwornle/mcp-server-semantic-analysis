@@ -1555,6 +1555,7 @@ export class PersistenceAgent {
           metadata: {
             created_at: now,
             last_updated: now,
+            team: this.config.ontologyTeam || 'coding',
             source: 'semantic-analysis-workflow',
             context: `comprehensive-analysis-${insight.metadata?.analysisTypes?.join('-') || 'semantic'}`,
             tags: insight.metadata?.analysisTypes,
@@ -1588,10 +1589,17 @@ export class PersistenceAgent {
           entity.metadata.validated_file_path = insightFilePath;
           entities.push(entity);
           sharedMemory.entities.push(entity);
-          log(`Created entity with validated file: ${entity.name}`, 'info', {
-            validatedFile: insightFilePath,
-            method: 'createEntitiesFromAnalysisResults'
-          });
+
+          // Store entity to graph (storeEntityToGraph handles classification + relationships)
+          try {
+            await this.storeEntityToGraph(entity);
+            log(`Created and stored entity: ${entity.name}`, 'info', {
+              validatedFile: insightFilePath,
+              method: 'createEntitiesFromAnalysisResults'
+            });
+          } catch (storeError) {
+            log(`Entity created but graph storage failed: ${entity.name}`, 'error', storeError);
+          }
         }
         }  // Close the else block for ontology classification check
       }
@@ -1648,6 +1656,7 @@ export class PersistenceAgent {
             metadata: {
               created_at: now,
               last_updated: now,
+              team: this.config.ontologyTeam || 'coding',
               source: 'semantic-analysis-workflow-additional',
               context: 'comprehensive-analysis-semantic',
               tags: ['pattern', 'additional'],
@@ -1667,11 +1676,18 @@ export class PersistenceAgent {
 
           entities.push(additionalEntity);
           sharedMemory.entities.push(additionalEntity);
-          log(`Created additional entity from insight file: ${patternName}`, 'info', {
-            file: insightFile.fullPath,
-            method: 'createEntitiesFromAnalysisResults-additional',
-            entityType: additionalOntologyMeta.ontologyClass
-          });
+
+          // Store entity to graph (handles classification + relationships)
+          try {
+            await this.storeEntityToGraph(additionalEntity);
+            log(`Created and stored additional entity: ${patternName}`, 'info', {
+              file: insightFile.fullPath,
+              method: 'createEntitiesFromAnalysisResults-additional',
+              entityType: additionalOntologyMeta.ontologyClass
+            });
+          } catch (storeError) {
+            log(`Additional entity created but graph storage failed: ${patternName}`, 'error', storeError);
+          }
         }
       }
 
@@ -1710,6 +1726,7 @@ export class PersistenceAgent {
           metadata: {
             created_at: now,
             last_updated: now,
+            team: this.config.ontologyTeam || 'coding',
             source: 'git-history-analysis',
             context: `git-evolution-${gitAnalysis.commits.length}-commits`,
             tags: ['git-analysis', 'development', 'evolution']
@@ -1732,10 +1749,17 @@ export class PersistenceAgent {
           gitEntity.metadata.validated_file_path = gitInsightPath;
           entities.push(gitEntity);
           sharedMemory.entities.push(gitEntity);
-          log(`Created git entity with validated file: ${gitEntity.name}`, 'info', {
-            validatedFile: gitInsightPath,
-            method: 'createEntitiesFromAnalysisResults-git'
-          });
+
+          // Store entity to graph (handles classification + relationships)
+          try {
+            await this.storeEntityToGraph(gitEntity);
+            log(`Created and stored git entity: ${gitEntity.name}`, 'info', {
+              validatedFile: gitInsightPath,
+              method: 'createEntitiesFromAnalysisResults-git'
+            });
+          } catch (storeError) {
+            log(`Git entity created but graph storage failed: ${gitEntity.name}`, 'error', storeError);
+          }
         }
       }
 
@@ -3176,6 +3200,7 @@ export class PersistenceAgent {
               metadata: {
                 created_at: currentDate,
                 last_updated: currentDate,
+                team: team,
                 created_by: 'workflow_persist',
                 version: '1.0'
               }

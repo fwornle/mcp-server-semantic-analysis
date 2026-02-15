@@ -1100,68 +1100,68 @@ QUALITY RULES:
   }
 
   /**
-   * Convert structured pattern objects to rich observation strings
+   * Convert structured pattern objects to rich observation strings (bullet-point format)
    */
   private convertStructuredPatterns(patterns: any[]): string[] {
     return patterns
       .filter(p => p.name && p.codeExample) // Must have name and code example
       .map(p => {
-        const parts = [`${p.name}:`];
-        if (p.problem) parts.push(`Problem: ${p.problem}`);
-        if (p.solution) parts.push(`Solution: ${p.solution}`);
-        if (p.codeExample) parts.push(`Example: ${p.codeExample}`);
-        if (p.doRules?.length) parts.push(`DO: ${p.doRules.join('; ')}`);
-        if (p.dontRules?.length) parts.push(`DON'T: ${p.dontRules.join('; ')}`);
-        if (p.evidence?.length) parts.push(`Evidence: ${p.evidence.slice(0, 2).join(', ')}`);
-        return parts.join(' | ');
+        const lines = [`**${p.name}**`];
+        if (p.problem) lines.push(`- Problem: ${p.problem}`);
+        if (p.solution) lines.push(`- Solution: ${p.solution}`);
+        if (p.codeExample) lines.push(`- Example: ${p.codeExample}`);
+        if (p.doRules?.length) lines.push(`- DO: ${p.doRules.join('; ')}`);
+        if (p.dontRules?.length) lines.push(`- DON'T: ${p.dontRules.join('; ')}`);
+        if (p.evidence?.length) lines.push(`- Evidence: ${p.evidence.slice(0, 2).join(', ')}`);
+        return lines.join('\n');
       });
   }
 
   /**
-   * Convert structured decision objects to rich observation strings
+   * Convert structured decision objects to rich observation strings (bullet-point format)
    */
   private convertStructuredDecisions(decisions: any[]): string[] {
     return decisions
       .filter(d => d.name && (d.decision || d.rationale))
       .map(d => {
-        const parts = [`${d.name}:`];
-        if (d.decision) parts.push(`Decision: ${d.decision}`);
-        if (d.rationale) parts.push(`Rationale: ${d.rationale}`);
-        if (d.codeExample) parts.push(`Example: ${d.codeExample}`);
-        if (d.tradeoffs?.length) parts.push(`Tradeoffs: ${d.tradeoffs.join('; ')}`);
-        if (d.evidence?.length) parts.push(`Evidence: ${d.evidence.slice(0, 2).join(', ')}`);
-        return parts.join(' | ');
+        const lines = [`**${d.name}**`];
+        if (d.decision) lines.push(`- Decision: ${d.decision}`);
+        if (d.rationale) lines.push(`- Rationale: ${d.rationale}`);
+        if (d.codeExample) lines.push(`- Example: ${d.codeExample}`);
+        if (d.tradeoffs?.length) lines.push(`- Tradeoffs: ${d.tradeoffs.join('; ')}`);
+        if (d.evidence?.length) lines.push(`- Evidence: ${d.evidence.slice(0, 2).join(', ')}`);
+        return lines.join('\n');
       });
   }
 
   /**
-   * Convert structured debt objects to rich observation strings
+   * Convert structured debt objects to rich observation strings (bullet-point format)
    */
   private convertStructuredDebt(debt: any[]): string[] {
     return debt
       .filter(d => d.name && d.issue)
       .map(d => {
-        const parts = [`${d.name}:`];
-        if (d.issue) parts.push(`Issue: ${d.issue}`);
-        if (d.location) parts.push(`Location: ${d.location}`);
-        if (d.suggestedFix) parts.push(`Fix: ${d.suggestedFix}`);
-        if (d.priority) parts.push(`Priority: ${d.priority}`);
-        return parts.join(' | ');
+        const lines = [`**${d.name}**`];
+        if (d.issue) lines.push(`- Issue: ${d.issue}`);
+        if (d.location) lines.push(`- Location: ${d.location}`);
+        if (d.suggestedFix) lines.push(`- Fix: ${d.suggestedFix}`);
+        if (d.priority) lines.push(`- Priority: ${d.priority}`);
+        return lines.join('\n');
       });
   }
 
   /**
-   * Convert structured learning objects to rich observation strings
+   * Convert structured learning objects to rich observation strings (bullet-point format)
    */
   private convertStructuredLearnings(learnings: any[]): string[] {
     return learnings
       .filter(l => l.name && (l.insight || l.codeExample))
       .map(l => {
-        const parts = [`${l.name}:`];
-        if (l.insight) parts.push(`Insight: ${l.insight}`);
-        if (l.codeExample) parts.push(`Example: ${l.codeExample}`);
-        if (l.applicability) parts.push(`When: ${l.applicability}`);
-        return parts.join(' | ');
+        const lines = [`**${l.name}**`];
+        if (l.insight) lines.push(`- Insight: ${l.insight}`);
+        if (l.codeExample) lines.push(`- Example: ${l.codeExample}`);
+        if (l.applicability) lines.push(`- When: ${l.applicability}`);
+        return lines.join('\n');
       });
   }
 

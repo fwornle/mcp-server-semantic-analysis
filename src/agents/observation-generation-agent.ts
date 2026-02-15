@@ -1655,23 +1655,45 @@ If no meaningful correlation exists, return { "hasCorrelation": false }`;
 
   // Helper methods
   private generateEntityName(type: string, description: string): string {
-    // Create a clean, PascalCase entity name - DO NOT force "Pattern" suffix
+    // Create a clean, PascalCase entity name
     // Entity types are determined by ontology classification, not naming convention
-    const cleaned = description
-      .replace(/[^a-zA-Z0-9\s]/g, '')
+
+    // Normalize type to PascalCase: split on camelCase boundaries, spaces, hyphens, underscores
+    const typeFormatted = this.toPascalCase(type);
+
+    // Normalize description: take first 4 meaningful words, PascalCase them
+    const cleaned = this.toPascalCase(
+      description
+        .replace(/[^a-zA-Z0-9\s]/g, '')
+        .trim()
+        .split(/\s+/)
+        .slice(0, 4)
+        .join(' ')
+    );
+
+    return `${typeFormatted}${cleaned}`;
+  }
+
+  /**
+   * Convert any string to PascalCase, handling:
+   * - camelCase ("modularConstraint" → "ModularConstraint")
+   * - concatenated lowercase ("modularconstraintmonitor" → "Modularconstraintmonitor" - kept as single word)
+   * - space/hyphen/underscore separated ("modular constraint" → "ModularConstraint")
+   * - already PascalCase ("ModularConstraint" → "ModularConstraint")
+   */
+  private toPascalCase(input: string): string {
+    // First split on explicit separators (spaces, hyphens, underscores)
+    // Then split on camelCase boundaries (lowercase→uppercase transitions)
+    const words = input
+      .replace(/[-_]/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
       .trim()
       .split(/\s+/)
-      .slice(0, 4) // Max 4 words for descriptive names
+      .filter(w => w.length > 0);
+
+    return words
       .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join('');
-
-    // Preserve original type casing (e.g., "SemanticInsight" stays "SemanticInsight")
-    // Only capitalize first letter if not already PascalCase
-    const typeFormatted = /^[A-Z]/.test(type) ? type : type.charAt(0).toUpperCase() + type.slice(1);
-
-    // Combine type and description WITHOUT forcing "Pattern" suffix
-    // The entity type (Pattern, Workflow, Evolution, etc.) is determined by ontology classification
-    return `${typeFormatted}${cleaned}`;
   }
 
   private calculateSignificance(impact: string, fileCount: number): number {

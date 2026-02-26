@@ -4753,86 +4753,244 @@ ${data.appendices || 'Additional metadata and references.'}
   }
 
   private async parseArchitecturalPatternsFromLLM(
-    llmInsights: string, 
+    llmInsights: string,
     commits: any[]
   ): Promise<IdentifiedPattern[]> {
     const patterns: IdentifiedPattern[] = [];
-    
+
+    // Generic section titles that are NOT pattern names -- excluded from header matching
+    const GENERIC_SECTION_TITLES = new Set([
+      'PatternIdentification', 'PatternDescriptions', 'ArchitecturalPatterns',
+      'DesignPatterns', 'IdentifiedPatterns', 'Summary', 'Analysis', 'Overview',
+      'Conclusion', 'Introduction'
+    ]);
+
     try {
-      // Try to extract structured patterns from LLM response
+      // -----------------------------------------------------------------------
+      // Strategy 1: JSON parse (most reliable -- handles structured LLM output)
+      // -----------------------------------------------------------------------
+      try {
+        const cleaned = llmInsights
+          .replace(/^```json?\n?/m, '')
+          .replace(/\n?```$/m, '')
+          .trim();
+        const parsed = JSON.parse(cleaned);
+        const jsonArray: any[] = Array.isArray(parsed) ? parsed : (parsed.patterns || []);
+
+        if (jsonArray.length > 0) {
+          for (const item of jsonArray) {
+            const name = this.formatPatternName(item.name || item.pattern || 'Unknown');
+            patterns.push(this.finalizePattern({
+              name,
+              description: item.description || '',
+              significance: typeof item.significance === 'number'
+                ? Math.min(10, Math.max(1, item.significance))
+                : 7,
+              category: item.category || 'architecture',
+              evidence: [],
+              relatedComponents: [],
+              implementation: { language: 'TypeScript', usageNotes: [] }
+            }, commits));
+          }
+          log(`Extracted ${patterns.length} patterns from LLM response (JSON strategy)`, 'info');
+          return patterns;
+        }
+      } catch (_jsonError) {
+        // JSON parse failed -- fall through to line-based parsing
+      }
+
+      // -----------------------------------------------------------------------
+      // Strategy 2: Line-based multi-format parsing
+      // -----------------------------------------------------------------------
       const lines = llmInsights.split('\n');
       let currentPattern: Partial<IdentifiedPattern> | null = null;
-      
+
       for (const line of lines) {
         const trimmed = line.trim();
-        
-        // Look for pattern headers
-        if (trimmed.match(/^(Pattern|Architecture|Design):\s*(.+)/i)) {
+
+        // 2a) Numbered bold markdown: "1. **PatternName**: description"
+        const boldMatch = trimmed.match(/^\d+\.\s+\*\*(.+?)\*\*[:\s]*(.*)/);
+        if (boldMatch) {
           if (currentPattern && currentPattern.name) {
             patterns.push(this.finalizePattern(currentPattern, commits));
           }
-          const patternName = RegExp.$2.trim();
           currentPattern = {
-            name: this.formatPatternName(patternName),
+            name: this.formatPatternName(boldMatch[1].trim()),
+            category: 'Architecture',
+            description: boldMatch[2].trim() || '',
+            significance: 7,
+            evidence: [],
+            relatedComponents: [],
+            implementation: { language: 'TypeScript', usageNotes: [] }
+          };
+          continue;
+        }
+
+        // 2b) Section headers: "### 1. PatternName" or "## PatternName"
+        const headerMatch = trimmed.match(/^#{1,3}\s+(?:\d+\.\s+)?([A-Z][A-Za-z]+(?:[A-Z][A-Za-z]*)*)/);
+        if (headerMatch) {
+          const candidateName = headerMatch[1].trim();
+          // Skip generic section titles
+          const normalized = candidateName.replace(/\s+/g, '');
+          if (!GENERIC_SECTION_TITLES.has(normalized)) {
+            if (currentPattern && currentPattern.name) {
+              patterns.push(this.finalizePattern(currentPattern, commits));
+            }
+            currentPattern = {
+              name: this.formatPatternName(candidateName),
+              category: 'Architecture',
+              description: '',
+              significance: 7,
+              evidence: [],
+              relatedComponents: [],
+              implementation: { language: 'TypeScript', usageNotes: [] }
+            };
+            continue;
+          }
+        }
+
+        // 2c) Original labeled format (fallback): "Pattern: ...", "Architecture: ...", "Design: ..."
+        const labeledMatch = trimmed.match(/^(Pattern|Architecture|Design):\s*(.+)/i);
+        if (labeledMatch) {
+          if (currentPattern && currentPattern.name) {
+            patterns.push(this.finalizePattern(currentPattern, commits));
+          }
+          currentPattern = {
+            name: this.formatPatternName(labeledMatch[2].trim()),
             category: 'Architecture',
             description: '',
             significance: 7,
             evidence: [],
             relatedComponents: [],
-            implementation: {
-              language: 'TypeScript',
-              usageNotes: []
-            }
+            implementation: { language: 'TypeScript', usageNotes: [] }
           };
+          continue;
         }
-        // Look for descriptions
-        else if (currentPattern && trimmed.match(/^(Description|Purpose|Summary):\s*(.+)/i)) {
-          currentPattern.description = RegExp.$2.trim();
-        }
-        // Look for significance indicators
-        else if (currentPattern && trimmed.match(/^(Significance|Importance|Impact):\s*(\d+)/i)) {
-          currentPattern.significance = Math.min(10, Math.max(1, parseInt(RegExp.$2)));
-        }
-        // Look for code examples or implementation notes
-        else if (currentPattern && trimmed.match(/^(Implementation|Code|Example):/i)) {
-          currentPattern.implementation = currentPattern.implementation || { language: 'TypeScript', usageNotes: [] };
-          currentPattern.implementation.usageNotes?.push(trimmed);
-        }
-        // Collect evidence
-        else if (currentPattern && trimmed.length > 20) {
-          currentPattern.evidence = currentPattern.evidence || [];
-          currentPattern.evidence.push(trimmed);
+
+        // Within a current pattern: collect description, significance, notes, evidence
+        if (currentPattern) {
+          const descMatch = trimmed.match(/^(Description|Purpose|Summary):\s*(.+)/i);
+          if (descMatch) {
+            currentPattern.description = descMatch[2].trim();
+            continue;
+          }
+
+          const sigMatch = trimmed.match(/^(Significance|Importance|Impact):\s*(\d+)/i);
+          if (sigMatch) {
+            currentPattern.significance = Math.min(10, Math.max(1, parseInt(sigMatch[2], 10)));
+            continue;
+          }
+
+          const implMatch = trimmed.match(/^(Implementation|Code|Example):/i);
+          if (implMatch) {
+            currentPattern.implementation = currentPattern.implementation || { language: 'TypeScript', usageNotes: [] };
+            currentPattern.implementation.usageNotes?.push(trimmed);
+            continue;
+          }
+
+          if (trimmed.length > 20) {
+            currentPattern.evidence = currentPattern.evidence || [];
+            currentPattern.evidence.push(trimmed);
+          }
         }
       }
-      
-      // Don't forget the last pattern
+
+      // Finalize the last open pattern
       if (currentPattern && currentPattern.name) {
         patterns.push(this.finalizePattern(currentPattern, commits));
       }
-      
-      // NOTE: Removed generic fallback pattern creation (ArchitecturalEvolutionPattern)
-      // Creating meaningless fallback entities pollutes the knowledge graph.
-      // If no structured patterns are found, return empty array - QA will handle it.
+
+      // -----------------------------------------------------------------------
+      // Strategy 3: LLM retry with explicit format hints on zero extraction
+      // -----------------------------------------------------------------------
       if (patterns.length === 0) {
-        log('No structured patterns could be extracted from LLM insights', 'warning', {
+        log('Zero patterns extracted from initial response, retrying with format hints', 'warning', {
+          responseLength: llmInsights.length,
+          commitCount: commits.length
+        });
+
+        try {
+          const formatHintPrompt = `The following analysis text could not be parsed into structured patterns. Please re-analyze and respond STRICTLY in this JSON format:
+
+\`\`\`json
+[
+  {
+    "name": "PatternNameInPascalCase",
+    "description": "What this pattern does and why it matters",
+    "significance": 7,
+    "category": "architecture"
+  }
+]
+\`\`\`
+
+Original analysis to re-format:
+${llmInsights.substring(0, 3000)}`;
+
+          const retryResult = await this.semanticAnalyzer.analyzeContent(formatHintPrompt, {
+            analysisType: 'patterns',
+            provider: 'auto',
+            taskType: 'pattern_recognition'
+          });
+
+          // Parse retry result using same Strategy 1 (JSON) logic
+          const retryCleaned = retryResult.insights
+            .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
+          const retryParsed = JSON.parse(retryCleaned);
+          const retryArray: any[] = Array.isArray(retryParsed) ? retryParsed : (retryParsed.patterns || []);
+
+          for (const item of retryArray) {
+            const name = this.formatPatternName(item.name || item.pattern || 'Unknown');
+            patterns.push(this.finalizePattern({
+              name,
+              description: item.description || '',
+              significance: typeof item.significance === 'number'
+                ? Math.min(10, Math.max(1, item.significance))
+                : 7,
+              category: item.category || 'architecture',
+              evidence: [],
+              relatedComponents: [],
+              implementation: { language: 'TypeScript', usageNotes: [] }
+            }, commits));
+          }
+
+          if (patterns.length > 0) {
+            log(`Retry with format hints succeeded: extracted ${patterns.length} patterns`, 'info');
+          }
+        } catch (retryError) {
+          log('LLM retry with format hints also failed', 'warning', {
+            error: retryError instanceof Error ? retryError.message : String(retryError)
+          });
+        }
+      }
+
+      if (patterns.length === 0) {
+        log('No structured patterns could be extracted from LLM insights (all strategies exhausted)', 'warning', {
           llmInsightsLength: llmInsights.length,
           commitCount: commits.length
         });
+      } else {
+        log(`Extracted ${patterns.length} patterns from LLM response`, 'info');
       }
+
     } catch (error) {
       log('Error parsing LLM insights into patterns', 'error', error);
     }
-    
+
     return patterns;
   }
 
   private formatPatternName(rawName: string): string {
-    // Convert to PascalCase and ensure it ends with "Pattern"
-    const words = rawName.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/);
+    // Convert to PascalCase preserving existing capitalization in sub-words
+    const words = rawName
+      .replace(/[^a-zA-Z0-9\s]/g, '')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')  // Split camelCase: "pathAnalyzer" -> "path Analyzer"
+      .split(/\s+/)
+      .filter(w => w.length > 0);
+
     const pascalCase = words
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))  // Preserve existing case after first char
       .join('');
-    
+
     return pascalCase.endsWith('Pattern') ? pascalCase : pascalCase + 'Pattern';
   }
 

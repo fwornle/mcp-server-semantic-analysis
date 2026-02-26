@@ -309,12 +309,13 @@ export class OntologyClassificationAgent {
     const byClass: Record<string, number> = {};
     let totalConfidence = 0;
 
-    // Process observations in sequential batches for memory safety
-    // Reduced default from 20 to 5 to prevent memory accumulation during LLM calls
-    // Configurable via LLM_BATCH_SIZE env var (default: 5, min: 1, max: 20)
+    // Process observations in parallel batches for speed
+    // With groq (task_provider_priority), each LLM call takes ~1-2s vs copilot's ~15s
+    // Higher batch size = more parallelism; memory-safe since prompts are small
+    // Configurable via LLM_BATCH_SIZE env var (default: 10, min: 1, max: 30)
     const BATCH_SIZE = Math.min(Math.max(
-      parseInt(process.env.LLM_BATCH_SIZE || '5', 10), 1
-    ), 20);
+      parseInt(process.env.LLM_BATCH_SIZE || '10', 10), 1
+    ), 30);
     const batches: any[][] = [];
     for (let i = 0; i < observationsList.length; i += BATCH_SIZE) {
       batches.push(observationsList.slice(i, i + BATCH_SIZE));

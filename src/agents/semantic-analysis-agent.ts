@@ -813,10 +813,13 @@ export class SemanticAnalysisAgent {
       log(`🔍 TRACE: LLM prompt written to ${promptTraceFile}`, 'info');
 
       // Use unified LLM service with automatic provider chain and fallback
+      // Explicit tier: 'standard' — the prompt is large (12-17KB) and copilot proxy
+      // times out at 120s, so task_provider_priority routes to groq first
       const result = await this.llmService.complete({
         messages: [{ role: 'user', content: analysisPrompt }],
         taskType: 'semantic_code_analysis',
         agentId: 'semantic_analysis',
+        tier: 'standard',
         maxTokens: 4096,
         temperature: 0.7,
       });

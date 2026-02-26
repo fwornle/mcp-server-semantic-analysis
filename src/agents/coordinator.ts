@@ -2625,7 +2625,7 @@ export class CoordinatorAgent {
               await this.checkSingleStepPause('sem_llm_analysis', true);
               await this.enforceSubstepVisibilityDelay('sem_llm_analysis');
 
-              // Call semantic analysis (surface depth for batch efficiency)
+              // Call semantic analysis (deep depth for meaningful code understanding)
               log(`Batch ${batch.id}: Running semantic analysis`, 'info', {
                 commits: commits.commits.length,
                 sessions: sessionResult.sessions.length
@@ -2634,7 +2634,7 @@ export class CoordinatorAgent {
               const semanticResult = await semanticAgent.analyzeGitAndVibeData(
                 gitAnalysis,
                 vibeAnalysis,
-                { analysisDepth: 'surface' }
+                { analysisDepth: 'deep' }
               );
 
               // Sub-step: LLM analysis complete

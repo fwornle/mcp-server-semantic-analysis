@@ -84,7 +84,9 @@ export interface WorkflowExecution {
       // LLM metrics for tracer visualization
       llmCalls?: number;
       tokensUsed?: number;
-      llmProvider?: string; // Model name or provider for display
+      llmProvider?: string; // Formatted model@provider for display
+      llmModel?: string;    // Raw model name (e.g. "claude-sonnet-4-5")
+      llmProviderName?: string; // Raw provider name (e.g. "claude-code", "copilot", "groq")
     }>;
   }>;
   // Rollback tracking for error recovery
@@ -235,6 +237,8 @@ export class CoordinatorAgent {
         outputs?: Record<string, any>;
         tokensUsed?: number;
         llmProvider?: string;
+        llmModel?: string;
+        llmProviderName?: string;
         llmCalls?: number;
         isSubstep?: boolean;
         parentStep?: string;
@@ -310,6 +314,7 @@ export class CoordinatorAgent {
           ...(llmMetrics?.totalTokens ? {
             tokensUsed: llmMetrics.totalTokens,
             llmProvider: llmMetrics.providers?.join(', ') || undefined,
+            llmProviderName: llmMetrics.providers?.[0] || undefined, // Primary provider for model@provider display
             llmCalls: llmMetrics.totalCalls,
           } : {}),
           // Mark sub-steps so dashboard can identify them for visualization
@@ -2308,6 +2313,13 @@ export class CoordinatorAgent {
             modeFallback?: boolean;
           }
         ) => {
+          // Format model@provider for display (e.g. "sonnet@claude-code", "llama-70b@groq")
+          const formatModelProvider = (model?: string, provider?: string): string | undefined => {
+            if (!model && !provider) return undefined;
+            if (model && provider && model !== provider) return `${model}@${provider}`;
+            return model || provider;
+          };
+
           currentBatchIteration.steps.push({
             name: stepName,
             status,
@@ -2317,7 +2329,9 @@ export class CoordinatorAgent {
             ...(llmMetrics?.calls ? {
               llmCalls: llmMetrics.calls,
               tokensUsed: llmMetrics.tokens,
-              llmProvider: llmMetrics.model || llmMetrics.provider, // Prefer model over provider
+              llmProvider: formatModelProvider(llmMetrics.model, llmMetrics.provider),
+              llmModel: llmMetrics.model,        // Separate model name for frontend formatting
+              llmProviderName: llmMetrics.provider, // Separate provider name for frontend formatting
               // LLM mode tracking for visibility
               llmIntendedMode: llmMetrics.intendedMode,
               llmActualMode: llmMetrics.actualMode,

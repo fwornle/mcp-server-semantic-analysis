@@ -218,6 +218,7 @@ export class OntologyClassificationAgent {
 
             const result = await this.semanticAnalyzer.analyzeContent(prompt, {
               analysisType: 'classification', // Pass prompt through unchanged for JSON response
+              taskType: 'ontology_classification', // Routes to groq via task_provider_priority
             });
 
             // The SemanticAnalyzer returns insights - extract the classification

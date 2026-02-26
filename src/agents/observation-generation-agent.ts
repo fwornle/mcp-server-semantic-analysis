@@ -551,10 +551,11 @@ export class ObservationGenerationAgent {
     const entityName = summary
       .substring(0, 60)
       .replace(/[^a-zA-Z0-9\s]/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')  // Split camelCase boundaries
       .trim()
       .split(/\s+/)
       .slice(0, 5)
-      .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))  // Preserve existing case
       .join('');
 
     if (!entityName || entityName.length < 3) {
@@ -1157,11 +1158,12 @@ Provide a JSON response with:
 
     const words = description
       .replace(/[^a-zA-Z0-9\s]/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')  // Split camelCase boundaries
       .trim()
       .split(/\s+/)
       .filter(word => word.length > 2 && !fillerWords.has(word.toLowerCase()))
       .slice(0, 4)
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1));  // Preserve existing case
 
     if (words.length < 2) {
       return null; // Not enough meaningful words
@@ -1658,6 +1660,12 @@ If no meaningful correlation exists, return { "hasCorrelation": false }`;
     // Create a clean, PascalCase entity name
     // Entity types are determined by ontology classification, not naming convention
 
+    // If description already looks like a PascalCase identifier (code identifier), use it directly
+    const alreadyPascalCase = /^[A-Z][a-zA-Z]+(?:[A-Z][a-zA-Z]+)+$/.test(description.trim());
+    if (alreadyPascalCase) {
+      return description.trim();
+    }
+
     // Normalize type to PascalCase: split on camelCase boundaries, spaces, hyphens, underscores
     const typeFormatted = this.toPascalCase(type);
 
@@ -1692,7 +1700,7 @@ If no meaningful correlation exists, return { "hasCorrelation": false }`;
       .filter(w => w.length > 0);
 
     return words
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))  // Preserve existing case in sub-words
       .join('');
   }
 

@@ -179,6 +179,16 @@ export class ObservationGenerationAgent {
       // Generate summary
       const summary = this.generateSummary(observations);
 
+      // End-of-generation summary with entity/error counts
+      log('Observation generation complete', 'info', {
+        totalObservations: observations.length,
+        byType: {
+          architecturalDecisions: (actualGitAnalysis?.architecturalDecisions || []).length,
+          codeEvolution: (actualGitAnalysis?.codeEvolution || []).length,
+          entities: (actualSemanticAnalysis?.entities || []).length
+        }
+      });
+
       log('Structured observation generation completed', 'info', {
         totalObservations: observations.length,
         averageSignificance: summary.averageSignificance,
@@ -287,40 +297,96 @@ export class ObservationGenerationAgent {
   }
 
   private async createArchitecturalDecisionObservation(
-    decision: any, 
+    decision: any,
     gitAnalysis: any
   ): Promise<StructuredObservation | null> {
     try {
-      const entityName = this.generateEntityName(decision.type, decision.description);
       const currentDate = new Date().toISOString();
 
-      // Create actionable observations with concrete guidance (avoid template garbage patterns)
-      const keyFiles = decision.files.slice(0, 3).map((f: string) => '`' + f.split('/').pop() + '`').join(', ');
-      const technologies = this.extractTechnologiesFromFiles(decision.files);
-      const techList = technologies.length > 0 ? technologies.join(', ') : 'TypeScript';
+      // LLM synthesis: Generate meaningful observations from architectural decision context
+      let synthesizedContent: any = null;
+      try {
+        const relatedCommits = (gitAnalysis.commits || [])
+          .filter((c: any) => c.files?.some((f: any) => (decision.files || []).includes(f.path)))
+          .slice(0, 5)
+          .map((c: any) => `- ${c.message}`)
+          .join('\n') || '(no specific commits identified)';
 
-      const observations: (string | ObservationTemplate)[] = [
-        {
+        const prompt = `Analyze this architectural decision and produce a structured observation.
+
+Decision Type: ${decision.type}
+Description: ${decision.description}
+Impact Level: ${decision.impact}
+Key Files: ${decision.files.slice(0, 5).join(', ')}
+Related Commits:
+${relatedCommits}
+
+Respond with JSON:
+{
+  "entityName": string,       // PascalCase name for this pattern/decision (e.g., "EventDrivenArchitecturePattern")
+  "whatItIs": string,         // 1-2 sentences: what this architectural decision IS
+  "whyItMatters": string,     // 1-2 sentences: WHY this matters for the codebase
+  "guidance": string,         // 1-2 sentences: actionable guidance for developers
+  "category": string          // "architecture" | "design-pattern" | "infrastructure" | "convention"
+}`;
+
+        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+          analysisType: 'patterns',
+          provider: 'auto',
+          taskType: 'observation_generation'
+        });
+
+        const cleaned = result.insights
+          .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
+        synthesizedContent = JSON.parse(cleaned);
+
+        log('LLM-synthesized architectural decision observation', 'debug', {
+          entityName: synthesizedContent.entityName,
+          category: synthesizedContent.category
+        });
+      } catch (error) {
+        log('LLM synthesis failed for architectural decision, using basic content', 'warning', {
+          type: decision.type,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+
+      // Use LLM-generated entity name if available (NAME-02), otherwise generate from decision data
+      const entityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))
+        ? synthesizedContent.entityName
+        : this.generateEntityName(decision.type, decision.description);
+
+      const observations: (string | ObservationTemplate)[] = [];
+
+      if (synthesizedContent) {
+        observations.push({
           type: 'problem',
-          content: `When working with ${decision.type} in this codebase, changes often span multiple modules. Key files: ${keyFiles}`,
+          content: synthesizedContent.whatItIs,
           date: currentDate
-        },
-        {
+        });
+        observations.push({
           type: 'solution',
-          content: `${decision.description}. This pattern was established to ${this.inferDecisionRationale(decision.type, decision.impact)}`,
+          content: synthesizedContent.whyItMatters,
           date: currentDate
-        },
-        {
+        });
+        observations.push({
           type: 'learning',
-          content: `DO: Check ${keyFiles} when modifying ${decision.type} behavior. DON'T: Make isolated changes without verifying related modules`,
+          content: synthesizedContent.guidance,
           date: currentDate
-        },
-        {
-          type: 'applicability',
-          content: `This ${decision.type} pattern is applicable when building ${techList} systems with ${decision.impact === 'high' ? 'critical' : 'standard'} reliability requirements`,
+        });
+      } else {
+        // Fallback: basic content from decision data (not useless template)
+        observations.push({
+          type: 'problem',
+          content: `${decision.type}: ${decision.description}`,
           date: currentDate
-        }
-      ];
+        });
+        observations.push({
+          type: 'solution',
+          content: `Impact: ${decision.impact}. Files: ${decision.files.slice(0, 3).join(', ')}`,
+          date: currentDate
+        });
+      }
 
       // Only add Details link if the insight file actually exists
       if (this.insightFileExists(entityName)) {
@@ -365,42 +431,88 @@ export class ObservationGenerationAgent {
     gitAnalysis: any
   ): Promise<StructuredObservation | null> {
     try {
-      const entityName = this.generateEntityName('CodeEvolution', pattern.pattern);
       const currentDate = new Date().toISOString();
 
-      // Create actionable code evolution observations
-      const keyFiles = pattern.files.slice(0, 3).map((f: string) => '`' + f.split('/').pop() + '`').join(', ');
-      const trendGuidance = this.interpretTrend(pattern.trend, pattern.pattern);
+      // LLM synthesis: Generate meaningful observations from code evolution pattern
+      let synthesizedContent: any = null;
+      try {
+        const prompt = `Analyze this code evolution pattern and produce a structured observation.
 
-      const observations: ObservationTemplate[] = [
-        {
+Pattern: ${pattern.pattern}
+Frequency: ${pattern.occurrences} occurrences
+Trend: ${pattern.trend}
+Key Files: ${pattern.files.slice(0, 5).join(', ')}
+
+Respond with JSON:
+{
+  "entityName": string,       // PascalCase name for this evolution pattern
+  "whatItIs": string,         // 1-2 sentences: what this code evolution pattern IS
+  "whyItMatters": string,     // 1-2 sentences: WHY understanding this pattern matters
+  "guidance": string,         // 1-2 sentences: actionable guidance for developers
+  "trendInsight": string      // 1 sentence: what the trend direction means
+}`;
+
+        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+          analysisType: 'patterns',
+          provider: 'auto',
+          taskType: 'observation_generation'
+        });
+
+        const cleaned = result.insights
+          .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
+        synthesizedContent = JSON.parse(cleaned);
+
+        log('LLM-synthesized code evolution observation', 'debug', {
+          entityName: synthesizedContent.entityName
+        });
+      } catch (error) {
+        log('LLM synthesis failed for code evolution, using basic content', 'warning', {
+          pattern: pattern.pattern,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+
+      // Use LLM-generated entity name if available (NAME-02), otherwise generate from pattern data
+      const entityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))
+        ? synthesizedContent.entityName
+        : this.generateEntityName('CodeEvolution', pattern.pattern);
+
+      const observations: (string | ObservationTemplate)[] = [];
+
+      if (synthesizedContent) {
+        observations.push({
           type: 'problem',
-          content: `Development teams frequently apply ${pattern.pattern} when modifying ${keyFiles}. Understanding this pattern improves code review efficiency`,
-          date: currentDate,
-          metadata: {
-            frequency: pattern.occurrences,
-            trend: pattern.trend
-          }
-        },
-        {
+          content: synthesizedContent.whatItIs,
+          date: currentDate
+        });
+        observations.push({
           type: 'solution',
-          content: `DO: Follow the ${pattern.pattern} approach when editing these files. DON'T: Deviate without team discussion`,
-          date: currentDate,
-          metadata: {
-            approach: pattern.pattern,
-            consistency: pattern.occurrences > 3 ? 'high' : 'medium'
-          }
-        },
-        {
+          content: synthesizedContent.whyItMatters,
+          date: currentDate
+        });
+        observations.push({
           type: 'learning',
-          content: `${trendGuidance}. Key touchpoints: ${keyFiles}`,
-          date: currentDate,
-          metadata: {
-            transferable: true,
-            domain: 'development-process'
-          }
-        }
-      ];
+          content: synthesizedContent.guidance,
+          date: currentDate
+        });
+        observations.push({
+          type: 'applicability',
+          content: synthesizedContent.trendInsight,
+          date: currentDate
+        });
+      } else {
+        // Fallback: basic content from pattern data (not useless template)
+        observations.push({
+          type: 'problem',
+          content: `${pattern.pattern}: ${pattern.occurrences} occurrences, trend: ${pattern.trend}`,
+          date: currentDate
+        });
+        observations.push({
+          type: 'solution',
+          content: `Files: ${pattern.files.slice(0, 3).join(', ')}`,
+          date: currentDate
+        });
+      }
 
       return {
         name: entityName,

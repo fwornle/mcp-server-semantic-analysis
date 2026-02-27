@@ -166,6 +166,27 @@ export class SemanticAnalysisAgent {
         codeFiles, gitAnalysis, vibeAnalysis, crossAnalysisInsights, codeGraph
       );
 
+      // Enrich architectural patterns with LLM-identified patterns
+      // The LLM sees the actual code and identifies real patterns beyond the 10 hardcoded ones
+      const llmPatterns = semanticInsights?.keyPatterns || [];
+      if (Array.isArray(llmPatterns) && llmPatterns.length > 0) {
+        const existingNames = new Set(codeAnalysis.architecturalPatterns.map(p => p.name.toLowerCase()));
+        for (const llmPattern of llmPatterns) {
+          const patternName = typeof llmPattern === 'string' ? llmPattern : ((llmPattern as any).name || (llmPattern as any).pattern || '');
+          const patternDesc = typeof llmPattern === 'string' ? '' : ((llmPattern as any).description || '');
+          if (patternName && !existingNames.has(patternName.toLowerCase())) {
+            codeAnalysis.architecturalPatterns.push({
+              name: patternName,
+              files: [],  // LLM doesn't provide file-level mapping
+              description: patternDesc || `${patternName} - identified by LLM analysis`,
+              confidence: typeof llmPattern === 'object' ? ((llmPattern as any).confidence || 0.7) : 0.7
+            });
+            existingNames.add(patternName.toLowerCase());
+          }
+        }
+        log(`Enriched architectural patterns: ${codeAnalysis.architecturalPatterns.length} total (${llmPatterns.length} from LLM)`, 'info');
+      }
+
       const processingTime = Date.now() - startTime;
       
       // FIXED: Create aggregated insights for QA validation

@@ -413,10 +413,15 @@ export class UKBTraceReportManager {
     };
 
     // Track data loss from source to concepts
-    const inputItems = batch.sourceData.gitHistory.commitsCount + batch.sourceData.vibeHistory.sessionsCount;
-    this.trackDataLoss(batch, 'semantic_analysis', inputItems, entities.length);
+    // Use files+patterns as input metric (what semantic analysis actually processes),
+    // not raw commits (which are a different abstraction level)
+    const filesAnalyzed = semanticResult?.codeAnalysis?.filesAnalyzed || 0;
+    const patternsFound = semanticResult?.codeAnalysis?.architecturalPatterns?.length || 0;
+    const conceptsExtracted = filesAnalyzed + patternsFound;
+    const inputDescription = `${filesAnalyzed} files analyzed, ${patternsFound} patterns found`;
+    this.trackDataLoss(batch, 'semantic_analysis', conceptsExtracted, entities.length);
 
-    log(`[UKBTraceReport] Batch ${batchId}: ${entities.length} entities, ${semanticResult?.relations?.length || 0} relations`, 'info')
+    log(`[UKBTraceReport] Batch ${batchId}: ${inputDescription} -> ${entities.length} entities`, 'info')
   }
 
   traceObservations(batchId: string, observationResult: any): void {
@@ -552,20 +557,23 @@ export class UKBTraceReportManager {
     this.report.finalization!.insightGeneration = insights.map((i: any) => ({
       entityName: i.name || 'unknown',
       materialsUsed: {
-        observations: [],
-        commits: [],
-        sessions: [],
-        codeSnippets: [],
-        patterns: []
+        observations: i.observations?.length
+          ? i.observations.slice(0, 5).map((o: any) => typeof o === 'string' ? o.substring(0, 100) : (o?.content || '').substring(0, 100))
+          : [],
+        commits: i.relatedCommits || i.metadata?.commits || [],
+        sessions: i.relatedSessions || i.metadata?.sessions || [],
+        codeSnippets: i.codeExamples?.slice(0, 3) || [],
+        patterns: i.patterns?.map((p: any) => typeof p === 'string' ? p : p.name) || i.metadata?.tags || []
       },
       insightDocument: {
         title: i.title || '',
         filePath: i.filePath || '',
-        sections: [],
-        diagramsGenerated: []
+        sections: i.sections?.map((s: any) => s.title || s.name || '') || [],
+        diagramsGenerated: i.diagrams?.map((d: any) => d.type || d.name || '') || []
       },
       significance: i.significance || 5,
-      qualityScore: i.qualityScore || 0
+      qualityScore: i.qualityScore || i.metadata?.qualityScore || 0,
+      contentLength: (i.content || '').length  // Track that content was actually generated
     }));
 
     // Track massive loss from patterns to insights

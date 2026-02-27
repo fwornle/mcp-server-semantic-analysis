@@ -1508,8 +1508,15 @@ Best practices, rules, and conventions for using this correctly. What should dev
 
       // Use actual pattern/entity name directly - DO NOT force "Pattern" suffix
       // Entity types (Pattern, Workflow, Evolution, etc.) are determined by content/ontology
-      // Remove spaces and ensure proper PascalCase
-      filename = topPattern.name.replace(/\s+/g, '');
+      // Convert to PascalCase with camelCase boundary awareness
+      filename = topPattern.name
+        .replace(/[-_]/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .trim()
+        .split(/\s+/)
+        .filter((w: string) => w.length > 0)
+        .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join('');
 
       // DO NOT append "Pattern" - the entity type is determined by ontology classification
       // Names like "ApiRouting", "ReduxStateManagement", "AuthenticationFlow" are valid
@@ -4504,7 +4511,7 @@ Significance: [1-10]`;
     // Clean and normalize the pattern name
     const words = rawPattern.trim()
       .split(/\s+/)
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
       .filter(word => word.length > 0);
 
     // Handle common pattern transformations
@@ -4512,11 +4519,11 @@ Significance: [1-10]`;
       return `${words[0]}Pattern`;
     }
 
-    // Create camelCase for multi-word patterns
-    const camelCase = words[0] + words.slice(1).join('');
-    
+    // Create PascalCase for multi-word patterns (each word already has first letter capitalized)
+    const pascalCase = words.join('');
+
     // Ensure it doesn't end with redundant suffixes
-    let finalName = camelCase;
+    let finalName = pascalCase;
     if (!finalName.endsWith('Pattern') && !finalName.endsWith('Implementation')) {
       finalName += 'Pattern';
     }

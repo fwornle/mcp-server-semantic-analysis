@@ -660,15 +660,9 @@ Respond with JSON:
     }
 
     // Generate meaningful entity name from summary content
-    const entityName = summary
-      .substring(0, 60)
-      .replace(/[^a-zA-Z0-9\s]/g, ' ')
-      .replace(/([a-z])([A-Z])/g, '$1 $2')  // Split camelCase boundaries
-      .trim()
-      .split(/\s+/)
-      .slice(0, 5)
-      .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))  // Preserve existing case
-      .join('');
+    const entityName = this.toPascalCase(
+      summary.substring(0, 60).replace(/[^a-zA-Z0-9\s]/g, ' ')
+    );
 
     if (!entityName || entityName.length < 3) {
       // Cannot generate meaningful name - skip
@@ -945,7 +939,9 @@ Provide a JSON response with:
         taskType: "observation_generation"
       });
 
-      synthesizedObservation = JSON.parse(result.insights);
+      const cleaned = result.insights
+        .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
+      synthesizedObservation = JSON.parse(cleaned);
       log("LLM-synthesized entity observation", "debug", {
         entity: entity.name,
         hasPattern: !!synthesizedObservation.keyPattern
@@ -966,9 +962,10 @@ Provide a JSON response with:
       ? `${observationContent}\n\nGuidance: ${guidance}`
       : observationContent;
 
+    const normalizedName = this.toPascalCase(entity.name);
     return {
-      id: `entity-${entity.name}-${Date.now()}`,
-      name: entity.name,
+      id: `entity-${normalizedName}-${Date.now()}`,
+      name: normalizedName,
       entityType: entity.type || entity.entityType || 'Unclassified',
       observations: [fullContent],
       relationships: [],
@@ -976,7 +973,7 @@ Provide a JSON response with:
       observationType: synthesizedObservation?.keyPattern ? 'pattern-observation' : 'entity-observation',
       content: fullContent,
       entities: [{
-        name: entity.name,
+        name: normalizedName,
         type: entity.type || entity.entityType || 'Unclassified',
         confidence: synthesizedObservation?.confidence || (entity.significance ? entity.significance / 10 : 0.5)
       }],
@@ -1039,7 +1036,7 @@ Provide a JSON response with:
   private async createInsightDocumentObservation(insightDoc: any): Promise<StructuredObservation | null> {
     try {
       const currentDate = new Date().toISOString();
-      const cleanName = insightDoc.name || 'UnknownInsight';
+      const cleanName = this.toPascalCase(insightDoc.name || 'UnknownInsight');
 
       const observations: ObservationTemplate[] = [
         {
@@ -1137,7 +1134,7 @@ Provide a JSON response with:
   private async createPatternObservation(pattern: any): Promise<StructuredObservation | null> {
     try {
       const currentDate = new Date().toISOString();
-      const patternName = pattern.name || 'UnknownPattern';
+      const patternName = this.toPascalCase(pattern.name || 'UnknownPattern');
       
       const observations: ObservationTemplate[] = [
         {
@@ -1334,7 +1331,9 @@ Provide a JSON response with:
           taskType: "observation_generation"  // Uses premium tier for quality observations
         });
 
-        enhancedInsights = JSON.parse(result.insights);
+        const cleaned = result.insights
+          .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
+        enhancedInsights = JSON.parse(cleaned);
         log("LLM-enhanced insight extraction completed", "info", {
           domain: enhancedInsights.technicalDomain,
           confidence: enhancedInsights.confidence

@@ -2636,7 +2636,7 @@ export class CoordinatorAgent {
               const semanticResult = await semanticAgent.analyzeGitAndVibeData(
                 gitAnalysis,
                 vibeAnalysis,
-                { analysisDepth: 'deep' }
+                { analysisDepth: 'surface' }
               );
 
               // Sub-step: LLM analysis complete

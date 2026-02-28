@@ -1781,14 +1781,23 @@ If no meaningful correlation exists, return { "hasCorrelation": false }`;
     const typeFormatted = this.toPascalCase(type);
 
     // Normalize description: take first 4 meaningful words, PascalCase them
-    const cleaned = this.toPascalCase(
-      description
-        .replace(/[^a-zA-Z0-9\s]/g, '')
-        .trim()
-        .split(/\s+/)
-        .slice(0, 4)
-        .join(' ')
-    );
+    // But first strip the type word from description to avoid duplication
+    // e.g., type="Pattern", description="Agent Agnostic Implementation Pattern"
+    //   -> cleaned should be "AgentAgnosticImplementation" not "AgentAgnosticImplementationPattern"
+    const typeWord = type.replace(/[^a-zA-Z]/g, '').toLowerCase();
+    const descWords = description
+      .replace(/[^a-zA-Z0-9\s]/g, '')
+      .trim()
+      .split(/\s+/)
+      .filter(w => w.toLowerCase() !== typeWord)
+      .slice(0, 4);
+
+    const cleaned = this.toPascalCase(descWords.join(' '));
+
+    // Avoid prepending type if cleaned already starts with it
+    if (cleaned.toLowerCase().startsWith(typeFormatted.toLowerCase())) {
+      return cleaned;
+    }
 
     return `${typeFormatted}${cleaned}`;
   }

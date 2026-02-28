@@ -152,10 +152,12 @@ export class SemanticAnalysisAgent {
       let crossAnalysisInsights: any;
 
       if (depth === 'surface') {
-        // Surface: skip file reading and code analysis — use git metadata only
-        log('Surface depth: skipping file analysis, using git metadata only', 'info');
-        codeAnalysis = this.generateCodeAnalysisMetrics([]);
-        crossAnalysisInsights = {};
+        // Surface: analyze up to 5 files for fast but meaningful results
+        const filesToAnalyze = this.extractFilesFromGitHistory(gitAnalysis, { ...options, maxFiles: 5 });
+        log(`Surface depth: analyzing ${filesToAnalyze.length} files (max 5)`, 'info');
+        codeFiles = await this.analyzeCodeFiles(filesToAnalyze, options);
+        codeAnalysis = this.generateCodeAnalysisMetrics(codeFiles);
+        crossAnalysisInsights = {};  // Skip cross-analysis for speed
       } else {
         // Deep/comprehensive: full file reading and analysis
         const filesToAnalyze = this.extractFilesFromGitHistory(gitAnalysis, options);
@@ -1290,8 +1292,8 @@ QUALITY RULES:
     confidence += Math.min(0.3, codeFiles.length * 0.02);
     
     // Cross-analysis correlations increase confidence
-    confidence += Math.min(0.2, crossAnalysis.gitCodeCorrelation.length * 0.05);
-    confidence += Math.min(0.2, crossAnalysis.vibeCodeCorrelation.length * 0.05);
+    confidence += Math.min(0.2, (crossAnalysis.gitCodeCorrelation?.length || 0) * 0.05);
+    confidence += Math.min(0.2, (crossAnalysis.vibeCodeCorrelation?.length || 0) * 0.05);
     
     return Math.min(1, confidence);
   }

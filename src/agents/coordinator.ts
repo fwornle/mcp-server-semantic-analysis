@@ -189,6 +189,8 @@ export class CoordinatorAgent {
         mockLLM?: boolean;
         mockLLMDelay?: number;
         mockLLMUpdatedAt?: string;
+        // LLM mode selection (mock/local/public)
+        llmState?: Record<string, any>;
       } = {};
 
       if (fs.existsSync(progressPath)) {

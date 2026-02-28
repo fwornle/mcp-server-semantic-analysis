@@ -146,20 +146,26 @@ export class SemanticAnalysisAgent {
     });
 
     try {
-      // Extract files to analyze from git history
-      const filesToAnalyze = this.extractFilesFromGitHistory(gitAnalysis, options);
-      log(`Identified ${filesToAnalyze.length} files for analysis`, 'info');
+      const depth = options.analysisDepth || 'deep';
+      let codeFiles: CodeFile[] = [];
+      let codeAnalysis: any;
+      let crossAnalysisInsights: any;
 
-      // Perform deep code analysis
-      const codeFiles = await this.analyzeCodeFiles(filesToAnalyze, options);
-      
-      // Generate code analysis metrics
-      const codeAnalysis = this.generateCodeAnalysisMetrics(codeFiles);
-
-      // Perform cross-analysis correlation (including code graph structural data)
-      const crossAnalysisInsights = await this.performCrossAnalysis(
-        codeFiles, gitAnalysis, vibeAnalysis, codeGraph
-      );
+      if (depth === 'surface') {
+        // Surface: skip file reading and code analysis — use git metadata only
+        log('Surface depth: skipping file analysis, using git metadata only', 'info');
+        codeAnalysis = this.generateCodeAnalysisMetrics([]);
+        crossAnalysisInsights = {};
+      } else {
+        // Deep/comprehensive: full file reading and analysis
+        const filesToAnalyze = this.extractFilesFromGitHistory(gitAnalysis, options);
+        log(`Identified ${filesToAnalyze.length} files for analysis`, 'info');
+        codeFiles = await this.analyzeCodeFiles(filesToAnalyze, options);
+        codeAnalysis = this.generateCodeAnalysisMetrics(codeFiles);
+        crossAnalysisInsights = await this.performCrossAnalysis(
+          codeFiles, gitAnalysis, vibeAnalysis, codeGraph
+        );
+      }
 
       // Generate semantic insights using LLM (with code graph context)
       const semanticInsights = await this.generateSemanticInsights(
@@ -170,7 +176,7 @@ export class SemanticAnalysisAgent {
       // The LLM sees the actual code and identifies real patterns beyond the 10 hardcoded ones
       const llmPatterns = semanticInsights?.keyPatterns || [];
       if (Array.isArray(llmPatterns) && llmPatterns.length > 0) {
-        const existingNames = new Set(codeAnalysis.architecturalPatterns.map(p => p.name.toLowerCase()));
+        const existingNames = new Set(codeAnalysis.architecturalPatterns.map((p: any) => p.name.toLowerCase()));
         for (const llmPattern of llmPatterns) {
           const patternName = typeof llmPattern === 'string' ? llmPattern : ((llmPattern as any).name || (llmPattern as any).pattern || '');
           const patternDesc = typeof llmPattern === 'string' ? '' : ((llmPattern as any).description || '');

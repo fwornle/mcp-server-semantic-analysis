@@ -1,0 +1,225 @@
+# Component Manifest - Authoritative source of truth for the L1/L2 component hierarchy.
+# Read by: Phase 5 migration script, Phase 6 HierarchyClassifier
+# Loaded via: yaml package parse(), same pattern as workflow-loader.ts
+# Location: bind-mounted read-only into Docker -- no rebuild needed to iterate
+
+version: "1.0"
+
+project:
+  name: Coding
+  level: 0
+  description: "Root node of the coding project knowledge hierarchy, encompassing all development infrastructure knowledge"
+
+components:
+  - name: LiveLoggingSystem
+    level: 1
+    description: "Live session logging infrastructure capturing Claude Code conversations. Handles session windowing, file routing, classification layers, and transcript capture."
+    aliases:
+      - LSL
+      - live-logging
+      - session-logging
+      - SpecStory
+    keywords:
+      - session
+      - logging
+      - transcript
+      - LSL
+      - classification
+      - windowing
+      - specstory
+    children: []
+
+  - name: LLMAbstraction
+    level: 1
+    description: "Abstraction layer over LLM providers (Anthropic, OpenAI, Groq) enabling provider-agnostic model calls, tier-based routing, and mock mode for testing."
+    aliases:
+      - llm-cli
+      - llm-proxy
+      - model-abstraction
+      - DMR
+    keywords:
+      - LLM
+      - provider
+      - anthropic
+      - openai
+      - groq
+      - tier
+      - model
+      - dmr
+    children: []
+
+  - name: DockerizedServices
+    level: 1
+    description: "Docker containerization layer for all coding services including semantic analysis MCP, constraint monitor, code-graph-rag, and supporting databases."
+    aliases:
+      - docker
+      - containers
+      - coding-services
+    keywords:
+      - docker
+      - container
+      - compose
+      - service
+      - deployment
+      - memgraph
+      - redis
+    children: []
+
+  - name: Trajectory
+    level: 1
+    description: "AI trajectory and planning system managing project milestones, GSD workflow, phase planning, and implementation task tracking."
+    aliases:
+      - GSD
+      - planning
+      - milestone
+      - phases
+    keywords:
+      - trajectory
+      - milestone
+      - planning
+      - phase
+      - GSD
+      - roadmap
+      - spec
+    children: []
+
+  - name: KnowledgeManagement
+    level: 1
+    description: "Knowledge graph storage, query, and lifecycle management including the VKB server, graph database, entity persistence, and knowledge decay tracking."
+    aliases:
+      - knowledge-graph
+      - KG
+      - VKB
+      - UKB
+    keywords:
+      - knowledge
+      - graph
+      - entity
+      - VKB
+      - UKB
+      - LevelDB
+      - Graphology
+      - persistence
+      - decay
+    children:
+      - name: ManualLearning
+        level: 2
+        description: "Knowledge created or curated by humans: manually authored entities, direct edits, and hand-crafted observations."
+        aliases:
+          - manual
+          - human-authored
+        keywords:
+          - manual
+          - human
+          - authored
+          - curated
+          - hand-crafted
+
+      - name: OnlineLearning
+        level: 2
+        description: "Knowledge extracted automatically by the batch analysis pipeline from git history, LSL sessions, and code analysis."
+        aliases:
+          - automated
+          - pipeline-extracted
+          - batch-learning
+        keywords:
+          - batch
+          - pipeline
+          - automated
+          - extracted
+          - analysis
+          - online
+
+  - name: CodingPatterns
+    level: 1
+    description: "General programming wisdom, design patterns, best practices, and coding conventions applicable across the project. Catch-all for entities not fitting other components."
+    aliases:
+      - patterns
+      - best-practices
+      - conventions
+    keywords:
+      - pattern
+      - convention
+      - practice
+      - design
+      - approach
+      - idiom
+      - anti-pattern
+    children: []
+
+  - name: ConstraintSystem
+    level: 1
+    description: "Constraint monitoring and enforcement system that validates code actions and file operations against configured rules during Claude Code sessions."
+    aliases:
+      - constraints
+      - constraint-monitor
+      - enforcement
+    keywords:
+      - constraint
+      - rule
+      - validation
+      - enforcement
+      - hook
+      - violation
+    children: []
+
+  - name: SemanticAnalysis
+    level: 1
+    description: "Multi-agent semantic analysis pipeline (batch-analysis workflow) that processes git history and LSL sessions to extract and persist structured knowledge entities."
+    aliases:
+      - semantic-analysis
+      - MCP
+      - pipeline
+      - batch-analysis
+    keywords:
+      - semantic
+      - analysis
+      - agent
+      - pipeline
+      - batch
+      - ontology
+      - classification
+      - coordinator
+    children:
+      - name: Pipeline
+        level: 2
+        description: "The batch processing pipeline agents: coordinator, observation generation, KG operators, deduplication, and persistence."
+        aliases:
+          - coordinator
+          - batch-pipeline
+        keywords:
+          - coordinator
+          - batch
+          - observation
+          - KG
+          - pipeline
+          - dedup
+
+      - name: Ontology
+        level: 2
+        description: "The ontology classification system: upper/lower ontology definitions, entity type resolution, and validation."
+        aliases:
+          - ontology-classification
+          - entity-types
+        keywords:
+          - ontology
+          - classification
+          - entity-type
+          - validation
+          - upper
+          - lower
+
+      - name: Insights
+        level: 2
+        description: "Insight generation, pattern catalog extraction, and knowledge report authoring."
+        aliases:
+          - insight-generation
+          - patterns
+          - reports
+        keywords:
+          - insight
+          - pattern
+          - report
+          - generation
+          - catalog
+          - PlantUML

@@ -40,6 +40,10 @@ export interface KGEntity {
   timestamp?: string;
   references?: string[];
   enrichedContext?: string;
+  // Hierarchy fields (Phase 4: schema foundation)
+  parentId?: string;       // Entity name of parent node (L0/L1/L2 scaffold)
+  level?: number;          // 0=Project, 1=Component, 2=SubComponent, 3=Detail
+  hierarchyPath?: string;  // Slash-separated path: "Coding/KnowledgeManagement/OnlineLearning"
 }
 
 export interface KGRelation {

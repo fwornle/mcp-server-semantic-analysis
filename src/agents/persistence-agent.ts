@@ -51,6 +51,11 @@ export interface SharedMemoryEntity {
     avoid: string;
     check: string;
   };
+  // Hierarchy fields (Phase 4: schema foundation)
+  hierarchyLevel?: number;          // 0=Project, 1=Component, 2=SubComponent, 3=Detail
+  parentEntityName?: string;        // Name of parent entity (null/undefined for root)
+  childEntityNames?: string[];      // Names of direct children
+  isScaffoldNode?: boolean;         // true for L0-L2 structural nodes created by migration
 }
 
 export interface ObservationObject {
@@ -95,6 +100,9 @@ export interface EntityMetadata {
     properties?: Record<string, any>;   // Properties per ontology schema
     classifiedAt: string;               // ISO timestamp
   };
+  // Hierarchy classification audit (Phase 4: schema foundation)
+  hierarchyClassifiedAt?: string;         // ISO timestamp of classification
+  hierarchyClassificationMethod?: string; // 'manifest-keyword' | 'llm-fallback' | 'manual'
 }
 
 export interface SharedMemoryStructure {

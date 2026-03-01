@@ -851,6 +851,7 @@ export class SemanticAnalysisAgent {
         tier: 'standard',
         maxTokens: 4096,
         temperature: 0.7,
+        timeout: 60_000,  // 60s per provider — fail fast, try next
       });
 
       const response = result.content;
@@ -1133,12 +1134,13 @@ QUALITY RULES:
 
   /**
    * Convert structured pattern objects to rich observation strings (bullet-point format)
+   * Uses plain text bullet points — no bold markdown (observations are displayed as-is in VKB)
    */
   private convertStructuredPatterns(patterns: any[]): string[] {
     return patterns
       .filter(p => p.name && p.codeExample) // Must have name and code example
       .map(p => {
-        const lines = [`**${p.name}**`];
+        const lines = [`${p.name}`];
         if (p.problem) lines.push(`- Problem: ${p.problem}`);
         if (p.solution) lines.push(`- Solution: ${p.solution}`);
         if (p.codeExample) lines.push(`- Example: ${p.codeExample}`);
@@ -1156,7 +1158,7 @@ QUALITY RULES:
     return decisions
       .filter(d => d.name && (d.decision || d.rationale))
       .map(d => {
-        const lines = [`**${d.name}**`];
+        const lines = [`${d.name}`];
         if (d.decision) lines.push(`- Decision: ${d.decision}`);
         if (d.rationale) lines.push(`- Rationale: ${d.rationale}`);
         if (d.codeExample) lines.push(`- Example: ${d.codeExample}`);
@@ -1173,7 +1175,7 @@ QUALITY RULES:
     return debt
       .filter(d => d.name && d.issue)
       .map(d => {
-        const lines = [`**${d.name}**`];
+        const lines = [`${d.name}`];
         if (d.issue) lines.push(`- Issue: ${d.issue}`);
         if (d.location) lines.push(`- Location: ${d.location}`);
         if (d.suggestedFix) lines.push(`- Fix: ${d.suggestedFix}`);
@@ -1189,7 +1191,7 @@ QUALITY RULES:
     return learnings
       .filter(l => l.name && (l.insight || l.codeExample))
       .map(l => {
-        const lines = [`**${l.name}**`];
+        const lines = [`${l.name}`];
         if (l.insight) lines.push(`- Insight: ${l.insight}`);
         if (l.codeExample) lines.push(`- Example: ${l.codeExample}`);
         if (l.applicability) lines.push(`- When: ${l.applicability}`);

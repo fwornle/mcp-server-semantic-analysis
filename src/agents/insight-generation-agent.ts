@@ -336,14 +336,14 @@ export class InsightGenerationAgent {
         if (outgoing.length > 0) {
           sections.push(`### Dependencies\n`);
           for (const rel of outgoing.slice(0, 10)) {
-            sections.push(`- **${rel.to}** (${rel.relationType})\n`);
+            sections.push(`- ${rel.to} (${rel.relationType})\n`);
           }
         }
 
         if (incoming.length > 0) {
           sections.push(`### Used By\n`);
           for (const rel of incoming.slice(0, 10)) {
-            sections.push(`- **${rel.from}** (${rel.relationType})\n`);
+            sections.push(`- ${rel.from} (${rel.relationType})\n`);
           }
         }
         sections.push('');
@@ -1061,22 +1061,35 @@ Best practices, rules, and conventions for using this correctly. What should dev
       log('Error extracting observation patterns', 'error', error);
     }
 
+    // Filter out patterns with generic/meaningless names from ALL sources
+    const unfilteredCount = patterns.length;
+    const meaningfulPatterns = patterns.filter(p => {
+      if (this.isGenericPatternName(p.name)) {
+        log(`Catalog filter: dropped generic pattern "${p.name}"`, 'warning');
+        return false;
+      }
+      return true;
+    });
+    if (meaningfulPatterns.length < unfilteredCount) {
+      log(`Pattern catalog: filtered ${unfilteredCount - meaningfulPatterns.length} generic names, kept ${meaningfulPatterns.length}`, 'info');
+    }
+
     // Analyze and summarize patterns
     const byCategory: Record<string, number> = {};
     let totalSignificance = 0;
 
-    patterns.forEach(pattern => {
+    meaningfulPatterns.forEach(pattern => {
       byCategory[pattern.category] = (byCategory[pattern.category] || 0) + 1;
       totalSignificance += pattern.significance;
     });
 
-    const topPatterns = patterns
+    const topPatterns = meaningfulPatterns
       .sort((a, b) => b.significance - a.significance)
       .slice(0, 5)
       .map(p => p.name);
 
     return {
-      patterns,
+      patterns: meaningfulPatterns,
       summary: {
         totalPatterns: patterns.length,
         byCategory,
@@ -1487,8 +1500,11 @@ Best practices, rules, and conventions for using this correctly. What should dev
       'Starting filename generation'
     );
 
-    const topPattern = patternCatalog?.patterns
-      ?.sort((a: any, b: any) => b.significance - a.significance)?.[0];
+    // Pick the highest-significance pattern that isn't a generic name
+    const sortedPatterns = patternCatalog?.patterns
+      ?.sort((a: any, b: any) => b.significance - a.significance) || [];
+    const topPattern = sortedPatterns.find((p: any) => p.name && !this.isGenericPatternName(p.name))
+      || sortedPatterns[0];
 
     FilenameTracer.trace('PATTERN_SELECTION', 'generateMeaningfulNameAndTitle',
       {
@@ -1537,9 +1553,6 @@ Best practices, rules, and conventions for using this correctly. What should dev
       { originalPattern: topPattern?.name, filename, title },
       { name: filename, title }
     );
-
-    // Add breakpoint opportunity
-    debugger; // Will pause here when running with debugger
 
     return { name: filename, title };
   }
@@ -3077,7 +3090,7 @@ SemanticAnalysisAgent --> InsightGenerationAgent
             const solution = typeof pair.solution === 'string' ? pair.solution
               : pair.solution?.description || pair.solution?.summary || pair.solution?.text || null;
             if (problem && solution) {
-              sections.push(`- **Problem:** ${problem}\n  **Solution:** ${solution}\n`);
+              sections.push(`- Problem: ${problem}\n  Solution: ${solution}\n`);
             }
           });
         }
@@ -3113,7 +3126,7 @@ SemanticAnalysisAgent --> InsightGenerationAgent
       if (patternCatalog.patterns.length > 1) {
         sections.push(`\n## Related Patterns\n`);
         patternCatalog.patterns.slice(1, 6).forEach((p: IdentifiedPattern) => {
-          sections.push(`- **${p.name}** (${p.category}): ${p.description}\n`);
+          sections.push(`- ${p.name} (${p.category}): ${p.description}\n`);
         });
       }
 
@@ -3795,22 +3808,32 @@ ${JSON.stringify(commitSummary, null, 2)}
 
 REQUIREMENTS:
 - Pattern names must be SPECIFIC and DESCRIPTIVE based on actual implementation details
-- Names should describe WHAT the pattern does, not just the technology
-- Avoid generic names like "JavascriptDevelopmentPattern" or "ConfigurationChangesPattern"
-- Examples of GOOD pattern names:
-  * "GraphDatabasePersistencePattern" (describes the specific technology + purpose)
-  * "MultiAgentCoordinationPattern" (describes specific architectural approach)
-  * "OntologyClassificationWorkflow" (describes specific domain + process)
-- Examples of BAD pattern names (DO NOT USE):
-  * "JavascriptDevelopmentPattern" (too generic)
-  * "ConfigurationChangesPattern" (just describes commit type)
-  * "ImplementationPattern" (meaningless)
+- Names MUST contain at least one DOMAIN-SPECIFIC word (e.g., "Graph", "Ontology", "MCP", "Batch", "Redis")
+- Names should describe WHAT the pattern does, not just classify it
+- NEVER use single-adjective names. NEVER use generic words alone as names.
 
-OUTPUT FORMAT:
-For each pattern found, use this format:
-Pattern: [Specific Descriptive Name]
-Description: [What this pattern specifically accomplishes]
-Significance: [1-10]`;
+BANNED NAMES (will be rejected):
+"IdentifiedPattern", "HighPattern", "CorePattern", "WorkflowPattern", "ArchitecturalPattern",
+"DesignPattern", "ImplementationPattern", "BugFixPattern", "ConfigurationPattern", "ApiPattern",
+"CodePattern", "SystemPattern", "ApplicationPattern"
+
+GOOD NAMES (follow these examples):
+- "GraphDatabasePersistence" (specific technology + purpose)
+- "MultiAgentCoordination" (specific architectural approach)
+- "OntologyDrivenClassification" (specific domain + process)
+- "BatchWorkflowOrchestration" (specific operation + pattern)
+- "MCPToolRouting" (specific protocol + function)
+
+BAD NAMES (DO NOT USE):
+- "IdentifiedPattern" (just an adjective)
+- "HighPattern" (meaningless)
+- "ConfigurationChanges" (too generic)
+- "ImplementationPattern" (classification, not description)
+
+OUTPUT FORMAT (respond with JSON array):
+\`\`\`json
+[{"name": "SpecificDescriptiveName", "description": "What it does", "significance": 7, "category": "architecture"}]
+\`\`\``;
 
       // ULTRA DEBUG: Write pattern extraction prompt to trace file
       const patternPromptTrace = `${process.cwd()}/logs/pattern-extraction-prompt-${Date.now()}.txt`;
@@ -4514,25 +4537,17 @@ Significance: [1-10]`;
       .map(word => word.charAt(0).toUpperCase() + word.slice(1))
       .filter(word => word.length > 0);
 
-    // Handle common pattern transformations
-    if (words.length === 1) {
-      return `${words[0]}Pattern`;
-    }
+    if (words.length === 0) return 'UnnamedEntity';
 
-    // Create PascalCase for multi-word patterns (each word already has first letter capitalized)
-    const pascalCase = words.join('');
+    // Create PascalCase for multi-word patterns
+    let finalName = words.join('');
 
-    // Ensure it doesn't end with redundant suffixes
-    let finalName = pascalCase;
-    if (!finalName.endsWith('Pattern') && !finalName.endsWith('Implementation')) {
-      finalName += 'Pattern';
-    }
+    // Do NOT force "Pattern" suffix — entity type is determined by ontology classification
 
-    // Validate length and meaningfulness
+    // Validate length
     if (finalName.length > 50) {
-      // Use acronym for very long names
       const acronym = words.map(w => w[0]).join('').toUpperCase();
-      finalName = `${acronym}Pattern`;
+      finalName = `${acronym}Insight`;
     }
 
     log(`Generated pattern name: "${rawPattern}" -> "${finalName}"`, 'info');
@@ -4769,7 +4784,11 @@ ${data.appendices || 'Additional metadata and references.'}
     const GENERIC_SECTION_TITLES = new Set([
       'PatternIdentification', 'PatternDescriptions', 'ArchitecturalPatterns',
       'DesignPatterns', 'IdentifiedPatterns', 'Summary', 'Analysis', 'Overview',
-      'Conclusion', 'Introduction'
+      'Conclusion', 'Introduction', 'Patterns', 'KeyPatterns', 'MainPatterns',
+      'IdentifiedPattern', 'HighPattern', 'CorePattern', 'WorkflowPattern',
+      'ArchitecturalPattern', 'DesignPattern', 'ImplementationPattern',
+      'BugFixPattern', 'ConfigurationPattern', 'ApiPattern', 'CodePattern',
+      'Pattern', 'Results', 'Findings', 'Observations', 'Details',
     ]);
 
     try {
@@ -4917,12 +4936,14 @@ ${data.appendices || 'Additional metadata and references.'}
         });
 
         try {
-          const formatHintPrompt = `The following analysis text could not be parsed into structured patterns. Please re-analyze and respond STRICTLY in this JSON format:
+          const formatHintPrompt = `The following analysis text could not be parsed into structured patterns. Re-analyze and respond STRICTLY in this JSON format.
+
+CRITICAL: Pattern names MUST be domain-specific and descriptive. NEVER use generic names like "IdentifiedPattern", "CorePattern", "HighPattern", "WorkflowPattern". Names must contain specific technical terms from the actual code (e.g., "GraphDatabasePersistence", "MCPToolRouting", "OntologyDrivenClassification").
 
 \`\`\`json
 [
   {
-    "name": "PatternNameInPascalCase",
+    "name": "SpecificDescriptiveName",
     "description": "What this pattern does and why it matters",
     "significance": 7,
     "category": "architecture"
@@ -4983,7 +5004,51 @@ ${llmInsights.substring(0, 3000)}`;
       log('Error parsing LLM insights into patterns', 'error', error);
     }
 
-    return patterns;
+    // Filter out patterns with generic names (e.g., "IdentifiedPattern", "HighPattern", "CorePattern")
+    const beforeCount = patterns.length;
+    const filtered = patterns.filter(p => {
+      if (this.isGenericPatternName(p.name)) {
+        log(`Filtered out generic pattern name: "${p.name}"`, 'warning');
+        return false;
+      }
+      return true;
+    });
+    if (filtered.length < beforeCount) {
+      log(`Filtered ${beforeCount - filtered.length} generic pattern names, ${filtered.length} remaining`, 'info');
+    }
+
+    return filtered;
+  }
+
+  // Generic words that are NOT meaningful pattern names on their own or with "Pattern" suffix.
+  // These come from LLM section headers, generic adjectives, or classification labels.
+  private static readonly GENERIC_PATTERN_WORDS = new Set([
+    'identified', 'high', 'core', 'workflow', 'architectural', 'pattern', 'design',
+    'implementation', 'analysis', 'overview', 'summary', 'key', 'main', 'primary',
+    'important', 'significant', 'notable', 'common', 'general', 'basic', 'advanced',
+    'simple', 'complex', 'major', 'minor', 'critical', 'essential', 'fundamental',
+    'bug', 'fix', 'configuration', 'api', 'code', 'development', 'software',
+    'system', 'application', 'service', 'component', 'module', 'feature',
+    'observed', 'detected', 'found', 'extracted', 'discovered',
+  ]);
+
+  /**
+   * Check if a pattern name is too generic to be useful.
+   * A name is generic if ALL its constituent words are in the generic list.
+   * Names with at least one domain-specific word are kept.
+   */
+  private isGenericPatternName(name: string): boolean {
+    const words = name
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/[^a-zA-Z\s]/g, '')
+      .split(/\s+/)
+      .filter(w => w.length > 1)
+      .map(w => w.toLowerCase());
+
+    if (words.length === 0) return true;
+
+    // If every word is generic, the whole name is generic
+    return words.every(w => InsightGenerationAgent.GENERIC_PATTERN_WORDS.has(w));
   }
 
   private formatPatternName(rawName: string): string {
@@ -4998,7 +5063,8 @@ ${llmInsights.substring(0, 3000)}`;
       .map(word => word.charAt(0).toUpperCase() + word.slice(1))  // Preserve existing case after first char
       .join('');
 
-    return pascalCase.endsWith('Pattern') ? pascalCase : pascalCase + 'Pattern';
+    // Do NOT force "Pattern" suffix — entity type is determined by ontology classification
+    return pascalCase;
   }
 
   private finalizePattern(partial: Partial<IdentifiedPattern>, commits: any[]): IdentifiedPattern {

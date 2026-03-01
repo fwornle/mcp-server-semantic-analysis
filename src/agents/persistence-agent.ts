@@ -1353,7 +1353,7 @@ export class PersistenceAgent {
       if (typeof obs === 'object' && obs !== null) {
         // Handle ObservationTemplate objects
         if (obs.content) {
-          const typePrefix = obs.type ? `**${obs.type.charAt(0).toUpperCase() + obs.type.slice(1)}:** ` : '';
+          const typePrefix = obs.type ? `${obs.type.charAt(0).toUpperCase() + obs.type.slice(1)}: ` : '';
           return `${typePrefix}${obs.content}`;
         }
         // Fallback: serialize as JSON if it has meaningful properties
@@ -3127,7 +3127,7 @@ export class PersistenceAgent {
       log(`Persisting ${entities.length} entities for team: ${team}`, 'info');
 
       // Process entities in parallel batches for performance
-      const CONCURRENCY = 10; // Process 10 entities concurrently
+      const CONCURRENCY = 20; // Process 20 entities concurrently (was 10)
       const validEntities = entities.filter(e => e.name && e.name.trim() !== '');
       const skippedCount = entities.length - validEntities.length;
       if (skippedCount > 0) {
@@ -3135,11 +3135,27 @@ export class PersistenceAgent {
         result.failed += skippedCount;
       }
 
+      // PERFORMANCE: Pre-load ALL existing entities once instead of querying per-entity
+      // This eliminates N DB round-trips (was the main bottleneck causing 5+ min persistence)
+      const preloadStart = Date.now();
+      let existingEntityMap = new Map<string, SharedMemoryEntity>();
+      try {
+        const allExisting = await this.getAllEntities(team);
+        for (const e of allExisting) {
+          if (e.name) existingEntityMap.set(e.name, e);
+        }
+        log(`Pre-loaded ${existingEntityMap.size} existing entities in ${Date.now() - preloadStart}ms`, 'info');
+      } catch (preloadError) {
+        log('Failed to pre-load entities, falling back to per-entity lookup', 'warning', preloadError);
+      }
+
       // Helper to process a single entity
       const processEntity = async (entity: typeof entities[0]): Promise<'created' | 'updated' | 'failed'> => {
         try {
-          // Check if entity already exists
-          const existingEntity = await this.getEntity(entity.name, team);
+          // Check if entity already exists (in-memory lookup instead of DB query)
+          const existingEntity = existingEntityMap.size > 0
+            ? (existingEntityMap.get(entity.name) || null)
+            : await this.getEntity(entity.name, team);
 
           if (existingEntity) {
             // Update existing entity - add new observations

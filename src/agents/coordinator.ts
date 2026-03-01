@@ -3098,10 +3098,24 @@ export class CoordinatorAgent {
                 batchEntities = batchEntities.map(entity => {
                   const classification = classifiedMap.get(entity.name);
                   if (classification?.ontologyMetadata) {
-                    return {
+                    const classifiedType = classification.ontologyMetadata.ontologyClass || entity.type;
+                    // Update type AND entityType — persistence agent uses entityType for classification check.
+                    // Without this, all entities arrive at persistence as 'Unclassified' and get redundantly
+                    // re-classified via LLM, adding ~200s of wasted time.
+                    const updated: any = {
                       ...entity,
-                      type: classification.ontologyMetadata.ontologyClass || entity.type
-                    } as KGEntity;
+                      type: classifiedType,
+                      entityType: classifiedType,
+                    };
+                    // Attach ontology metadata so persistence can skip re-classification
+                    updated.metadata = {
+                      ontology: {
+                        classificationMethod: classification.ontologyMetadata.classificationMethod || 'ontology-classification-agent',
+                        classificationConfidence: classification.ontologyMetadata.confidence || 0.8,
+                        ontologyClass: classifiedType
+                      }
+                    };
+                    return updated as KGEntity;
                   }
                   return entity;
                 });

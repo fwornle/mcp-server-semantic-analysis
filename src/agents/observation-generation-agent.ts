@@ -303,53 +303,10 @@ export class ObservationGenerationAgent {
     try {
       const currentDate = new Date().toISOString();
 
-      // LLM synthesis: Generate meaningful observations from architectural decision context
-      let synthesizedContent: any = null;
-      try {
-        const relatedCommits = (gitAnalysis.commits || [])
-          .filter((c: any) => c.files?.some((f: any) => (decision.files || []).includes(f.path)))
-          .slice(0, 5)
-          .map((c: any) => `- ${c.message}`)
-          .join('\n') || '(no specific commits identified)';
-
-        const prompt = `Analyze this architectural decision and produce a structured observation.
-
-Decision Type: ${decision.type}
-Description: ${decision.description}
-Impact Level: ${decision.impact}
-Key Files: ${decision.files.slice(0, 5).join(', ')}
-Related Commits:
-${relatedCommits}
-
-Respond with JSON:
-{
-  "entityName": string,       // PascalCase name for this pattern/decision (e.g., "EventDrivenArchitecturePattern")
-  "whatItIs": string,         // 1-2 sentences: what this architectural decision IS
-  "whyItMatters": string,     // 1-2 sentences: WHY this matters for the codebase
-  "guidance": string,         // 1-2 sentences: actionable guidance for developers
-  "category": string          // "architecture" | "design-pattern" | "infrastructure" | "convention"
-}`;
-
-        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-          analysisType: 'patterns',
-          provider: 'auto',
-          taskType: 'observation_generation'
-        });
-
-        const cleaned = result.insights
-          .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
-        synthesizedContent = JSON.parse(cleaned);
-
-        log('LLM-synthesized architectural decision observation', 'debug', {
-          entityName: synthesizedContent.entityName,
-          category: synthesizedContent.category
-        });
-      } catch (error) {
-        log('LLM synthesis failed for architectural decision, using basic content', 'warning', {
-          type: decision.type,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      // Skip per-item LLM synthesis — use structured fallback content directly.
+      // Per-item LLM calls are too slow (30s+ each via batch queue) and always fail/timeout.
+      // The main semantic analysis LLM call already extracted meaningful patterns.
+      const synthesizedContent: any = null;
 
       // Use LLM-generated entity name if available (NAME-02), otherwise generate from decision data
       const entityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))
@@ -433,44 +390,9 @@ Respond with JSON:
     try {
       const currentDate = new Date().toISOString();
 
-      // LLM synthesis: Generate meaningful observations from code evolution pattern
-      let synthesizedContent: any = null;
-      try {
-        const prompt = `Analyze this code evolution pattern and produce a structured observation.
-
-Pattern: ${pattern.pattern}
-Frequency: ${pattern.occurrences} occurrences
-Trend: ${pattern.trend}
-Key Files: ${pattern.files.slice(0, 5).join(', ')}
-
-Respond with JSON:
-{
-  "entityName": string,       // PascalCase name for this evolution pattern
-  "whatItIs": string,         // 1-2 sentences: what this code evolution pattern IS
-  "whyItMatters": string,     // 1-2 sentences: WHY understanding this pattern matters
-  "guidance": string,         // 1-2 sentences: actionable guidance for developers
-  "trendInsight": string      // 1 sentence: what the trend direction means
-}`;
-
-        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-          analysisType: 'patterns',
-          provider: 'auto',
-          taskType: 'observation_generation'
-        });
-
-        const cleaned = result.insights
-          .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
-        synthesizedContent = JSON.parse(cleaned);
-
-        log('LLM-synthesized code evolution observation', 'debug', {
-          entityName: synthesizedContent.entityName
-        });
-      } catch (error) {
-        log('LLM synthesis failed for code evolution, using basic content', 'warning', {
-          pattern: pattern.pattern,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
+      // Skip per-item LLM synthesis — use structured fallback content directly.
+      // Per-item LLM calls are too slow (30s+ each via batch queue) and always fail/timeout.
+      const synthesizedContent: any = null;
 
       // Use LLM-generated entity name if available (NAME-02), otherwise generate from pattern data
       const entityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))
@@ -914,44 +836,11 @@ Respond with JSON:
       ? entityObservations.slice(0, 5).join('\n')
       : String(entityObservations).substring(0, 1000);
 
-    // LLM synthesis: Transform raw observations into actionable insights
-    let synthesizedObservation: any = null;
-    try {
-      const prompt = `Synthesize a concise, actionable observation from this entity data:
-
-Entity: ${entity.name}
-Type: ${entity.type || entity.entityType || 'Unknown'}
-Raw Observations:
-${rawContent}
-
-Provide a JSON response with:
-{
-  "synthesizedContent": string, // 1-2 sentence actionable summary (what developers should know/do)
-  "keyPattern": string | null, // If this represents a pattern, name it (e.g., "Factory Pattern", "Repository Pattern")
-  "actionableGuidance": string, // Specific guidance for developers working in this area
-  "relatedConcepts": string[], // 2-3 related technical concepts
-  "confidence": number // 0-1
-}`;
-
-      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-        analysisType: "general",
-        provider: "auto",
-        taskType: "observation_generation"
-      });
-
-      const cleaned = result.insights
-        .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
-      synthesizedObservation = JSON.parse(cleaned);
-      log("LLM-synthesized entity observation", "debug", {
-        entity: entity.name,
-        hasPattern: !!synthesizedObservation.keyPattern
-      });
-    } catch (error) {
-      log("LLM synthesis failed for entity, using raw content", "warning", {
-        entity: entity.name,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
+    // Skip per-entity LLM synthesis — use raw content directly.
+    // Per-entity LLM calls are too slow (each goes through the full provider chain)
+    // and cause the workflow to hang for hours on large batches.
+    // The main semantic analysis LLM call already extracted meaningful insights.
+    const synthesizedObservation: any = null;
 
     // Build observation content - prefer synthesized, fallback to raw
     const observationContent = synthesizedObservation?.synthesizedContent
@@ -1309,38 +1198,10 @@ Provide a JSON response with:
       }
       const currentDate = new Date().toISOString();
 
-      // ENHANCEMENT: Use LLM to extract deeper insights and categorization
-      let enhancedInsights: any = null;
-      try {
-        const prompt = `Analyze this technical insight and extract structured information:
-
-Insight: ${insightText}
-
-Provide a JSON response with:
-{
-  "keyLearnings": string[], // 2-3 specific actionable learnings
-  "technicalDomain": string, // e.g., "architecture", "performance", "security"
-  "applicabilityScope": string, // Who can benefit from this
-  "confidence": number, // 0-1
-  "actionableRecommendations": string[] // 2-3 specific recommendations
-}`;
-
-        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-          analysisType: "general",
-          provider: "auto",
-          taskType: "observation_generation"  // Uses premium tier for quality observations
-        });
-
-        const cleaned = result.insights
-          .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
-        enhancedInsights = JSON.parse(cleaned);
-        log("LLM-enhanced insight extraction completed", "info", {
-          domain: enhancedInsights.technicalDomain,
-          confidence: enhancedInsights.confidence
-        });
-      } catch (error) {
-        log("LLM insight enhancement failed, using template-based approach", "warning", error);
-      }
+      // Skip per-insight LLM synthesis — use raw insight text directly.
+      // Per-item LLM calls cause workflow hangs (hours on large batches).
+      // The main semantic analysis LLM call already extracted meaningful patterns.
+      const enhancedInsights: any = null;
 
       // Only include observations with actual meaningful content - no hardcoded boilerplate
       const observations: ObservationTemplate[] = [];
@@ -1810,18 +1671,40 @@ If no meaningful correlation exists, return { "hasCorrelation": false }`;
    * - already PascalCase ("ModularConstraint" → "ModularConstraint")
    */
   private toPascalCase(input: string): string {
+    // Strip markdown formatting and garbage from LLM output
+    let cleaned = input
+      .replace(/\*\*/g, '')           // Remove markdown bold
+      .replace(/\*/g, '')             // Remove markdown italic
+      .replace(/__/g, '')             // Remove markdown underline
+      .replace(/`/g, '')              // Remove backticks
+      .replace(/#+\s*/g, '')          // Remove markdown headers
+      .replace(/Problem:.*/gi, '')    // Remove prompt-like suffixes
+      .replace(/Solution:.*/gi, '')
+      .replace(/Example:.*/gi, '')
+      .replace(/HowTo[A-Z].*/g, (m) => m.slice(0, 50)) // Truncate runaway HowTo names
+      .replace(/[^a-zA-Z0-9\s\-_]/g, ' ')  // Remove non-alphanumeric chars
+      .trim();
+
+    // If cleaning removed everything, fall back to first 50 chars of original
+    if (!cleaned) {
+      cleaned = input.replace(/[^a-zA-Z0-9]/g, ' ').trim().slice(0, 50);
+    }
+
     // First split on explicit separators (spaces, hyphens, underscores)
     // Then split on camelCase boundaries (lowercase→uppercase transitions)
-    const words = input
+    const words = cleaned
       .replace(/[-_]/g, ' ')
       .replace(/([a-z])([A-Z])/g, '$1 $2')
       .trim()
       .split(/\s+/)
       .filter(w => w.length > 0);
 
-    return words
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))  // Preserve existing case in sub-words
+    const result = words
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
       .join('');
+
+    // Cap entity names at 80 characters
+    return result.slice(0, 80);
   }
 
   private calculateSignificance(impact: string, fileCount: number): number {

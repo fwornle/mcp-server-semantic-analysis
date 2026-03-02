@@ -2630,13 +2630,14 @@ export class CoordinatorAgent {
               // Call semantic analysis (deep depth for meaningful code understanding)
               log(`Batch ${batch.id}: Running semantic analysis`, 'info', {
                 commits: commits.commits.length,
-                sessions: sessionResult.sessions.length
+                sessions: sessionResult.sessions.length,
+                analysisDepth: parameters.analysisDepth || 'surface'
               });
 
               const semanticResult = await semanticAgent.analyzeGitAndVibeData(
                 gitAnalysis,
                 vibeAnalysis,
-                { analysisDepth: 'surface' }
+                { analysisDepth: parameters.analysisDepth || 'surface' }
               );
 
               // Sub-step: LLM analysis complete

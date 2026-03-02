@@ -71,6 +71,9 @@ parameters:
       beta: 0.2   # Adamic-Adar weight
       gamma: 0.2  # Common ancestors weight
     description: "Weights for edge prediction scoring"
+  analysisDepth:
+    default: surface
+    description: "Depth of semantic code analysis. 'surface' analyzes diffs and signatures (fast, lower token cost). 'deep' includes full file contents, imports, and dependencies (thorough, higher token cost). 'comprehensive' adds cross-file relationship analysis."
 
 # Workflow steps
 steps:

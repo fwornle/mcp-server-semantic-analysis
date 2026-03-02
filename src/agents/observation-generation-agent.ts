@@ -323,7 +323,7 @@ Respond with JSON (no markdown fences):
 }`;
 
         const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-          analysisType: 'patterns',
+          analysisType: 'raw',
           provider: 'auto',
           taskType: 'observation_generation'
         });
@@ -443,7 +443,7 @@ Respond with JSON (no markdown fences):
 }`;
 
         const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-          analysisType: 'patterns',
+          analysisType: 'raw',
           provider: 'auto',
           taskType: 'observation_generation'
         });
@@ -916,7 +916,7 @@ Respond with JSON (no markdown fences):
 }`;
 
       const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-        analysisType: 'general',
+        analysisType: 'raw',
         provider: 'auto',
         taskType: 'observation_generation'
       });
@@ -1305,7 +1305,7 @@ Respond with JSON (no markdown fences):
 }`;
 
         const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-          analysisType: 'general',
+          analysisType: 'raw',
           provider: 'auto',
           taskType: 'observation_generation'
         });
@@ -1457,7 +1457,7 @@ Return JSON:
 If no meaningful correlation exists, return { "hasCorrelation": false }`;
 
       const result = await this.semanticAnalyzer.analyzeContent(prompt, {
-        analysisType: 'patterns',
+        analysisType: 'raw',
         provider: 'auto',
         taskType: 'observation_generation'
       });

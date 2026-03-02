@@ -1284,10 +1284,38 @@ Respond with JSON (no markdown fences):
       }
       const currentDate = new Date().toISOString();
 
-      // Skip per-insight LLM synthesis — use raw insight text directly.
-      // Per-item LLM calls cause workflow hangs (hours on large batches).
-      // The main semantic analysis LLM call already extracted meaningful patterns.
-      const enhancedInsights: any = null;
+      // Batch LLM synthesis for semantic insight observation (OBSV-01, OBSV-02)
+      let enhancedInsights: any = null;
+      try {
+        const keyPatterns = (insight.keyPatterns || []).slice(0, 5).join(', ');
+        const prompt = `Synthesize a structured observation from this semantic insight for a knowledge graph.
+
+Insight: ${insight.name || 'unknown'}
+Type: ${insight.type || 'general'}
+Key Patterns: ${keyPatterns || 'none'}
+Insight Text: ${(insight.insightText || insightText || '').substring(0, 800)}
+
+Respond with JSON (no markdown fences):
+{
+  "keyLearnings": ["learning 1: what this insight reveals about the codebase", "learning 2: a second key takeaway"],
+  "technicalDomain": "domain name (e.g. architecture, performance, testing)",
+  "actionableRecommendations": ["recommendation 1: practical action for developers", "recommendation 2: another actionable step"],
+  "confidence": 0.8,
+  "architecturalSignificance": "1 sentence: why this insight matters architecturally"
+}`;
+
+        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+          analysisType: 'general',
+          provider: 'auto',
+          taskType: 'observation_generation'
+        });
+        const cleaned = result.insights
+          .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
+        enhancedInsights = JSON.parse(cleaned);
+        log(`LLM synthesis succeeded for semantic insight: ${insight.name}`, 'info');
+      } catch (error) {
+        log(`LLM synthesis failed for semantic insight, using raw text`, 'warning', error);
+      }
 
       // Only include observations with actual meaningful content - no hardcoded boilerplate
       const observations: ObservationTemplate[] = [];

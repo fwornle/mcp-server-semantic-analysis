@@ -303,10 +303,38 @@ export class ObservationGenerationAgent {
     try {
       const currentDate = new Date().toISOString();
 
-      // Skip per-item LLM synthesis — use structured fallback content directly.
-      // Per-item LLM calls are too slow (30s+ each via batch queue) and always fail/timeout.
-      // The main semantic analysis LLM call already extracted meaningful patterns.
-      const synthesizedContent: any = null;
+      // Batch LLM synthesis for architectural decision observation (OBSV-01, OBSV-02)
+      let synthesizedContent: any = null;
+      try {
+        const relatedFiles = (decision.files || []).slice(0, 5).join(', ');
+        const prompt = `Analyze this architectural decision and synthesize a meaningful observation for a knowledge graph.
+
+Decision Type: ${decision.type || 'unknown'}
+Description: ${decision.description || 'no description'}
+Impact: ${decision.impact || 'unknown'}
+Related Files: ${relatedFiles || 'none'}
+
+Respond with JSON (no markdown fences):
+{
+  "entityName": "PascalCaseName describing this decision pattern",
+  "whatItIs": "1-2 sentences: what this architectural decision represents and how it manifests in the codebase",
+  "whyItMatters": "1-2 sentences: why this decision matters for maintainability, performance, or developer experience",
+  "guidance": "1-2 sentences: actionable guidance for developers working with this pattern"
+}`;
+
+        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+          analysisType: 'patterns',
+          provider: 'auto',
+          taskType: 'observation_generation'
+        });
+        const cleaned = result.insights
+          .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
+        synthesizedContent = JSON.parse(cleaned);
+        log(`LLM synthesis succeeded for architectural decision: ${decision.type}`, 'info');
+      } catch (error) {
+        log(`LLM synthesis failed for architectural decision, using fallback`, 'warning', error);
+        // synthesizedContent stays null, fallback content used below
+      }
 
       // Use LLM-generated entity name if available (NAME-02), otherwise generate from decision data
       const entityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))
@@ -390,9 +418,42 @@ export class ObservationGenerationAgent {
     try {
       const currentDate = new Date().toISOString();
 
-      // Skip per-item LLM synthesis — use structured fallback content directly.
-      // Per-item LLM calls are too slow (30s+ each via batch queue) and always fail/timeout.
-      const synthesizedContent: any = null;
+      // Batch LLM synthesis for code evolution observation (OBSV-01, OBSV-02)
+      let synthesizedContent: any = null;
+      try {
+        const relatedFiles = (pattern.files || []).slice(0, 5).join(', ');
+        const commitMessages = (pattern.commits || []).slice(0, 5)
+          .map((c: any) => typeof c === 'string' ? c : c.message || '')
+          .filter(Boolean).join('; ');
+        const prompt = `Analyze this code evolution pattern and synthesize a meaningful observation for a knowledge graph.
+
+Pattern: ${pattern.pattern || 'unknown'}
+Occurrences: ${pattern.occurrences || 0}
+Trend: ${pattern.trend || 'unknown'}
+Related Files: ${relatedFiles || 'none'}
+Related Commits: ${commitMessages || 'none'}
+
+Respond with JSON (no markdown fences):
+{
+  "entityName": "PascalCaseName describing this evolution pattern",
+  "whatItIs": "1-2 sentences: what this code evolution pattern represents",
+  "whyItMatters": "1-2 sentences: why this evolution trend matters for the codebase",
+  "guidance": "1-2 sentences: actionable guidance based on this evolution trend",
+  "trendInsight": "1 sentence: what the trend direction suggests about the codebase trajectory"
+}`;
+
+        const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+          analysisType: 'patterns',
+          provider: 'auto',
+          taskType: 'observation_generation'
+        });
+        const cleaned = result.insights
+          .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
+        synthesizedContent = JSON.parse(cleaned);
+        log(`LLM synthesis succeeded for code evolution: ${pattern.pattern}`, 'info');
+      } catch (error) {
+        log(`LLM synthesis failed for code evolution, using fallback`, 'warning', error);
+      }
 
       // Use LLM-generated entity name if available (NAME-02), otherwise generate from pattern data
       const entityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))

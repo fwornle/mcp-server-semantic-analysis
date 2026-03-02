@@ -897,11 +897,36 @@ Respond with JSON (no markdown fences):
       ? entityObservations.slice(0, 5).join('\n')
       : String(entityObservations).substring(0, 1000);
 
-    // Skip per-entity LLM synthesis — use raw content directly.
-    // Per-entity LLM calls are too slow (each goes through the full provider chain)
-    // and cause the workflow to hang for hours on large batches.
-    // The main semantic analysis LLM call already extracted meaningful insights.
-    const synthesizedObservation: any = null;
+    // Batch LLM synthesis for entity observation (OBSV-01, OBSV-02)
+    let synthesizedObservation: any = null;
+    try {
+      const prompt = `Synthesize a concise, actionable observation from this entity data for a knowledge graph.
+
+Entity: ${entity.name}
+Type: ${entity.type || entity.entityType || 'unknown'}
+Raw Observations: ${rawContent.substring(0, 800)}
+
+Respond with JSON (no markdown fences):
+{
+  "synthesizedContent": "2-3 sentences: what this entity represents and its role in the codebase",
+  "keyPattern": "name of the primary pattern or null if not a pattern",
+  "actionableGuidance": "1-2 sentences: practical guidance for developers",
+  "confidence": 0.8,
+  "relatedConcepts": ["concept1", "concept2"]
+}`;
+
+      const result = await this.semanticAnalyzer.analyzeContent(prompt, {
+        analysisType: 'general',
+        provider: 'auto',
+        taskType: 'observation_generation'
+      });
+      const cleaned = result.insights
+        .replace(/^```json?\n?/m, '').replace(/\n?```$/m, '').trim();
+      synthesizedObservation = JSON.parse(cleaned);
+      log(`LLM synthesis succeeded for entity: ${entity.name}`, 'info');
+    } catch (error) {
+      log(`LLM synthesis failed for entity ${entity.name}, using raw content`, 'warning', error);
+    }
 
     // Build observation content - prefer synthesized, fallback to raw
     const observationContent = synthesizedObservation?.synthesizedContent

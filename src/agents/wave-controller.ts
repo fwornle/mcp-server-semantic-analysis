@@ -20,6 +20,8 @@ import { loadComponentManifest, flattenManifestEntries } from '../types/componen
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
 import { Wave1ProjectAgent } from './wave1-project-agent.js';
 import { PersistenceAgent } from './persistence-agent.js';
+import { InsightGenerationAgent } from './insight-generation-agent.js';
+import type { CrossReferenceContext } from './insight-generation-agent.js';
 import type { GraphEntity } from '../storage/graph-database-adapter.js';
 import type { SharedMemoryEntity, EntityRelationship } from './persistence-agent.js';
 import type { KGEntity, KGRelation } from './kg-operators.js';
@@ -87,7 +89,7 @@ export class WaveController {
 
       // ---- Wave 1: L0 Project + L1 Components ----
       this.logWaveBanner('WAVE 1', 'L0 Project + L1 Components');
-      this.updateProgress({ currentWave: 1, totalWaves: 3, message: 'Wave 1: Creating Project and Component entities' });
+      this.updateProgress({ currentWave: 1, totalWaves: 4, message: 'Wave 1: Creating Project and Component entities' });
 
       const wave1Result = await this.executeWave1(manifest, existingEntities);
       waveResults.push(wave1Result);
@@ -106,7 +108,7 @@ export class WaveController {
 
       // ---- Wave 2: L2 SubComponents ----
       this.logWaveBanner('WAVE 2', 'L2 SubComponents');
-      this.updateProgress({ currentWave: 2, totalWaves: 3, message: 'Wave 2: Creating SubComponent entities' });
+      this.updateProgress({ currentWave: 2, totalWaves: 4, message: 'Wave 2: Creating SubComponent entities' });
 
       const wave2Result = await this.executeWave2(wave1Result, manifest);
       waveResults.push(wave2Result);
@@ -125,7 +127,7 @@ export class WaveController {
 
       // ---- Wave 3: L3 Details ----
       this.logWaveBanner('WAVE 3', 'L3 Detail Entities');
-      this.updateProgress({ currentWave: 3, totalWaves: 3, message: 'Wave 3: Creating Detail entities' });
+      this.updateProgress({ currentWave: 3, totalWaves: 4, message: 'Wave 3: Creating Detail entities' });
 
       const wave3Result = await this.executeWave3(wave2Result);
       waveResults.push(wave3Result);
@@ -139,6 +141,17 @@ export class WaveController {
         });
       }
 
+      // ---- Insight Finalization: Generate insight documents ----
+      this.logWaveBanner('FINALIZATION', 'Insight Document Generation');
+      this.updateProgress({ currentWave: 4, totalWaves: 4, message: 'Generating insight documents' });
+
+      const insightResult = await this.generateInsightsForWaveEntities(waveResults);
+      log('[WaveController] Insight finalization complete', 'info', {
+        generated: insightResult.generated,
+        failed: insightResult.failed,
+        skippedDiagrams: insightResult.skippedDiagrams,
+      });
+
       // Build and return final summary
       const summary = this.buildSummaryReport(startTime, waveResults);
 
@@ -146,8 +159,8 @@ export class WaveController {
       this.logSummaryReport(summary);
 
       this.updateProgress({
-        currentWave: 3,
-        totalWaves: 3,
+        currentWave: 4,
+        totalWaves: 4,
         message: summary.success ? 'Wave analysis complete' : 'Wave analysis completed with errors',
       });
 
@@ -473,6 +486,135 @@ export class WaveController {
       case 3: return 'Detail';
       default: return 'Detail';
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // Insight Finalization
+  // --------------------------------------------------------------------------
+
+  /**
+   * Generate insight documents for all entities produced by the wave pipeline.
+   * Runs after all 3 waves complete and entities are persisted.
+   * Each entity gets a markdown document; L1/L2 also get PlantUML diagrams.
+   */
+  private async generateInsightsForWaveEntities(
+    waveResults: WaveResult[],
+  ): Promise<{ generated: number; failed: number; skippedDiagrams: number }> {
+    // Collect all entities and relationships from all waves
+    const allEntities = waveResults.flatMap(wr => wr.agentOutputs.flatMap(ao => ao.entities));
+    const allRelationships = waveResults.flatMap(wr => wr.agentOutputs.flatMap(ao => ao.relationships));
+
+    log('[WaveController] Starting insight finalization', 'info', {
+      entityCount: allEntities.length,
+      relationshipCount: allRelationships.length,
+    });
+
+    if (allEntities.length === 0) {
+      log('[WaveController] No entities to generate insights for', 'warning');
+      return { generated: 0, failed: 0, skippedDiagrams: 0 };
+    }
+
+    // Instantiate InsightGenerationAgent ONCE (constructor creates dirs, checks PlantUML)
+    const insightAgent = new InsightGenerationAgent(this.repositoryPath);
+
+    let generated = 0;
+    let failed = 0;
+    let skippedDiagrams = 0;
+
+    // Build insight generation tasks (one per entity)
+    const insightTasks = allEntities.map(entity => {
+      return async (): Promise<void> => {
+        try {
+          // Build cross-reference context
+          const crossReferences = this.buildCrossReferences(entity, allEntities);
+
+          // L1 Component and L2 SubComponent get diagrams; L0 Project and L3 Detail get text-only
+          const generateDiagrams = entity.level === 1 || entity.level === 2;
+
+          // Build relations for this entity
+          const entityRelations = allRelationships
+            .filter(r => r.from === entity.name || r.to === entity.name)
+            .map(r => ({ from: r.from, to: r.to, relationType: r.type }));
+
+          const result = await insightAgent.generateEntityInsight({
+            entityName: entity.name,
+            entityType: entity.type,
+            observations: entity.observations,
+            relations: entityRelations,
+            crossReferences,
+            generateDiagrams,
+          });
+
+          if (result.success) {
+            generated++;
+
+            // Track skipped diagrams (L1/L2 that got fewer than 4 diagrams)
+            if (generateDiagrams && result.diagramCount < 4) {
+              skippedDiagrams++;
+            }
+
+            // Update entity metadata with insight document path
+            try {
+              await this.graphDB.storeEntity({
+                name: entity.name,
+                entityType: entity.type,
+                observations: entity.observations,
+                significance: entity.significance,
+                metadata: {
+                  validated_file_path: result.filePath,
+                  has_insight_document: true,
+                },
+              });
+            } catch (updateErr) {
+              log(`[WaveController] Failed to update metadata for ${entity.name}: ${updateErr}`, 'warning');
+            }
+          } else {
+            failed++;
+          }
+        } catch (entityErr) {
+          log(`[WaveController] Insight generation failed for ${entity.name}: ${entityErr}`, 'warning');
+          failed++;
+        }
+      };
+    });
+
+    // Execute with bounded concurrency (2 parallel to be conservative with LLM rate limits)
+    await this.runWithConcurrency(insightTasks, 2);
+
+    return { generated, failed, skippedDiagrams };
+  }
+
+  /**
+   * Build cross-reference context for an entity from the full entity set.
+   * Extracts parent, children, and siblings for dual cross-reference generation.
+   */
+  private buildCrossReferences(
+    entity: KGEntity,
+    allEntities: KGEntity[],
+  ): CrossReferenceContext {
+    const parent = entity.parentId
+      ? allEntities.find(e => e.name === entity.parentId)
+      : undefined;
+
+    const children = allEntities.filter(e => e.parentId === entity.name);
+
+    const siblings = entity.parentId
+      ? allEntities.filter(e => e.parentId === entity.parentId && e.name !== entity.name)
+      : [];
+
+    return {
+      parent: parent
+        ? { name: parent.name, firstObservation: parent.observations[0] || 'No observations available' }
+        : undefined,
+      children: children.map(c => ({
+        name: c.name,
+        firstObservation: c.observations[0] || 'No observations available',
+      })),
+      siblings: siblings.map(s => ({
+        name: s.name,
+        firstObservation: s.observations[0] || 'No observations available',
+      })),
+    };
   }
 
   // --------------------------------------------------------------------------

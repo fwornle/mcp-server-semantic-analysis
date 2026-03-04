@@ -16,7 +16,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
-import { loadComponentManifest, flattenManifestEntries } from '../types/component-manifest.js';
+import { loadComponentManifest, flattenManifestEntries, writeManifestDiscoveries } from '../types/component-manifest.js';
+import type { DiscoveredManifestEntry } from '../types/component-manifest.js';
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
 import { Wave1ProjectAgent } from './wave1-project-agent.js';
 import { PersistenceAgent } from './persistence-agent.js';
@@ -129,7 +130,7 @@ export class WaveController {
       this.logWaveBanner('WAVE 3', 'L3 Detail Entities');
       this.updateProgress({ currentWave: 3, totalWaves: 4, message: 'Wave 3: Creating Detail entities' });
 
-      const wave3Result = await this.executeWave3(wave2Result);
+      const wave3Result = await this.executeWave3(wave2Result, manifest);
       waveResults.push(wave3Result);
 
       if (!wave3Result.success) {
@@ -139,6 +140,35 @@ export class WaveController {
         log('[WaveController] Wave 3 entities persisted', 'info', {
           entities: wave3Result.totalEntities,
         });
+      }
+
+      // ---- Manifest Write-Back: Persist discovered L2 entities to YAML ----
+      try {
+        const discoveries: DiscoveredManifestEntry[] = [];
+        // Collect discovered L2 entities from Wave 2 results
+        for (const output of wave2Result.agentOutputs) {
+          for (const entity of output.entities) {
+            if (entity.level === 2 && entity.id?.startsWith('discovered:')) {
+              discoveries.push({
+                name: entity.name,
+                parentL1: entity.parentId ?? '',
+                description: entity.observations[0] ?? `SubComponent ${entity.name}`,
+                keywords: [entity.name.toLowerCase()],
+              });
+            }
+          }
+        }
+
+        if (discoveries.length > 0) {
+          const added = writeManifestDiscoveries(discoveries);
+          log('[WaveController] Manifest write-back complete', 'info', {
+            discovered: discoveries.length,
+            newlyAdded: added,
+          });
+        }
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        log('[WaveController] Manifest write-back failed (non-fatal)', 'warning', { error: errMsg });
       }
 
       // ---- Insight Finalization: Generate insight documents ----
@@ -302,7 +332,7 @@ export class WaveController {
     }
   }
 
-  private async executeWave3(wave2Result: WaveResult): Promise<WaveResult> {
+  private async executeWave3(wave2Result: WaveResult, manifest: ComponentManifest): Promise<WaveResult> {
     const waveStart = Date.now();
 
     try {
@@ -313,6 +343,9 @@ export class WaveController {
       const l2Entities = wave2Result.agentOutputs
         .flatMap(o => o.entities)
         .filter(e => e.level === 2);
+
+      // Collect all L3 suggestions from Wave 2 agent outputs
+      const allL3Suggestions = wave2Result.agentOutputs.flatMap(o => o.childManifest);
 
       // Gather all L1 entities for hierarchy path construction
       // L1 entities are the parents referenced by L2 entity parentId
@@ -332,10 +365,17 @@ export class WaveController {
           const parentId = l2Entity.parentId ?? '';
           const l1Entity = l1EntityMap.get(parentId);
 
-          // Get scoped files for this L2 entity
+          // ENHANCED: Use L1 keywords for broader file scoping (not just L2 name)
+          const l1Component = manifest.components.find(c => c.name === parentId);
+          const l1Keywords = l1Component?.keywords ?? [];
           const scopedFiles = await this.getComponentFiles(
             l2Entity.name,
-            [l2Entity.name.toLowerCase()],
+            [l2Entity.name.toLowerCase(), ...l1Keywords],
+          );
+
+          // Pass suggested L3 children from Wave 2 for this L2 entity
+          const suggestedChildren = allL3Suggestions.filter(
+            c => c.parentId === l2Entity.name && c.level === 3,
           );
 
           const wave3Input: Wave3Input = {
@@ -349,6 +389,7 @@ export class WaveController {
               level: 1,
             },
             scopedFiles,
+            suggestedChildren,
           };
 
           const agent = new Wave3DetailAgent(this.repositoryPath, this.team);

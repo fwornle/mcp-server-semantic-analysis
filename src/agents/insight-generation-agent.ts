@@ -609,6 +609,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
     const docSemanticsResults = params.doc_semantics_results || params.docSemanticsResults;
     const codeSynthesisResults = params.code_synthesis_results || params.codeSynthesisResults;
     const observations = params.observations || [];
+    const persistedEntities: any[] = params.persisted_entities || params.persistedEntities || [];
 
     log('Data availability checked', 'debug', {
       gitAnalysis: !!gitAnalysis,
@@ -853,8 +854,12 @@ Best practices, rules, and conventions for using this correctly. What should dev
               }
             };
 
+            // Match persisted entities to this pattern by name/keyword overlap
+            const matchedEntity = this.findMatchingEntity(pattern, persistedEntities);
+
             return this.generateInsightDocument(
-              gitAnalysis, vibeAnalysis, semanticAnalysis, singlePatternCatalog, webResults
+              gitAnalysis, vibeAnalysis, semanticAnalysis, singlePatternCatalog, webResults,
+              matchedEntity || undefined
             ).catch(err => {
               log(`Failed to generate insight for pattern ${pattern.name}: ${err.message}`, 'error');
               return null; // Continue with other patterns
@@ -1557,6 +1562,50 @@ Best practices, rules, and conventions for using this correctly. What should dev
     return { name: filename, title };
   }
 
+
+  /**
+   * Find a persisted entity that matches a pattern by name/keyword overlap.
+   * Returns entityInfo shape expected by generateInsightDocument, or null if no match.
+   */
+  private findMatchingEntity(
+    pattern: { name: string; category?: string; description?: string },
+    persistedEntities: any[]
+  ): { name: string; type: string; observations: string[] } | null {
+    if (!persistedEntities || persistedEntities.length === 0) return null;
+
+    const patternNameLower = pattern.name.toLowerCase();
+    // Split PascalCase into words for matching
+    const patternWords = pattern.name.replace(/([A-Z])/g, ' $1').trim().toLowerCase().split(/\s+/);
+
+    for (const entity of persistedEntities) {
+      const entityNameLower = (entity.name || '').toLowerCase();
+
+      // Exact name match
+      if (entityNameLower === patternNameLower) {
+        return this.entityToInfo(entity);
+      }
+
+      // Check if pattern name words overlap significantly with entity name
+      const entityWords = (entity.name || '').replace(/([A-Z])/g, ' $1').trim().toLowerCase().split(/\s+/);
+      const overlap = patternWords.filter(w => entityWords.includes(w)).length;
+      if (overlap >= 2 && overlap >= patternWords.length * 0.5) {
+        return this.entityToInfo(entity);
+      }
+    }
+
+    return null;
+  }
+
+  private entityToInfo(entity: any): { name: string; type: string; observations: string[] } {
+    const observations = (entity.observations || []).map((obs: any) =>
+      typeof obs === 'string' ? obs : (obs.content || String(obs))
+    );
+    return {
+      name: entity.name || '',
+      type: entity.entityType || entity.type || 'Unknown',
+      observations: observations.slice(0, 10) // Limit to avoid token bloat
+    };
+  }
 
   private async generateInsightDocument(
     gitAnalysis: any,

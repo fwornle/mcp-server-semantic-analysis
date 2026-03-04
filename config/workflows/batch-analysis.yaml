@@ -19,23 +19,24 @@ workflow:
   description: "Unified 14-agent workflow with Tree-KG operators and Code Graph RAG (runs in batches when needed)"
   type: iterative  # Signals coordinator to use batch iteration
 
-  # All 14 agents in the unified workflow:
+  # All 17 agents in the unified workflow:
   # 1. batch_scheduler - Plans chronological batches
   # 2. git_history - Extracts commits with LLM analysis
   # 3. vibe_history - Extracts session logs correlated with commits
   # 4. semantic_analysis - Analyzes semantics with LLM
   # 5. observation_generation - Generates structured observations
   # 6. ontology_classification - Classifies using project ontology
-  # 7. kg_operators - Tree-KG operators (conv, aggr, embed, dedup, pred, merge)
-  # 8. quality_assurance - Validates quality with retry
-  # 9. batch_checkpoint_manager - Saves batch checkpoints
-  # 10. code_graph - AST-based code intelligence (via Memgraph)
-  # 11. documentation_linker - Links docs/diagrams to code
-  # 12. web_search - Searches for similar patterns externally
-  # 13. insight_generation - Generates insight documents with diagrams
-  # 14. persistence - Persists to LevelDB knowledge graph
-  # 15. deduplication - Deduplicates entities
-  # 16. content_validation - Validates entity accuracy
+  # 7. hierarchy_classifier - Assigns entities to component hierarchy
+  # 8. kg_operators - Tree-KG operators (conv, aggr, embed, dedup, pred, merge)
+  # 9. quality_assurance - Validates quality with retry
+  # 10. batch_checkpoint_manager - Saves batch checkpoints
+  # 11. code_graph - AST-based code intelligence (via Memgraph)
+  # 12. documentation_linker - Links docs/diagrams to code
+  # 13. web_search - Searches for similar patterns externally
+  # 14. insight_generation - Generates insight documents with diagrams
+  # 15. persistence - Persists to LevelDB knowledge graph
+  # 16. deduplication - Deduplicates entities
+  # 17. content_validation - Validates entity accuracy
 
 config:
   max_concurrent_steps: 2  # Limited concurrency for batch processing
@@ -177,6 +178,20 @@ steps:
     timeout: 120
     dependencies:
       - generate_batch_observations
+    phase: batch
+    operator: classify
+
+  # PHASE 2.7: Hierarchy Classification
+  # Assigns entities to component hierarchy using keyword matching against component-manifest.yaml
+  - name: classify_hierarchy
+    agent: hierarchy_classifier
+    action: classifyHierarchy
+    tier: fast
+    parameters:
+      entities: "{{classify_with_ontology.result.classified}}"
+    timeout: 30
+    dependencies:
+      - classify_with_ontology
     phase: batch
     operator: classify
 
@@ -366,6 +381,20 @@ steps:
       - synthesize_code_insights
     phase: finalization
 
+  # PHASE F6.5: Link Insight Documents to Entities
+  # Post-insight step that updates entity metadata with has_insight_document and validated_file_path
+  - name: link_insight_docs
+    agent: persistence
+    action: linkInsightDocuments
+    tier: fast
+    parameters:
+      team: "{{params.team}}"
+      insightDir: "{{params.repositoryPath}}/knowledge-management/insights"
+    timeout: 60
+    dependencies:
+      - generate_insights
+    phase: finalization
+
   # PHASE F7: Web Search for Similar Patterns
   # Searches external resources for similar patterns, best practices, and related work
   - name: web_search
@@ -461,8 +490,14 @@ edges:
     to: ontology_classification
     type: dataflow
 
-  # Tree-KG operator pipeline
+  # Hierarchy classification (assigns entities to component hierarchy)
   - from: ontology_classification
+    to: hierarchy_classifier
+    type: dataflow
+    label: "hierarchy"
+
+  # Tree-KG operator pipeline
+  - from: hierarchy_classifier
     to: kg_operators
     type: dependency
     label: "conv"
@@ -539,6 +574,12 @@ edges:
     to: insight_generation
     type: dataflow
     label: "generate docs"
+
+  # Insight generation links back to persistence for metadata updates
+  - from: insight_generation
+    to: persistence
+    type: dataflow
+    label: "link insight docs"
 
   # Insight generation outputs to web search
   - from: insight_generation

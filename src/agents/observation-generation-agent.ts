@@ -870,16 +870,23 @@ Respond with JSON (no markdown fences):
         relationCount: semanticAnalysis.relations?.length || 0
       });
 
-      // Process ALL entities with LLM synthesis (async)
+      // Process ALL entities with LLM synthesis (concurrency-limited)
       // FIXED: Removed .slice(0, 20) limit that was causing 95% data loss
-      // The deduplication operators downstream will handle any duplicates
-      log(`Processing ${semanticAnalysis.entities.length} semantic entities (no artificial limit)`, 'info');
-      const entityObservations = await Promise.all(
-        semanticAnalysis.entities.map((entity: any) => this.createEntityObservation(entity))
-      );
+      // FIXED: Replaced Promise.all with batched concurrency to avoid overwhelming LLM providers
+      const CONCURRENCY_LIMIT = 3;
+      log(`Processing ${semanticAnalysis.entities.length} semantic entities (concurrency: ${CONCURRENCY_LIMIT})`, 'info');
+      const entityObservations: (StructuredObservation | null)[] = [];
+      const entities = semanticAnalysis.entities;
+      for (let i = 0; i < entities.length; i += CONCURRENCY_LIMIT) {
+        const chunk = entities.slice(i, i + CONCURRENCY_LIMIT);
+        const chunkResults = await Promise.all(
+          chunk.map((entity: any) => this.createEntityObservation(entity))
+        );
+        entityObservations.push(...chunkResults);
+      }
       const validEntityObs = entityObservations.filter((obs): obs is StructuredObservation => obs !== null);
       observations.push(...validEntityObs);
-      log(`Generated ${validEntityObs.length} observations from ${semanticAnalysis.entities.length} entities`, 'info');
+      log(`Generated ${validEntityObs.length} observations from ${entities.length} entities`, 'info');
     }
 
     return observations;

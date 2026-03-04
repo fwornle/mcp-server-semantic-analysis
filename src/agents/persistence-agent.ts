@@ -1120,14 +1120,20 @@ export class PersistenceAgent {
           originalMethod: ontologyMeta?.classificationMethod || 'unknown'
         });
       } else {
-        // Classify the entity using the ontology system - throws on failure (NO FALLBACKS)
-        classification = await this.classifyEntity(entity.name, entityContent);
-
-        // Use classified entity type - classification is mandatory, no fallbacks
-        if (!classification.entityType || classification.entityType === 'Unclassified') {
-          throw new Error(`Entity "${entity.name}" classification failed: no valid entityType returned. NO FALLBACKS.`);
-        }
-        entityType = classification.entityType;
+        // No pre-classification found — use whatever entityType the entity already has.
+        // Persistence does NOT classify. Classification is the ontology step's job.
+        entityType = entity.entityType || 'Unclassified';
+        classification = {
+          entityType,
+          confidence: entityType === 'Unclassified' ? 0 : 0.5,
+          method: 'passthrough-no-reclassification',
+          ontologyMetadata: { note: 'Entity arrived at persistence without pre-classification' }
+        };
+        log('Entity not pre-classified — storing with existing type (no LLM reclassification)', 'warning', {
+          entityName: entity.name,
+          entityType,
+          originalEntityType: entity.entityType
+        });
       }
 
       // CONTENT VALIDATION: Check if existing entity content is accurate
@@ -3222,12 +3228,26 @@ export class PersistenceAgent {
               }),
               relationships: [],
               metadata: {
+                // Preserve ontology classification from upstream steps (avoids 301 redundant LLM calls)
+                ...(entity as any).metadata,
                 created_at: currentDate,
                 last_updated: currentDate,
                 team: team,
                 created_by: 'workflow_persist',
-                version: '1.0'
-              }
+                version: '1.0',
+                // Preserve hierarchy classification metadata if present
+                ...((entity as any).parentId ? {
+                  hierarchyClassifiedAt: currentDate,
+                  hierarchyClassificationMethod: 'manifest-keyword'
+                } : {})
+              },
+              // Copy hierarchy fields from upstream classification
+              ...((entity as any).parentId ? {
+                parentEntityName: (entity as any).parentId,
+                hierarchyLevel: (entity as any).level ?? 3,
+                childEntityNames: [],
+                isScaffoldNode: false
+              } : {})
             };
 
             const nodeId = await this.storeEntityToGraph(sharedMemoryEntity);
@@ -3268,6 +3288,55 @@ export class PersistenceAgent {
       log(result.details, 'error');
     }
 
+    return result;
+  }
+
+  /**
+   * Link insight documents to entities in the knowledge graph.
+   * Scans the insight directory for .md files, matches them to entities by name,
+   * and updates entity metadata with has_insight_document and validated_file_path.
+   */
+  async linkInsightDocuments(params: { team: string; insightDir: string }): Promise<{
+    linked: number;
+    notFound: number;
+    files: string[];
+  }> {
+    const { team, insightDir } = params;
+    const result = { linked: 0, notFound: 0, files: [] as string[] };
+
+    if (!fs.existsSync(insightDir)) {
+      log(`Insight directory not found: ${insightDir}`, 'warning');
+      return result;
+    }
+
+    const files = fs.readdirSync(insightDir).filter(f => f.endsWith('.md'));
+    result.files = files;
+
+    for (const file of files) {
+      const entityName = file.replace(/\.md$/, '');
+      const filePath = path.join(insightDir, file);
+
+      try {
+        const existing = await this.getEntity(entityName, team);
+        if (existing) {
+          // Update metadata and re-store to persist the link
+          existing.metadata = existing.metadata || {} as any;
+          existing.metadata.has_insight_document = true;
+          existing.metadata.validated_file_path = filePath;
+          existing.metadata.last_updated = new Date().toISOString();
+
+          await this.storeEntityToGraph(existing);
+          result.linked++;
+        } else {
+          result.notFound++;
+        }
+      } catch (err) {
+        log(`Failed to link insight for ${entityName}: ${err instanceof Error ? err.message : String(err)}`, 'warning');
+        result.notFound++;
+      }
+    }
+
+    log(`Insight linking: ${result.linked} linked, ${result.notFound} not found, ${files.length} files`, 'info');
     return result;
   }
 }

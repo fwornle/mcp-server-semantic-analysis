@@ -14,6 +14,7 @@ import { ContentValidationAgent } from "./content-validation-agent.js";
 import { OntologyClassificationAgent } from "./ontology-classification-agent.js";
 import { CodeGraphAgent } from "./code-graph-agent.js";
 import { DocumentationLinkerAgent } from "./documentation-linker-agent.js";
+import { HierarchyClassifierAgent } from "./hierarchy-classifier.js";
 import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
 import { WorkflowReportAgent, type StepReport } from "./workflow-report-agent.js";
 import { loadAllWorkflows, loadWorkflowFromYAML, getConfigDir, loadOrchestratorConfig } from "../utils/workflow-loader.js";
@@ -1573,12 +1574,17 @@ export class CoordinatorAgent {
       const ontologyClassificationAgent = new OntologyClassificationAgent(this.team, this.repositoryPath);
       this.agents.set("ontology_classification", ontologyClassificationAgent);
 
+      // Hierarchy Classifier Agent for assigning entities to component hierarchy
+      const hierarchyClassifierAgent = new HierarchyClassifierAgent();
+      this.agents.set("hierarchy_classifier", hierarchyClassifierAgent);
+
       const qualityAssuranceAgent = new QualityAssuranceAgent();
       this.agents.set("quality_assurance", qualityAssuranceAgent);
 
       // Initialize PersistenceAgent with GraphDB adapter
+      // NOTE: No initializeOntology() — persistence does NOT classify entities.
+      // Classification is handled by the upstream classify_with_ontology step.
       const persistenceAgent = new PersistenceAgent(this.repositoryPath, this.graphDB);
-      await persistenceAgent.initializeOntology();
       this.agents.set("persistence", persistenceAgent);
 
       // SynchronizationAgent REMOVED - GraphDatabaseService handles persistence automatically
@@ -3263,6 +3269,50 @@ export class CoordinatorAgent {
             trackBatchStep('classify_with_ontology', 'skipped', ontologySkipDuration);
           }
 
+          // Hierarchy Classification — assign entities to component hierarchy
+          const hierarchyStartTime = new Date();
+          const hierarchyClassifier = this.agents.get('hierarchy_classifier') as HierarchyClassifierAgent | undefined;
+          if (hierarchyClassifier && batchEntities.length > 0) {
+            try {
+              this.writeProgressFile(execution, workflow, 'classify_hierarchy', ['classify_hierarchy'], currentBatchProgress);
+              await this.checkSingleStepPause('classify_hierarchy');
+
+              const hierarchyResult = await hierarchyClassifier.classifyHierarchy({ entities: batchEntities });
+              batchEntities = hierarchyResult.entities;
+
+              const hierarchyDuration = Date.now() - hierarchyStartTime.getTime();
+              execution.results['classify_hierarchy'] = this.wrapWithTiming({
+                result: {
+                  classified: hierarchyResult.classified,
+                  unclassified: hierarchyResult.unclassified,
+                  byComponent: hierarchyResult.byComponent
+                },
+                batchId: batch.id
+              }, hierarchyStartTime);
+              this.writeProgressFile(execution, workflow, 'classify_hierarchy', [], currentBatchProgress);
+              trackBatchStep('classify_hierarchy', 'completed', hierarchyDuration, {
+                classified: hierarchyResult.classified,
+                unclassified: hierarchyResult.unclassified,
+                byComponent: hierarchyResult.byComponent
+              });
+
+              log(`Batch ${batch.id}: Hierarchy classification complete`, 'info', {
+                classified: hierarchyResult.classified,
+                unclassified: hierarchyResult.unclassified
+              });
+            } catch (hierarchyError) {
+              const hierarchyErrorMsg = hierarchyError instanceof Error ? hierarchyError.message : String(hierarchyError);
+              log(`Batch ${batch.id}: Hierarchy classification failed (non-critical)`, 'warning', { error: hierarchyErrorMsg });
+              execution.results['classify_hierarchy'] = this.wrapWithTiming({
+                skipped: true,
+                skipReason: hierarchyErrorMsg,
+                batchId: batch.id
+              }, hierarchyStartTime);
+              this.writeProgressFile(execution, workflow, 'classify_hierarchy', [], currentBatchProgress);
+              trackBatchStep('classify_hierarchy', 'failed', Date.now() - hierarchyStartTime.getTime());
+            }
+          }
+
           // Apply Tree-KG operators
           SemanticAnalyzer.resetStepMetrics();
           const operatorsStartTime = new Date();
@@ -3886,6 +3936,7 @@ export class CoordinatorAgent {
             observations: allBatchObservations,
             code_graph_results: execution.results['index_codebase'] || execution.results['synthesize_code_insights'],
             code_synthesis_results: execution.results['synthesize_code_insights'],
+            persisted_entities: accumulatedKG.entities,
             team: parameters.team || this.team
           });
 
@@ -3936,6 +3987,41 @@ export class CoordinatorAgent {
             skipReason: `Insight generation failed: ${errorMsg}`,  // Use consistent field name
             warning: `Insight generation failed: ${errorMsg}`  // Also set warning for summary extraction
           }, insightStartTime);
+        }
+      }
+
+      // Post-insight: Link insight documents to entities in the knowledge graph
+      const persistenceAgentForLinking = this.agents.get('persistence') as PersistenceAgent | undefined;
+      if (persistenceAgentForLinking) {
+        try {
+          const linkStartTime = new Date();
+          const team = parameters.team || this.team;
+          const insightDir = path.join(parameters.repositoryPath || this.repositoryPath, 'knowledge-management', 'insights');
+
+          this.writeProgressFile(execution, workflow, 'link_insight_docs', ['link_insight_docs'], {
+            currentBatch: batchCount,
+            totalBatches: totalBatchCount,
+            batchId: 'finalization-link-insights'
+          });
+
+          const linkResult = await persistenceAgentForLinking.linkInsightDocuments({ team, insightDir });
+          const linkEndTime = new Date();
+
+          execution.results['link_insight_docs'] = this.wrapWithTiming(linkResult, linkStartTime, linkEndTime);
+          this.writeProgressFile(execution, workflow, 'link_insight_docs', [], {
+            currentBatch: batchCount,
+            totalBatches: totalBatchCount,
+            batchId: 'finalization-link-insights'
+          });
+
+          log('Post-insight linking completed', 'info', {
+            linked: linkResult.linked,
+            notFound: linkResult.notFound,
+            duration: `${linkEndTime.getTime() - linkStartTime.getTime()}ms`
+          });
+        } catch (linkError) {
+          const linkMsg = linkError instanceof Error ? linkError.message : String(linkError);
+          log('Post-insight linking failed (non-critical)', 'warning', { error: linkMsg });
         }
       }
 

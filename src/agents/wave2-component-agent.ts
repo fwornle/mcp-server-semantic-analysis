@@ -213,6 +213,14 @@ ${fileContents || '(no source files available)'}
 
 3. For ALL sub-components (known + discovered), suggest what Detail-level (L3) entities exist within them.
 
+## Self-Sufficiency Standard
+Each sub-component description and its observations MUST orient a new developer:
+- What does this sub-component DO? (purpose and responsibility, not just existence)
+- WHERE in the code does it live? (key files and directories)
+- WHAT should the developer expect to find? (patterns, interfaces, key classes)
+- A developer reading ONLY this node (not its children) should understand the scope.
+Write as if this is the only documentation a new team member will read about this sub-component.
+
 ## Output (JSON only, no markdown fencing)
 {
   "subComponents": [

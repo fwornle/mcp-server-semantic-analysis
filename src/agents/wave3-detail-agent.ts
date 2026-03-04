@@ -157,6 +157,12 @@ export class Wave3DetailAgent {
       log(`[Wave3Agent] No scoped files for ${input.l2Entity.name}, using parent context only`, 'warning');
     }
 
+    const suggestedSection = input.suggestedChildren && input.suggestedChildren.length > 0
+      ? `\n## Suggested Detail Nodes (from parent component analysis)\nThe parent analysis suggested these L3 nodes exist. Validate them against the source code -- keep those with evidence, discard those without, and discover additional nodes not listed here:\n${input.suggestedChildren
+          .map(c => `- ${c.name}: ${c.description}`)
+          .join('\n')}\n`
+      : '';
+
     const prompt = `You are analyzing the ${input.l2Entity.name} sub-component to identify its detail-level knowledge nodes.
 
 ## Hierarchy Context
@@ -166,7 +172,7 @@ SubComponent (L2): ${input.l2Entity.name} - ${l2Description}
 
 ## Source Files
 ${fileSection}
-
+${suggestedSection}
 ## Task
 Identify ${hasFiles ? '2-8' : '1-3'} Detail-level (L3) nodes that represent specific, notable aspects of this sub-component. Good L3 nodes are:
 - Specific classes or modules with distinct behavior (e.g., "BatchScheduler", "LLMRetryPolicy")
@@ -194,6 +200,13 @@ For each L3 node, provide:
   BAD observations (DO NOT write these):
   - "Works well" (trivially generic, no code reference)
   - "Important implementation detail" (vague, no artifact mentioned)
+
+## Self-Sufficiency Standard
+Each detail node description and its observations MUST orient a new developer:
+- What does this detail DO? (specific behavior, algorithm, or pattern)
+- WHERE in the code does it live? (exact files, classes, or functions)
+- WHAT should the developer expect? (how it works, what it connects to)
+Write as if this is the only documentation available about this detail.
 
 ## Output (JSON only, no markdown fencing)
 {
@@ -252,6 +265,9 @@ For each L3 node, provide:
       const genericNames = new Set([
         'Configuration', 'Utils', 'Types', 'Helpers', 'Constants',
         'Index', 'Main', 'Base', 'Common', 'Shared', 'Core',
+        'Manager', 'Service', 'Handler', 'Controller', 'Module',
+        'Logic', 'Processing', 'Implementation', 'Functionality',
+        'Features', 'Operations', 'System', 'Framework', 'Engine',
       ]);
 
       const validDetails = parsed.details.filter(detail => {

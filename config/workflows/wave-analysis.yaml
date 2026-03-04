@@ -1,0 +1,16 @@
+workflow:
+  name: wave-analysis
+  version: "1.0"
+  description: "Hierarchical wave analysis: Wave1 (L0/L1) -> Wave2 (L2) -> Wave3 (L3)"
+  type: wave
+
+config:
+  max_agents_per_wave: 4
+  persist_after_each_wave: true
+  fail_fast: true
+
+parameters:
+  repositoryPath:
+    required: true
+  team:
+    required: true

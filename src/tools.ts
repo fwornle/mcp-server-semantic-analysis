@@ -984,7 +984,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
 
   // CRITICAL: Force async_mode=true for long-running workflows to prevent MCP timeout crashes
   // These workflows can take 10-20 minutes and will kill the MCP connection if run synchronously
-  const longRunningWorkflows = ['complete-analysis', 'incremental-analysis', 'batch-analysis'];
+  const longRunningWorkflows = ['complete-analysis', 'incremental-analysis', 'batch-analysis', 'wave-analysis'];
   const forceAsync = longRunningWorkflows.includes(workflow_name);
   const async_mode = args.async_mode ?? forceAsync; // Default to async for long workflows
 
@@ -1005,6 +1005,10 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       target: 'batch-analysis',
       // Fresh start by default - use complete-analysis for crash recovery behavior
       defaults: { forceCleanStart: true, resumeFromCheckpoint: true }
+    },
+    'wave-analysis': {
+      target: 'wave-analysis',
+      defaults: {}
     }
   };
 

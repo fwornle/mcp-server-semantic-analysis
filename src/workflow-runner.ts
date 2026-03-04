@@ -465,6 +465,55 @@ async function main(): Promise<void> {
     pid: process.pid
   });
 
+  // Wave-analysis routing -- separate from coordinator path
+  if (workflowName === 'wave-analysis') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { WaveController } = await import('./agents/wave-controller.js' as any);
+    const waveController = new WaveController({
+      repositoryPath,
+      team: parameters?.team || 'coding',
+      progressFile
+    });
+
+    try {
+      const result = await waveController.execute();
+      writeProgressPreservingDetails(progressFile, {
+        workflowId,
+        workflowName: 'wave-analysis',
+        team: parameters?.team || 'unknown',
+        repositoryPath,
+        status: result.success ? 'completed' : 'failed',
+        message: `Wave analysis ${result.success ? 'completed' : 'failed'}: ${result.totalEntities} entities across ${result.waves.length} waves`,
+        startTime: startTime.toISOString(),
+        lastUpdate: new Date().toISOString(),
+        elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
+        pid: process.pid
+      });
+      // Clean up PID and config files
+      try { fs.unlinkSync(pidFile); } catch (e) { /* ignore */ }
+      try { fs.unlinkSync(configPath); } catch (e) { /* ignore */ }
+      process.exit(result.success ? 0 : 1);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      writeProgressPreservingDetails(progressFile, {
+        workflowId,
+        workflowName: 'wave-analysis',
+        team: parameters?.team || 'unknown',
+        repositoryPath,
+        status: 'failed',
+        error: errorMessage,
+        message: `Wave analysis failed: ${errorMessage}`,
+        startTime: startTime.toISOString(),
+        lastUpdate: new Date().toISOString(),
+        elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
+        pid: process.pid
+      });
+      try { fs.unlinkSync(pidFile); } catch (e) { /* ignore */ }
+      try { fs.unlinkSync(configPath); } catch (e) { /* ignore */ }
+      process.exit(1);
+    }
+  }
+
   const coordinator = new CoordinatorAgent(repositoryPath);
   cleanupState.coordinator = coordinator;
 

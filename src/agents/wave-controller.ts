@@ -1,0 +1,724 @@
+/**
+ * WaveController - Hierarchical Wave Orchestration Engine
+ *
+ * Replaces the flat batch-analysis DAG with sequential wave execution:
+ *   Wave 1: L0 Project + L1 Component entities (manifest-driven)
+ *   Wave 2: L2 SubComponent entities (manifest seeded + code discovery)
+ *   Wave 3: L3 Detail entities (pure code discovery)
+ *
+ * Each wave produces parent nodes before the next wave spawns child-level agents.
+ * Entities are persisted after each wave (crash-resilient).
+ * Agents within a wave run in parallel, bounded by maxAgentsPerWave.
+ *
+ * @module agents/wave-controller
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import { log } from '../logging.js';
+import { loadComponentManifest, flattenManifestEntries } from '../types/component-manifest.js';
+import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
+import { Wave1ProjectAgent } from './wave1-project-agent.js';
+import { PersistenceAgent } from './persistence-agent.js';
+import type { GraphEntity } from '../storage/graph-database-adapter.js';
+import type { SharedMemoryEntity, EntityRelationship } from './persistence-agent.js';
+import type { KGEntity, KGRelation } from './kg-operators.js';
+import type { ComponentManifest } from '../types/component-manifest.js';
+import type {
+  WaveControllerConfig,
+  WaveResult,
+  WaveExecutionResult,
+  WaveAgentOutput,
+  ChildManifestEntry,
+  Wave2Input,
+  Wave3Input,
+} from '../types/wave-types.js';
+
+// ============================================================================
+// WaveController
+// ============================================================================
+
+export class WaveController {
+  private repositoryPath: string;
+  private team: string;
+  private progressFile: string;
+  private maxAgentsPerWave: number;
+  private failFast: boolean;
+  private graphDB: GraphDatabaseAdapter;
+
+  constructor(config: WaveControllerConfig) {
+    this.repositoryPath = config.repositoryPath;
+    this.team = config.team;
+    this.progressFile = config.progressFile;
+    this.maxAgentsPerWave = config.maxAgentsPerWave ?? 4;
+    this.failFast = config.failFast ?? true;
+
+    // Derive the knowledge-graph DB path from the repository
+    const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph');
+    this.graphDB = new GraphDatabaseAdapter(dbPath, this.team);
+  }
+
+  // --------------------------------------------------------------------------
+  // Main entry point
+  // --------------------------------------------------------------------------
+
+  async execute(): Promise<WaveExecutionResult> {
+    const startTime = Date.now();
+    const waveResults: WaveResult[] = [];
+
+    try {
+      // Initialize graph database
+      await this.graphDB.initialize();
+      log('[WaveController] GraphDatabaseAdapter initialized', 'info');
+
+      // Load component manifest
+      const manifest = loadComponentManifest();
+      const flatEntries = flattenManifestEntries(manifest);
+      log('[WaveController] Component manifest loaded', 'info', {
+        components: manifest.components.length,
+        totalEntries: flatEntries.length,
+      });
+
+      // Load existing KG entities for context enrichment
+      const existingEntities = await this.loadExistingEntities();
+      log('[WaveController] Existing entities loaded', 'info', {
+        count: existingEntities.length,
+      });
+
+      // ---- Wave 1: L0 Project + L1 Components ----
+      this.logWaveBanner('WAVE 1', 'L0 Project + L1 Components');
+      this.updateProgress({ currentWave: 1, totalWaves: 3, message: 'Wave 1: Creating Project and Component entities' });
+
+      const wave1Result = await this.executeWave1(manifest, existingEntities);
+      waveResults.push(wave1Result);
+
+      if (!wave1Result.success) {
+        log('[WaveController] Wave 1 failed', 'error', { error: wave1Result.error });
+        if (this.failFast) {
+          return this.buildSummaryReport(startTime, waveResults);
+        }
+      } else {
+        await this.persistWaveResult(wave1Result);
+        log('[WaveController] Wave 1 entities persisted', 'info', {
+          entities: wave1Result.totalEntities,
+        });
+      }
+
+      // ---- Wave 2: L2 SubComponents ----
+      this.logWaveBanner('WAVE 2', 'L2 SubComponents');
+      this.updateProgress({ currentWave: 2, totalWaves: 3, message: 'Wave 2: Creating SubComponent entities' });
+
+      const wave2Result = await this.executeWave2(wave1Result, manifest);
+      waveResults.push(wave2Result);
+
+      if (!wave2Result.success) {
+        log('[WaveController] Wave 2 failed', 'error', { error: wave2Result.error });
+        if (this.failFast) {
+          return this.buildSummaryReport(startTime, waveResults);
+        }
+      } else {
+        await this.persistWaveResult(wave2Result);
+        log('[WaveController] Wave 2 entities persisted', 'info', {
+          entities: wave2Result.totalEntities,
+        });
+      }
+
+      // ---- Wave 3: L3 Details ----
+      this.logWaveBanner('WAVE 3', 'L3 Detail Entities');
+      this.updateProgress({ currentWave: 3, totalWaves: 3, message: 'Wave 3: Creating Detail entities' });
+
+      const wave3Result = await this.executeWave3(wave2Result);
+      waveResults.push(wave3Result);
+
+      if (!wave3Result.success) {
+        log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
+      } else {
+        await this.persistWaveResult(wave3Result);
+        log('[WaveController] Wave 3 entities persisted', 'info', {
+          entities: wave3Result.totalEntities,
+        });
+      }
+
+      // Build and return final summary
+      const summary = this.buildSummaryReport(startTime, waveResults);
+
+      // Log structured summary
+      this.logSummaryReport(summary);
+
+      this.updateProgress({
+        currentWave: 3,
+        totalWaves: 3,
+        message: summary.success ? 'Wave analysis complete' : 'Wave analysis completed with errors',
+      });
+
+      return summary;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      log('[WaveController] Fatal error during wave execution', 'error', { error: errorMsg });
+
+      return {
+        success: false,
+        waves: waveResults,
+        totalEntities: waveResults.reduce((sum, w) => sum + w.totalEntities, 0),
+        totalDurationMs: Date.now() - startTime,
+        entitiesByLevel: {},
+        manifestEntities: 0,
+        discoveredEntities: 0,
+        error: errorMsg,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Wave Execution Methods
+  // --------------------------------------------------------------------------
+
+  private async executeWave1(
+    manifest: ComponentManifest,
+    existingEntities: KGEntity[],
+  ): Promise<WaveResult> {
+    const waveStart = Date.now();
+
+    try {
+      const wave1Agent = new Wave1ProjectAgent(this.repositoryPath, this.team);
+      const output = await wave1Agent.execute({
+        manifest,
+        existingEntities,
+        repositoryPath: this.repositoryPath,
+      });
+
+      return {
+        wave: 1,
+        agentOutputs: [output],
+        totalEntities: output.entities.length,
+        manifestEntities: output.entities.filter(e => !e.id.startsWith('discovered:')).length,
+        discoveredEntities: output.entities.filter(e => e.id.startsWith('discovered:')).length,
+        durationMs: Date.now() - waveStart,
+        success: true,
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      return {
+        wave: 1,
+        agentOutputs: [],
+        totalEntities: 0,
+        manifestEntities: 0,
+        discoveredEntities: 0,
+        durationMs: Date.now() - waveStart,
+        success: false,
+        error: errorMsg,
+      };
+    }
+  }
+
+  private async executeWave2(
+    wave1Result: WaveResult,
+    manifest: ComponentManifest,
+  ): Promise<WaveResult> {
+    const waveStart = Date.now();
+
+    try {
+      // Dynamic import: Wave2ComponentAgent is created by Plan 03 (runs in parallel)
+      const { Wave2ComponentAgent } = await import('./wave2-component-agent.js');
+
+      // Gather all L1 entities from Wave 1
+      const l1Entities = wave1Result.agentOutputs
+        .flatMap(o => o.entities)
+        .filter(e => e.level === 1);
+
+      // Gather all child manifest entries from Wave 1
+      const allChildManifest = wave1Result.agentOutputs.flatMap(o => o.childManifest);
+
+      // Build agent tasks for each L1 entity
+      const agentTasks = l1Entities.map(l1Entity => {
+        return async (): Promise<WaveAgentOutput> => {
+          // Find child manifest entries for this L1 entity
+          const childEntries = allChildManifest.filter(
+            c => c.parentId === l1Entity.name && c.level === 2,
+          );
+
+          // Get component files via code-graph-rag (graceful fallback)
+          const componentKeywords = manifest.components
+            .find(c => c.name === l1Entity.name)?.keywords ?? [];
+          const componentFiles = await this.getComponentFiles(l1Entity.name, componentKeywords);
+
+          const wave2Input: Wave2Input = {
+            l1Entity,
+            componentFiles,
+            componentKeywords,
+            manifestChildren: childEntries,
+          };
+
+          const agent = new Wave2ComponentAgent(this.repositoryPath, this.team);
+          return agent.execute(wave2Input);
+        };
+      });
+
+      // Run agents with bounded concurrency
+      const outputs = await this.runWithConcurrency(agentTasks, this.maxAgentsPerWave);
+
+      const totalEntities = outputs.reduce((sum, o) => sum + o.entities.length, 0);
+      const manifestCount = outputs.reduce(
+        (sum, o) => sum + o.entities.filter(e => !e.id.startsWith('discovered:')).length, 0,
+      );
+      const discoveredCount = outputs.reduce(
+        (sum, o) => sum + o.entities.filter(e => e.id.startsWith('discovered:')).length, 0,
+      );
+
+      return {
+        wave: 2,
+        agentOutputs: outputs,
+        totalEntities,
+        manifestEntities: manifestCount,
+        discoveredEntities: discoveredCount,
+        durationMs: Date.now() - waveStart,
+        success: true,
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      return {
+        wave: 2,
+        agentOutputs: [],
+        totalEntities: 0,
+        manifestEntities: 0,
+        discoveredEntities: 0,
+        durationMs: Date.now() - waveStart,
+        success: false,
+        error: errorMsg,
+      };
+    }
+  }
+
+  private async executeWave3(wave2Result: WaveResult): Promise<WaveResult> {
+    const waveStart = Date.now();
+
+    try {
+      // Dynamic import: Wave3DetailAgent is created by Plan 03 (runs in parallel)
+      const { Wave3DetailAgent } = await import('./wave3-detail-agent.js');
+
+      // Gather all L2 entities from Wave 2 (both manifest-defined and discovered)
+      const l2Entities = wave2Result.agentOutputs
+        .flatMap(o => o.entities)
+        .filter(e => e.level === 2);
+
+      // Gather all L1 entities for hierarchy path construction
+      // L1 entities are the parents referenced by L2 entity parentId
+      const l1EntityMap = new Map<string, KGEntity>();
+      for (const output of wave2Result.agentOutputs) {
+        for (const entity of output.entities) {
+          if (entity.level === 1) {
+            l1EntityMap.set(entity.name, entity);
+          }
+        }
+      }
+
+      // Build agent tasks for each L2 entity
+      const agentTasks = l2Entities.map(l2Entity => {
+        return async (): Promise<WaveAgentOutput> => {
+          // Find the parent L1 entity
+          const parentId = l2Entity.parentId ?? '';
+          const l1Entity = l1EntityMap.get(parentId);
+
+          // Get scoped files for this L2 entity
+          const scopedFiles = await this.getComponentFiles(
+            l2Entity.name,
+            [l2Entity.name.toLowerCase()],
+          );
+
+          const wave3Input: Wave3Input = {
+            l2Entity,
+            l1Entity: l1Entity ?? {
+              id: parentId,
+              name: parentId,
+              type: 'Component',
+              observations: [],
+              significance: 8,
+              level: 1,
+            },
+            scopedFiles,
+          };
+
+          const agent = new Wave3DetailAgent(this.repositoryPath, this.team);
+          return agent.execute(wave3Input);
+        };
+      });
+
+      // Run agents with bounded concurrency
+      const outputs = await this.runWithConcurrency(agentTasks, this.maxAgentsPerWave);
+
+      const totalEntities = outputs.reduce((sum, o) => sum + o.entities.length, 0);
+
+      return {
+        wave: 3,
+        agentOutputs: outputs,
+        totalEntities,
+        manifestEntities: 0, // Wave 3 is pure discovery
+        discoveredEntities: totalEntities,
+        durationMs: Date.now() - waveStart,
+        success: true,
+      };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      return {
+        wave: 3,
+        agentOutputs: [],
+        totalEntities: 0,
+        manifestEntities: 0,
+        discoveredEntities: 0,
+        durationMs: Date.now() - waveStart,
+        success: false,
+        error: errorMsg,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Persistence
+  // --------------------------------------------------------------------------
+
+  private async persistWaveResult(waveResult: WaveResult): Promise<void> {
+    // Collect all entities from all agents in this wave
+    const allEntities = waveResult.agentOutputs.flatMap(o => o.entities);
+    const allRelationships = waveResult.agentOutputs.flatMap(o => o.relationships);
+
+    // Convert KGEntity to SharedMemoryEntity format for PersistenceAgent
+    const sharedMemoryEntities = allEntities.map(e => this.mapEntityToSharedMemory(e));
+
+    // Persist entities via PersistenceAgent
+    const persistenceAgent = new PersistenceAgent(this.repositoryPath, this.graphDB, {
+      ontologyTeam: this.team,
+      validationMode: 'disabled',
+      contentValidationMode: 'disabled',
+    });
+
+    await persistenceAgent.persistEntities({
+      entities: sharedMemoryEntities.map(e => ({
+        name: e.name,
+        entityType: e.entityType,
+        observations: e.observations.map(obs =>
+          typeof obs === 'string' ? obs : obs.content,
+        ),
+        significance: e.significance,
+      })),
+      team: this.team,
+    });
+
+    // Persist relationship edges via GraphDatabaseAdapter
+    for (const rel of allRelationships) {
+      try {
+        await this.graphDB.storeRelationship({
+          from: rel.from,
+          to: rel.to,
+          relationType: rel.type,
+        });
+      } catch (error) {
+        log(`[WaveController] Failed to persist relationship ${rel.from} -> ${rel.to}`, 'warning', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    log(`[WaveController] Wave ${waveResult.wave} persistence complete`, 'info', {
+      entities: allEntities.length,
+      relationships: allRelationships.length,
+    });
+  }
+
+  /**
+   * Map KGEntity to SharedMemoryEntity format.
+   *
+   * CRITICAL: Correct field mapping (see RESEARCH.md Pitfall 1 and Pitfall 6):
+   * - entityType comes from KGEntity.type (not entityType -- KGEntity has `type`)
+   * - hierarchyLevel comes from KGEntity.level
+   * - parentEntityName comes from KGEntity.parentId
+   * - Ontology metadata is pre-populated to prevent redundant LLM re-classification
+   */
+  private mapEntityToSharedMemory(entity: KGEntity): SharedMemoryEntity {
+    return {
+      id: entity.id,
+      name: entity.name,
+      entityType: entity.type, // KGEntity uses `type`, SharedMemoryEntity uses `entityType`
+      significance: entity.significance,
+      observations: entity.observations,
+      relationships: [],
+      metadata: {
+        created_at: new Date().toISOString(),
+        last_updated: new Date().toISOString(),
+        team: this.team,
+        source: 'wave-analysis',
+        ontology: {
+          ontologyClass: this.getOntologyClass(entity.level),
+          ontologyVersion: '1.0',
+          classificationConfidence: 1.0,
+          classificationMethod: 'auto-assigned',
+          ontologySource: 'lower' as const,
+          classifiedAt: new Date().toISOString(),
+        },
+      },
+      hierarchyLevel: entity.level,
+      parentEntityName: entity.parentId,
+      childEntityNames: [],
+      isScaffoldNode: (entity.level ?? 3) < 3, // L0, L1, L2 are scaffold nodes
+    };
+  }
+
+  /**
+   * Map hierarchy level to ontology class name.
+   */
+  private getOntologyClass(level?: number): string {
+    switch (level) {
+      case 0: return 'Project';
+      case 1: return 'Component';
+      case 2: return 'SubComponent';
+      case 3: return 'Detail';
+      default: return 'Detail';
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Concurrency Control
+  // --------------------------------------------------------------------------
+
+  /**
+   * Run tasks with bounded concurrency using work-stealing pattern.
+   * Starts maxConcurrent workers; each pulls next task when done.
+   * Results are returned in original order.
+   *
+   * If failFast is true and any task throws, remaining tasks are skipped.
+   */
+  private async runWithConcurrency<T>(
+    tasks: Array<() => Promise<T>>,
+    maxConcurrent: number,
+  ): Promise<T[]> {
+    if (tasks.length === 0) return [];
+
+    const results: T[] = new Array(tasks.length);
+    let nextIndex = 0;
+    let hasError = false;
+    let firstError: Error | null = null;
+
+    const worker = async (): Promise<void> => {
+      while (nextIndex < tasks.length) {
+        if (hasError && this.failFast) return;
+
+        const taskIndex = nextIndex++;
+        if (taskIndex >= tasks.length) return;
+
+        try {
+          results[taskIndex] = await tasks[taskIndex]();
+        } catch (error) {
+          if (!hasError) {
+            hasError = true;
+            firstError = error instanceof Error ? error : new Error(String(error));
+          }
+          if (this.failFast) return;
+        }
+      }
+    };
+
+    // Start up to maxConcurrent workers
+    const workerCount = Math.min(maxConcurrent, tasks.length);
+    const workers = Array.from({ length: workerCount }, () => worker());
+    await Promise.all(workers);
+
+    if (hasError && this.failFast && firstError) {
+      throw firstError;
+    }
+
+    return results;
+  }
+
+  // --------------------------------------------------------------------------
+  // Progress & Logging
+  // --------------------------------------------------------------------------
+
+  /**
+   * Log a visible wave banner for progress visibility.
+   */
+  private logWaveBanner(wave: string, description: string): void {
+    const line = '='.repeat(60);
+    log(line, 'info');
+    log(`=== ${wave}: ${description} ===`, 'info');
+    log(line, 'info');
+  }
+
+  /**
+   * Update the progress file with wave status.
+   * Preserves debug state fields (singleStepMode, mockLLM, llmState).
+   */
+  private updateProgress(data: {
+    currentWave: number;
+    totalWaves: number;
+    message?: string;
+  }): void {
+    try {
+      let existing: Record<string, unknown> = {};
+
+      // Read existing progress file if it exists
+      if (fs.existsSync(this.progressFile)) {
+        const content = fs.readFileSync(this.progressFile, 'utf-8');
+        existing = JSON.parse(content);
+      }
+
+      // Preserve debug state fields
+      const preserved: Record<string, unknown> = {};
+      const preserveKeys = ['singleStepMode', 'mockLLM', 'llmState', 'debug'];
+      for (const key of preserveKeys) {
+        if (key in existing) {
+          preserved[key] = existing[key];
+        }
+      }
+
+      // Merge wave-specific data
+      const updated = {
+        ...existing,
+        ...preserved,
+        status: 'running',
+        currentStep: `wave-${data.currentWave}`,
+        currentWave: data.currentWave,
+        totalWaves: data.totalWaves,
+        message: data.message ?? '',
+        lastUpdated: new Date().toISOString(),
+      };
+
+      // Ensure parent directory exists
+      const dir = path.dirname(this.progressFile);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      fs.writeFileSync(this.progressFile, JSON.stringify(updated, null, 2));
+    } catch (error) {
+      log('[WaveController] Failed to update progress file', 'warning', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Log a structured summary report of the wave execution.
+   */
+  private logSummaryReport(result: WaveExecutionResult): void {
+    const line = '='.repeat(60);
+    log(line, 'info');
+    log('=== WAVE ANALYSIS SUMMARY ===', 'info');
+    log(line, 'info');
+
+    log(`Overall: ${result.success ? 'SUCCESS' : 'FAILED'}`, 'info');
+    log(`Total entities: ${result.totalEntities}`, 'info');
+    log(`  Manifest-defined: ${result.manifestEntities}`, 'info');
+    log(`  Discovered: ${result.discoveredEntities}`, 'info');
+    log(`Total duration: ${(result.totalDurationMs / 1000).toFixed(1)}s`, 'info');
+
+    log('Entities by level:', 'info');
+    for (const [level, count] of Object.entries(result.entitiesByLevel)) {
+      const levelName = ['Project', 'Component', 'SubComponent', 'Detail'][Number(level)] ?? `L${level}`;
+      log(`  L${level} (${levelName}): ${count}`, 'info');
+    }
+
+    for (const wave of result.waves) {
+      log(`Wave ${wave.wave}: ${wave.success ? 'OK' : 'FAILED'} - ${wave.totalEntities} entities in ${(wave.durationMs / 1000).toFixed(1)}s`, 'info');
+      if (wave.error) {
+        log(`  Error: ${wave.error}`, 'error');
+      }
+    }
+
+    log(line, 'info');
+  }
+
+  // --------------------------------------------------------------------------
+  // Data Helpers
+  // --------------------------------------------------------------------------
+
+  /**
+   * Load existing KG entities from the graph database.
+   * Maps GraphEntity format to KGEntity format for context enrichment.
+   */
+  private async loadExistingEntities(): Promise<KGEntity[]> {
+    try {
+      const graphEntities = await this.graphDB.queryEntities();
+
+      return graphEntities.map((ge: GraphEntity): KGEntity => ({
+        id: ge.name,
+        name: ge.name,
+        type: ge.entityType ?? 'Unknown',
+        observations: Array.isArray(ge.observations)
+          ? ge.observations.map((obs: unknown) =>
+              typeof obs === 'string' ? obs : (obs as Record<string, string>)?.content ?? String(obs))
+          : [],
+        significance: ge.significance ?? 5,
+        parentId: ge.metadata?.parentEntityName as string | undefined,
+        level: ge.metadata?.hierarchyLevel as number | undefined,
+        hierarchyPath: ge.metadata?.hierarchyPath as string | undefined,
+      }));
+    } catch (error) {
+      log('[WaveController] Failed to load existing entities, continuing with empty set', 'warning', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Build the final WaveExecutionResult summary from all wave results.
+   */
+  private buildSummaryReport(
+    startTime: number,
+    waveResults: WaveResult[],
+  ): WaveExecutionResult {
+    const entitiesByLevel: Record<number, number> = {};
+
+    for (const wave of waveResults) {
+      for (const output of wave.agentOutputs) {
+        for (const entity of output.entities) {
+          const level = entity.level ?? 3;
+          entitiesByLevel[level] = (entitiesByLevel[level] ?? 0) + 1;
+        }
+      }
+    }
+
+    const totalEntities = waveResults.reduce((sum, w) => sum + w.totalEntities, 0);
+    const manifestEntities = waveResults.reduce((sum, w) => sum + w.manifestEntities, 0);
+    const discoveredEntities = waveResults.reduce((sum, w) => sum + w.discoveredEntities, 0);
+    const allSuccess = waveResults.every(w => w.success);
+
+    return {
+      success: allSuccess,
+      waves: waveResults,
+      totalEntities,
+      totalDurationMs: Date.now() - startTime,
+      entitiesByLevel,
+      manifestEntities,
+      discoveredEntities,
+      error: allSuccess ? undefined : waveResults.find(w => !w.success)?.error,
+    };
+  }
+
+  /**
+   * Get component files via code-graph-rag Cypher queries.
+   * Uses Memgraph's File nodes to find files associated with a component.
+   * Gracefully falls back to empty array if CGR is unavailable.
+   */
+  private async getComponentFiles(componentName: string, keywords: string[]): Promise<string[]> {
+    try {
+      const { CodeGraphAgent } = await import('./code-graph-agent.js');
+      const cgrAgent = new CodeGraphAgent();
+
+      // Build a Cypher query to find files related to this component by name/keywords
+      const cypher = `MATCH (f:File) WHERE toLower(f.file_path) CONTAINS toLower('${componentName}') OR ANY(k IN ['${keywords.join("','")}'] WHERE toLower(f.file_path) CONTAINS toLower(k)) RETURN f.file_path AS path LIMIT 50`;
+
+      const result = await cgrAgent.runCypherQuery(cypher);
+      const files = Array.isArray(result)
+        ? result.map((r: Record<string, string>) => r.path).filter(Boolean)
+        : [];
+
+      log(`[WaveController] CGR found ${files.length} files for ${componentName}`, 'info');
+      return files;
+    } catch (error) {
+      log(`[WaveController] CGR query failed for ${componentName}, falling back to empty file list`, 'warning', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+  }
+}

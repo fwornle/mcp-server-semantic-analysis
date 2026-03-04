@@ -88,6 +88,12 @@ export interface InsightGenerationResult {
   };
 }
 
+export interface CrossReferenceContext {
+  parent?: { name: string; firstObservation: string };
+  children: Array<{ name: string; firstObservation: string }>;
+  siblings: Array<{ name: string; firstObservation: string }>;
+}
+
 
 /**
  * Convert a name to kebab-case (lowercase with hyphens).
@@ -139,6 +145,144 @@ export class InsightGenerationAgent {
     this.checkPlantUMLAvailability();
     // Load ontology descriptions asynchronously (will be available for most calls)
     this.loadOntologyDescriptions();
+  }
+
+  /**
+   * Public API for wave pipeline insight generation.
+   * Generates a markdown insight document for an entity, optionally with PlantUML diagrams.
+   * Cross-references parent, children, and siblings in two forms:
+   *   1. Natural references injected into the LLM narrative prompt
+   *   2. Structured "## Hierarchy Context" section appended to the document
+   *
+   * @param params Entity data and cross-reference context
+   * @returns Path to the generated insight .md file, diagram count, and success flag
+   */
+  public async generateEntityInsight(params: {
+    entityName: string;
+    entityType: string;
+    observations: string[];
+    relations: Array<{ from: string; to: string; relationType: string }>;
+    crossReferences: CrossReferenceContext;
+    generateDiagrams: boolean;
+  }): Promise<{ filePath: string; diagramCount: number; success: boolean }> {
+    try {
+      log(`[InsightGen] Generating insight for ${params.entityName} (type=${params.entityType}, diagrams=${params.generateDiagrams})`, 'info');
+
+      // --- Cross-reference form 1: Build hierarchy context for LLM narrative injection ---
+      let hierarchyContextText = '';
+      if (params.crossReferences.parent || params.crossReferences.children.length > 0 || params.crossReferences.siblings.length > 0) {
+        hierarchyContextText = '\n\n**Hierarchy Context:**\n';
+        if (params.crossReferences.parent) {
+          hierarchyContextText += `- Parent component: ${params.crossReferences.parent.name} (${params.crossReferences.parent.firstObservation})\n`;
+        }
+        if (params.crossReferences.siblings.length > 0) {
+          const siblingNames = params.crossReferences.siblings.map(s => s.name).join(', ');
+          hierarchyContextText += `- Sibling components at same level: ${siblingNames}\n`;
+          for (const sib of params.crossReferences.siblings.slice(0, 5)) {
+            hierarchyContextText += `  - ${sib.name}: ${sib.firstObservation}\n`;
+          }
+        }
+        if (params.crossReferences.children.length > 0) {
+          const childNames = params.crossReferences.children.map(c => c.name).join(', ');
+          hierarchyContextText += `- Child components: ${childNames}\n`;
+          for (const child of params.crossReferences.children.slice(0, 5)) {
+            hierarchyContextText += `  - ${child.name}: ${child.firstObservation}\n`;
+          }
+        }
+        hierarchyContextText += '\nIMPORTANT: Naturally weave references to parent, sibling, and child entities into your narrative where relevant. For example, mention how this entity relates to its parent, what it shares with siblings, or what its children implement. Use entity names as-is (they will be linked later).';
+      }
+
+      // --- Diagrams (conditional: L1/L2 only) ---
+      let successfulDiagrams: PlantUMLDiagram[] = [];
+      if (params.generateDiagrams && this.plantumlAvailable) {
+        try {
+          const allDiagrams = await this.generateAllDiagrams(
+            toKebabCase(params.entityName),
+            {
+              patternCatalog: null,
+              entityInfo: {
+                name: params.entityName,
+                type: params.entityType,
+                observations: params.observations,
+              },
+            },
+          );
+          successfulDiagrams = allDiagrams.filter(d => d.success);
+          if (successfulDiagrams.length === 0) {
+            log(`[InsightGen] All diagrams failed for ${params.entityName}, continuing with text-only`, 'warning');
+          } else {
+            log(`[InsightGen] ${successfulDiagrams.length}/4 diagrams succeeded for ${params.entityName}`, 'info');
+          }
+        } catch (diagramErr) {
+          log(`[InsightGen] Diagram generation failed for ${params.entityName}: ${diagramErr}`, 'warning');
+        }
+      }
+
+      // --- Technical documentation with narrative cross-references ---
+      const content = await this.generateTechnicalDocumentation({
+        entityName: params.entityName,
+        entityType: params.entityType,
+        observations: params.observations,
+        relations: params.relations,
+        diagrams: successfulDiagrams.map(d => ({ name: d.name, type: d.type, success: d.success })),
+        additionalContext: hierarchyContextText,
+      });
+
+      // --- Cross-reference form 2: Structured Hierarchy Context section ---
+      let hierarchySection = '';
+      const hasParent = !!params.crossReferences.parent;
+      const hasChildren = params.crossReferences.children.length > 0;
+      const hasSiblings = params.crossReferences.siblings.length > 0;
+
+      if (hasParent || hasChildren || hasSiblings) {
+        hierarchySection = '\n## Hierarchy Context\n\n';
+        if (hasParent) {
+          const p = params.crossReferences.parent!;
+          hierarchySection += `### Parent\n- [${p.name}](./${p.name}.md) -- ${p.firstObservation}\n\n`;
+        }
+        if (hasChildren) {
+          hierarchySection += '### Children\n';
+          for (const child of params.crossReferences.children) {
+            hierarchySection += `- [${child.name}](./${child.name}.md) -- ${child.firstObservation}\n`;
+          }
+          hierarchySection += '\n';
+        }
+        if (hasSiblings) {
+          hierarchySection += '### Siblings\n';
+          for (const sib of params.crossReferences.siblings) {
+            hierarchySection += `- [${sib.name}](./${sib.name}.md) -- ${sib.firstObservation}\n`;
+          }
+          hierarchySection += '\n';
+        }
+      }
+
+      // Insert hierarchy section before the footer (--- line)
+      let finalContent: string;
+      const footerIndex = content.lastIndexOf('\n---\n');
+      if (footerIndex !== -1 && hierarchySection) {
+        finalContent = content.substring(0, footerIndex) + '\n' + hierarchySection + content.substring(footerIndex);
+      } else {
+        finalContent = content + hierarchySection;
+      }
+
+      // --- Write file ---
+      const filePath = path.join(this.outputDir, `${params.entityName}.md`);
+      fs.writeFileSync(filePath, finalContent, 'utf-8');
+      log(`[InsightGen] Wrote insight document: ${filePath}`, 'info');
+
+      return {
+        filePath,
+        diagramCount: successfulDiagrams.length,
+        success: true,
+      };
+    } catch (error) {
+      log(`[InsightGen] Failed to generate insight for ${params.entityName}: ${error}`, 'error');
+      return {
+        filePath: '',
+        diagramCount: 0,
+        success: false,
+      };
+    }
   }
 
   /**
@@ -223,6 +367,7 @@ export class InsightGenerationAgent {
     observations: string[];
     relations?: Array<{ from: string; to: string; relationType: string }>;
     diagrams?: Array<{ name: string; type: string; success: boolean }>;
+    additionalContext?: string;
   }): Promise<string> {
     const { entityName, entityType, observations, relations = [], diagrams = [] } = params;
 
@@ -253,7 +398,8 @@ export class InsightGenerationAgent {
           entityType,
           observations,
           relations,
-          serenaAnalysis
+          serenaAnalysis,
+          additionalContext: params.additionalContext,
         });
         log(`Generated deep insight content (${deepInsightContent?.length || 0} chars)`, 'info');
       } catch (error) {
@@ -408,6 +554,7 @@ export class InsightGenerationAgent {
     observations: string[];
     relations: Array<{ from: string; to: string; relationType: string }>;
     serenaAnalysis: SerenaAnalysisResult | null;
+    additionalContext?: string;
   }): Promise<string> {
     const { entityName, entityType, observations, relations, serenaAnalysis } = params;
 
@@ -435,6 +582,8 @@ export class InsightGenerationAgent {
       ? `\n\n**Code Structure:**\n- ${serenaAnalysis.symbols.length} code symbols found\n- Key files: ${serenaAnalysis.fileStructures.map(f => f.path).slice(0, 5).join(', ')}`
       : '';
 
+    const additionalContextText = params.additionalContext || '';
+
     const prompt = `You are a technical documentation expert creating a comprehensive insight document for "${entityName}" (type: ${entityType}).
 
 **CRITICAL GROUNDING RULES:**
@@ -446,6 +595,7 @@ export class InsightGenerationAgent {
 ${observationsText}
 ${relationsText}
 ${codeContextText}
+${additionalContextText}
 
 **Generate a comprehensive technical insight document with these sections:**
 

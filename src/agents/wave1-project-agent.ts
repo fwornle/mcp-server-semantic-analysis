@@ -181,7 +181,22 @@ ${fileContentsBlock}
 
 ## Task
 1. Write a comprehensive summary (2-3 paragraphs) of what this component does, its architecture, and key patterns.
-2. List 3-7 specific observations about this component. Each observation should be a detailed sentence about architecture, behavior, or design decisions. NOT generic boilerplate.
+
+2. List 5-7 specific observations about this component. Each observation MUST:
+   - Reference at least one specific code artifact (file path, class name, function name, or module)
+   - Describe a concrete architectural decision, behavior, or pattern
+   - Be self-contained (understandable without reading the source)
+
+   GOOD observations (follow this style):
+   - "Uses GraphDatabaseAdapter (storage/graph-database-adapter.ts) for Graphology+LevelDB persistence with automatic JSON export sync"
+   - "Wave agents follow constructor(repoPath, team) + ensureLLMInitialized() + execute(input) pattern for lazy LLM initialization"
+   - "Implements work-stealing concurrency via shared atomic index counter in runWithConcurrency() (wave-controller.ts:489)"
+
+   BAD observations (DO NOT write these):
+   - "Handles data storage" (too generic, no code reference)
+   - "Is an important component" (no specifics, no artifact reference)
+   - "Processes data efficiently" (vague, no code artifact mentioned)
+
 3. Suggest sub-components (L2 nodes) that exist within this component. For each, provide name (PascalCase), description, and whether it's a new discovery beyond the manifest.
 
 ## Output Format (JSON)

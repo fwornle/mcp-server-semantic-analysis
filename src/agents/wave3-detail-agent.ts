@@ -170,8 +170,18 @@ BAD L3 nodes (do NOT suggest these):
 For each L3 node, provide:
 - name: PascalCase, specific and descriptive
 - description: 1-2 sentences about what it does
-- observations: 2-5 specific observations about architecture, behavior, or design decisions
-  Each observation must reference something visible in the source files.
+- observations: 3-5 specific observations about architecture, behavior, or design decisions. Each observation MUST:
+  - Reference at least one specific code artifact (file path, class name, function name, or module)
+  - Describe a concrete architectural decision, behavior, or pattern
+  - Be self-contained (understandable without reading the source)
+
+  GOOD observations (follow this style):
+  - "SharedMemoryStore (kg-operators.ts:31) defines the KGEntity interface with hierarchy fields parentId, level, hierarchyPath added in Phase 4"
+  - "LLMRetryPolicy in llm-service.ts implements exponential backoff with jitter, capping at 3 retries per provider before falling back to the next"
+
+  BAD observations (DO NOT write these):
+  - "Works well" (trivially generic, no code reference)
+  - "Important implementation detail" (vague, no artifact mentioned)
 
 ## Output (JSON only, no markdown fencing)
 {

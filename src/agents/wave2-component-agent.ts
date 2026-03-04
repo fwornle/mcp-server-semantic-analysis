@@ -180,9 +180,20 @@ ${manifestList || '(none defined)'}
 ${fileContents || '(no source files available)'}
 
 ## Task
-1. For each known sub-component, provide:
-   - 3-7 specific observations about its architecture, patterns, and behavior
-   - These must be specific to THIS sub-component, not generic statements
+1. For each known sub-component, provide 5-7 specific observations. Each observation MUST:
+   - Reference at least one specific code artifact (file path, class name, function name, or module)
+   - Describe a concrete architectural decision, behavior, or pattern
+   - Be self-contained (understandable without reading the source)
+
+   GOOD observations (follow this style):
+   - "BatchScheduler uses a DAG-based execution model with topological sort in batch-analysis.yaml steps, each step declaring explicit depends_on edges"
+   - "PersistenceAgent.mapEntityToSharedMemory() pre-populates ontology metadata fields (entityType, metadata.ontologyClass) to prevent redundant LLM re-classification"
+   - "WaveController.runWithConcurrency() implements work-stealing via shared nextIndex counter, allowing idle workers to pull tasks immediately"
+
+   BAD observations (DO NOT write these):
+   - "Processes data" (too generic, no code reference)
+   - "Is responsible for handling logic" (vague, no artifact)
+   - "Works with other components" (meaningless boilerplate)
 
 2. Identify additional sub-components NOT in the known list:
    - Only suggest sub-components that represent real, distinct architectural areas

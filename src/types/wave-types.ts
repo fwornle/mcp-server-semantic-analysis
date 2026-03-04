@@ -180,4 +180,6 @@ export interface Wave3Input {
   l1Entity: KGEntity;
   /** Source files relevant to this L2 sub-component via code-graph-rag query */
   scopedFiles: string[];
+  /** L3 children suggested by Wave 2 agent -- used as discovery seeds, not authoritative */
+  suggestedChildren?: ChildManifestEntry[];
 }

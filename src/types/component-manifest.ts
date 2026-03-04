@@ -32,6 +32,8 @@ export interface ComponentManifestEntry {
   keywords: string[];
   /** L2 sub-components (empty array if none) */
   children?: ComponentManifestEntry[];
+  /** True if this entry was auto-discovered by wave analysis (not hand-curated) */
+  discovered?: boolean;
 }
 
 /** The project root entry */

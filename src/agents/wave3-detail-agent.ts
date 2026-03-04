@@ -95,10 +95,22 @@ export class Wave3DetailAgent {
       const discoveryResult = await this.discoverL3Details(input, fileContents);
 
       for (const detail of discoveryResult.details) {
+        const parentPath = input.l2Entity.hierarchyPath || `${input.l1Entity.name}/${input.l2Entity.name}`;
+        const validatedObs = await this.ensureMinimumObservations(
+          detail.name,
+          detail.observations,
+          {
+            description: detail.description,
+            hierarchyPath: `${parentPath}/${detail.name}`,
+            parentName: input.l2Entity.name,
+            sourceFiles: input.scopedFiles,
+          },
+        );
+
         const entity = this.buildL3Entity(
           detail.name,
           detail.description,
-          detail.observations,
+          validatedObs,
           input.l2Entity,
           input.l1Entity
         );
@@ -299,6 +311,157 @@ For each L3 node, provide:
       weight: 1.0,
       source: 'explicit' as const,
     }));
+  }
+
+  // --------------------------------------------------------------------------
+  // Observation Validation
+  // --------------------------------------------------------------------------
+
+  /**
+   * Check if an observation is specific enough (references code artifacts).
+   * Lenient check: focus on rejecting clearly generic, not validating specific patterns.
+   */
+  private isSpecificObservation(obs: string): boolean {
+    if (obs.length < 30) return false;
+
+    // Long observations are likely specific enough
+    if (obs.length >= 80) return true;
+
+    // Check for code artifact indicators
+    const hasCodeRef =
+      /\.(ts|js|py|yaml|yml|json|md|puml)\b/i.test(obs) ||        // file extensions
+      /[A-Z][a-z]+[A-Z]/.test(obs) ||                              // PascalCase/camelCase
+      /\w+\.\w+\(/.test(obs) ||                                    // method calls
+      /\/[\w-]+\//.test(obs) ||                                     // file paths
+      /\b(class|function|interface|module|implements|extends|import|export|constructor|async)\b/i.test(obs);
+
+    return hasCodeRef;
+  }
+
+  /**
+   * Ensure an entity has at least 3 specific observations.
+   * Strategy: filter -> retry LLM -> supplement from context.
+   */
+  private async ensureMinimumObservations(
+    entityName: string,
+    observations: string[],
+    context: { description: string; hierarchyPath: string; parentName?: string; sourceFiles?: string[] },
+  ): Promise<string[]> {
+    const initial = observations.length;
+
+    // Step 1: Filter to specific observations
+    const specific = observations.filter(obs => this.isSpecificObservation(obs));
+    const filtered = initial - specific.length;
+
+    if (specific.length >= 3) {
+      log(`[Wave3Agent] Observation validation for ${entityName}: ${initial} -> ${specific.length} (filtered: ${filtered}, retried: 0, supplemented: 0)`, 'info');
+      return specific.slice(0, 7);
+    }
+
+    // Step 2: Retry with enriched prompt
+    let retryAdded = 0;
+    const needed = 3 - specific.length;
+
+    try {
+      const retryPrompt = `You are generating specific observations about the "${entityName}" detail entity.
+
+Context:
+- Description: ${context.description}
+- Hierarchy: ${context.hierarchyPath}
+- Parent sub-component: ${context.parentName || 'unknown'}
+${context.sourceFiles && context.sourceFiles.length > 0 ? `- Source files: ${context.sourceFiles.slice(0, 5).join(', ')}` : ''}
+
+Generate exactly ${needed} specific observation(s) about this detail entity. Each observation MUST:
+- Reference at least one specific code artifact (file path, class name, function name, or module)
+- Be a complete, self-contained sentence
+
+GOOD examples:
+- "SharedMemoryStore (kg-operators.ts:31) defines KGEntity interface with hierarchy fields"
+- "LLMRetryPolicy implements exponential backoff with jitter in llm-service.ts"
+
+Return a JSON array of strings, e.g. ["observation 1", "observation 2"]`;
+
+      const result = await this.llmService.complete({
+        messages: [{ role: 'user', content: retryPrompt }],
+        taskType: 'observation_retry',
+        agentId: 'wave3_detail',
+        tier: 'standard',
+        maxTokens: 512,
+        temperature: 0.7,
+        timeout: 30_000,
+      });
+
+      let retryObs: string[] = [];
+      try {
+        let cleaned = result.content.trim();
+        if (cleaned.startsWith('```')) {
+          cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+        }
+        const parsed = JSON.parse(cleaned);
+        retryObs = Array.isArray(parsed)
+          ? parsed.filter((o: unknown): o is string => typeof o === 'string')
+          : [];
+      } catch {
+        // Parse failed, skip retry results
+      }
+
+      // Combine and dedup
+      const combined = [...specific, ...retryObs.filter(o => this.isSpecificObservation(o))];
+      const deduped = [...new Set(combined)];
+      retryAdded = deduped.length - specific.length;
+
+      if (deduped.length >= 3) {
+        log(`[Wave3Agent] Observation validation for ${entityName}: ${initial} -> ${deduped.length} (filtered: ${filtered}, retried: ${retryAdded}, supplemented: 0)`, 'info');
+        return deduped.slice(0, 7);
+      }
+
+      specific.push(...deduped.slice(specific.length));
+    } catch (retryError) {
+      log(`[Wave3Agent] Observation retry failed for ${entityName}: ${retryError instanceof Error ? retryError.message : String(retryError)}`, 'warning');
+    }
+
+    // Step 3: Supplement from available data
+    const supplements: string[] = [];
+
+    // From description
+    if (context.description && context.description.length > 10) {
+      supplements.push(`Serves as ${context.description} within the ${context.parentName || 'parent'} sub-component at hierarchy path ${context.hierarchyPath}`);
+    }
+
+    // From hierarchy
+    supplements.push(`${entityName} is an L3 Detail entity under ${context.parentName || 'parent'} in the project knowledge hierarchy`);
+
+    // From source files (code-graph-rag file analysis)
+    if (context.sourceFiles && context.sourceFiles.length > 0) {
+      supplements.push(`Primary implementation in ${context.sourceFiles[0]} with ${context.sourceFiles.length} related source file(s) including ${context.sourceFiles.slice(0, 3).join(', ')}`);
+    } else {
+      // Attempt CGR lookup as fallback
+      try {
+        const { CodeGraphAgent } = await import('./code-graph-agent.js');
+        const cgrAgent = new CodeGraphAgent();
+        const cypher = `MATCH (f:File) WHERE toLower(f.file_path) CONTAINS toLower('${entityName}') RETURN f.file_path AS path LIMIT 5`;
+        const result = await cgrAgent.runCypherQuery(cypher);
+        const files = Array.isArray(result) ? result.map((r: any) => r.path).filter(Boolean) : [];
+        if (files.length > 0) {
+          supplements.push(`Primary implementation in ${files[0]} with ${files.length} related source file(s)`);
+        }
+      } catch {
+        // CGR unavailable -- skip this supplement source silently
+      }
+    }
+
+    if (supplements.length === 0) {
+      supplements.push(`${entityName} represents a distinct architectural concern within ${context.parentName || 'parent'}`);
+    }
+
+    const final = [...specific, ...supplements].slice(0, 7);
+    while (final.length < 3) {
+      final.push(`${entityName} represents a distinct architectural concern within ${context.parentName || 'parent'}`);
+    }
+
+    const supplementAdded = final.length - specific.length;
+    log(`[Wave3Agent] Observation validation for ${entityName}: ${initial} -> ${final.length} (filtered: ${filtered}, retried: ${retryAdded}, supplemented: ${supplementAdded})`, 'info');
+    return final;
   }
 
   /**

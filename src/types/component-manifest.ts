@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { parse } from 'yaml';
+import { parse, stringify } from 'yaml';
 
 // ES module compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -92,4 +92,66 @@ export function flattenManifestEntries(manifest: ComponentManifest): ComponentMa
     }
   }
   return entries;
+}
+
+/** Entry discovered by wave analysis to write back to the manifest */
+export interface DiscoveredManifestEntry {
+  /** PascalCase name of the discovered L2 sub-component */
+  name: string;
+  /** Parent L1 component name */
+  parentL1: string;
+  /** Description of what this sub-component covers */
+  description: string;
+  /** Keywords for future CGR file scoping */
+  keywords: string[];
+}
+
+/**
+ * Write discovered L2 entities back to the component manifest YAML.
+ * Skips entries that already exist (by case-insensitive name match).
+ * Curated entries are never modified -- only new discovered entries are appended.
+ *
+ * @param discoveries - L2 entities discovered by wave analysis
+ * @param configDir - Optional override for config directory path
+ * @returns Number of new entries added
+ */
+export function writeManifestDiscoveries(
+  discoveries: DiscoveredManifestEntry[],
+  configDir?: string,
+): number {
+  const dir = configDir || path.resolve(__dirname, '../../config');
+  const manifestPath = path.join(dir, 'component-manifest.yaml');
+  const manifest = loadComponentManifest(configDir);
+  let added = 0;
+
+  for (const discovery of discoveries) {
+    const component = manifest.components.find(c => c.name === discovery.parentL1);
+    if (!component) continue;
+    if (!component.children) component.children = [];
+
+    // Skip if already exists (curated or previously discovered)
+    const exists = component.children.some(
+      c => c.name.toLowerCase() === discovery.name.toLowerCase(),
+    );
+    if (exists) continue;
+
+    component.children.push({
+      name: discovery.name,
+      level: 2,
+      description: discovery.description,
+      aliases: [],
+      keywords: discovery.keywords,
+      children: [],
+      discovered: true,
+    });
+    added++;
+  }
+
+  if (added > 0) {
+    const header = '# Component Manifest - Authoritative source of truth for the L1/L2 component hierarchy.\n'
+      + '# Curated entries are hand-authored. Entries with discovered: true were auto-added by wave analysis.\n\n';
+    fs.writeFileSync(manifestPath, header + stringify(manifest, { lineWidth: 120 }));
+  }
+
+  return added;
 }

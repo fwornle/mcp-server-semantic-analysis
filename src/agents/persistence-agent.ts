@@ -7,6 +7,8 @@ import { ContentValidationAgent, type EntityValidationReport } from './content-v
 import { CheckpointManager } from '../utils/checkpoint-manager.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 
+const VALID_HIERARCHY_TYPES = new Set(['Project', 'Component', 'SubComponent', 'Detail', 'System']);
+
 export interface PersistenceResult {
   success: boolean;
   entitiesCreated: number;
@@ -820,13 +822,58 @@ export class PersistenceAgent {
     return createdEntities;
   }
 
+  /**
+   * Resolve an ontology class name to a valid hierarchy type.
+   * Ontology class (e.g., "SemanticAnalyzer") stays in metadata.ontology;
+   * entityType must be a hierarchy level (Project/Component/SubComponent/Detail/System).
+   */
+  private resolveHierarchyType(classifiedType: string, entityName: string, existingEntities: SharedMemoryEntity[]): string {
+    // If already a valid hierarchy type, keep it
+    if (VALID_HIERARCHY_TYPES.has(classifiedType)) return classifiedType;
+
+    // Check if this entity name matches an existing hierarchy node
+    const existing = existingEntities.find(e => e.name === entityName && VALID_HIERARCHY_TYPES.has(e.entityType));
+    if (existing) return existing.entityType;
+
+    // Default: batch-analyzed entities are Detail level
+    return 'Detail';
+  }
+
+  /**
+   * Find the best parent Component/SubComponent for an entity based on name matching.
+   * Falls back to 'Coding' project if no match found.
+   */
+  private findBestParent(entityName: string, allEntities: SharedMemoryEntity[]): string {
+    const candidates = allEntities.filter(e =>
+      e.entityType === 'SubComponent' || e.entityType === 'Component'
+    );
+
+    const lowerName = entityName.toLowerCase();
+    let bestMatch: SharedMemoryEntity | null = null;
+    let bestLen = 0;
+
+    for (const c of candidates) {
+      const cLower = c.name.toLowerCase();
+      // Entity name contains the component/sub-component name
+      if (lowerName.includes(cLower) && cLower.length > bestLen) {
+        // Prefer SubComponent over Component (more specific)
+        if (!bestMatch || c.entityType === 'SubComponent' || cLower.length > bestLen) {
+          bestMatch = c;
+          bestLen = cLower.length;
+        }
+      }
+    }
+
+    return bestMatch?.name || 'Coding';
+  }
+
   private async updateEntityRelationships(
     sharedMemory: SharedMemoryStructure,
     analysisData: any
   ): Promise<EntityRelationship[]> {
     const newRelations: EntityRelationship[] = [];
+    const existingRelations = sharedMemory.relations || [];
 
-    // Create standard relationships for new entities
     const recentEntities = sharedMemory.entities.filter(e => {
       const createdAt = new Date(e.metadata.created_at);
       const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
@@ -834,26 +881,31 @@ export class PersistenceAgent {
     });
 
     for (const entity of recentEntities) {
-      // HIERARCHICAL STRUCTURE: Topics link to Projects, not directly to CollectiveKnowledge
-      // CollectiveKnowledge -> includes -> Projects (handled by GraphDatabaseService)
-      // Topics -> implemented_in -> Projects
+      // Skip hierarchy scaffolding (they get relations from wave agents)
+      if (['Project', 'System'].includes(entity.entityType)) continue;
 
-      // Relationship to Coding project (use underscore for consistency)
-      const codingRelation: EntityRelationship = {
-        from: entity.name,
-        to: 'Coding',
-        relationType: 'implemented_in'
+      // Skip if entity already has a parent relation (incoming contains or parent-child)
+      const hasParent = existingRelations.some(r =>
+        (r.to === entity.name) &&
+        (r.relationType === 'contains' || r.relationType === 'parent-child')
+      );
+      if (hasParent) continue;
+
+      const parentName = this.findBestParent(entity.name, sharedMemory.entities);
+
+      const relation: EntityRelationship = {
+        from: parentName,
+        to: entity.name,
+        relationType: 'contains'
       };
 
-      // Check if relationship already exists
-      const existingRelations = sharedMemory.relations || [];
-      const hasCodingRel = existingRelations.some(r =>
-        r.from === entity.name && r.to === 'Coding'
+      // Avoid duplicate
+      const exists = existingRelations.some(r =>
+        r.from === parentName && r.to === entity.name
       );
-
-      if (!hasCodingRel) {
-        sharedMemory.relations.push(codingRelation);
-        newRelations.push(codingRelation);
+      if (!exists) {
+        sharedMemory.relations.push(relation);
+        newRelations.push(relation);
       }
     }
 
@@ -1136,6 +1188,10 @@ export class PersistenceAgent {
         });
       }
 
+      // Normalize: ontology class names → hierarchy type
+      // Ontology class stays in metadata.ontology; entityType must be a hierarchy level
+      entityType = this.resolveHierarchyType(entityType, entity.name, sharedMemory.entities);
+
       // CONTENT VALIDATION: Check if existing entity content is accurate
       let contentValidationReport: EntityValidationReport | null = null;
       if (this.contentValidationAgent && this.config.contentValidationMode !== 'disabled') {
@@ -1245,23 +1301,19 @@ export class PersistenceAgent {
       };
 
       // Create automatic relationships for graph connectivity
-      // HIERARCHICAL STRUCTURE: CollectiveKnowledge -> Projects -> Topics
-      // Topics should connect to Projects (not directly to CollectiveKnowledge)
+      // Use findBestParent to link to the correct Component/SubComponent, not always root
       const autoRelationships = [...(entity.relationships || [])];
 
-      // Add project relationship if team metadata exists
-      // Use capitalized team name (e.g., "coding" -> "Coding") as Project entity name
-      if (entity.metadata?.team) {
-        const teamName = entity.metadata.team;
-        const projectName = teamName.charAt(0).toUpperCase() + teamName.slice(1);
-        const hasProjectRel = autoRelationships.some(r =>
-          r.from === projectName && r.to === entity.name
+      // Skip auto-parent for Project/System entities — they are hierarchy roots
+      if (!['Project', 'System'].includes(entityType)) {
+        const parentName = this.findBestParent(entity.name, sharedMemory.entities);
+        const hasParentRel = autoRelationships.some(r =>
+          (r.relationType === 'contains' || r.relationType === 'parent-child') &&
+          r.to === entity.name
         );
-        if (!hasProjectRel) {
-          // Only add the relationship if the project entity exists
-          // The relationship will be validated during storeEntity; skip if source doesn't exist
+        if (!hasParentRel) {
           autoRelationships.push({
-            from: projectName,
+            from: parentName,
             to: entity.name,
             relationType: 'contains'
           });
@@ -1562,7 +1614,7 @@ export class PersistenceAgent {
           const entity: SharedMemoryEntity = {
             id: `analysis_${Date.now()}`,
             name: cleanName,
-            entityType: ontologyMeta.ontologyClass,  // Must be classified - no fallbacks
+            entityType: this.resolveHierarchyType(ontologyMeta.ontologyClass, cleanName, sharedMemory.entities),
           significance: insight.metadata?.significance || 7,
           observations: detailedObservations,
           relationships: [],
@@ -1663,7 +1715,7 @@ export class PersistenceAgent {
           const additionalEntity: SharedMemoryEntity = {
             id: `analysis_${Date.now()}_${patternName}`,
             name: patternName,
-            entityType: additionalOntologyMeta.ontologyClass,  // Must be classified - no fallbacks
+            entityType: this.resolveHierarchyType(additionalOntologyMeta.ontologyClass, patternName, sharedMemory.entities),
             significance: 7,
             observations: simpleObservations,
             relationships: [],

@@ -129,7 +129,7 @@ export class CodeGraphAgent {
     this.repositoryPath = path.resolve(repositoryPath);
 
     // Compute code-graph-rag directory with better defaults
-    const codingRepoPath = process.env.CODING_REPO || process.env.CODING_TOOLS_PATH;
+    const codingRepoPath = process.env.CODING_REPO || process.env.CODING_TOOLS_PATH || process.env.CODING_ROOT;
     if (options.codeGraphRagDir) {
       this.codeGraphRagDir = path.resolve(options.codeGraphRagDir);
     } else if (codingRepoPath) {

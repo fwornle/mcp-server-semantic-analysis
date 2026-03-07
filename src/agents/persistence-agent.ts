@@ -94,8 +94,10 @@ export interface EntityMetadata {
   renamedAt?: string;                 // Timestamp when entity was renamed
   // Ontology classification metadata
   ontology?: {
+    ontologyName?: string;              // Display name for UI (e.g. "Component", "Detail")
     ontologyClass: string;              // Matched ontology class name
     ontologyVersion: string;            // Version of ontology used
+    confidence?: number;                // 0-1 confidence (UI-facing alias)
     classificationConfidence: number;   // 0-1 confidence score
     classificationMethod: string;       // 'heuristic' | 'llm' | 'hybrid' | 'auto-assigned' | 'unclassified'
     ontologySource: 'upper' | 'lower';  // Which ontology provided the class
@@ -3215,6 +3217,7 @@ export class PersistenceAgent {
       entityType: string;
       observations: string[];
       significance: number;
+      metadata?: EntityMetadata;
     }> | null | undefined;
     team: string;
   }): Promise<{

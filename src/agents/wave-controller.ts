@@ -458,6 +458,7 @@ export class WaveController {
           typeof obs === 'string' ? obs : obs.content,
         ),
         significance: e.significance,
+        metadata: e.metadata,
       })),
       team: this.team,
     });
@@ -506,8 +507,10 @@ export class WaveController {
         team: this.team,
         source: 'wave-analysis',
         ontology: {
+          ontologyName: this.getOntologyClass(entity.level),
           ontologyClass: this.getOntologyClass(entity.level),
           ontologyVersion: '1.0',
+          confidence: 1.0,
           classificationConfidence: 1.0,
           classificationMethod: 'auto-assigned',
           ontologySource: 'lower' as const,

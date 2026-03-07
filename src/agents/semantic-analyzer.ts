@@ -2,6 +2,7 @@ import { log } from "../logging.js";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { spawn } from "child_process";
 import { isMockLLMEnabled, mockSemanticAnalysis, getLLMMode, type LLMMode } from "../mock/llm-mock-service.js";
 import { LLMService } from "../../../../lib/llm/dist/index.js";
 import type { LLMCompletionResult, MockServiceInterface } from "../../../../lib/llm/dist/types.js";
@@ -720,8 +721,82 @@ For each pattern found, provide:
 
   async generateEmbedding(text: string): Promise<number[]> {
     log("Generating embedding for text", "info", { textLength: text.length });
-    const mockEmbedding = Array(384).fill(0).map(() => Math.random());
-    return mockEmbedding;
+    const results = await this.generateEmbeddings([text]);
+    return results[0] || [];
+  }
+
+  async generateEmbeddings(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) {
+      return [];
+    }
+
+    try {
+      const scriptPath = path.join(__dirname, '../../src/utils/embedding_generator.py');
+      const inputData = JSON.stringify(texts);
+
+      const result = await new Promise<string>((resolve, reject) => {
+        const proc = spawn('python3', [scriptPath], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 120000,
+        });
+
+        let stdout = '';
+        let stderr = '';
+        let stdoutSize = 0;
+        const maxBuffer = 50 * 1024 * 1024;
+
+        proc.stdout.on('data', (chunk: Buffer) => {
+          stdoutSize += chunk.length;
+          if (stdoutSize > maxBuffer) {
+            proc.kill();
+            reject(new Error('maxBuffer exceeded'));
+            return;
+          }
+          stdout += chunk.toString();
+        });
+
+        proc.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString();
+        });
+
+        proc.on('close', (code) => {
+          if (code !== 0) {
+            reject(new Error(`Python process exited with code ${code}: ${stderr}`));
+          } else {
+            resolve(stdout);
+          }
+        });
+
+        proc.on('error', (err) => {
+          reject(err);
+        });
+
+        proc.stdin.write(inputData);
+        proc.stdin.end();
+      });
+
+      const parsed = JSON.parse(result);
+      if (!Array.isArray(parsed) || parsed.length !== texts.length) {
+        log('Embedding generator returned unexpected result', 'warning', {
+          expected: texts.length,
+          got: Array.isArray(parsed) ? parsed.length : typeof parsed,
+        });
+        return texts.map(() => []);
+      }
+
+      log('Batch embeddings generated', 'info', {
+        count: texts.length,
+        dimensions: parsed[0]?.length || 0,
+      });
+
+      return parsed;
+    } catch (error) {
+      log('Failed to generate embeddings via Python subprocess', 'warning', {
+        error: error instanceof Error ? error.message : String(error),
+        textCount: texts.length,
+      });
+      return texts.map(() => []);
+    }
   }
 
   async analyzeDifferences(content1: string, content2: string): Promise<{ hasUniqueValue: boolean; differences: string[] }> {

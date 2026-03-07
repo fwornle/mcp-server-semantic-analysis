@@ -216,6 +216,11 @@ interface ProgressUpdate {
   lastUpdate: string;
   elapsedSeconds: number;
   pid: number;
+  totalWaves?: number;
+  currentWave?: number;
+  completedSteps?: number;
+  stepsDetail?: Array<{ name: string; status: string; wave?: number; startTime?: string; endTime?: string }>;
+  batchIterations?: any;
 }
 
 function writeProgress(progressFile: string, update: ProgressUpdate): void {
@@ -279,15 +284,20 @@ function writeProgressPreservingDetails(progressFile: string, update: ProgressUp
     // Merge: new update takes precedence, but preserve detailed coordinator data
     const merged: Record<string, any> = {
       ...update,
-      // Preserve detailed trace data from coordinator
-      batchIterations: existingData.batchIterations,
-      stepsDetail: existingData.stepsDetail,
+      // Preserve detailed trace data from coordinator (update takes precedence if provided)
+      batchIterations: update.batchIterations ?? existingData.batchIterations,
+      stepsDetail: update.stepsDetail ?? existingData.stepsDetail,
       summary: existingData.summary,
       multiAgent: existingData.multiAgent,
       stepsRunning: existingData.stepsRunning,
       stepsSkipped: existingData.stepsSkipped,
       stepsFailed: existingData.stepsFailed,
       batchProgress: existingData.batchProgress,
+      // Preserve wave controller progress fields (heartbeats must not clobber these)
+      currentStep: update.currentStep ?? existingData.currentStep,
+      currentWave: update.currentWave ?? existingData.currentWave,
+      totalWaves: update.totalWaves ?? existingData.totalWaves,
+      totalSteps: update.totalSteps ?? existingData.totalSteps,
       // CRITICAL: Preserve debug/test state fields
       singleStepMode: existingData.singleStepMode,
       stepIntoSubsteps: existingData.stepIntoSubsteps,
@@ -475,18 +485,71 @@ async function main(): Promise<void> {
       progressFile
     });
 
-    try {
-      const result = await waveController.execute();
+    // Set initial totalSteps so dashboard doesn't see 0/0 before first wave starts
+    // 8 sub-steps: wave1_init, wave1_analyze, wave1_persist, wave2_analyze, wave2_persist,
+    //              wave3_analyze, wave3_persist, wave4_insights
+    writeProgressPreservingDetails(progressFile, {
+      workflowId,
+      workflowName: 'wave-analysis',
+      team: parameters?.team || 'unknown',
+      repositoryPath,
+      status: 'running',
+      message: 'Starting wave analysis...',
+      startTime: startTime.toISOString(),
+      lastUpdate: new Date().toISOString(),
+      elapsedSeconds: 0,
+      totalSteps: 8,
+      totalWaves: 4,
+      pid: process.pid
+    });
+
+    // Start heartbeat to prevent "stale" status during long-running waves
+    // Dashboard marks workflows stale after 120s without an update; heartbeat fires every 30s
+    const heartbeatInterval = setInterval(() => {
       writeProgressPreservingDetails(progressFile, {
         workflowId,
         workflowName: 'wave-analysis',
         team: parameters?.team || 'unknown',
         repositoryPath,
-        status: result.success ? 'completed' : 'failed',
-        message: `Wave analysis ${result.success ? 'completed' : 'failed'}: ${result.totalEntities} entities across ${result.waves.length} waves`,
+        status: 'running',
+        message: 'Wave analysis running... (heartbeat)',
         startTime: startTime.toISOString(),
         lastUpdate: new Date().toISOString(),
         elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
+        pid: process.pid
+      });
+      log('[WorkflowRunner] Wave-analysis heartbeat sent', 'debug');
+    }, loadWorkflowRunnerConfig().runner.heartbeat_interval_ms);
+
+    try {
+      const result = await waveController.execute();
+      clearInterval(heartbeatInterval);
+
+      // Mark all stepsDetail as completed/failed based on result
+      const finalStatus = result.success ? 'completed' : 'failed';
+      const now = new Date().toISOString();
+      let existingProgress: Record<string, any> = {};
+      try {
+        existingProgress = JSON.parse(fs.readFileSync(progressFile, 'utf-8'));
+      } catch (e) { /* ignore */ }
+      const finalStepsDetail = (existingProgress.stepsDetail || []).map((s: any) => ({
+        ...s,
+        status: s.status === 'pending' || s.status === 'running' ? finalStatus : s.status,
+        ...(s.status === 'pending' || s.status === 'running' ? { endTime: now } : {}),
+      }));
+
+      writeProgressPreservingDetails(progressFile, {
+        workflowId,
+        workflowName: 'wave-analysis',
+        team: parameters?.team || 'unknown',
+        repositoryPath,
+        status: finalStatus,
+        message: `Wave analysis ${result.success ? 'completed' : 'failed'}: ${result.totalEntities} entities across ${result.waves.length} waves`,
+        startTime: startTime.toISOString(),
+        lastUpdate: now,
+        elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
+        completedSteps: finalStepsDetail.filter((s: any) => s.status === 'completed').length,
+        stepsDetail: finalStepsDetail,
         pid: process.pid
       });
       // Clean up PID and config files
@@ -494,6 +557,7 @@ async function main(): Promise<void> {
       try { fs.unlinkSync(configPath); } catch (e) { /* ignore */ }
       process.exit(result.success ? 0 : 1);
     } catch (error) {
+      clearInterval(heartbeatInterval);
       const errorMessage = error instanceof Error ? error.message : String(error);
       writeProgressPreservingDetails(progressFile, {
         workflowId,

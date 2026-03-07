@@ -533,12 +533,8 @@ export class InsightGenerationAgent {
       .slice(0, 2);
 
     if (descriptive.length > 0) {
-      // Take first 200 chars of the most descriptive observation
-      const main = descriptive[0];
-      if (main.length > 200) {
-        return main.substring(0, 200) + '...';
-      }
-      return main;
+      // Use the full most-descriptive observation as overview (no truncation)
+      return descriptive[0];
     }
 
     return `Technical documentation for ${entityName}.`;

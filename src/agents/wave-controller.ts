@@ -90,8 +90,9 @@ export class WaveController {
 
       // ---- Wave 1: L0 Project + L1 Components ----
       this.logWaveBanner('WAVE 1', 'L0 Project + L1 Components');
-      this.updateProgress({ currentWave: 1, totalWaves: 4, message: 'Wave 1: Creating Project and Component entities' });
+      this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'init', message: 'Wave 1: Loading manifest & planning' });
 
+      this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'analyze', message: 'Wave 1: Analyzing Project & Components' });
       const wave1Result = await this.executeWave1(manifest, existingEntities);
       waveResults.push(wave1Result);
 
@@ -101,6 +102,7 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
+        this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'persist', message: 'Wave 1: Persisting entities' });
         await this.persistWaveResult(wave1Result);
         log('[WaveController] Wave 1 entities persisted', 'info', {
           entities: wave1Result.totalEntities,
@@ -109,7 +111,7 @@ export class WaveController {
 
       // ---- Wave 2: L2 SubComponents ----
       this.logWaveBanner('WAVE 2', 'L2 SubComponents');
-      this.updateProgress({ currentWave: 2, totalWaves: 4, message: 'Wave 2: Creating SubComponent entities' });
+      this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'analyze', message: 'Wave 2: Analyzing SubComponents' });
 
       const wave2Result = await this.executeWave2(wave1Result, manifest);
       waveResults.push(wave2Result);
@@ -120,6 +122,7 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
+        this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'persist', message: 'Wave 2: Persisting entities' });
         await this.persistWaveResult(wave2Result);
         log('[WaveController] Wave 2 entities persisted', 'info', {
           entities: wave2Result.totalEntities,
@@ -128,7 +131,7 @@ export class WaveController {
 
       // ---- Wave 3: L3 Details ----
       this.logWaveBanner('WAVE 3', 'L3 Detail Entities');
-      this.updateProgress({ currentWave: 3, totalWaves: 4, message: 'Wave 3: Creating Detail entities' });
+      this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'analyze', message: 'Wave 3: Analyzing Detail entities' });
 
       const wave3Result = await this.executeWave3(wave2Result, manifest);
       waveResults.push(wave3Result);
@@ -136,6 +139,7 @@ export class WaveController {
       if (!wave3Result.success) {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
       } else {
+        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'persist', message: 'Wave 3: Persisting entities' });
         await this.persistWaveResult(wave3Result);
         log('[WaveController] Wave 3 entities persisted', 'info', {
           entities: wave3Result.totalEntities,
@@ -173,7 +177,7 @@ export class WaveController {
 
       // ---- Insight Finalization: Generate insight documents ----
       this.logWaveBanner('FINALIZATION', 'Insight Document Generation');
-      this.updateProgress({ currentWave: 4, totalWaves: 4, message: 'Generating insight documents' });
+      this.updateProgress({ currentWave: 4, totalWaves: 4, subPhase: 'insights', message: 'Generating insight documents' });
 
       const insightResult = await this.generateInsightsForWaveEntities(waveResults);
       log('[WaveController] Insight finalization complete', 'info', {
@@ -191,6 +195,7 @@ export class WaveController {
       this.updateProgress({
         currentWave: 4,
         totalWaves: 4,
+        subPhase: 'insights',
         message: summary.success ? 'Wave analysis complete' : 'Wave analysis completed with errors',
       });
 
@@ -726,12 +731,31 @@ export class WaveController {
   }
 
   /**
+   * Ordered sequence of sub-steps across all waves.
+   * Each step name maps to an agent ID in the dashboard's STEP_TO_AGENT.
+   * This gives the multi-agent graph fine-grained progress visibility.
+   */
+  private static readonly WAVE_STEP_SEQUENCE = [
+    { name: 'wave1_init',     wave: 1, phase: 'init' as const },
+    { name: 'wave1_analyze',  wave: 1, phase: 'analyze' as const },
+    { name: 'wave1_persist',  wave: 1, phase: 'persist' as const },
+    { name: 'wave2_analyze',  wave: 2, phase: 'analyze' as const },
+    { name: 'wave2_persist',  wave: 2, phase: 'persist' as const },
+    { name: 'wave3_analyze',  wave: 3, phase: 'analyze' as const },
+    { name: 'wave3_persist',  wave: 3, phase: 'persist' as const },
+    { name: 'wave4_insights', wave: 4, phase: 'insights' as const },
+  ];
+
+  /**
    * Update the progress file with wave status.
+   * Reports granular sub-steps per wave so the dashboard multi-agent graph
+   * can light up the correct agents (semantic_analysis, persistence, etc.).
    * Preserves debug state fields (singleStepMode, mockLLM, llmState).
    */
   private updateProgress(data: {
     currentWave: number;
     totalWaves: number;
+    subPhase?: 'init' | 'analyze' | 'persist' | 'insights';
     message?: string;
   }): void {
     try {
@@ -752,16 +776,46 @@ export class WaveController {
         }
       }
 
+      // Determine the current sub-step name for agent graph highlighting
+      const effectivePhase = data.subPhase ?? 'analyze';
+      const currentStepName = `wave${data.currentWave}_${effectivePhase}`;
+
+      // Find current position in the ordered step sequence
+      const currentIndex = WaveController.WAVE_STEP_SEQUENCE.findIndex(
+        s => s.name === currentStepName,
+      );
+
+      // Build stepsDetail with granular sub-steps that map to dashboard agents
+      // If currentIndex is the last step, mark it as running; all before it completed.
+      // If currentIndex is -1 (step not found), default to last known step.
+      const lastIndex = WaveController.WAVE_STEP_SEQUENCE.length - 1;
+      const effectiveIndex = currentIndex >= 0 ? currentIndex : lastIndex;
+      const now = new Date().toISOString();
+      const stepsDetail = WaveController.WAVE_STEP_SEQUENCE.map((step, idx) => {
+        const status = idx < effectiveIndex ? 'completed'
+          : idx === effectiveIndex ? 'running'
+          : 'pending';
+        return {
+          name: step.name,
+          status,
+          wave: step.wave,
+          ...(status === 'completed' && { endTime: now }),
+          ...(status === 'running' && { startTime: now }),
+        };
+      });
+
       // Merge wave-specific data
       const updated = {
         ...existing,
         ...preserved,
         status: 'running',
-        currentStep: `wave-${data.currentWave}`,
+        currentStep: currentStepName,
         currentWave: data.currentWave,
         totalWaves: data.totalWaves,
+        totalSteps: WaveController.WAVE_STEP_SEQUENCE.length,
+        stepsDetail,
         message: data.message ?? '',
-        lastUpdated: new Date().toISOString(),
+        lastUpdated: now,
       };
 
       // Ensure parent directory exists

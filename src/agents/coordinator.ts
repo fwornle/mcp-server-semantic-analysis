@@ -1047,7 +1047,7 @@ export class CoordinatorAgent {
             agent: "deduplication",
             action: "handleResolveDuplicates",
             parameters: {
-              entity_types: ["Pattern", "WorkflowPattern", "Insight", "DesignPattern", "CodeClass", "CodeFunction"],
+              entity_types: ["Detail", "Component", "SubComponent", "Project", "System", "Pattern", "WorkflowPattern", "Insight", "DesignPattern"],
               similarity_threshold: 0.85,
               auto_merge: true,
               preserve_history: true,

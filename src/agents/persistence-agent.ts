@@ -270,6 +270,45 @@ export class PersistenceAgent {
   }
 
   /**
+   * Calculate Jaccard similarity between PascalCase entity names.
+   * Splits on capital letters to extract word components.
+   * @returns similarity score between 0 (no overlap) and 1 (identical)
+   */
+  private calculateNameSimilarity(name1: string, name2: string): number {
+    const splitPascal = (name: string): Set<string> => {
+      const words = name.match(/[A-Z][a-z]+|[A-Z]+(?=[A-Z]|$)/g) || [];
+      return new Set(words.map(w => w.toLowerCase()).filter(w => w.length > 2));
+    };
+    const words1 = splitPascal(name1);
+    const words2 = splitPascal(name2);
+
+    if (words1.size === 0 && words2.size === 0) return 1;
+    if (words1.size === 0 || words2.size === 0) return 0;
+
+    const intersection = new Set([...words1].filter(w => words2.has(w)));
+    const union = new Set([...words1, ...words2]);
+
+    return union.size > 0 ? intersection.size / union.size : 0;
+  }
+
+  /**
+   * Find the best fuzzy match for a new entity name among existing entities.
+   * Returns the matching entity if similarity >= threshold, null otherwise.
+   */
+  private findFuzzyMatch(newName: string, existingMap: Map<string, any>, threshold: number = 0.7): { name: string; entity: any; similarity: number } | null {
+    let bestMatch: { name: string; entity: any; similarity: number } | null = null;
+
+    for (const [existingName, existingEntity] of existingMap) {
+      const similarity = this.calculateNameSimilarity(newName, existingName);
+      if (similarity >= threshold && (!bestMatch || similarity > bestMatch.similarity)) {
+        bestMatch = { name: existingName, entity: existingEntity, similarity };
+      }
+    }
+
+    return bestMatch;
+  }
+
+  /**
    * Initialize the ontology system asynchronously
    * Must be called after construction before using classification
    */
@@ -843,7 +882,7 @@ export class PersistenceAgent {
    * Find the best parent Component/SubComponent for an entity based on name matching.
    * Falls back to 'Coding' project if no match found.
    */
-  private findBestParent(entityName: string, allEntities: SharedMemoryEntity[]): string {
+  private findBestParent(entityName: string, allEntities: SharedMemoryEntity[]): string | null {
     const candidates = allEntities.filter(e =>
       e.entityType === 'SubComponent' || e.entityType === 'Component'
     );
@@ -864,7 +903,8 @@ export class PersistenceAgent {
       }
     }
 
-    return bestMatch?.name || 'Coding';
+    // Return null if no match — don't fallback to "Coding" (avoids flower pattern)
+    return bestMatch?.name || null;
   }
 
   private async updateEntityRelationships(
@@ -892,6 +932,7 @@ export class PersistenceAgent {
       if (hasParent) continue;
 
       const parentName = this.findBestParent(entity.name, sharedMemory.entities);
+      if (!parentName) continue; // No matching parent — leave unlinked (avoids flower)
 
       const relation: EntityRelationship = {
         from: parentName,
@@ -1100,12 +1141,47 @@ export class PersistenceAgent {
    * Store an entity to the graph database
    * FAIL-FAST: GraphDB MUST be available. Health monitor handles restart if unavailable.
    */
-  private async storeEntityToGraph(entity: SharedMemoryEntity): Promise<string> {
+  private async storeEntityToGraph(entity: SharedMemoryEntity, allEntities?: SharedMemoryEntity[]): Promise<string> {
     if (!this.graphDB) {
       throw new Error('GraphDB not available. Health monitor should detect and restart services.');
     }
 
     try {
+      // FUZZY NAME DEDUP: Before creating, check if a similar entity already exists
+      const team = this.config.ontologyTeam || 'coding';
+      const existingEntities = allEntities || [];
+      if (existingEntities.length > 0) {
+        const existingMap = new Map<string, SharedMemoryEntity>();
+        for (const e of existingEntities) {
+          if (e.name) existingMap.set(e.name, e);
+        }
+        // Skip exact match (GraphDB handles that), only check fuzzy
+        if (!existingMap.has(entity.name)) {
+          const fuzzyMatch = this.findFuzzyMatch(entity.name, existingMap, 0.7);
+          if (fuzzyMatch) {
+            log(`Fuzzy dedup in storeEntityToGraph: "${entity.name}" matches existing "${fuzzyMatch.name}" (${fuzzyMatch.similarity.toFixed(2)}) — merging into existing`, 'info');
+            // Merge observations into existing entity instead of creating new
+            const existing = fuzzyMatch.entity;
+            const newObs = entity.observations.filter(obs => {
+              const obsContent = typeof obs === 'string' ? obs : obs.content;
+              return !existing.observations.some((eObs: any) => {
+                const eContent = typeof eObs === 'string' ? eObs : eObs.content;
+                return eContent === obsContent;
+              });
+            });
+            if (newObs.length > 0) {
+              existing.observations.push(...newObs);
+              await this.graphDB.storeEntity({
+                ...existing,
+                observations: existing.observations
+              });
+              log(`Merged ${newObs.length} observations into "${fuzzyMatch.name}"`, 'info');
+            }
+            return fuzzyMatch.name; // Return existing entity name, skip creation
+          }
+        }
+      }
+
       // Prepare entity content for classification
       const observationsText = entity.observations
         .map(obs => typeof obs === 'string' ? obs : obs.content)
@@ -1190,7 +1266,7 @@ export class PersistenceAgent {
 
       // Normalize: ontology class names → hierarchy type
       // Ontology class stays in metadata.ontology; entityType must be a hierarchy level
-      entityType = this.resolveHierarchyType(entityType, entity.name, sharedMemory.entities);
+      entityType = this.resolveHierarchyType(entityType, entity.name, allEntities || []);
 
       // CONTENT VALIDATION: Check if existing entity content is accurate
       let contentValidationReport: EntityValidationReport | null = null;
@@ -1305,19 +1381,22 @@ export class PersistenceAgent {
       const autoRelationships = [...(entity.relationships || [])];
 
       // Skip auto-parent for Project/System entities — they are hierarchy roots
-      if (!['Project', 'System'].includes(entityType)) {
-        const parentName = this.findBestParent(entity.name, sharedMemory.entities);
-        const hasParentRel = autoRelationships.some(r =>
-          (r.relationType === 'contains' || r.relationType === 'parent-child') &&
-          r.to === entity.name
-        );
-        if (!hasParentRel) {
-          autoRelationships.push({
-            from: parentName,
-            to: entity.name,
-            relationType: 'contains'
-          });
+      if (!['Project', 'System'].includes(entityType) && allEntities) {
+        const parentName = this.findBestParent(entity.name, allEntities);
+        if (parentName) {
+          const hasParentRel = autoRelationships.some(r =>
+            (r.relationType === 'contains' || r.relationType === 'parent-child') &&
+            r.to === entity.name
+          );
+          if (!hasParentRel) {
+            autoRelationships.push({
+              from: parentName,
+              to: entity.name,
+              relationType: 'contains'
+            });
+          }
         }
+        // If no parent found, leave unlinked — avoids flower pattern
       }
 
       const graphEntity = {
@@ -1658,7 +1737,7 @@ export class PersistenceAgent {
 
           // Store entity to graph (storeEntityToGraph handles classification + relationships)
           try {
-            await this.storeEntityToGraph(entity);
+            await this.storeEntityToGraph(entity, sharedMemory.entities);
             log(`Created and stored entity: ${entity.name}`, 'info', {
               validatedFile: insightFilePath,
               method: 'createEntitiesFromAnalysisResults'
@@ -1745,7 +1824,7 @@ export class PersistenceAgent {
 
           // Store entity to graph (handles classification + relationships)
           try {
-            await this.storeEntityToGraph(additionalEntity);
+            await this.storeEntityToGraph(additionalEntity, sharedMemory.entities);
             log(`Created and stored additional entity: ${patternName}`, 'info', {
               file: insightFile.fullPath,
               method: 'createEntitiesFromAnalysisResults-additional',
@@ -1818,7 +1897,7 @@ export class PersistenceAgent {
 
           // Store entity to graph (handles classification + relationships)
           try {
-            await this.storeEntityToGraph(gitEntity);
+            await this.storeEntityToGraph(gitEntity, sharedMemory.entities);
             log(`Created and stored git entity: ${gitEntity.name}`, 'info', {
               validatedFile: gitInsightPath,
               method: 'createEntitiesFromAnalysisResults-git'
@@ -3218,10 +3297,21 @@ export class PersistenceAgent {
       // Helper to process a single entity
       const processEntity = async (entity: typeof entities[0]): Promise<'created' | 'updated' | 'failed'> => {
         try {
-          // Check if entity already exists (in-memory lookup instead of DB query)
-          const existingEntity = existingEntityMap.size > 0
+          // Check if entity already exists — exact match first, then fuzzy name match
+          let existingEntity = existingEntityMap.size > 0
             ? (existingEntityMap.get(entity.name) || null)
             : await this.getEntity(entity.name, team);
+
+          // Fuzzy name dedup: if no exact match, check for semantically similar names
+          if (!existingEntity && existingEntityMap.size > 0) {
+            const fuzzyMatch = this.findFuzzyMatch(entity.name, existingEntityMap, 0.7);
+            if (fuzzyMatch) {
+              log(`Fuzzy dedup: "${entity.name}" matches existing "${fuzzyMatch.name}" (similarity: ${fuzzyMatch.similarity.toFixed(2)}) — merging observations`, 'info');
+              existingEntity = fuzzyMatch.entity;
+              // Use the existing entity's name for the update
+              entity.name = fuzzyMatch.name;
+            }
+          }
 
           if (existingEntity) {
             // Update existing entity - add new observations

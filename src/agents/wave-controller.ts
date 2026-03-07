@@ -1148,7 +1148,22 @@ export class WaveController {
 
       // Determine the current sub-step name for agent graph highlighting
       const effectivePhase = data.subPhase ?? 'analyze';
-      const currentStepName = `wave${data.currentWave}_${effectivePhase}`;
+      let currentStepName: string;
+      if (effectivePhase === 'operators' && data.message) {
+        // Map operator messages to step names: "KG Operator: Context Convolution" -> "operator_conv"
+        const opMap: Record<string, string> = {
+          'Context Convolution': 'operator_conv',
+          'Entity Aggregation': 'operator_aggr',
+          'Node Embedding': 'operator_embed',
+          'Deduplication': 'operator_dedup',
+          'Edge Prediction': 'operator_pred',
+          'Structure Fusion': 'operator_merge',
+        };
+        const opLabel = data.message.replace('KG Operator: ', '');
+        currentStepName = opMap[opLabel] ?? `wave${data.currentWave}_${effectivePhase}`;
+      } else {
+        currentStepName = `wave${data.currentWave}_${effectivePhase}`;
+      }
 
       // Find current position in the ordered step sequence
       const currentIndex = WaveController.WAVE_STEP_SEQUENCE.findIndex(

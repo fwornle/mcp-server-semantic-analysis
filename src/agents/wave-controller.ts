@@ -767,18 +767,33 @@ export class WaveController {
           // Build cross-reference context
           const crossReferences = this.buildCrossReferences(entity, allEntities);
 
-          // L1 Component and L2 SubComponent get diagrams; L0 Project and L3 Detail get text-only
-          const generateDiagrams = entity.level === 1 || entity.level === 2;
+          // All levels get diagram treatment per Phase 9 decision (overrides Phase 6 L3 text-only)
+          const generateDiagrams = true;
 
           // Build relations for this entity
           const entityRelations = allRelationships
             .filter(r => r.from === entity.name || r.to === entity.name)
             .map(r => ({ from: r.from, to: r.to, relationType: r.type }));
 
+          // Enrich observations with analysis artifacts from SemanticAnalysisAgent
+          const artifacts = (entity as any)._analysisArtifacts;
+          let enrichedObservations = [...entity.observations];
+          if (artifacts) {
+            if (artifacts.patterns?.length > 0) {
+              enrichedObservations.push(`[Architectural Patterns] ${artifacts.patterns.join('; ')}`);
+            }
+            if (artifacts.architectureNotes?.length > 0) {
+              enrichedObservations.push(`[Architecture Notes] ${artifacts.architectureNotes.join('; ')}`);
+            }
+            if (artifacts.codeReferences?.length > 0) {
+              enrichedObservations.push(`[Code References] ${artifacts.codeReferences.join('; ')}`);
+            }
+          }
+
           const result = await insightAgent.generateEntityInsight({
             entityName: entity.name,
             entityType: entity.type,
-            observations: entity.observations,
+            observations: enrichedObservations,
             relations: entityRelations,
             crossReferences,
             generateDiagrams,

@@ -14,6 +14,83 @@ import type { KGEntity, KGRelation } from '../agents/kg-operators.js';
 import type { ComponentManifest } from './component-manifest.js';
 
 // ============================================================================
+// Analysis Artifact & Trace Data Contracts
+// ============================================================================
+
+/**
+ * Artifacts produced by deep code analysis of an entity.
+ * Captures patterns, architecture notes, and grounding references.
+ */
+export interface AnalysisArtifacts {
+  /** Architectural patterns discovered in the entity's code */
+  patterns: string[];
+  /** Architecture observations from code analysis */
+  architectureNotes: string[];
+  /** Specific file/line references grounding the analysis */
+  codeReferences: string[];
+}
+
+/**
+ * Trace data from a single agent's contribution to entity analysis.
+ * Used for observability and debugging of the multi-agent pipeline.
+ */
+export interface EntityTraceData {
+  /** Number of LLM calls made by this agent */
+  llmCallCount: number;
+  /** Total wall clock duration in milliseconds */
+  totalDurationMs: number;
+  /** LLM model used (e.g. 'gpt-4o', 'llama-3.3-70b') */
+  model: string;
+  /** LLM provider used (e.g. 'openai', 'groq') */
+  provider: string;
+  /** Agent type identifier (e.g. 'SemanticAnalysisAgent', 'OntologyClassificationAgent') */
+  agentType: string;
+}
+
+/**
+ * KGEntity enriched with analysis artifacts and trace data.
+ * Produced by the agent pipeline and consumed by insight generation.
+ */
+export interface EnrichedEntity extends KGEntity {
+  /** Analysis artifacts attached by SemanticAnalysisAgent */
+  _analysisArtifacts?: AnalysisArtifacts;
+  /** Trace data from each agent that contributed (array because multiple agents contribute) */
+  _traceData?: EntityTraceData[];
+  /** Fallback flag when SemanticAnalysisAgent fails -- signals shallow analysis */
+  _shallowAnalysis?: boolean;
+}
+
+/**
+ * Input contract for SemanticAnalysisAgent.analyzeEntityCode().
+ * Provides the per-entity context needed for deep code analysis.
+ */
+export interface AnalyzeEntityCodeInput {
+  /** PascalCase entity name */
+  entityName: string;
+  /** Entity type (e.g. 'Component', 'SubComponent', 'Detail') */
+  entityType: string;
+  /** Pre-scoped file paths from wave agent */
+  codeFiles: string[];
+  /** Parent entity observations for grounding */
+  parentContext: string[];
+  /** Analysis depth -- always 'deep' for wave integration */
+  analysisDepth: 'deep';
+}
+
+/**
+ * Output contract from SemanticAnalysisAgent.analyzeEntityCode().
+ * Contains deep observations, analysis artifacts, and trace data.
+ */
+export interface AnalyzeEntityCodeResult {
+  /** Deep, multi-paragraph observations about architecture, patterns, trade-offs */
+  observations: string[];
+  /** Structured analysis artifacts */
+  artifacts: AnalysisArtifacts;
+  /** Trace data from the LLM call */
+  traceData: EntityTraceData;
+}
+
+// ============================================================================
 // Wave Controller Configuration
 // ============================================================================
 

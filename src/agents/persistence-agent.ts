@@ -1410,7 +1410,14 @@ export class PersistenceAgent {
         significance: entity.significance,
         relationships: autoRelationships,
         metadata: enhancedMetadata,
-        quick_reference: entity.quick_reference
+        quick_reference: entity.quick_reference,
+        // Preserve hierarchy fields from wave controller
+        ...(entity.hierarchyLevel !== undefined && entity.hierarchyLevel !== null ? {
+          hierarchyLevel: entity.hierarchyLevel,
+          parentEntityName: entity.parentEntityName || null,
+          childEntityNames: entity.childEntityNames || [],
+          isScaffoldNode: entity.isScaffoldNode || false,
+        } : {}),
       };
 
       const nodeId = await this.graphDB.storeEntity(graphEntity);
@@ -3381,15 +3388,16 @@ export class PersistenceAgent {
                 created_by: 'workflow_persist',
                 version: '1.0',
                 // Preserve hierarchy classification metadata if present
-                ...((entity as any).parentId ? {
+              ...((entity as any).level !== undefined ? {
                   hierarchyClassifiedAt: currentDate,
                   hierarchyClassificationMethod: 'manifest-keyword'
                 } : {})
               },
               // Copy hierarchy fields from upstream classification
-              ...((entity as any).parentId ? {
-                parentEntityName: (entity as any).parentId,
-                hierarchyLevel: (entity as any).level ?? 3,
+              // Use level (not parentId) as gate — L0 Project has no parent but still needs hierarchy
+              ...((entity as any).level !== undefined ? {
+                parentEntityName: (entity as any).parentId || null,
+                hierarchyLevel: (entity as any).level,
                 childEntityNames: [],
                 isScaffoldNode: false
               } : {})

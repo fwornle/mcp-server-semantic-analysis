@@ -545,7 +545,9 @@ export class WaveController {
       if (classificationResult?.classified?.length > 0) {
         const classification = classificationResult.classified[0];
         if (classification?.classified && classification?.ontologyMetadata) {
-          entity.type = classification.ontologyMetadata.ontologyClass || entity.type;
+          // Do NOT override entity.type — it carries the hierarchy role (Project, Component,
+          // SubComponent, Detail) which the VKB graph uses for node coloring/sizing.
+          // Store ontology class in metadata only.
           (entity as any)._ontologyMetadata = {
             ontologyClass: classification.ontologyMetadata.ontologyClass,
             ontologyVersion: classification.ontologyMetadata.ontologyVersion || '1.0',

@@ -485,9 +485,20 @@ async function main(): Promise<void> {
       progressFile
     });
 
-    // Set initial totalSteps so dashboard doesn't see 0/0 before first wave starts
+    // Set initial totalSteps AND stepsDetail so dashboard wave sidebar shows
+    // proper pending states from the start (not empty until wave controller writes first update)
     // 8 sub-steps: wave1_init, wave1_analyze, wave1_persist, wave2_analyze, wave2_persist,
     //              wave3_analyze, wave3_persist, wave4_insights
+    const initialStepsDetail = [
+      { name: 'wave1_init',     status: 'pending', wave: 1 },
+      { name: 'wave1_analyze',  status: 'pending', wave: 1 },
+      { name: 'wave1_persist',  status: 'pending', wave: 1 },
+      { name: 'wave2_analyze',  status: 'pending', wave: 2 },
+      { name: 'wave2_persist',  status: 'pending', wave: 2 },
+      { name: 'wave3_analyze',  status: 'pending', wave: 3 },
+      { name: 'wave3_persist',  status: 'pending', wave: 3 },
+      { name: 'wave4_insights', status: 'pending', wave: 4 },
+    ];
     writeProgressPreservingDetails(progressFile, {
       workflowId,
       workflowName: 'wave-analysis',
@@ -500,6 +511,7 @@ async function main(): Promise<void> {
       elapsedSeconds: 0,
       totalSteps: 8,
       totalWaves: 4,
+      stepsDetail: initialStepsDetail,
       pid: process.pid
     });
 

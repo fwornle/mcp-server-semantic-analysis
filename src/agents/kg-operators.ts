@@ -293,46 +293,61 @@ export class KGOperators {
    * Generate vector embeddings for entities
    */
   async nodeEmbedding(entities: KGEntity[]): Promise<KGEntity[]> {
-    const embedded: KGEntity[] = [];
+    // Collect entities needing embeddings and their text representations
+    const needsEmbedding: { index: number; text: string }[] = [];
+    const result = [...entities];
 
-    for (const entity of entities) {
-      // Skip if already has embedding
+    for (let i = 0; i < entities.length; i++) {
+      const entity = entities[i];
+      // Skip if already has non-empty embedding
       if (entity.embedding && entity.embedding.length > 0) {
-        embedded.push(entity);
         continue;
       }
 
-      try {
-        // Build text representation for embedding
-        const textParts = [
-          entity.name,
-          entity.type,
-          ...entity.observations.slice(0, 3) // Limit observations for embedding
-        ];
-        const text = textParts.join(' ').substring(0, 8000); // Limit length
+      const textParts = [
+        entity.name,
+        entity.type,
+        ...entity.observations.slice(0, 3) // Limit observations for embedding
+      ];
+      const text = textParts.join(' ').substring(0, 8000); // Limit length
+      needsEmbedding.push({ index: i, text });
+    }
 
-        // Use semantic analyzer's embedding generation
-        const embedding = await this.semanticAnalyzer.generateEmbedding(text);
+    if (needsEmbedding.length === 0) {
+      log('Node embedding skipped - all entities already have embeddings', 'info', {
+        total: entities.length,
+      });
+      return result;
+    }
 
-        embedded.push({
-          ...entity,
-          embedding
-        });
-      } catch (error) {
-        log('Failed to generate embedding for entity', 'warning', {
-          entityId: entity.id,
-          error
-        });
-        embedded.push(entity); // Keep entity without embedding
+    // Batch all texts in one subprocess call
+    const texts = needsEmbedding.map(item => item.text);
+    const embeddings = await this.semanticAnalyzer.generateEmbeddings(texts);
+
+    if (embeddings.length === 0 || embeddings.every(e => e.length === 0)) {
+      log('Batch embedding returned empty results, returning entities unchanged', 'warning', {
+        total: entities.length,
+        attempted: needsEmbedding.length,
+      });
+      return result;
+    }
+
+    // Assign embeddings back to entities
+    for (let i = 0; i < needsEmbedding.length; i++) {
+      const { index } = needsEmbedding[i];
+      const embedding = embeddings[i];
+      if (embedding && embedding.length > 0) {
+        result[index] = { ...result[index], embedding };
       }
     }
 
     log('Node embedding completed', 'info', {
       total: entities.length,
-      embedded: embedded.filter(e => e.embedding).length
+      embedded: result.filter(e => e.embedding && e.embedding.length > 0).length,
+      newlyEmbedded: needsEmbedding.length,
     });
 
-    return embedded;
+    return result;
   }
 
   /**

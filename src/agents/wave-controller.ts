@@ -22,6 +22,7 @@ import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
 import { Wave1ProjectAgent } from './wave1-project-agent.js';
 import { PersistenceAgent } from './persistence-agent.js';
 import { InsightGenerationAgent } from './insight-generation-agent.js';
+import { OntologyClassificationAgent } from './ontology-classification-agent.js';
 import type { CrossReferenceContext } from './insight-generation-agent.js';
 import type { GraphEntity } from '../storage/graph-database-adapter.js';
 import type { SharedMemoryEntity, EntityRelationship } from './persistence-agent.js';
@@ -102,6 +103,8 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
+        // Classify entities against real ontology before persistence
+        await this.classifyWaveEntities(wave1Result);
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'persist', message: 'Wave 1: Persisting entities' });
         await this.persistWaveResult(wave1Result);
         log('[WaveController] Wave 1 entities persisted', 'info', {
@@ -122,6 +125,7 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
+        await this.classifyWaveEntities(wave2Result);
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'persist', message: 'Wave 2: Persisting entities' });
         await this.persistWaveResult(wave2Result);
         log('[WaveController] Wave 2 entities persisted', 'info', {
@@ -139,6 +143,7 @@ export class WaveController {
       if (!wave3Result.success) {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
       } else {
+        await this.classifyWaveEntities(wave3Result);
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'persist', message: 'Wave 3: Persisting entities' });
         await this.persistWaveResult(wave3Result);
         log('[WaveController] Wave 3 entities persisted', 'info', {
@@ -349,8 +354,14 @@ export class WaveController {
         .flatMap(o => o.entities)
         .filter(e => e.level === 2);
 
-      // Collect all L3 suggestions from Wave 2 agent outputs
+      // Collect all L3 suggestions from Wave 2 agent outputs, with a global cap
       const allL3Suggestions = wave2Result.agentOutputs.flatMap(o => o.childManifest);
+      const MAX_TOTAL_L3_AGENTS = 80;
+      if (allL3Suggestions.length > MAX_TOTAL_L3_AGENTS) {
+        log(`[WaveController] Capping total L3 agent tasks: ${allL3Suggestions.length} -> ${MAX_TOTAL_L3_AGENTS}`, 'warning');
+        allL3Suggestions.length = MAX_TOTAL_L3_AGENTS;
+      }
+      log(`[WaveController] Wave 3 will process ${l2Entities.length} L2 entities with ${allL3Suggestions.length} L3 suggestions`, 'info');
 
       // Gather all L1 entities for hierarchy path construction
       // L1 entities are the parents referenced by L2 entity parentId
@@ -485,15 +496,103 @@ export class WaveController {
   }
 
   /**
+   * Run ontology classification on wave entities using the real OntologyClassificationAgent.
+   * This replaces the naive level-based "auto-assigned" classification with actual
+   * semantic classification (heuristic + LLM) against the project ontology.
+   *
+   * Mutates entities in-place: updates entity.type and attaches ontologyMetadata
+   * so that mapEntityToSharedMemory() can use the real classification.
+   */
+  private async classifyWaveEntities(waveResult: WaveResult): Promise<{
+    classified: number;
+    unclassified: number;
+    byClass: Record<string, number>;
+  }> {
+    const allEntities = waveResult.agentOutputs.flatMap(o => o.entities);
+    if (allEntities.length === 0) {
+      return { classified: 0, unclassified: 0, byClass: {} };
+    }
+
+    try {
+      const ontologyAgent = new OntologyClassificationAgent(this.team, this.repositoryPath);
+
+      // Transform wave entities to the observation format expected by the classification agent
+      const observationsForClassification = allEntities.map(entity => ({
+        name: entity.name,
+        entityType: entity.type || 'Unclassified',
+        observations: entity.observations || [],
+        significance: entity.significance || 5,
+        tags: [] as string[],
+      }));
+
+      const classificationResult = await ontologyAgent.classifyObservations({
+        observations: observationsForClassification,
+        autoExtend: true,
+        minConfidence: 0.6,
+      });
+
+      if (classificationResult?.classified && classificationResult.classified.length > 0) {
+        // Build a name -> classification map for fast lookup
+        const classifiedMap = new Map<string, any>(
+          classificationResult.classified
+            .filter((c: any) => c.classified && c.ontologyMetadata)
+            .map((c: any) => [c.original?.name, c]),
+        );
+
+        // Apply classifications back to entities in-place
+        for (const entity of allEntities) {
+          const classification = classifiedMap.get(entity.name);
+          if (classification?.ontologyMetadata) {
+            // Store ontology metadata on the entity for mapEntityToSharedMemory to pick up
+            (entity as any)._ontologyMetadata = {
+              ontologyClass: classification.ontologyMetadata.ontologyClass,
+              ontologyVersion: classification.ontologyMetadata.ontologyVersion || '1.0',
+              classificationConfidence: classification.ontologyMetadata.classificationConfidence,
+              classificationMethod: classification.ontologyMetadata.classificationMethod,
+              ontologySource: classification.ontologyMetadata.ontologySource || 'lower',
+              classifiedAt: classification.ontologyMetadata.classifiedAt || new Date().toISOString(),
+            };
+          }
+        }
+
+        const summary = classificationResult.summary;
+        log(`[WaveController] Ontology classification for wave ${waveResult.wave}: ${summary.classifiedCount}/${summary.total} classified`, 'info', {
+          byClass: summary.byClass,
+          byMethod: summary.byMethod,
+          llmCalls: summary.llmCalls,
+        });
+
+        return {
+          classified: summary.classifiedCount,
+          unclassified: summary.unclassifiedCount,
+          byClass: summary.byClass,
+        };
+      }
+
+      return { classified: 0, unclassified: allEntities.length, byClass: {} };
+    } catch (error) {
+      log(`[WaveController] Ontology classification failed for wave ${waveResult.wave}, using hierarchy-level fallback`, 'warning', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { classified: 0, unclassified: allEntities.length, byClass: {} };
+    }
+  }
+
+  /**
    * Map KGEntity to SharedMemoryEntity format.
    *
    * CRITICAL: Correct field mapping (see RESEARCH.md Pitfall 1 and Pitfall 6):
    * - entityType comes from KGEntity.type (not entityType -- KGEntity has `type`)
    * - hierarchyLevel comes from KGEntity.level
    * - parentEntityName comes from KGEntity.parentId
-   * - Ontology metadata is pre-populated to prevent redundant LLM re-classification
+   * - Ontology metadata uses real classification from classifyWaveEntities() if available,
+   *   falling back to hierarchy-level classification only as last resort.
    */
   private mapEntityToSharedMemory(entity: KGEntity): SharedMemoryEntity {
+    // Check for real ontology classification attached by classifyWaveEntities()
+    const realOntology = (entity as any)._ontologyMetadata;
+    const hierarchyClass = this.getHierarchyLevelName(entity.level);
+
     return {
       id: entity.id,
       name: entity.name,
@@ -506,16 +605,27 @@ export class WaveController {
         last_updated: new Date().toISOString(),
         team: this.team,
         source: 'wave-analysis',
-        ontology: {
-          ontologyName: this.getOntologyClass(entity.level),
-          ontologyClass: this.getOntologyClass(entity.level),
-          ontologyVersion: '1.0',
-          confidence: 1.0,
-          classificationConfidence: 1.0,
-          classificationMethod: 'auto-assigned',
-          ontologySource: 'lower' as const,
-          classifiedAt: new Date().toISOString(),
-        },
+        ontology: realOntology
+          ? {
+              ontologyName: realOntology.ontologyClass,
+              ontologyClass: realOntology.ontologyClass,
+              ontologyVersion: realOntology.ontologyVersion,
+              confidence: realOntology.classificationConfidence,
+              classificationConfidence: realOntology.classificationConfidence,
+              classificationMethod: realOntology.classificationMethod,
+              ontologySource: realOntology.ontologySource,
+              classifiedAt: realOntology.classifiedAt,
+            }
+          : {
+              ontologyName: hierarchyClass,
+              ontologyClass: hierarchyClass,
+              ontologyVersion: '1.0',
+              confidence: 1.0,
+              classificationConfidence: 1.0,
+              classificationMethod: 'auto-assigned',
+              ontologySource: 'lower' as const,
+              classifiedAt: new Date().toISOString(),
+            },
       },
       hierarchyLevel: entity.level,
       parentEntityName: entity.parentId,
@@ -525,9 +635,10 @@ export class WaveController {
   }
 
   /**
-   * Map hierarchy level to ontology class name.
+   * Map hierarchy level to human-readable name (for structural metadata only).
+   * This is NOT the ontology classification — just the hierarchy level label.
    */
-  private getOntologyClass(level?: number): string {
+  private getHierarchyLevelName(level?: number): string {
     switch (level) {
       case 0: return 'Project';
       case 1: return 'Component';

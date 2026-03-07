@@ -212,6 +212,10 @@ ${fileContents || '(no source files available)'}
    - Each must have clear file/directory evidence in the source code
 
 3. For ALL sub-components (known + discovered), suggest what Detail-level (L3) entities exist within them.
+   - Only suggest L3 entities that have clear code evidence (specific files, classes, or modules)
+   - Limit to 3-6 L3 suggestions per sub-component — quality over quantity
+   - Do NOT invent entities by combining unrelated concepts from different parts of the codebase
+   - Do NOT suggest generic L3 names like "Configuration", "Utils", "Types", "Handler", "Manager"
 
 ## Self-Sufficiency Standard
 Each sub-component description and its observations MUST orient a new developer:
@@ -297,9 +301,31 @@ Write as if this is the only documentation a new team member will read about thi
           comp.observations = [`${comp.name} is a sub-component of the parent entity`];
         }
 
-        // Validate L3 children
+        // Validate and cap L3 children to prevent unbounded entity explosion
         if (!Array.isArray(comp.suggestedL3Children)) {
           comp.suggestedL3Children = [];
+        }
+
+        // Filter out generic L3 suggestions
+        const genericL3Names = new Set([
+          'Configuration', 'Utils', 'Types', 'Helpers', 'Constants',
+          'Index', 'Main', 'Base', 'Common', 'Shared', 'Core',
+          'Manager', 'Service', 'Handler', 'Controller', 'Module',
+        ]);
+        const beforeFilter = comp.suggestedL3Children.length;
+        comp.suggestedL3Children = comp.suggestedL3Children.filter(
+          (c: any) => c.name && !genericL3Names.has(c.name),
+        );
+
+        // Cap at 6 L3 suggestions per L2 entity to control Wave 3 agent spawning
+        const MAX_L3_PER_L2 = 6;
+        if (comp.suggestedL3Children.length > MAX_L3_PER_L2) {
+          log(`[Wave2Agent] Capping L3 suggestions for ${comp.name}: ${comp.suggestedL3Children.length} -> ${MAX_L3_PER_L2}`, 'info');
+          comp.suggestedL3Children = comp.suggestedL3Children.slice(0, MAX_L3_PER_L2);
+        }
+
+        if (beforeFilter !== comp.suggestedL3Children.length) {
+          log(`[Wave2Agent] Filtered L3 suggestions for ${comp.name}: ${beforeFilter} -> ${comp.suggestedL3Children.length}`, 'info');
         }
       }
 

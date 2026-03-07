@@ -174,7 +174,14 @@ SubComponent (L2): ${input.l2Entity.name} - ${l2Description}
 ${fileSection}
 ${suggestedSection}
 ## Task
-Identify ${hasFiles ? '2-8' : '1-3'} Detail-level (L3) nodes that represent specific, notable aspects of this sub-component. Good L3 nodes are:
+Identify ${hasFiles ? '2-8' : '1-3'} Detail-level (L3) nodes that represent specific, notable aspects of this sub-component.
+
+CRITICAL RULE: Every L3 node you suggest MUST have verifiable code evidence in the source files above.
+- If no source files are available, suggest AT MOST 1-2 nodes based on strong parent context. Prefer suggesting fewer high-quality nodes over many speculative ones.
+- Do NOT invent entities that you cannot point to in the code. If a suggested node from the parent analysis has no code evidence, DISCARD it.
+- It is better to return an empty list than to hallucinate entities.
+
+Good L3 nodes are:
 - Specific classes or modules with distinct behavior (e.g., "BatchScheduler", "LLMRetryPolicy")
 - Key algorithms or processing patterns (e.g., "StreamingResponseParser", "DAGDependencyResolver")
 - Important configuration or integration points (e.g., "ProviderFallbackConfig", "MemgraphConnection")
@@ -183,13 +190,14 @@ Identify ${hasFiles ? '2-8' : '1-3'} Detail-level (L3) nodes that represent spec
 BAD L3 nodes (do NOT suggest these):
 - Generic labels like "Configuration", "Utils", "Types", "Helpers"
 - Nodes that just restate the L2 name with "Manager" or "Service" suffix
-- Nodes with no specific code evidence
+- Nodes with no specific code evidence in the source files above
+- Nodes that combine unrelated concepts (e.g., "VkbApiAgentGateway" — VKB and agent management are unrelated)
 
 For each L3 node, provide:
 - name: PascalCase, specific and descriptive
 - description: 1-2 sentences about what it does
 - observations: 3-5 specific observations about architecture, behavior, or design decisions. Each observation MUST:
-  - Reference at least one specific code artifact (file path, class name, function name, or module)
+  - Reference at least one specific code artifact (file path, class name, function name, or module) FROM THE SOURCE FILES ABOVE
   - Describe a concrete architectural decision, behavior, or pattern
   - Be self-contained (understandable without reading the source)
 
@@ -200,6 +208,7 @@ For each L3 node, provide:
   BAD observations (DO NOT write these):
   - "Works well" (trivially generic, no code reference)
   - "Important implementation detail" (vague, no artifact mentioned)
+  - References to files not shown in the Source Files section above
 
 ## Self-Sufficiency Standard
 Each detail node description and its observations MUST orient a new developer:
@@ -281,10 +290,28 @@ Write as if this is the only documentation available about this detail.
           detail.observations = [detail.description || `Detail entity ${detail.name}`];
         }
 
+        // Require at least one observation with a code artifact reference
+        const hasCodeEvidence = detail.observations.some((obs: string) =>
+          /\.(ts|js|py|yaml|yml|json|md)\b/i.test(obs) ||
+          /[A-Z][a-z]+[A-Z]/.test(obs) ||
+          /\w+\.\w+\(/.test(obs) ||
+          /\/[\w-]+\//.test(obs),
+        );
+        if (!hasCodeEvidence) {
+          log(`[Wave3Agent] Filtered out L3 entity with no code evidence: ${detail.name}`, 'info');
+          return false;
+        }
+
         return true;
       });
 
-      return { details: validDetails };
+      // Cap output to prevent runaway entity creation
+      const MAX_L3_PER_AGENT = 8;
+      if (validDetails.length > MAX_L3_PER_AGENT) {
+        log(`[Wave3Agent] Capping L3 entities: ${validDetails.length} -> ${MAX_L3_PER_AGENT}`, 'info');
+      }
+
+      return { details: validDetails.slice(0, MAX_L3_PER_AGENT) };
     } catch (parseError) {
       log(`[Wave3Agent] Failed to parse LLM response as JSON: ${parseError instanceof Error ? parseError.message : String(parseError)}`, 'warning');
       return { details: [] };

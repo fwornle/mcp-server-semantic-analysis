@@ -103,8 +103,12 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
-        // Classify entities against real ontology before persistence
-        await this.classifyWaveEntities(wave1Result);
+        // Per-entity ontology classification with bounded concurrency
+        const wave1Entities = wave1Result.agentOutputs.flatMap(o => o.entities);
+        const wave1ClassifyTasks = wave1Entities.map(entity => async () => {
+          await this.classifyEntity(entity);
+        });
+        await this.runWithConcurrency(wave1ClassifyTasks, 2);
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'persist', message: 'Wave 1: Persisting entities' });
         await this.persistWaveResult(wave1Result);
         log('[WaveController] Wave 1 entities persisted', 'info', {
@@ -125,7 +129,12 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
-        await this.classifyWaveEntities(wave2Result);
+        // Per-entity ontology classification with bounded concurrency
+        const wave2Entities = wave2Result.agentOutputs.flatMap(o => o.entities);
+        const wave2ClassifyTasks = wave2Entities.map(entity => async () => {
+          await this.classifyEntity(entity);
+        });
+        await this.runWithConcurrency(wave2ClassifyTasks, 2);
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'persist', message: 'Wave 2: Persisting entities' });
         await this.persistWaveResult(wave2Result);
         log('[WaveController] Wave 2 entities persisted', 'info', {
@@ -143,7 +152,12 @@ export class WaveController {
       if (!wave3Result.success) {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
       } else {
-        await this.classifyWaveEntities(wave3Result);
+        // Per-entity ontology classification with bounded concurrency
+        const wave3Entities = wave3Result.agentOutputs.flatMap(o => o.entities);
+        const wave3ClassifyTasks = wave3Entities.map(entity => async () => {
+          await this.classifyEntity(entity);
+        });
+        await this.runWithConcurrency(wave3ClassifyTasks, 2);
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'persist', message: 'Wave 3: Persisting entities' });
         await this.persistWaveResult(wave3Result);
         log('[WaveController] Wave 3 entities persisted', 'info', {
@@ -509,6 +523,58 @@ export class WaveController {
   }
 
   /**
+   * Classify a single entity using the OntologyClassificationAgent.
+   * Per-entity sequential classification -- each entity gets its own classification call.
+   * Mutates entity in-place: updates entity.type and attaches _ontologyMetadata.
+   */
+  private async classifyEntity(entity: KGEntity): Promise<void> {
+    const ontologyAgent = new OntologyClassificationAgent(this.team, this.repositoryPath);
+    try {
+      const classificationResult = await ontologyAgent.classifyObservations({
+        observations: [{
+          name: entity.name,
+          entityType: entity.type || 'Unclassified',
+          observations: entity.observations || [],
+          significance: entity.significance || 5,
+          tags: [],
+        }],
+        autoExtend: true,
+        minConfidence: 0.6,
+      });
+
+      if (classificationResult?.classified?.length > 0) {
+        const classification = classificationResult.classified[0];
+        if (classification?.classified && classification?.ontologyMetadata) {
+          entity.type = classification.ontologyMetadata.ontologyClass || entity.type;
+          (entity as any)._ontologyMetadata = {
+            ontologyClass: classification.ontologyMetadata.ontologyClass,
+            ontologyVersion: classification.ontologyMetadata.ontologyVersion || '1.0',
+            classificationConfidence: classification.ontologyMetadata.classificationConfidence,
+            classificationMethod: classification.ontologyMetadata.classificationMethod,
+            ontologySource: classification.ontologyMetadata.ontologySource || 'lower',
+            classifiedAt: classification.ontologyMetadata.classifiedAt || new Date().toISOString(),
+          };
+          // Append ontology trace data
+          const traceArr = (entity as any)._traceData || [];
+          traceArr.push({
+            llmCallCount: 1,
+            totalDurationMs: 0, // ontology agent doesn't expose timing yet
+            model: 'heuristic+llm',
+            provider: 'ontology',
+            agentType: 'OntologyClassificationAgent',
+          });
+          (entity as any)._traceData = traceArr;
+        }
+      }
+    } catch (err) {
+      log(`[WaveController] Ontology classification failed for ${entity.name}, using hierarchy fallback: ${err instanceof Error ? err.message : String(err)}`, 'warning');
+      // Entity keeps its existing type -- mapEntityToSharedMemory handles fallback
+    }
+  }
+
+  /**
+   * @deprecated Use classifyEntity() per-entity instead.
+   *
    * Run ontology classification on wave entities using the real OntologyClassificationAgent.
    * This replaces the naive level-based "auto-assigned" classification with actual
    * semantic classification (heuristic + LLM) against the project ontology.

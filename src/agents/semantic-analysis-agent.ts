@@ -5,6 +5,7 @@ import type { IntelligentQueryResult } from './code-graph-agent.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 import { LLMService } from '../../../../lib/llm/dist/index.js';
+import type { AnalyzeEntityCodeInput, AnalyzeEntityCodeResult, AnalysisArtifacts, EntityTraceData } from '../types/wave-types.js';
 
 export interface CodeFile {
   path: string;
@@ -1902,5 +1903,124 @@ Extract and respond with JSON:
       log(`Document prose analysis failed for ${docPath}`, 'warning', error);
       return null;
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // Per-Entity Code Analysis (Wave Integration)
+  // --------------------------------------------------------------------------
+
+  /**
+   * Analyze code for a single entity, producing deep observations and analysis artifacts.
+   * Designed for per-entity wave integration -- each wave agent calls this for its entities.
+   *
+   * @param input - Entity context and scoped code files
+   * @returns Deep observations, analysis artifacts, and trace data
+   * @throws Error if LLM call fails (caller handles fallback)
+   */
+  async analyzeEntityCode(input: AnalyzeEntityCodeInput): Promise<AnalyzeEntityCodeResult> {
+    await this.ensureLLMInitialized();
+    const startTime = Date.now();
+
+    // Read code file contents (limit to 5 files, 300 lines each)
+    const fileContents: { path: string; content: string }[] = [];
+    const filesToRead = input.codeFiles.slice(0, 5);
+
+    for (const filePath of filesToRead) {
+      try {
+        const absolutePath = path.resolve(this.repositoryPath, filePath);
+        const content = fs.readFileSync(absolutePath, 'utf-8');
+        const lines = content.split('\n');
+        const truncated = lines.slice(0, 300).join('\n');
+        fileContents.push({
+          path: filePath,
+          content: truncated + (lines.length > 300 ? '\n// ... truncated ...' : ''),
+        });
+      } catch {
+        log(`[SemanticAnalysisAgent] Could not read file: ${filePath}`, 'warning');
+      }
+    }
+
+    if (fileContents.length === 0) {
+      throw new Error(`No readable code files for entity "${input.entityName}"`);
+    }
+
+    // Build focused analysis prompt
+    const parentContextBlock = input.parentContext.length > 0
+      ? `\n## Parent Context\nThe parent entity has these observations:\n${input.parentContext.map(o => `- ${o}`).join('\n')}\n`
+      : '';
+
+    const codeBlock = fileContents.map(f =>
+      `### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``
+    ).join('\n\n');
+
+    const prompt = `You are analyzing the "${input.entityName}" component (type: ${input.entityType}) of a software project.
+${parentContextBlock}
+## Code Files
+${codeBlock}
+
+## Instructions
+Analyze this code component and produce a JSON response with:
+1. "observations" - An array of 5+ detailed multi-paragraph observations about architecture, patterns, trade-offs, and implementation details. Each observation MUST reference specific files/functions. AVOID generic statements.
+2. "patterns" - An array of architectural patterns discovered (e.g. "Observer pattern for event handling", "Repository pattern for data access")
+3. "architectureNotes" - An array of architecture observations (e.g. "Uses dependency injection via constructor", "Tight coupling between X and Y")
+4. "codeReferences" - An array of specific file/line references grounding the analysis (e.g. "src/auth.ts:45 - JWT validation")
+
+Respond ONLY with a JSON object. Do not include markdown fences or any text outside the JSON.`;
+
+    // Make LLM call
+    const result = await this.llmService.complete({
+      messages: [{ role: 'user', content: prompt }],
+      taskType: 'semantic_analysis',
+      agentId: 'semantic_analysis_entity',
+      maxTokens: 4096,
+      temperature: 0.7,
+      timeout: 60_000,
+    });
+
+    const durationMs = Date.now() - startTime;
+
+    // Parse response -- strip markdown fences if present
+    let responseText = result.content.trim();
+    const fenceMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenceMatch) {
+      responseText = fenceMatch[1].trim();
+    }
+
+    let parsed: { observations?: string[]; patterns?: string[]; architectureNotes?: string[]; codeReferences?: string[] };
+    try {
+      parsed = JSON.parse(responseText);
+    } catch {
+      log(`[SemanticAnalysisAgent] Failed to parse LLM response as JSON for entity "${input.entityName}"`, 'warning');
+      throw new Error(`LLM response was not valid JSON for entity "${input.entityName}"`);
+    }
+
+    // Build result
+    const artifacts: AnalysisArtifacts = {
+      patterns: parsed.patterns || [],
+      architectureNotes: parsed.architectureNotes || [],
+      codeReferences: parsed.codeReferences || [],
+    };
+
+    const traceData: EntityTraceData = {
+      llmCallCount: 1,
+      totalDurationMs: durationMs,
+      model: result.model,
+      provider: result.provider,
+      agentType: 'SemanticAnalysisAgent',
+    };
+
+    log(`[SemanticAnalysisAgent] analyzeEntityCode complete for "${input.entityName}"`, 'info', {
+      observations: (parsed.observations || []).length,
+      patterns: artifacts.patterns.length,
+      durationMs,
+      provider: result.provider,
+      model: result.model,
+    });
+
+    return {
+      observations: parsed.observations || [],
+      artifacts,
+      traceData,
+    };
   }
 }

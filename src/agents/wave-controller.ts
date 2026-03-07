@@ -461,8 +461,19 @@ export class WaveController {
       contentValidationMode: 'disabled',
     });
 
+    // Basic structural validation before persistence
+    const validEntities = sharedMemoryEntities.filter(e => {
+      const hasHierarchy = e.hierarchyLevel !== undefined && e.hierarchyLevel !== null;
+      const hasObservations = e.observations && e.observations.length > 0;
+      if (!hasHierarchy || !hasObservations) {
+        log(`[WaveController] Skipping entity ${e.name}: missing hierarchy or observations`, 'warning');
+        return false;
+      }
+      return true;
+    });
+
     await persistenceAgent.persistEntities({
-      entities: sharedMemoryEntities.map(e => ({
+      entities: validEntities.map(e => ({
         name: e.name,
         entityType: e.entityType,
         observations: e.observations.map(obs =>
@@ -470,6 +481,8 @@ export class WaveController {
         ),
         significance: e.significance,
         metadata: e.metadata,
+        parentId: e.parentEntityName,
+        level: e.hierarchyLevel,
       })),
       team: this.team,
     });

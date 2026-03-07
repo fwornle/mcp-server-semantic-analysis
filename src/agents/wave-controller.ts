@@ -26,7 +26,9 @@ import { OntologyClassificationAgent } from './ontology-classification-agent.js'
 import type { CrossReferenceContext } from './insight-generation-agent.js';
 import type { GraphEntity } from '../storage/graph-database-adapter.js';
 import type { SharedMemoryEntity, EntityRelationship } from './persistence-agent.js';
-import type { KGEntity, KGRelation } from './kg-operators.js';
+import { createKGOperators } from './kg-operators.js';
+import { SemanticAnalyzer } from './semantic-analyzer.js';
+import type { KGEntity, KGRelation, BatchContext } from './kg-operators.js';
 import type { ComponentManifest } from '../types/component-manifest.js';
 import type {
   WaveControllerConfig,
@@ -192,6 +194,114 @@ export class WaveController {
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         log('[WaveController] Manifest write-back failed (non-fatal)', 'warning', { error: errMsg });
+      }
+
+      // ---- KG Operators: Post-persistence refinement ----
+      this.logWaveBanner('KG OPERATORS', 'Post-Persistence Refinement (6 operators)');
+      try {
+        // Collect all entities and relations from all 3 waves
+        let allEntities: KGEntity[] = waveResults.flatMap(wr => wr.agentOutputs.flatMap(o => o.entities));
+        let allRelations: KGRelation[] = waveResults.flatMap(wr => wr.agentOutputs.flatMap(o => o.relationships));
+
+        log('[WaveController] KG Operators: collected entities/relations', 'info', {
+          entities: allEntities.length,
+          relations: allRelations.length,
+        });
+
+        // Build BatchContext
+        const batchContext: BatchContext = {
+          batchId: `wave-run-${Date.now()}`,
+          startDate: new Date(startTime),
+          endDate: new Date(),
+          commits: await this.getRecentGitCommits(30),
+          sessions: this.getRecentSessions(30),
+        };
+
+        // Create KGOperators instance
+        const kgOperators = createKGOperators(new SemanticAnalyzer());
+        const accumulatedKG = { entities: [] as KGEntity[], relations: [] as KGRelation[] }; // full-replace mode
+
+        let currentEntities = allEntities;
+        let currentRelations = allRelations;
+
+        // Conv
+        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Context Convolution' });
+        try {
+          currentEntities = await kgOperators.contextConvolution(currentEntities, batchContext);
+          log('[WaveController] Conv operator complete', 'info', { entities: currentEntities.length });
+        } catch (e) { log('[WaveController] Conv operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+
+        // Aggr
+        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Entity Aggregation' });
+        try {
+          const aggr = await kgOperators.entityAggregation(currentEntities);
+          currentEntities = [...aggr.core, ...aggr.nonCore];
+          log('[WaveController] Aggr operator complete', 'info', { core: aggr.core.length, nonCore: aggr.nonCore.length });
+        } catch (e) { log('[WaveController] Aggr operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+
+        // Embed
+        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Node Embedding' });
+        try {
+          currentEntities = await kgOperators.nodeEmbedding(currentEntities);
+          const withEmb = currentEntities.filter(e => e.embedding && e.embedding.length === 384).length;
+          log('[WaveController] Embed operator complete', 'info', { withEmbeddings: withEmb, total: currentEntities.length });
+        } catch (e) { log('[WaveController] Embed operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+
+        // Dedup
+        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Deduplication' });
+        try {
+          const deduped = await kgOperators.deduplication(currentEntities, accumulatedKG);
+          log('[WaveController] Dedup operator complete', 'info', { before: currentEntities.length, after: deduped.entities.length, merged: deduped.merged });
+          currentEntities = deduped.entities;
+        } catch (e) { log('[WaveController] Dedup operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+
+        // Pred
+        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Edge Prediction' });
+        try {
+          const predicted = await kgOperators.edgePrediction(currentEntities, { entities: currentEntities, relations: currentRelations });
+          log('[WaveController] Pred operator complete', 'info', { predictedEdges: predicted.edges.length });
+          currentRelations = [...currentRelations, ...predicted.edges];
+        } catch (e) { log('[WaveController] Pred operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+
+        // Merge (structure fusion)
+        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Structure Fusion' });
+        try {
+          const merged = await kgOperators.structureMerge(
+            { entities: currentEntities, relations: currentRelations },
+            accumulatedKG
+          );
+          log('[WaveController] Merge operator complete', 'info', { entities: merged.entities.length, relations: merged.relations.length });
+          currentEntities = merged.entities;
+          currentRelations = merged.relations;
+        } catch (e) { log('[WaveController] Merge operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+
+        // Re-persist refined entities back to the KG
+        log('[WaveController] Re-persisting operator-refined entities', 'info', { count: currentEntities.length });
+        try {
+          const refinedWaveResult: WaveResult = {
+            wave: 3,
+            agentOutputs: [{
+              entities: currentEntities,
+              relationships: currentRelations,
+              childManifest: [],
+              discovered: false,
+              durationMs: Date.now() - startTime,
+              parentId: '',
+              agentName: 'KGOperators',
+            }],
+            totalEntities: currentEntities.length,
+            manifestEntities: currentEntities.filter(e => !e.id?.startsWith('discovered:')).length,
+            discoveredEntities: currentEntities.filter(e => e.id?.startsWith('discovered:')).length,
+            durationMs: Date.now() - startTime,
+            success: true,
+          };
+          await this.persistWaveResult(refinedWaveResult);
+          log('[WaveController] Operator-refined entities persisted', 'info');
+        } catch (e) { log('[WaveController] Re-persist after operators failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        log('[WaveController] KG Operators phase failed (non-fatal)', 'warning', { error: errMsg });
       }
 
       // ---- Insight Finalization: Generate insight documents ----
@@ -941,6 +1051,50 @@ export class WaveController {
   }
 
   /**
+   * Get recent git commits for BatchContext.
+   */
+  private async getRecentGitCommits(days: number): Promise<Array<{ hash: string; message: string; date: Date }>> {
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const { stdout } = await execFileAsync('git', [
+        'log', `--since=${since}`, '--format=%H|%s|%aI', '--max-count=50',
+      ], { cwd: this.repositoryPath, timeout: 10000 });
+
+      return stdout.trim().split('\n').filter(Boolean).map(line => {
+        const [hash, message, dateStr] = line.split('|');
+        return { hash, message, date: new Date(dateStr) };
+      });
+    } catch {
+      return []; // Git not available or no commits -- non-fatal
+    }
+  }
+
+  /**
+   * Get recent session files for BatchContext.
+   */
+  private getRecentSessions(days: number): Array<{ filename: string; timestamp: Date }> {
+    try {
+      const sessionsDir = path.join(this.repositoryPath, '.specstory', 'history');
+      if (!fs.existsSync(sessionsDir)) return [];
+
+      const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+      return fs.readdirSync(sessionsDir)
+        .filter(f => f.endsWith('.md'))
+        .map(f => {
+          const dateStr = f.substring(0, 10); // YYYY-MM-DD prefix
+          return { filename: f, timestamp: new Date(dateStr) };
+        })
+        .filter(s => s.timestamp.getTime() >= cutoff);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Ordered sequence of sub-steps across all waves.
    * Each step name maps to an agent ID in the dashboard's STEP_TO_AGENT.
    * This gives the multi-agent graph fine-grained progress visibility.
@@ -953,6 +1107,12 @@ export class WaveController {
     { name: 'wave2_persist',  wave: 2, phase: 'persist' as const },
     { name: 'wave3_analyze',  wave: 3, phase: 'analyze' as const },
     { name: 'wave3_persist',  wave: 3, phase: 'persist' as const },
+    { name: 'operator_conv',   wave: 3, phase: 'operators' as const },
+    { name: 'operator_aggr',   wave: 3, phase: 'operators' as const },
+    { name: 'operator_embed',  wave: 3, phase: 'operators' as const },
+    { name: 'operator_dedup',  wave: 3, phase: 'operators' as const },
+    { name: 'operator_pred',   wave: 3, phase: 'operators' as const },
+    { name: 'operator_merge',  wave: 3, phase: 'operators' as const },
     { name: 'wave4_insights', wave: 4, phase: 'insights' as const },
   ];
 
@@ -965,7 +1125,7 @@ export class WaveController {
   private updateProgress(data: {
     currentWave: number;
     totalWaves: number;
-    subPhase?: 'init' | 'analyze' | 'persist' | 'insights';
+    subPhase?: 'init' | 'analyze' | 'persist' | 'insights' | 'operators';
     message?: string;
   }): void {
     try {

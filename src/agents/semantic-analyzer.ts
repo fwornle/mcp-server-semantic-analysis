@@ -732,10 +732,11 @@ For each pattern found, provide:
 
     try {
       const scriptPath = path.join(__dirname, '../../src/utils/embedding_generator.py');
+      const pythonPath = process.env.EMBEDDING_PYTHON || path.join(__dirname, '../../.embedding-venv/bin/python3');
       const inputData = JSON.stringify(texts);
 
       const result = await new Promise<string>((resolve, reject) => {
-        const proc = spawn('python3', [scriptPath], {
+        const proc = spawn(pythonPath, [scriptPath], {
           stdio: ['pipe', 'pipe', 'pipe'],
           timeout: 120000,
         });

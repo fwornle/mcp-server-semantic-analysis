@@ -502,13 +502,29 @@ export class KGOperators {
       significance,
       embedding,
       enrichedContext: enrichedContext || undefined,
-      timestamp: incoming.timestamp || existing.timestamp
+      timestamp: incoming.timestamp || existing.timestamp,
+      parentId: incoming.parentId ?? existing.parentId,
+      level: incoming.level ?? existing.level,
+      hierarchyPath: incoming.hierarchyPath ?? existing.hierarchyPath,
     };
   }
 
   /**
-   * PRED: Edge Prediction
+   * Get L1 ancestor (Component level) from an entity's hierarchy path.
+   * Returns the L1 component name, or null if not available.
+   * Path format: "Project/Component/SubComponent/..."
+   *              parts[0]=L0(Project), parts[1]=L1(Component)
+   */
+  private getL1Ancestor(entity: KGEntity): string | null {
+    if (!entity.hierarchyPath) return null;
+    const parts = entity.hierarchyPath.split('/');
+    return parts.length >= 2 ? parts[1] : null;
+  }
+
+  /**
+   * PRED: Edge Prediction (cross-branch only)
    * Predict relations using weighted scoring: score = α·cos + β·AA + γ·CA
+   * Skips entity pairs in the same L1 branch (same-branch pairs already have explicit relations)
    */
   async edgePrediction(
     entities: KGEntity[],
@@ -517,30 +533,45 @@ export class KGOperators {
     const edges: KGRelation[] = [];
     const scores: PredictedEdges['scores'] = [];
 
-    // OOM fix: removed unused allEntities and entityMap (dead code that wasted memory)
-
-    // Build neighbor map for Adamic-Adar
+    // Build neighbor map for Adamic-Adar from the run's own relations
+    // (accumulatedKG.relations is empty in full-replace mode, use provided relations via applyAll)
+    const allRelations = [...accumulatedKG.relations];
     const neighbors = new Map<string, Set<string>>();
-    for (const relation of accumulatedKG.relations) {
+    for (const relation of allRelations) {
       if (!neighbors.has(relation.from)) neighbors.set(relation.from, new Set());
       if (!neighbors.has(relation.to)) neighbors.set(relation.to, new Set());
       neighbors.get(relation.from)!.add(relation.to);
       neighbors.get(relation.to)!.add(relation.from);
     }
 
-    // Compare each pair of new entities with accumulated entities
-    for (const newEntity of entities) {
-      for (const accEntity of accumulatedKG.entities) {
-        if (newEntity.id === accEntity.id) continue;
+    // Compare entities within the run (cross-branch prediction)
+    // In full-replace mode, accumulatedKG is empty, so we compare entities against themselves
+    let pairsCompared = 0;
+    let sameBranchSkipped = 0;
+
+    for (let i = 0; i < entities.length; i++) {
+      const entityA = entities[i];
+      for (let j = i + 1; j < entities.length; j++) {
+        const entityB = entities[j];
+
+        // Cross-branch filter: skip pairs in the same L1 branch
+        const l1A = this.getL1Ancestor(entityA);
+        const l1B = this.getL1Ancestor(entityB);
+        if (l1A && l1B && l1A === l1B) {
+          sameBranchSkipped++;
+          continue;
+        }
+
+        pairsCompared++;
 
         // Calculate cosine similarity
-        const cos = this.cosineSimilarity(newEntity.embedding, accEntity.embedding);
+        const cos = this.cosineSimilarity(entityA.embedding, entityB.embedding);
 
         // Calculate Adamic-Adar index
-        const aa = this.adamicAdar(newEntity.id, accEntity.id, neighbors);
+        const aa = this.adamicAdar(entityA.id, entityB.id, neighbors);
 
         // Calculate common ancestors
-        const ca = this.commonAncestors(newEntity.id, accEntity.id, accumulatedKG.relations);
+        const ca = this.commonAncestors(entityA.id, entityB.id, allRelations);
 
         // Combined score
         const score =
@@ -550,17 +581,17 @@ export class KGOperators {
 
         if (score >= this.edgeThreshold) {
           edges.push({
-            from: newEntity.id,
-            to: accEntity.id,
+            from: entityA.id,
+            to: entityB.id,
             type: 'related_to',
             weight: score,
             source: 'predicted',
-            batchId: newEntity.batchId
+            batchId: entityA.batchId
           });
 
           scores.push({
-            from: newEntity.id,
-            to: accEntity.id,
+            from: entityA.id,
+            to: entityB.id,
             score,
             components: { cos, aa, ca }
           });
@@ -569,7 +600,8 @@ export class KGOperators {
     }
 
     log('Edge prediction completed', 'info', {
-      entitiesCompared: entities.length * accumulatedKG.entities.length,
+      pairsCompared,
+      sameBranchSkipped,
       edgesPredicted: edges.length,
       threshold: this.edgeThreshold
     });

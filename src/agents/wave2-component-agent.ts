@@ -16,7 +16,8 @@ import { log } from '../logging.js';
 import { LLMService } from '../../../../lib/llm/dist/index.js';
 import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 import type { KGEntity, KGRelation } from './kg-operators.js';
-import type { Wave2Input, WaveAgentOutput, ChildManifestEntry } from '../types/wave-types.js';
+import type { Wave2Input, WaveAgentOutput, ChildManifestEntry, AnalyzeEntityCodeInput } from '../types/wave-types.js';
+import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
 
 /** LLM response shape for L2 analysis */
 interface L2AnalysisResponse {
@@ -145,6 +146,31 @@ export class Wave2ComponentAgent {
             description: l3Child.description,
             discovered: true, // L3 children are always discovered
           });
+        }
+      }
+    }
+
+    // Enrich each L2 entity via SemanticAnalysisAgent (per-entity, fresh instance)
+    if (!isMockLLMEnabled(this.repositoryPath)) {
+      for (const entity of l2Entities) {
+        const semanticAgent = new SemanticAnalysisAgent(this.repositoryPath);
+        try {
+          const analysisInput: AnalyzeEntityCodeInput = {
+            entityName: entity.name,
+            entityType: entity.type,
+            codeFiles: input.componentFiles,
+            parentContext: input.l1Entity.observations,
+            analysisDepth: 'deep',
+          };
+          const analysisResult = await semanticAgent.analyzeEntityCode(analysisInput);
+          // Replace observations entirely (per plan -- replace, not merge)
+          entity.observations = analysisResult.observations;
+          (entity as any)._analysisArtifacts = analysisResult.artifacts;
+          (entity as any)._traceData = [analysisResult.traceData];
+          log(`[Wave2] Enriched entity ${entity.name} via SemanticAnalysisAgent (${analysisResult.observations.length} observations)`, 'info');
+        } catch (err) {
+          (entity as any)._shallowAnalysis = true;
+          log(`[Wave2] SemanticAnalysisAgent failed for ${entity.name}, using shallow analysis: ${err instanceof Error ? err.message : String(err)}`, 'warning');
         }
       }
     }

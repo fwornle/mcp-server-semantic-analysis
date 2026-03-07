@@ -22,7 +22,7 @@ import { LLMService } from '../../../../lib/llm/dist/index.js';
 import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 import type { KGEntity, KGRelation } from './kg-operators.js';
 import type { ComponentManifest, ComponentManifestEntry } from '../types/component-manifest.js';
-import type { Wave1Input, WaveAgentOutput, ChildManifestEntry } from '../types/wave-types.js';
+import type { Wave1Input, WaveAgentOutput, ChildManifestEntry, EntityTraceData } from '../types/wave-types.js';
 
 // ============================================================================
 // Wave1ProjectAgent
@@ -131,6 +131,82 @@ export class Wave1ProjectAgent {
         analysis.suggestedChildren,
       );
       allChildManifest.push(...children);
+    }
+
+    // Step 3b: Multi-step enrichment -- second LLM call per L1 entity for deep observations
+    if (!isMock) {
+      for (const l1Entity of l1Entities) {
+        try {
+          const enrichStart = Date.now();
+          const enrichPrompt = `You are performing deep observation synthesis for the "${l1Entity.name}" component of the Coding project.
+
+## Component Context
+Name: ${l1Entity.name}
+Hierarchy: ${input.manifest.project.name}/${l1Entity.name}
+
+## Initial Analysis
+${l1Entity.observations.join('\n')}
+
+## Task
+Given this component and its initial analysis, produce 5+ detailed multi-paragraph observations.
+Each observation MUST:
+- Reference specific architectural aspects, code patterns, or design decisions
+- Include code file references where possible (file paths, class names, function names)
+- Be self-contained and informative to a new developer
+- Describe concrete behavior, not abstract platitudes
+
+Return a JSON object: { "observations": ["obs1", "obs2", ...] }
+IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
+
+          const enrichResult = await this.llmService.complete({
+            messages: [{ role: 'user', content: enrichPrompt }],
+            taskType: 'semantic_analysis',
+            agentId: 'wave1_project_enrich',
+            tier: 'standard',
+            maxTokens: 2048,
+            temperature: 0.7,
+            timeout: 60_000,
+            responseFormat: { type: 'json_object' },
+          });
+
+          const enrichDurationMs = Date.now() - enrichStart;
+
+          // Parse enriched observations
+          let enrichedObs: string[] = [];
+          try {
+            let cleaned = enrichResult.content.trim();
+            if (cleaned.startsWith('```')) {
+              cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+            }
+            const parsed = JSON.parse(cleaned);
+            enrichedObs = Array.isArray(parsed.observations)
+              ? parsed.observations.filter((o: unknown): o is string => typeof o === 'string')
+              : [];
+          } catch {
+            // Parse failed, keep original observations
+          }
+
+          if (enrichedObs.length > 0) {
+            // Replace observations with enriched ones (per plan -- replace, not merge)
+            l1Entity.observations = enrichedObs;
+            log(`[Wave1] Enriched entity ${l1Entity.name} with multi-step analysis (${enrichedObs.length} observations)`, 'info');
+          }
+
+          // Attach trace data
+          const traceData: EntityTraceData = {
+            llmCallCount: 1,
+            totalDurationMs: enrichDurationMs,
+            model: enrichResult.model || 'unknown',
+            provider: enrichResult.provider || 'unknown',
+            agentType: 'Wave1MultiStep',
+          };
+          (l1Entity as any)._traceData = [traceData];
+        } catch (err) {
+          // On failure, keep original observations and flag as shallow
+          (l1Entity as any)._shallowAnalysis = true;
+          log(`[Wave1] Multi-step enrichment failed for ${l1Entity.name}, using shallow analysis: ${err instanceof Error ? err.message : String(err)}`, 'warning');
+        }
+      }
     }
 
     // Step 4: Build L0 Project entity

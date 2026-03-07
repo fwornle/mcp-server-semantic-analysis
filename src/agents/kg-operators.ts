@@ -350,21 +350,26 @@ export class KGOperators {
     // Track input count without creating a copy (OOM fix: avoid spread operator)
     const inputCount = entities.length + accumulatedKG.entities.length;
 
+    // === PASS 1: Exact normalized name match (hierarchy-aware) ===
+    // Dedup key includes parentId so same-name entities under different parents survive
+
     // First, add accumulated entities (already deduped from previous batches)
     for (const entity of accumulatedKG.entities) {
       const normalizedName = entity.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-      seen.set(normalizedName, entity);
+      const dedupKey = `${entity.parentId || 'root'}::${normalizedName}`;
+      seen.set(dedupKey, entity);
     }
 
     // Then process new batch entities, merging with existing
     for (const entity of entities) {
       const normalizedName = entity.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const existing = seen.get(normalizedName);
+      const dedupKey = `${entity.parentId || 'root'}::${normalizedName}`;
+      const existing = seen.get(dedupKey);
 
       if (existing) {
         // Merge into existing
         const mergedEntity = this.mergeEntities(existing, entity);
-        seen.set(normalizedName, mergedEntity);
+        seen.set(dedupKey, mergedEntity);
         merged.push(entity.id);
 
         // Update merge log
@@ -375,7 +380,56 @@ export class KGOperators {
           mergeLog.push({ kept: existing.id, merged: [entity.id] });
         }
       } else {
-        seen.set(normalizedName, entity);
+        seen.set(dedupKey, entity);
+      }
+    }
+
+    const pass1MergeCount = merged.length;
+
+    // === PASS 2: Semantic dedup using embedding cosine similarity ===
+    // Merges near-duplicates (cosine > 0.9) with same parentId and same level
+    let pass2MergeCount = 0;
+    const dedupedAfterPass1 = Array.from(seen.entries());
+    const removedKeys = new Set<string>();
+
+    for (let i = 0; i < dedupedAfterPass1.length; i++) {
+      const [keyA, entityA] = dedupedAfterPass1[i];
+      if (removedKeys.has(keyA)) continue;
+      if (!entityA.embedding || entityA.embedding.length === 0) continue;
+
+      for (let j = i + 1; j < dedupedAfterPass1.length; j++) {
+        const [keyB, entityB] = dedupedAfterPass1[j];
+        if (removedKeys.has(keyB)) continue;
+        if (!entityB.embedding || entityB.embedding.length === 0) continue;
+
+        // Same parentId AND same level required
+        if ((entityA.parentId || 'root') !== (entityB.parentId || 'root')) continue;
+        if (entityA.level !== entityB.level) continue;
+
+        const cosine = this.cosineSimilarity(entityA.embedding, entityB.embedding);
+        if (cosine > 0.9) {
+          // Keep the entity with higher significance
+          const keepA = (entityA.significance || 0) >= (entityB.significance || 0);
+          const [keptKey, kept, mergedEntity] = keepA
+            ? [keyA, entityA, entityB]
+            : [keyB, entityB, entityA];
+          const removedKey = keepA ? keyB : keyA;
+
+          const result = this.mergeEntities(kept, mergedEntity);
+          seen.set(keptKey, result);
+          seen.delete(removedKey);
+          removedKeys.add(removedKey);
+          merged.push(mergedEntity.id);
+          pass2MergeCount++;
+
+          // Update merge log
+          const logEntry = mergeLog.find(l => l.kept === kept.id);
+          if (logEntry) {
+            logEntry.merged.push(mergedEntity.id);
+          } else {
+            mergeLog.push({ kept: kept.id, merged: [mergedEntity.id] });
+          }
+        }
       }
     }
 
@@ -384,7 +438,9 @@ export class KGOperators {
     log('Deduplication completed', 'info', {
       input: inputCount,
       output: dedupedEntities.length,
-      merged: merged.length
+      pass1Merged: pass1MergeCount,
+      pass2SemanticMerged: pass2MergeCount,
+      totalMerged: merged.length
     });
 
     return {

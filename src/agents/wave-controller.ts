@@ -28,6 +28,7 @@ import type { GraphEntity } from '../storage/graph-database-adapter.js';
 import type { SharedMemoryEntity, EntityRelationship } from './persistence-agent.js';
 import { createKGOperators } from './kg-operators.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
+import { WorkflowReportAgent } from './workflow-report-agent.js';
 import type { KGEntity, KGRelation, BatchContext } from './kg-operators.js';
 import type { ComponentManifest } from '../types/component-manifest.js';
 import type {
@@ -51,6 +52,7 @@ export class WaveController {
   private maxAgentsPerWave: number;
   private failFast: boolean;
   private graphDB: GraphDatabaseAdapter;
+  private reportAgent: WorkflowReportAgent;
 
   constructor(config: WaveControllerConfig) {
     this.repositoryPath = config.repositoryPath;
@@ -62,6 +64,7 @@ export class WaveController {
     // Derive the knowledge-graph DB path from the repository
     const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph');
     this.graphDB = new GraphDatabaseAdapter(dbPath, this.team);
+    this.reportAgent = new WorkflowReportAgent(this.repositoryPath);
   }
 
   // --------------------------------------------------------------------------
@@ -90,6 +93,10 @@ export class WaveController {
       log('[WaveController] Existing entities loaded', 'info', {
         count: existingEntities.length,
       });
+
+      // Start workflow report for history
+      const executionId = `wave-analysis-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      this.reportAgent.startWorkflowReport('wave-analysis', executionId, { team: this.team });
 
       // ---- Wave 1: L0 Project + L1 Components ----
       this.logWaveBanner('WAVE 1', 'L0 Project + L1 Components');
@@ -451,6 +458,71 @@ export class WaveController {
         subPhase: 'insights',
         message: summary.success ? 'Wave analysis complete' : 'Wave analysis completed with errors',
       });
+
+      // Record all 17 sub-steps from stepsDetail for rich history trace
+      try {
+        const progressContent = fs.readFileSync(this.progressFile, 'utf-8');
+        const progressData = JSON.parse(progressContent);
+        const stepsDetail = progressData.stepsDetail || [];
+        for (const step of stepsDetail) {
+          const stepStart = step.startTime ? new Date(step.startTime) : new Date(startTime);
+          const stepEnd = step.endTime ? new Date(step.endTime) : new Date();
+          const duration = stepEnd.getTime() - stepStart.getTime();
+          this.reportAgent.recordStep({
+            stepName: step.name,
+            agent: step.name.replace(/^wave\d_/, '').replace(/^operator_/, 'kg_operators:'),
+            action: step.name.replace(/_/g, ' '),
+            startTime: stepStart,
+            endTime: stepEnd,
+            duration,
+            status: step.status === 'completed' ? 'success' : step.status === 'failed' ? 'failed' : 'skipped',
+            inputs: {},
+            outputs: {},
+            decisions: [],
+            warnings: [],
+            errors: [],
+          });
+        }
+      } catch (e) {
+        // Fallback: record wave-level steps if progress file can't be read
+        for (const wr of waveResults) {
+          this.reportAgent.recordStep({
+            stepName: `wave${wr.wave}`,
+            agent: `wave${wr.wave}`,
+            action: `Wave ${wr.wave} analysis`,
+            startTime: new Date(startTime),
+            endTime: new Date(startTime + wr.durationMs),
+            duration: wr.durationMs,
+            status: wr.success ? 'success' : 'failed',
+            inputs: { manifestEntities: wr.manifestEntities },
+            outputs: { totalEntities: wr.totalEntities, discoveredEntities: wr.discoveredEntities },
+            decisions: [],
+            warnings: [],
+            errors: wr.error ? [wr.error] : [],
+          });
+        }
+      }
+
+      // Finalize and save workflow report for history
+      try {
+        const completedSteps = waveResults.filter(w => w.success).length;
+        this.reportAgent.finalizeReport(
+          summary.success ? 'completed' : 'failed',
+          {
+            stepsCompleted: completedSteps,
+            totalSteps: 17,
+            entitiesCreated: summary.totalEntities,
+            entitiesUpdated: 0,
+            filesCreated: [],
+            contentChanges: summary.totalEntities > 0,
+          },
+        );
+        log('[WaveController] Workflow report saved to .data/workflow-reports/', 'info');
+      } catch (e) {
+        log('[WaveController] Failed to save workflow report (non-fatal)', 'warning', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
 
       return summary;
     } catch (error) {
@@ -1316,7 +1388,16 @@ export class WaveController {
       const existingSteps = (existing as any).stepsDetail as Array<{
         name: string; status: string; wave: number;
         startTime?: string; endTime?: string;
+        llmProvider?: string;
       }> | undefined;
+      // Steps that use LLM for analysis/classification/insights
+      const llmPhases = new Set(['analyze', 'classify', 'insights']);
+      // Determine active LLM provider from current config
+      const llmState = (existing as any).llmState;
+      const globalMode = llmState?.globalMode || 'public';
+      const llmLabel = globalMode === 'mock' ? 'mock'
+        : globalMode === 'local' ? 'local-llm'
+        : 'llm'; // generic — actual model resolved by SemanticAnalyzer at runtime
       const stepsDetail = WaveController.WAVE_STEP_SEQUENCE.map((step, idx) => {
         const status = idx < effectiveIndex ? 'completed'
           : idx === effectiveIndex ? 'running'
@@ -1327,12 +1408,14 @@ export class WaveController {
         const endTime = status === 'completed'
           ? (prev?.endTime ?? now)  // keep original end time if already completed
           : undefined;
+        const usesLLM = llmPhases.has(step.phase);
         return {
           name: step.name,
           status,
           wave: step.wave,
           ...(startTime && { startTime }),
           ...(endTime && { endTime }),
+          ...(usesLLM && { llmProvider: llmLabel }),
         };
       });
 

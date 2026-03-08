@@ -1422,6 +1422,10 @@ export class PersistenceAgent {
           childEntityNames: entity.childEntityNames || [],
           isScaffoldNode: entity.isScaffoldNode || false,
         } : {}),
+        // Operator-enriched fields from KG operators
+        ...(entity.embedding ? { embedding: entity.embedding } : {}),
+        ...(entity.role ? { role: entity.role } : {}),
+        ...(entity.enrichedContext ? { enrichedContext: entity.enrichedContext } : {}),
       };
 
       const nodeId = await this.graphDB.storeEntity(graphEntity);

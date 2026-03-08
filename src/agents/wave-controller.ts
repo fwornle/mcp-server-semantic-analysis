@@ -574,6 +574,9 @@ export class WaveController {
             decisions: [],
             warnings: [],
             errors: [],
+            tokensUsed: captured?.tokensUsed || step.tokensUsed,
+            llmCalls: captured?.llmCalls || step.llmCalls,
+            llmProvider: captured?.llmProvider || step.llmProvider,
           });
         }
       } catch (e) {

@@ -24,6 +24,9 @@ export interface StepReport {
   decisions: string[];
   warnings: string[];
   errors: string[];
+  tokensUsed?: number;
+  llmCalls?: number;
+  llmProvider?: string;
 }
 
 export interface WorkflowReport {
@@ -277,6 +280,15 @@ export class WorkflowReportAgent {
       lines.push(`**Action:** ${step.action}`);
       lines.push(`**Status:** ${this.getStatusEmoji(step.status)} ${step.status}`);
       lines.push(`**Duration:** ${(step.duration / 1000).toFixed(2)}s`);
+      if (step.llmProvider) {
+        lines.push(`**LLM Provider:** ${step.llmProvider}`);
+      }
+      if (step.tokensUsed) {
+        lines.push(`**Tokens Used:** ${step.tokensUsed}`);
+      }
+      if (step.llmCalls) {
+        lines.push(`**LLM Calls:** ${step.llmCalls}`);
+      }
       lines.push('');
 
       // Inputs summary

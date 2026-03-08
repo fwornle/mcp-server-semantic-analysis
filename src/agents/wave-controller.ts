@@ -235,6 +235,7 @@ export class WaveController {
 
         // Conv
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Context Convolution' });
+        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
         try {
           currentEntities = await kgOperators.contextConvolution(currentEntities, batchContext);
           log('[WaveController] Conv operator complete', 'info', { entities: currentEntities.length });
@@ -242,6 +243,7 @@ export class WaveController {
 
         // Aggr
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Entity Aggregation' });
+        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
         try {
           const aggr = await kgOperators.entityAggregation(currentEntities);
           currentEntities = [...aggr.core, ...aggr.nonCore];
@@ -250,6 +252,7 @@ export class WaveController {
 
         // Embed
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Node Embedding' });
+        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
         try {
           currentEntities = await kgOperators.nodeEmbedding(currentEntities);
           const withEmb = currentEntities.filter(e => e.embedding && e.embedding.length === 384).length;
@@ -258,6 +261,7 @@ export class WaveController {
 
         // Dedup
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Deduplication' });
+        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
         try {
           const deduped = await kgOperators.deduplication(currentEntities, accumulatedKG);
           log('[WaveController] Dedup operator complete', 'info', { before: currentEntities.length, after: deduped.entities.length, merged: deduped.merged });
@@ -266,6 +270,7 @@ export class WaveController {
 
         // Pred
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Edge Prediction' });
+        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
         try {
           const predicted = await kgOperators.edgePrediction(currentEntities, { entities: currentEntities, relations: currentRelations });
           log('[WaveController] Pred operator complete', 'info', { predictedEdges: predicted.edges.length });
@@ -274,6 +279,7 @@ export class WaveController {
 
         // Merge (structure fusion)
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Structure Fusion' });
+        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
         try {
           const merged = await kgOperators.structureMerge(
             { entities: currentEntities, relations: currentRelations },

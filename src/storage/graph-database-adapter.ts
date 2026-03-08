@@ -324,6 +324,43 @@ export class GraphDatabaseAdapter {
   }
 
   /**
+   * Merge attributes directly into an existing graph node.
+   * Used for operator-enriched fields (embedding, role, enrichedContext)
+   * that need to bypass the full persist pipeline.
+   */
+  async mergeAttributes(nodeId: string, attributes: Record<string, any>): Promise<void> {
+    if (!this.isInitialized) {
+      throw new Error('GraphDatabaseAdapter not initialized. Call initialize() first.');
+    }
+
+    try {
+      if (this.useApi && this.apiClient) {
+        // Use VKB API - PATCH entity with partial update
+        const entityName = nodeId.includes(':') ? nodeId.split(':')[1] : nodeId;
+        await this.apiClient.updateEntity(entityName, attributes, { team: this.team });
+        log('Attributes merged via VKB API', 'debug', { nodeId, keys: Object.keys(attributes) });
+      } else if (this.graphDB) {
+        // Direct access — use Graphology's mergeNodeAttributes
+        const graph = (this.graphDB as any).getGraph?.() ?? (this.graphDB as any).graph;
+        if (graph && graph.hasNode(nodeId)) {
+          graph.mergeNodeAttributes(nodeId, attributes);
+          log('Attributes merged via direct graph access', 'debug', { nodeId, keys: Object.keys(attributes) });
+        } else {
+          throw new Error(`Node ${nodeId} not found in graph`);
+        }
+      } else {
+        throw new Error('No database access available');
+      }
+    } catch (error) {
+      log('Failed to merge attributes', 'warning', {
+        nodeId, keys: Object.keys(attributes),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
    * Delete an entity from the graph database
    * Used by ContentValidationAgent to remove stale entities
    * Supports both VKB API and direct GraphDatabaseService access

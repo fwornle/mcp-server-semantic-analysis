@@ -490,14 +490,17 @@ async function main(): Promise<void> {
     // 8 sub-steps: wave1_init, wave1_analyze, wave1_persist, wave2_analyze, wave2_persist,
     //              wave3_analyze, wave3_persist, wave4_insights
     const initialStepsDetail = [
-      { name: 'wave1_init',     status: 'pending', wave: 1 },
-      { name: 'wave1_analyze',  status: 'pending', wave: 1 },
-      { name: 'wave1_persist',  status: 'pending', wave: 1 },
-      { name: 'wave2_analyze',  status: 'pending', wave: 2 },
-      { name: 'wave2_persist',  status: 'pending', wave: 2 },
-      { name: 'wave3_analyze',  status: 'pending', wave: 3 },
-      { name: 'wave3_persist',  status: 'pending', wave: 3 },
-      { name: 'wave4_insights', status: 'pending', wave: 4 },
+      { name: 'wave1_init',      status: 'pending', wave: 1 },
+      { name: 'wave1_analyze',   status: 'pending', wave: 1 },
+      { name: 'wave1_classify',  status: 'pending', wave: 1 },
+      { name: 'wave1_persist',   status: 'pending', wave: 1 },
+      { name: 'wave2_analyze',   status: 'pending', wave: 2 },
+      { name: 'wave2_classify',  status: 'pending', wave: 2 },
+      { name: 'wave2_persist',   status: 'pending', wave: 2 },
+      { name: 'wave3_analyze',   status: 'pending', wave: 3 },
+      { name: 'wave3_classify',  status: 'pending', wave: 3 },
+      { name: 'wave3_persist',   status: 'pending', wave: 3 },
+      { name: 'wave4_insights',  status: 'pending', wave: 4 },
     ];
     writeProgressPreservingDetails(progressFile, {
       workflowId,
@@ -509,7 +512,7 @@ async function main(): Promise<void> {
       startTime: startTime.toISOString(),
       lastUpdate: new Date().toISOString(),
       elapsedSeconds: 0,
-      totalSteps: 8,
+      totalSteps: 17,  // 11 wave steps + 6 operator steps
       totalWaves: 4,
       stepsDetail: initialStepsDetail,
       pid: process.pid

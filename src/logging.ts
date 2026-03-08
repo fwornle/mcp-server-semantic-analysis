@@ -81,8 +81,8 @@ export function log(message: string, level: LogLevel = "info", data?: any): void
   // Write to stderr for debugging (visible in terminal)
   // Use minimal formatting to reduce blocking
   console.error(`[${entry.timestamp}] ${level.toUpperCase()}: ${message}`);
-  if (data && level === 'error') {
-    // Only log data details for errors to reduce stderr output
+  if (data && (level === 'error' || level === 'warning' || message.includes('TRACE') || message.includes('SUMMARY'))) {
+    // Log data for errors, warnings, and trace/summary entries
     console.error(`  Data: ${JSON.stringify(data, null, 2)}`);
   }
 

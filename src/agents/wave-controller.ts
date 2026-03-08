@@ -107,11 +107,15 @@ export class WaveController {
       } else {
         // Per-entity ontology classification with bounded concurrency
         const wave1Entities = wave1Result.agentOutputs.flatMap(o => o.entities);
+        this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'classify', message: 'Wave 1: Classifying entities' });
+        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast classify step
         const wave1ClassifyTasks = wave1Entities.map(entity => async () => {
           await this.classifyEntity(entity);
         });
         await this.runWithConcurrency(wave1ClassifyTasks, 2);
+        log('[WaveController] Wave 1 classification complete', 'info', { entities: wave1Entities.length });
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'persist', message: 'Wave 1: Persisting entities' });
+        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
         await this.persistWaveResult(wave1Result);
         log('[WaveController] Wave 1 entities persisted', 'info', {
           entities: wave1Result.totalEntities,
@@ -133,11 +137,15 @@ export class WaveController {
       } else {
         // Per-entity ontology classification with bounded concurrency
         const wave2Entities = wave2Result.agentOutputs.flatMap(o => o.entities);
+        this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'classify', message: 'Wave 2: Classifying entities' });
+        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast classify step
         const wave2ClassifyTasks = wave2Entities.map(entity => async () => {
           await this.classifyEntity(entity);
         });
         await this.runWithConcurrency(wave2ClassifyTasks, 2);
+        log('[WaveController] Wave 2 classification complete', 'info', { entities: wave2Entities.length });
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'persist', message: 'Wave 2: Persisting entities' });
+        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
         await this.persistWaveResult(wave2Result);
         log('[WaveController] Wave 2 entities persisted', 'info', {
           entities: wave2Result.totalEntities,
@@ -156,11 +164,15 @@ export class WaveController {
       } else {
         // Per-entity ontology classification with bounded concurrency
         const wave3Entities = wave3Result.agentOutputs.flatMap(o => o.entities);
+        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'classify', message: 'Wave 3: Classifying entities' });
+        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast classify step
         const wave3ClassifyTasks = wave3Entities.map(entity => async () => {
           await this.classifyEntity(entity);
         });
         await this.runWithConcurrency(wave3ClassifyTasks, 2);
+        log('[WaveController] Wave 3 classification complete', 'info', { entities: wave3Entities.length });
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'persist', message: 'Wave 3: Persisting entities' });
+        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
         await this.persistWaveResult(wave3Result);
         log('[WaveController] Wave 3 entities persisted', 'info', {
           entities: wave3Result.totalEntities,
@@ -233,62 +245,119 @@ export class WaveController {
           }
         }
 
+        // --- Run each operator with full trace logging and SSE visibility ---
+        const operatorTimings: Record<string, number> = {};
+
         // Conv
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Context Convolution' });
-        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
+        await new Promise(r => setTimeout(r, 100)); // Allow SSE broadcast
         try {
+          const convStart = Date.now();
+          const convInputCount = currentEntities.length;
           currentEntities = await kgOperators.contextConvolution(currentEntities, batchContext);
-          log('[WaveController] Conv operator complete', 'info', { entities: currentEntities.length });
-        } catch (e) { log('[WaveController] Conv operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+          operatorTimings.conv = Date.now() - convStart;
+          const withContext = currentEntities.filter(e => e.enrichedContext).length;
+          log('[WaveController] OPERATOR TRACE: Conv complete', 'info', {
+            inputEntities: convInputCount, outputEntities: currentEntities.length,
+            withEnrichedContext: withContext, durationMs: operatorTimings.conv,
+          });
+        } catch (e) { log('[WaveController] Conv operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Aggr
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Entity Aggregation' });
-        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
+        await new Promise(r => setTimeout(r, 100));
         try {
+          const aggrStart = Date.now();
+          const aggrInputCount = currentEntities.length;
           const aggr = await kgOperators.entityAggregation(currentEntities);
           currentEntities = [...aggr.core, ...aggr.nonCore];
-          log('[WaveController] Aggr operator complete', 'info', { core: aggr.core.length, nonCore: aggr.nonCore.length });
-        } catch (e) { log('[WaveController] Aggr operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+          operatorTimings.aggr = Date.now() - aggrStart;
+          log('[WaveController] OPERATOR TRACE: Aggr complete', 'info', {
+            inputEntities: aggrInputCount, core: aggr.core.length, nonCore: aggr.nonCore.length,
+            durationMs: operatorTimings.aggr,
+          });
+        } catch (e) { log('[WaveController] Aggr operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Embed
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Node Embedding' });
-        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
+        await new Promise(r => setTimeout(r, 100));
         try {
+          const embedStart = Date.now();
+          const embedInputCount = currentEntities.length;
+          const beforeEmbCount = currentEntities.filter(e => e.embedding && e.embedding.length > 0).length;
           currentEntities = await kgOperators.nodeEmbedding(currentEntities);
-          const withEmb = currentEntities.filter(e => e.embedding && e.embedding.length === 384).length;
-          log('[WaveController] Embed operator complete', 'info', { withEmbeddings: withEmb, total: currentEntities.length });
-        } catch (e) { log('[WaveController] Embed operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+          operatorTimings.embed = Date.now() - embedStart;
+          const afterEmbCount = currentEntities.filter(e => e.embedding && e.embedding.length > 0).length;
+          const sampleEmb = currentEntities.find(e => e.embedding && e.embedding.length > 0);
+          log('[WaveController] OPERATOR TRACE: Embed complete', 'info', {
+            inputEntities: embedInputCount, embeddingsBefore: beforeEmbCount, embeddingsAfter: afterEmbCount,
+            newEmbeddings: afterEmbCount - beforeEmbCount, durationMs: operatorTimings.embed,
+            sampleDimensions: sampleEmb?.embedding?.length ?? 0,
+            sampleEntity: sampleEmb?.name ?? 'none',
+          });
+        } catch (e) { log('[WaveController] Embed operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Dedup
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Deduplication' });
-        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
+        await new Promise(r => setTimeout(r, 100));
         try {
+          const dedupStart = Date.now();
+          const dedupInputCount = currentEntities.length;
           const deduped = await kgOperators.deduplication(currentEntities, accumulatedKG);
-          log('[WaveController] Dedup operator complete', 'info', { before: currentEntities.length, after: deduped.entities.length, merged: deduped.merged });
+          operatorTimings.dedup = Date.now() - dedupStart;
+          log('[WaveController] OPERATOR TRACE: Dedup complete', 'info', {
+            inputEntities: dedupInputCount, outputEntities: deduped.entities.length,
+            merged: deduped.merged, durationMs: operatorTimings.dedup,
+            mergeLog: deduped.mergeLog.slice(0, 5), // First 5 merges for trace
+          });
           currentEntities = deduped.entities;
-        } catch (e) { log('[WaveController] Dedup operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+        } catch (e) { log('[WaveController] Dedup operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Pred
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Edge Prediction' });
-        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
+        await new Promise(r => setTimeout(r, 100));
         try {
+          const predStart = Date.now();
+          const relsBefore = currentRelations.length;
           const predicted = await kgOperators.edgePrediction(currentEntities, { entities: currentEntities, relations: currentRelations });
-          log('[WaveController] Pred operator complete', 'info', { predictedEdges: predicted.edges.length });
+          operatorTimings.pred = Date.now() - predStart;
+          log('[WaveController] OPERATOR TRACE: Pred complete', 'info', {
+            inputEntities: currentEntities.length, relationsBefore: relsBefore,
+            predictedEdges: predicted.edges.length, durationMs: operatorTimings.pred,
+            topScores: predicted.scores.slice(0, 3).map(s => ({ from: s.from, to: s.to, score: s.score.toFixed(3) })),
+          });
           currentRelations = [...currentRelations, ...predicted.edges];
-        } catch (e) { log('[WaveController] Pred operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+        } catch (e) { log('[WaveController] Pred operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Merge (structure fusion)
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Structure Fusion' });
-        await new Promise(r => setTimeout(r, 50)); // Allow SSE broadcast to pick up operator step
+        await new Promise(r => setTimeout(r, 100));
         try {
+          const mergeStart = Date.now();
           const merged = await kgOperators.structureMerge(
             { entities: currentEntities, relations: currentRelations },
             accumulatedKG
           );
-          log('[WaveController] Merge operator complete', 'info', { entities: merged.entities.length, relations: merged.relations.length });
+          operatorTimings.merge = Date.now() - mergeStart;
+          log('[WaveController] OPERATOR TRACE: Merge complete', 'info', {
+            inputEntities: currentEntities.length, inputRelations: currentRelations.length,
+            outputEntities: merged.entities.length, outputRelations: merged.relations.length,
+            added: merged.added, updated: merged.updated, durationMs: operatorTimings.merge,
+          });
           currentEntities = merged.entities;
           currentRelations = merged.relations;
-        } catch (e) { log('[WaveController] Merge operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+        } catch (e) { log('[WaveController] Merge operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
+
+        // Log operator pipeline summary
+        const totalOperatorTime = Object.values(operatorTimings).reduce((s, t) => s + t, 0);
+        const embCount = currentEntities.filter(e => e.embedding && e.embedding.length > 0).length;
+        const roleCount = currentEntities.filter(e => e.role).length;
+        const ctxCount = currentEntities.filter(e => e.enrichedContext).length;
+        log('[WaveController] === OPERATOR PIPELINE SUMMARY ===', 'info', {
+          totalEntities: currentEntities.length, totalRelations: currentRelations.length,
+          withEmbeddings: embCount, withRole: roleCount, withEnrichedContext: ctxCount,
+          totalDurationMs: totalOperatorTime, operatorTimings,
+        });
 
         // Re-attach ontology metadata that operators may have stripped
         for (const entity of currentEntities) {
@@ -297,8 +366,41 @@ export class WaveController {
           }
         }
 
-        // Re-persist refined entities back to the KG
-        log('[WaveController] Re-persisting operator-refined entities', 'info', { count: currentEntities.length });
+        // === DIRECT GRAPH WRITE for operator-enriched fields ===
+        // Bypass the 7-layer persist pipeline — write embedding/role/enrichedContext
+        // directly to existing graph nodes via graphDB.mergeNodeAttributes()
+        log('[WaveController] Direct graph write: merging operator-enriched fields', 'info', {
+          entitiesWithEmbedding: embCount, entitiesWithRole: roleCount, entitiesWithContext: ctxCount,
+        });
+        let directWriteSuccess = 0;
+        let directWriteFail = 0;
+        for (const entity of currentEntities) {
+          const enrichedAttrs: Record<string, any> = {};
+          if (entity.embedding && entity.embedding.length > 0) enrichedAttrs.embedding = entity.embedding;
+          if (entity.role) enrichedAttrs.role = entity.role;
+          if (entity.enrichedContext) enrichedAttrs.enrichedContext = entity.enrichedContext;
+
+          if (Object.keys(enrichedAttrs).length > 0) {
+            try {
+              // Write directly to graph node — no pipeline, no transformation
+              const nodeId = `${this.team}:${entity.name}`;
+              await this.graphDB.mergeAttributes(nodeId, enrichedAttrs);
+              directWriteSuccess++;
+            } catch (e) {
+              directWriteFail++;
+              // Node might not exist yet — will be created by re-persist below
+              log('[WaveController] Direct graph write failed for entity (will try via persist)', 'debug', {
+                entity: entity.name, error: e instanceof Error ? e.message : String(e),
+              });
+            }
+          }
+        }
+        log('[WaveController] Direct graph write complete', 'info', {
+          success: directWriteSuccess, failed: directWriteFail,
+        });
+
+        // Re-persist refined entities back to the KG (ensures new entities are created)
+        log('[WaveController] Re-persisting operator-refined entities via pipeline', 'info', { count: currentEntities.length });
         try {
           const refinedWaveResult: WaveResult = {
             wave: 3,
@@ -318,7 +420,7 @@ export class WaveController {
             success: true,
           };
           await this.persistWaveResult(refinedWaveResult);
-          log('[WaveController] Operator-refined entities persisted', 'info');
+          log('[WaveController] Operator-refined entities persisted via pipeline', 'info');
         } catch (e) { log('[WaveController] Re-persist after operators failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
 
       } catch (error) {
@@ -1130,20 +1232,23 @@ export class WaveController {
    * This gives the multi-agent graph fine-grained progress visibility.
    */
   private static readonly WAVE_STEP_SEQUENCE = [
-    { name: 'wave1_init',     wave: 1, phase: 'init' as const },
-    { name: 'wave1_analyze',  wave: 1, phase: 'analyze' as const },
-    { name: 'wave1_persist',  wave: 1, phase: 'persist' as const },
-    { name: 'wave2_analyze',  wave: 2, phase: 'analyze' as const },
-    { name: 'wave2_persist',  wave: 2, phase: 'persist' as const },
-    { name: 'wave3_analyze',  wave: 3, phase: 'analyze' as const },
-    { name: 'wave3_persist',  wave: 3, phase: 'persist' as const },
+    { name: 'wave1_init',      wave: 1, phase: 'init' as const },
+    { name: 'wave1_analyze',   wave: 1, phase: 'analyze' as const },
+    { name: 'wave1_classify',  wave: 1, phase: 'classify' as const },
+    { name: 'wave1_persist',   wave: 1, phase: 'persist' as const },
+    { name: 'wave2_analyze',   wave: 2, phase: 'analyze' as const },
+    { name: 'wave2_classify',  wave: 2, phase: 'classify' as const },
+    { name: 'wave2_persist',   wave: 2, phase: 'persist' as const },
+    { name: 'wave3_analyze',   wave: 3, phase: 'analyze' as const },
+    { name: 'wave3_classify',  wave: 3, phase: 'classify' as const },
+    { name: 'wave3_persist',   wave: 3, phase: 'persist' as const },
     { name: 'operator_conv',   wave: 3, phase: 'operators' as const },
     { name: 'operator_aggr',   wave: 3, phase: 'operators' as const },
     { name: 'operator_embed',  wave: 3, phase: 'operators' as const },
     { name: 'operator_dedup',  wave: 3, phase: 'operators' as const },
     { name: 'operator_pred',   wave: 3, phase: 'operators' as const },
     { name: 'operator_merge',  wave: 3, phase: 'operators' as const },
-    { name: 'wave4_insights', wave: 4, phase: 'insights' as const },
+    { name: 'wave4_insights',  wave: 4, phase: 'insights' as const },
   ];
 
   /**
@@ -1155,7 +1260,7 @@ export class WaveController {
   private updateProgress(data: {
     currentWave: number;
     totalWaves: number;
-    subPhase?: 'init' | 'analyze' | 'persist' | 'insights' | 'operators';
+    subPhase?: 'init' | 'analyze' | 'classify' | 'persist' | 'insights' | 'operators';
     message?: string;
   }): void {
     try {
@@ -1179,7 +1284,9 @@ export class WaveController {
       // Determine the current sub-step name for agent graph highlighting
       const effectivePhase = data.subPhase ?? 'analyze';
       let currentStepName: string;
-      if (effectivePhase === 'operators' && data.message) {
+      if (effectivePhase === 'classify') {
+        currentStepName = `wave${data.currentWave}_classify`;
+      } else if (effectivePhase === 'operators' && data.message) {
         // Map operator messages to step names: "KG Operator: Context Convolution" -> "operator_conv"
         const opMap: Record<string, string> = {
           'Context Convolution': 'operator_conv',

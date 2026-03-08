@@ -58,6 +58,10 @@ export interface SharedMemoryEntity {
   parentEntityName?: string;        // Name of parent entity (null/undefined for root)
   childEntityNames?: string[];      // Names of direct children
   isScaffoldNode?: boolean;         // true for L0-L2 structural nodes created by migration
+  // Operator-enriched fields from KG operators (Phase 10)
+  embedding?: number[];              // 384-dim vector from embedding operator
+  role?: string;                     // core/non-core from aggregation operator
+  enrichedContext?: string;          // temporal context from conversion operator
 }
 
 export interface ObservationObject {
@@ -3341,15 +3345,38 @@ export class PersistenceAgent {
 
               if (updateResult.success) {
                 log(`Updated entity: ${entity.name} with ${newObservations.length} new observations`, 'debug');
-                return 'updated';
               } else {
                 log(`Failed to update entity: ${entity.name}`, 'warning');
                 return 'failed';
               }
-            } else {
-              // Entity exists but no new observations - count as updated (no-op)
-              return 'updated';
             }
+
+            // Update operator-enriched fields on existing entity (regardless of new observations)
+            const enrichedFields: Record<string, any> = {};
+            if ((entity as any).embedding) enrichedFields.embedding = (entity as any).embedding;
+            if ((entity as any).role) enrichedFields.role = (entity as any).role;
+            if ((entity as any).enrichedContext) enrichedFields.enrichedContext = (entity as any).enrichedContext;
+            if ((entity as any).significance && (entity as any).significance !== existingEntity.significance) {
+              enrichedFields.significance = (entity as any).significance;
+            }
+
+            if (Object.keys(enrichedFields).length > 0 && this.graphDB) {
+              try {
+                const existingEntities = await this.graphDB.queryEntities({ searchTerm: entity.name });
+                const existing = existingEntities?.find((e: any) => (e.name || e.entity_name) === entity.name);
+                if (existing) {
+                  await this.graphDB.storeEntity({
+                    ...existing,
+                    ...enrichedFields,
+                  });
+                  log(`Updated enriched fields for: ${entity.name}`, 'debug', { fields: Object.keys(enrichedFields) });
+                }
+              } catch (fieldError) {
+                log(`Failed to update enriched fields for ${entity.name} (non-fatal)`, 'warning', fieldError);
+              }
+            }
+
+            return 'updated';
           } else {
             // Create new entity using storeEntityToGraph (direct GraphDB storage)
             const currentDate = new Date().toISOString();
@@ -3400,7 +3427,11 @@ export class PersistenceAgent {
                 hierarchyLevel: (entity as any).level,
                 childEntityNames: [],
                 isScaffoldNode: false
-              } : {})
+              } : {}),
+              // Operator-enriched fields (embedding, role, enrichedContext) from KG operators
+              ...((entity as any).embedding ? { embedding: (entity as any).embedding } : {}),
+              ...((entity as any).role ? { role: (entity as any).role } : {}),
+              ...((entity as any).enrichedContext ? { enrichedContext: (entity as any).enrichedContext } : {}),
             };
 
             const nodeId = await this.storeEntityToGraph(sharedMemoryEntity);

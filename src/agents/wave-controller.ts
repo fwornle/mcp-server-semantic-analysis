@@ -86,6 +86,16 @@ export class WaveController {
     });
   }
 
+  /** Capture LLM metrics directly from a wave agent's getLLMMetrics() */
+  private captureAgentMetrics(stepName: string, agentMetrics: { providers: string[]; totalTokens: number; totalCalls: number }, outputs?: Record<string, unknown>): void {
+    this.stepMetrics.set(stepName, {
+      tokensUsed: agentMetrics.totalTokens || undefined,
+      llmCalls: agentMetrics.totalCalls || undefined,
+      llmProvider: agentMetrics.providers.join(', ') || undefined,
+      outputs,
+    });
+  }
+
   // --------------------------------------------------------------------------
   // Main entry point
   // --------------------------------------------------------------------------
@@ -124,9 +134,13 @@ export class WaveController {
 
       SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'analyze', message: 'Wave 1: Analyzing Project & Components' });
-      const wave1Result = await this.executeWave1(manifest, existingEntities);
+      const { result: wave1Result, agent: wave1Agent } = await this.executeWave1WithMetrics(manifest, existingEntities);
       waveResults.push(wave1Result);
-      this.captureStepMetrics('wave1_analyze', { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities });
+      if (wave1Agent) {
+        this.captureAgentMetrics('wave1_analyze', wave1Agent.getLLMMetrics(), { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities });
+      } else {
+        this.captureStepMetrics('wave1_analyze', { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities });
+      }
 
       if (!wave1Result.success) {
         log('[WaveController] Wave 1 failed', 'error', { error: wave1Result.error });
@@ -158,9 +172,20 @@ export class WaveController {
       SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'analyze', message: 'Wave 2: Analyzing SubComponents' });
 
-      const wave2Result = await this.executeWave2(wave1Result, manifest);
+      const { result: wave2Result, agents: wave2Agents } = await this.executeWave2WithMetrics(wave1Result, manifest);
       waveResults.push(wave2Result);
-      this.captureStepMetrics('wave2_analyze', { totalEntities: wave2Result.totalEntities, discoveredEntities: wave2Result.discoveredEntities });
+      {
+        // Aggregate metrics from all Wave 2 agents
+        const allProviders = new Set<string>();
+        let totalTokens = 0, totalCalls = 0;
+        for (const agent of wave2Agents) {
+          const m = agent.getLLMMetrics();
+          m.providers.forEach(p => allProviders.add(p));
+          totalTokens += m.totalTokens;
+          totalCalls += m.totalCalls;
+        }
+        this.captureAgentMetrics('wave2_analyze', { providers: [...allProviders], totalTokens, totalCalls }, { totalEntities: wave2Result.totalEntities, discoveredEntities: wave2Result.discoveredEntities });
+      }
 
       if (!wave2Result.success) {
         log('[WaveController] Wave 2 failed', 'error', { error: wave2Result.error });
@@ -192,9 +217,19 @@ export class WaveController {
       SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'analyze', message: 'Wave 3: Analyzing Detail entities' });
 
-      const wave3Result = await this.executeWave3(wave2Result, manifest);
+      const { result: wave3Result, agents: wave3Agents } = await this.executeWave3WithMetrics(wave2Result, manifest);
       waveResults.push(wave3Result);
-      this.captureStepMetrics('wave3_analyze', { totalEntities: wave3Result.totalEntities, discoveredEntities: wave3Result.discoveredEntities });
+      {
+        const allProviders = new Set<string>();
+        let totalTokens = 0, totalCalls = 0;
+        for (const agent of wave3Agents) {
+          const m = agent.getLLMMetrics();
+          m.providers.forEach(p => allProviders.add(p));
+          totalTokens += m.totalTokens;
+          totalCalls += m.totalCalls;
+        }
+        this.captureAgentMetrics('wave3_analyze', { providers: [...allProviders], totalTokens, totalCalls }, { totalEntities: wave3Result.totalEntities, discoveredEntities: wave3Result.discoveredEntities });
+      }
 
       if (!wave3Result.success) {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
@@ -300,6 +335,10 @@ export class WaveController {
             inputEntities: convInputCount, outputEntities: currentEntities.length,
             withEnrichedContext: withContext, durationMs: operatorTimings.conv,
           });
+          this.captureAgentMetrics('operator_conv', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+            inputEntities: convInputCount, outputEntities: currentEntities.length,
+            withEnrichedContext: withContext, durationMs: operatorTimings.conv,
+          });
         } catch (e) { log('[WaveController] Conv operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Aggr
@@ -312,6 +351,10 @@ export class WaveController {
           currentEntities = [...aggr.core, ...aggr.nonCore];
           operatorTimings.aggr = Date.now() - aggrStart;
           log('[WaveController] OPERATOR TRACE: Aggr complete', 'info', {
+            inputEntities: aggrInputCount, core: aggr.core.length, nonCore: aggr.nonCore.length,
+            durationMs: operatorTimings.aggr,
+          });
+          this.captureAgentMetrics('operator_aggr', { providers: [], totalTokens: 0, totalCalls: 0 }, {
             inputEntities: aggrInputCount, core: aggr.core.length, nonCore: aggr.nonCore.length,
             durationMs: operatorTimings.aggr,
           });
@@ -334,6 +377,10 @@ export class WaveController {
             sampleDimensions: sampleEmb?.embedding?.length ?? 0,
             sampleEntity: sampleEmb?.name ?? 'none',
           });
+          this.captureAgentMetrics('operator_embed', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+            inputEntities: embedInputCount, embeddingsBefore: beforeEmbCount, embeddingsAfter: afterEmbCount,
+            newEmbeddings: afterEmbCount - beforeEmbCount, durationMs: operatorTimings.embed,
+          });
         } catch (e) { log('[WaveController] Embed operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Dedup
@@ -350,6 +397,10 @@ export class WaveController {
             mergeLog: deduped.mergeLog.slice(0, 5), // First 5 merges for trace
           });
           currentEntities = deduped.entities;
+          this.captureAgentMetrics('operator_dedup', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+            inputEntities: dedupInputCount, outputEntities: deduped.entities.length,
+            merged: deduped.merged, durationMs: operatorTimings.dedup,
+          });
         } catch (e) { log('[WaveController] Dedup operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Pred
@@ -366,6 +417,10 @@ export class WaveController {
             topScores: predicted.scores.slice(0, 3).map(s => ({ from: s.from, to: s.to, score: s.score.toFixed(3) })),
           });
           currentRelations = [...currentRelations, ...predicted.edges];
+          this.captureAgentMetrics('operator_pred', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+            inputEntities: currentEntities.length, relationsBefore: relsBefore,
+            predictedEdges: predicted.edges.length, durationMs: operatorTimings.pred,
+          });
         } catch (e) { log('[WaveController] Pred operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Merge (structure fusion)
@@ -385,6 +440,11 @@ export class WaveController {
           });
           currentEntities = merged.entities;
           currentRelations = merged.relations;
+          this.captureAgentMetrics('operator_merge', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+            inputEntities: currentEntities.length, inputRelations: currentRelations.length,
+            outputEntities: merged.entities.length, outputRelations: merged.relations.length,
+            added: merged.added, updated: merged.updated, durationMs: operatorTimings.merge,
+          });
         } catch (e) { log('[WaveController] Merge operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
 
         // Log operator pipeline summary
@@ -583,6 +643,14 @@ export class WaveController {
     manifest: ComponentManifest,
     existingEntities: KGEntity[],
   ): Promise<WaveResult> {
+    const { result } = await this.executeWave1WithMetrics(manifest, existingEntities);
+    return result;
+  }
+
+  private async executeWave1WithMetrics(
+    manifest: ComponentManifest,
+    existingEntities: KGEntity[],
+  ): Promise<{ result: WaveResult; agent: Wave1ProjectAgent | null }> {
     const waveStart = Date.now();
 
     try {
@@ -594,25 +662,31 @@ export class WaveController {
       });
 
       return {
-        wave: 1,
-        agentOutputs: [output],
-        totalEntities: output.entities.length,
-        manifestEntities: output.entities.filter(e => !e.id.startsWith('discovered:')).length,
-        discoveredEntities: output.entities.filter(e => e.id.startsWith('discovered:')).length,
-        durationMs: Date.now() - waveStart,
-        success: true,
+        result: {
+          wave: 1,
+          agentOutputs: [output],
+          totalEntities: output.entities.length,
+          manifestEntities: output.entities.filter(e => !e.id.startsWith('discovered:')).length,
+          discoveredEntities: output.entities.filter(e => e.id.startsWith('discovered:')).length,
+          durationMs: Date.now() - waveStart,
+          success: true,
+        },
+        agent: wave1Agent,
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       return {
-        wave: 1,
-        agentOutputs: [],
-        totalEntities: 0,
-        manifestEntities: 0,
-        discoveredEntities: 0,
-        durationMs: Date.now() - waveStart,
-        success: false,
-        error: errorMsg,
+        result: {
+          wave: 1,
+          agentOutputs: [],
+          totalEntities: 0,
+          manifestEntities: 0,
+          discoveredEntities: 0,
+          durationMs: Date.now() - waveStart,
+          success: false,
+          error: errorMsg,
+        },
+        agent: null,
       };
     }
   }
@@ -621,7 +695,16 @@ export class WaveController {
     wave1Result: WaveResult,
     manifest: ComponentManifest,
   ): Promise<WaveResult> {
+    const { result } = await this.executeWave2WithMetrics(wave1Result, manifest);
+    return result;
+  }
+
+  private async executeWave2WithMetrics(
+    wave1Result: WaveResult,
+    manifest: ComponentManifest,
+  ): Promise<{ result: WaveResult; agents: Array<{ getLLMMetrics(): { providers: string[]; totalTokens: number; totalCalls: number } }> }> {
     const waveStart = Date.now();
+    const createdAgents: Array<{ getLLMMetrics(): { providers: string[]; totalTokens: number; totalCalls: number } }> = [];
 
     try {
       // Dynamic import: Wave2ComponentAgent is created by Plan 03 (runs in parallel)
@@ -656,6 +739,7 @@ export class WaveController {
           };
 
           const agent = new Wave2ComponentAgent(this.repositoryPath, this.team);
+          createdAgents.push(agent);
           return agent.execute(wave2Input);
         };
       });
@@ -672,31 +756,46 @@ export class WaveController {
       );
 
       return {
-        wave: 2,
-        agentOutputs: outputs,
-        totalEntities,
-        manifestEntities: manifestCount,
-        discoveredEntities: discoveredCount,
-        durationMs: Date.now() - waveStart,
-        success: true,
+        result: {
+          wave: 2,
+          agentOutputs: outputs,
+          totalEntities,
+          manifestEntities: manifestCount,
+          discoveredEntities: discoveredCount,
+          durationMs: Date.now() - waveStart,
+          success: true,
+        },
+        agents: createdAgents,
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       return {
-        wave: 2,
-        agentOutputs: [],
-        totalEntities: 0,
-        manifestEntities: 0,
-        discoveredEntities: 0,
-        durationMs: Date.now() - waveStart,
-        success: false,
-        error: errorMsg,
+        result: {
+          wave: 2,
+          agentOutputs: [],
+          totalEntities: 0,
+          manifestEntities: 0,
+          discoveredEntities: 0,
+          durationMs: Date.now() - waveStart,
+          success: false,
+          error: errorMsg,
+        },
+        agents: createdAgents,
       };
     }
   }
 
   private async executeWave3(wave2Result: WaveResult, manifest: ComponentManifest): Promise<WaveResult> {
+    const { result } = await this.executeWave3WithMetrics(wave2Result, manifest);
+    return result;
+  }
+
+  private async executeWave3WithMetrics(
+    wave2Result: WaveResult,
+    manifest: ComponentManifest,
+  ): Promise<{ result: WaveResult; agents: Array<{ getLLMMetrics(): { providers: string[]; totalTokens: number; totalCalls: number } }> }> {
     const waveStart = Date.now();
+    const createdAgents: Array<{ getLLMMetrics(): { providers: string[]; totalTokens: number; totalCalls: number } }> = [];
 
     try {
       // Dynamic import: Wave3DetailAgent is created by Plan 03 (runs in parallel)
@@ -762,6 +861,7 @@ export class WaveController {
           };
 
           const agent = new Wave3DetailAgent(this.repositoryPath, this.team);
+          createdAgents.push(agent);
           return agent.execute(wave3Input);
         };
       });
@@ -772,25 +872,31 @@ export class WaveController {
       const totalEntities = outputs.reduce((sum, o) => sum + o.entities.length, 0);
 
       return {
-        wave: 3,
-        agentOutputs: outputs,
-        totalEntities,
-        manifestEntities: 0, // Wave 3 is pure discovery
-        discoveredEntities: totalEntities,
-        durationMs: Date.now() - waveStart,
-        success: true,
+        result: {
+          wave: 3,
+          agentOutputs: outputs,
+          totalEntities,
+          manifestEntities: 0, // Wave 3 is pure discovery
+          discoveredEntities: totalEntities,
+          durationMs: Date.now() - waveStart,
+          success: true,
+        },
+        agents: createdAgents,
       };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       return {
-        wave: 3,
-        agentOutputs: [],
-        totalEntities: 0,
-        manifestEntities: 0,
-        discoveredEntities: 0,
-        durationMs: Date.now() - waveStart,
-        success: false,
-        error: errorMsg,
+        result: {
+          wave: 3,
+          agentOutputs: [],
+          totalEntities: 0,
+          manifestEntities: 0,
+          discoveredEntities: 0,
+          durationMs: Date.now() - waveStart,
+          success: false,
+          error: errorMsg,
+        },
+        agents: createdAgents,
       };
     }
   }
@@ -1425,12 +1531,6 @@ export class WaveController {
       }> | undefined;
       // Steps that use LLM for analysis/classification/insights
       const llmPhases = new Set(['analyze', 'classify', 'insights']);
-      // Determine active LLM provider from current config
-      const llmState = (existing as any).llmState;
-      const globalMode = llmState?.globalMode || 'public';
-      const llmLabel = globalMode === 'mock' ? 'mock'
-        : globalMode === 'local' ? 'local-llm'
-        : 'llm'; // generic — actual model resolved by SemanticAnalyzer at runtime
       const stepsDetail = WaveController.WAVE_STEP_SEQUENCE.map((step, idx) => {
         const status = idx < effectiveIndex ? 'completed'
           : idx === effectiveIndex ? 'running'
@@ -1449,7 +1549,8 @@ export class WaveController {
           wave: step.wave,
           ...(startTime && { startTime }),
           ...(endTime && { endTime }),
-          ...(usesLLM && { llmProvider: captured?.llmProvider || llmLabel }),
+          ...(usesLLM && captured?.llmProvider && { llmProvider: captured.llmProvider }),
+          ...(usesLLM && !captured?.llmProvider && { llmProvider: 'pending' }),
           ...(captured?.tokensUsed && { tokensUsed: captured.tokensUsed }),
           ...(captured?.llmCalls && { llmCalls: captured.llmCalls }),
           ...(captured?.outputs && { outputs: captured.outputs }),

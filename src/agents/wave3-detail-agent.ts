@@ -47,6 +47,15 @@ export class Wave3DetailAgent {
     }
   }
 
+  /** Return LLM metrics from this agent's LLMService (for tracer) */
+  getLLMMetrics(): { providers: string[]; totalTokens: number; totalCalls: number } {
+    const tracker = this.llmService.getMetricsTracker();
+    const calls = tracker.getCalls();
+    const providers = [...new Set(calls.map(c => c.model ? `${c.model}@${c.provider}` : c.provider))];
+    const totalTokens = calls.reduce((sum, c) => sum + c.totalTokens, 0);
+    return { providers, totalTokens, totalCalls: calls.length };
+  }
+
   /**
    * Execute Wave 3 analysis for a single L2 SubComponent.
    *

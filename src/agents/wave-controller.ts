@@ -224,6 +224,15 @@ export class WaveController {
         let currentEntities = allEntities;
         let currentRelations = allRelations;
 
+        // Preserve ontology metadata from per-wave classification before operators strip it
+        const ontologyMap = new Map<string, any>();
+        for (const entity of allEntities) {
+          const meta = (entity as any)._ontologyMetadata;
+          if (meta) {
+            ontologyMap.set(entity.name, meta);
+          }
+        }
+
         // Conv
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Context Convolution' });
         try {
@@ -274,6 +283,13 @@ export class WaveController {
           currentEntities = merged.entities;
           currentRelations = merged.relations;
         } catch (e) { log('[WaveController] Merge operator failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+
+        // Re-attach ontology metadata that operators may have stripped
+        for (const entity of currentEntities) {
+          if (!(entity as any)._ontologyMetadata && ontologyMap.has(entity.name)) {
+            (entity as any)._ontologyMetadata = ontologyMap.get(entity.name);
+          }
+        }
 
         // Re-persist refined entities back to the KG
         log('[WaveController] Re-persisting operator-refined entities', 'info', { count: currentEntities.length });
@@ -607,6 +623,10 @@ export class WaveController {
         metadata: e.metadata,
         parentId: e.parentEntityName,
         level: e.hierarchyLevel,
+        // Operator-enriched fields (set by conv, aggr, embed operators)
+        ...((e as any).embedding ? { embedding: (e as any).embedding } : {}),
+        ...((e as any).role ? { role: (e as any).role } : {}),
+        ...((e as any).enrichedContext ? { enrichedContext: (e as any).enrichedContext } : {}),
       })),
       team: this.team,
     });
@@ -822,6 +842,10 @@ export class WaveController {
       parentEntityName: entity.parentId,
       childEntityNames: [],
       isScaffoldNode: (entity.level ?? 3) < 3, // L0, L1, L2 are scaffold nodes
+      // Operator-enriched fields (set by conv, aggr, embed operators)
+      ...(entity.embedding ? { embedding: entity.embedding } : {}),
+      ...(entity.role ? { role: entity.role } : {}),
+      ...(entity.enrichedContext ? { enrichedContext: entity.enrichedContext } : {}),
     };
   }
 

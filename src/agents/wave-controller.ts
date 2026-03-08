@@ -1307,22 +1307,32 @@ export class WaveController {
         s => s.name === currentStepName,
       );
 
-      // Build stepsDetail with granular sub-steps that map to dashboard agents
-      // If currentIndex is the last step, mark it as running; all before it completed.
-      // If currentIndex is -1 (step not found), default to last known step.
+      // Build stepsDetail with granular sub-steps that map to dashboard agents.
+      // Preserve existing timestamps from previous progress writes so the dashboard
+      // sees incremental transitions instead of all steps jumping at once.
       const lastIndex = WaveController.WAVE_STEP_SEQUENCE.length - 1;
       const effectiveIndex = currentIndex >= 0 ? currentIndex : lastIndex;
       const now = new Date().toISOString();
+      const existingSteps = (existing as any).stepsDetail as Array<{
+        name: string; status: string; wave: number;
+        startTime?: string; endTime?: string;
+      }> | undefined;
       const stepsDetail = WaveController.WAVE_STEP_SEQUENCE.map((step, idx) => {
         const status = idx < effectiveIndex ? 'completed'
           : idx === effectiveIndex ? 'running'
           : 'pending';
+        const prev = existingSteps?.find(s => s.name === step.name);
+        // Preserve timestamps from previous writes
+        const startTime = prev?.startTime ?? (status !== 'pending' ? now : undefined);
+        const endTime = status === 'completed'
+          ? (prev?.endTime ?? now)  // keep original end time if already completed
+          : undefined;
         return {
           name: step.name,
           status,
           wave: step.wave,
-          ...(status === 'completed' && { endTime: now }),
-          ...(status === 'running' && { startTime: now }),
+          ...(startTime && { startTime }),
+          ...(endTime && { endTime }),
         };
       });
 

@@ -53,6 +53,13 @@ export class WaveController {
   private failFast: boolean;
   private graphDB: GraphDatabaseAdapter;
   private reportAgent: WorkflowReportAgent;
+  /** Per-step LLM metrics and outputs accumulated during execution */
+  private stepMetrics: Map<string, {
+    tokensUsed?: number;
+    llmCalls?: number;
+    llmProvider?: string;
+    outputs?: Record<string, unknown>;
+  }> = new Map();
 
   constructor(config: WaveControllerConfig) {
     this.repositoryPath = config.repositoryPath;
@@ -65,6 +72,18 @@ export class WaveController {
     const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph');
     this.graphDB = new GraphDatabaseAdapter(dbPath, this.team);
     this.reportAgent = new WorkflowReportAgent(this.repositoryPath);
+  }
+
+  /** Capture LLM metrics from SemanticAnalyzer for a step and store outputs */
+  private captureStepMetrics(stepName: string, outputs?: Record<string, unknown>): void {
+    const metrics = SemanticAnalyzer.getStepMetrics();
+    SemanticAnalyzer.resetStepMetrics();
+    this.stepMetrics.set(stepName, {
+      tokensUsed: metrics.totalTokens || undefined,
+      llmCalls: metrics.totalCalls || undefined,
+      llmProvider: metrics.providers?.join(', ') || undefined,
+      outputs,
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -101,10 +120,13 @@ export class WaveController {
       // ---- Wave 1: L0 Project + L1 Components ----
       this.logWaveBanner('WAVE 1', 'L0 Project + L1 Components');
       this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'init', message: 'Wave 1: Loading manifest & planning' });
+      this.captureStepMetrics('wave1_init', { manifestEntries: flatEntries.length, existingEntities: existingEntities.length });
 
+      SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'analyze', message: 'Wave 1: Analyzing Project & Components' });
       const wave1Result = await this.executeWave1(manifest, existingEntities);
       waveResults.push(wave1Result);
+      this.captureStepMetrics('wave1_analyze', { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities });
 
       if (!wave1Result.success) {
         log('[WaveController] Wave 1 failed', 'error', { error: wave1Result.error });
@@ -112,18 +134,20 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
-        // Per-entity ontology classification with bounded concurrency
         const wave1Entities = wave1Result.agentOutputs.flatMap(o => o.entities);
+        SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'classify', message: 'Wave 1: Classifying entities' });
-        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast classify step
+        await new Promise(r => setTimeout(r, 100));
         const wave1ClassifyTasks = wave1Entities.map(entity => async () => {
           await this.classifyEntity(entity);
         });
         await this.runWithConcurrency(wave1ClassifyTasks, 2);
+        this.captureStepMetrics('wave1_classify', { entitiesClassified: wave1Entities.length });
         log('[WaveController] Wave 1 classification complete', 'info', { entities: wave1Entities.length });
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'persist', message: 'Wave 1: Persisting entities' });
-        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
+        await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave1Result);
+        this.captureStepMetrics('wave1_persist', { entitiesPersisted: wave1Result.totalEntities });
         log('[WaveController] Wave 1 entities persisted', 'info', {
           entities: wave1Result.totalEntities,
         });
@@ -131,10 +155,12 @@ export class WaveController {
 
       // ---- Wave 2: L2 SubComponents ----
       this.logWaveBanner('WAVE 2', 'L2 SubComponents');
+      SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'analyze', message: 'Wave 2: Analyzing SubComponents' });
 
       const wave2Result = await this.executeWave2(wave1Result, manifest);
       waveResults.push(wave2Result);
+      this.captureStepMetrics('wave2_analyze', { totalEntities: wave2Result.totalEntities, discoveredEntities: wave2Result.discoveredEntities });
 
       if (!wave2Result.success) {
         log('[WaveController] Wave 2 failed', 'error', { error: wave2Result.error });
@@ -142,18 +168,20 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
-        // Per-entity ontology classification with bounded concurrency
         const wave2Entities = wave2Result.agentOutputs.flatMap(o => o.entities);
+        SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'classify', message: 'Wave 2: Classifying entities' });
-        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast classify step
+        await new Promise(r => setTimeout(r, 100));
         const wave2ClassifyTasks = wave2Entities.map(entity => async () => {
           await this.classifyEntity(entity);
         });
         await this.runWithConcurrency(wave2ClassifyTasks, 2);
+        this.captureStepMetrics('wave2_classify', { entitiesClassified: wave2Entities.length });
         log('[WaveController] Wave 2 classification complete', 'info', { entities: wave2Entities.length });
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'persist', message: 'Wave 2: Persisting entities' });
-        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
+        await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave2Result);
+        this.captureStepMetrics('wave2_persist', { entitiesPersisted: wave2Result.totalEntities });
         log('[WaveController] Wave 2 entities persisted', 'info', {
           entities: wave2Result.totalEntities,
         });
@@ -161,26 +189,30 @@ export class WaveController {
 
       // ---- Wave 3: L3 Details ----
       this.logWaveBanner('WAVE 3', 'L3 Detail Entities');
+      SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'analyze', message: 'Wave 3: Analyzing Detail entities' });
 
       const wave3Result = await this.executeWave3(wave2Result, manifest);
       waveResults.push(wave3Result);
+      this.captureStepMetrics('wave3_analyze', { totalEntities: wave3Result.totalEntities, discoveredEntities: wave3Result.discoveredEntities });
 
       if (!wave3Result.success) {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
       } else {
-        // Per-entity ontology classification with bounded concurrency
         const wave3Entities = wave3Result.agentOutputs.flatMap(o => o.entities);
+        SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'classify', message: 'Wave 3: Classifying entities' });
-        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast classify step
+        await new Promise(r => setTimeout(r, 100));
         const wave3ClassifyTasks = wave3Entities.map(entity => async () => {
           await this.classifyEntity(entity);
         });
         await this.runWithConcurrency(wave3ClassifyTasks, 2);
+        this.captureStepMetrics('wave3_classify', { entitiesClassified: wave3Entities.length });
         log('[WaveController] Wave 3 classification complete', 'info', { entities: wave3Entities.length });
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'persist', message: 'Wave 3: Persisting entities' });
         await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
         await this.persistWaveResult(wave3Result);
+        this.captureStepMetrics('wave3_persist', { entitiesPersisted: wave3Result.totalEntities });
         log('[WaveController] Wave 3 entities persisted', 'info', {
           entities: wave3Result.totalEntities,
         });
@@ -468,6 +500,7 @@ export class WaveController {
           const stepStart = step.startTime ? new Date(step.startTime) : new Date(startTime);
           const stepEnd = step.endTime ? new Date(step.endTime) : new Date();
           const duration = stepEnd.getTime() - stepStart.getTime();
+          const captured = this.stepMetrics.get(step.name);
           this.reportAgent.recordStep({
             stepName: step.name,
             agent: step.name.replace(/^wave\d_/, '').replace(/^operator_/, 'kg_operators:'),
@@ -476,8 +509,8 @@ export class WaveController {
             endTime: stepEnd,
             duration,
             status: step.status === 'completed' ? 'success' : step.status === 'failed' ? 'failed' : 'skipped',
-            inputs: {},
-            outputs: {},
+            inputs: captured?.outputs || {},
+            outputs: captured?.outputs || {},
             decisions: [],
             warnings: [],
             errors: [],
@@ -1409,13 +1442,17 @@ export class WaveController {
           ? (prev?.endTime ?? now)  // keep original end time if already completed
           : undefined;
         const usesLLM = llmPhases.has(step.phase);
+        const captured = this.stepMetrics.get(step.name);
         return {
           name: step.name,
           status,
           wave: step.wave,
           ...(startTime && { startTime }),
           ...(endTime && { endTime }),
-          ...(usesLLM && { llmProvider: llmLabel }),
+          ...(usesLLM && { llmProvider: captured?.llmProvider || llmLabel }),
+          ...(captured?.tokensUsed && { tokensUsed: captured.tokensUsed }),
+          ...(captured?.llmCalls && { llmCalls: captured.llmCalls }),
+          ...(captured?.outputs && { outputs: captured.outputs }),
         };
       });
 

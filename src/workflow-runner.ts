@@ -487,8 +487,7 @@ async function main(): Promise<void> {
 
     // Set initial totalSteps AND stepsDetail so dashboard wave sidebar shows
     // proper pending states from the start (not empty until wave controller writes first update)
-    // 8 sub-steps: wave1_init, wave1_analyze, wave1_persist, wave2_analyze, wave2_persist,
-    //              wave3_analyze, wave3_persist, wave4_insights
+    // 17 sub-steps: 3 waves × (analyze + classify + persist) + init + 6 kg-ops + insights
     const initialStepsDetail = [
       { name: 'wave1_init',      status: 'pending', wave: 1 },
       { name: 'wave1_analyze',   status: 'pending', wave: 1 },
@@ -500,6 +499,12 @@ async function main(): Promise<void> {
       { name: 'wave3_analyze',   status: 'pending', wave: 3 },
       { name: 'wave3_classify',  status: 'pending', wave: 3 },
       { name: 'wave3_persist',   status: 'pending', wave: 3 },
+      { name: 'operator_conv',   status: 'pending', wave: 3 },
+      { name: 'operator_aggr',   status: 'pending', wave: 3 },
+      { name: 'operator_embed',  status: 'pending', wave: 3 },
+      { name: 'operator_dedup',  status: 'pending', wave: 3 },
+      { name: 'operator_pred',   status: 'pending', wave: 3 },
+      { name: 'operator_merge',  status: 'pending', wave: 3 },
       { name: 'wave4_insights',  status: 'pending', wave: 4 },
     ];
     writeProgressPreservingDetails(progressFile, {

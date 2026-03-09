@@ -1953,8 +1953,9 @@ export class WaveController {
           // Build cross-reference context
           const crossReferences = this.buildCrossReferences(entity, allEntities);
 
-          // All levels get diagram treatment per Phase 9 decision (overrides Phase 6 L3 text-only)
-          const generateDiagrams = true;
+          // L1/L2 get diagrams; L0 too broad, L3 too granular (Phase 14 overrides Phase 9 all-levels decision)
+          const entityLevel = (entity as any).hierarchyLevel ?? (entity as any).level;
+          const generateDiagrams = entityLevel === 1 || entityLevel === 2;
 
           // Build relations for this entity
           const entityRelations = allRelationships
@@ -1988,8 +1989,8 @@ export class WaveController {
           if (result.success) {
             generated++;
 
-            // Track skipped diagrams (L1/L2 that got fewer than 4 diagrams)
-            if (generateDiagrams && result.diagramCount < 4) {
+            // Track skipped diagrams (L1/L2 that got fewer than 2 diagrams: architecture + relationship)
+            if (generateDiagrams && result.diagramCount < 2) {
               skippedDiagrams++;
             }
 

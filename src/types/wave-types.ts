@@ -28,6 +28,8 @@ export interface AnalysisArtifacts {
   architectureNotes: string[];
   /** Specific file/line references grounding the analysis */
   codeReferences: string[];
+  /** Raw CGR evidence strings preserved through the pipeline */
+  cgrEvidence?: string[];
 }
 
 /**
@@ -45,6 +47,12 @@ export interface EntityTraceData {
   provider: string;
   /** Agent type identifier (e.g. 'SemanticAnalysisAgent', 'OntologyClassificationAgent') */
   agentType: string;
+  /** Number of CGR queries made by this agent */
+  cgrQueryCount?: number;
+  /** Total CGR query duration in milliseconds */
+  cgrDurationMs?: number;
+  /** Number of code entities returned by CGR queries */
+  cgrEntitiesReturned?: number;
 }
 
 /**
@@ -58,6 +66,8 @@ export interface EnrichedEntity extends KGEntity {
   _traceData?: EntityTraceData[];
   /** Fallback flag when SemanticAnalysisAgent fails -- signals shallow analysis */
   _shallowAnalysis?: boolean;
+  /** Flag set when no CGR evidence was found for this entity */
+  _noCgrEvidence?: boolean;
 }
 
 /**
@@ -75,6 +85,8 @@ export interface AnalyzeEntityCodeInput {
   parentContext: string[];
   /** Analysis depth -- always 'deep' for wave integration */
   analysisDepth: 'deep';
+  /** CGR context data injected as a separate parameter (not merged into parentContext) */
+  cgrContext?: string;
 }
 
 /**

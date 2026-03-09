@@ -38,6 +38,31 @@ export interface TraceLLMCall {
 }
 
 /**
+ * A single CGR (Code Graph RAG) query event captured during pipeline execution.
+ * Each Cypher query to Memgraph produces one of these records.
+ */
+export interface TraceCGRQuery {
+  /** Unique identifier for this query */
+  id: string;
+  /** Type of CGR query performed */
+  queryType: 'component_entities' | 'entity_details' | 'call_graph' | 'index_refresh';
+  /** Entity name the query was scoped to */
+  entityName: string;
+  /** Raw Cypher query string (for debugging) */
+  cypherQuery?: string;
+  /** Number of results returned */
+  resultCount: number;
+  /** Duration in milliseconds */
+  durationMs: number;
+  /** Whether this result was served from cache */
+  cacheHit: boolean;
+  /** Outcome of the query */
+  status: 'success' | 'failed' | 'timeout';
+  /** Error message if status is 'failed' or 'timeout' */
+  error?: string;
+}
+
+/**
  * An agent instance that ran during a wave step.
  * Groups LLM calls and entity output under a single agent execution.
  */
@@ -103,4 +128,6 @@ export interface TraceStepExtension {
   qaResult?: TraceQAResult;
   /** Individual LLM call events (from all agents in this step) */
   llmCallEvents?: TraceLLMCall[];
+  /** Individual CGR query events (from all agents in this step) */
+  cgrQueryEvents?: TraceCGRQuery[];
 }

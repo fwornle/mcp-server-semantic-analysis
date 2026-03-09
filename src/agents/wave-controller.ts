@@ -15,6 +15,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { log } from '../logging.js';
 import { loadComponentManifest, flattenManifestEntries, writeManifestDiscoveries } from '../types/component-manifest.js';
 import type { DiscoveredManifestEntry } from '../types/component-manifest.js';
@@ -183,6 +184,38 @@ export class WaveController {
     }
   }
 
+  /**
+   * Extract TraceLLMCall events from entities' _traceData and capture them.
+   * Converts the per-entity EntityTraceData into TraceLLMCall format.
+   */
+  private captureEntityTraceData(stepName: string, entities: KGEntity[]): void {
+    try {
+      for (const entity of entities) {
+        const traceArr = (entity as any)._traceData as Array<{
+          llmCallCount: number; totalDurationMs: number;
+          model: string; provider: string; agentType: string;
+        }> | undefined;
+        if (!traceArr) continue;
+        for (const trace of traceArr) {
+          this.captureLLMCallEvent(stepName, {
+            id: crypto.randomUUID(),
+            model: trace.model,
+            provider: trace.provider,
+            purpose: trace.agentType,
+            durationMs: trace.totalDurationMs,
+            tokensIn: 0,  // Not tracked at entity level
+            tokensOut: 0,
+            status: 'success',
+          });
+        }
+      }
+    } catch (e) {
+      log('[WaveController] Failed to extract entity trace data (non-fatal)', 'debug', {
+        stepName, error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
   // --------------------------------------------------------------------------
   // Main entry point
   // --------------------------------------------------------------------------
@@ -229,6 +262,32 @@ export class WaveController {
         this.captureStepMetrics('wave1_analyze', { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities });
       }
 
+      // Capture trace data from Wave 1 entities
+      if (wave1Result.success) {
+        const w1Entities = wave1Result.agentOutputs.flatMap(o => o.entities);
+        this.captureEntityTraceData('wave1_analyze', w1Entities);
+        this.captureEntityFlow('wave1_analyze', {
+          produced: w1Entities.length,
+          passedQA: 0,
+          persisted: 0,
+        });
+        // Capture Wave 1 agent as a single instance
+        if (wave1Agent) {
+          const w1Metrics = wave1Agent.getLLMMetrics();
+          this.captureAgentInstance('wave1_analyze', {
+            agentId: 'wave1_agent_project',
+            agentType: 'Wave1ProjectAgent',
+            parentEntity: 'Project',
+            startTime: new Date(startTime).toISOString(),
+            endTime: new Date().toISOString(),
+            status: 'completed',
+            llmCalls: [],
+            entityCount: w1Entities.length,
+            observationCount: w1Entities.reduce((sum, e) => sum + (e.observations?.length || 0), 0),
+          });
+        }
+      }
+
       if (!wave1Result.success) {
         log('[WaveController] Wave 1 failed', 'error', { error: wave1Result.error });
         if (this.failFast) {
@@ -248,6 +307,12 @@ export class WaveController {
           warnings: wave1QaReport.warnings.length,
         });
         this.captureStepMetrics('wave1_qa', { passed: wave1QaReport.passed, score: wave1QaReport.score });
+        // Capture QA trace result
+        this.captureQAResult('wave1_analyze', {
+          passed: wave1QaReport.passed,
+          score: wave1QaReport.score,
+          errors: wave1QaReport.errors.length > 0 ? wave1QaReport.errors : undefined,
+        });
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'qa', message: 'Wave 1: QA validation' });
         await new Promise(r => setTimeout(r, 50));
 
@@ -299,6 +364,13 @@ export class WaveController {
           }
         }
 
+        // Update entity flow: passedQA count
+        this.captureEntityFlow('wave1_analyze', {
+          produced: wave1Entities.length,
+          passedQA: wave1Entities.length,
+          persisted: 0,
+        });
+
         SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'classify', message: 'Wave 1: Classifying entities' });
         await new Promise(r => setTimeout(r, 100));
@@ -312,6 +384,12 @@ export class WaveController {
         await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave1Result);
         this.captureStepMetrics('wave1_persist', { entitiesPersisted: wave1Result.totalEntities });
+        // Update entity flow: persisted count
+        this.captureEntityFlow('wave1_analyze', {
+          produced: wave1Entities.length,
+          passedQA: wave1Entities.length,
+          persisted: wave1Result.totalEntities,
+        });
         log('[WaveController] Wave 1 entities persisted', 'info', {
           entities: wave1Result.totalEntities,
         });
@@ -337,6 +415,31 @@ export class WaveController {
         this.captureAgentMetrics('wave2_analyze', { providers: [...allProviders], totalTokens, totalCalls }, { totalEntities: wave2Result.totalEntities, discoveredEntities: wave2Result.discoveredEntities });
       }
 
+      // Capture trace data from Wave 2 entities and agent instances
+      if (wave2Result.success) {
+        const w2Entities = wave2Result.agentOutputs.flatMap(o => o.entities);
+        this.captureEntityTraceData('wave2_analyze', w2Entities);
+        this.captureEntityFlow('wave2_analyze', {
+          produced: w2Entities.length,
+          passedQA: 0,
+          persisted: 0,
+        });
+        // Capture each Wave 2 agent as an instance
+        for (const output of wave2Result.agentOutputs) {
+          this.captureAgentInstance('wave2_analyze', {
+            agentId: `wave2_agent_${output.parentId || output.agentName}`,
+            agentType: 'Wave2ComponentAgent',
+            parentEntity: output.parentId || output.agentName,
+            startTime: new Date(startTime).toISOString(),
+            endTime: new Date().toISOString(),
+            status: 'completed',
+            llmCalls: [],
+            entityCount: output.entities.length,
+            observationCount: output.entities.reduce((sum, e) => sum + (e.observations?.length || 0), 0),
+          });
+        }
+      }
+
       if (!wave2Result.success) {
         log('[WaveController] Wave 2 failed', 'error', { error: wave2Result.error });
         if (this.failFast) {
@@ -356,6 +459,12 @@ export class WaveController {
           warnings: wave2QaReport.warnings.length,
         });
         this.captureStepMetrics('wave2_qa', { passed: wave2QaReport.passed, score: wave2QaReport.score });
+        // Capture QA trace result
+        this.captureQAResult('wave2_analyze', {
+          passed: wave2QaReport.passed,
+          score: wave2QaReport.score,
+          errors: wave2QaReport.errors.length > 0 ? wave2QaReport.errors : undefined,
+        });
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'qa', message: 'Wave 2: QA validation' });
         await new Promise(r => setTimeout(r, 50));
 
@@ -407,6 +516,13 @@ export class WaveController {
           }
         }
 
+        // Update entity flow: passedQA count
+        this.captureEntityFlow('wave2_analyze', {
+          produced: wave2Entities.length,
+          passedQA: wave2Entities.length,
+          persisted: 0,
+        });
+
         SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'classify', message: 'Wave 2: Classifying entities' });
         await new Promise(r => setTimeout(r, 100));
@@ -420,6 +536,12 @@ export class WaveController {
         await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave2Result);
         this.captureStepMetrics('wave2_persist', { entitiesPersisted: wave2Result.totalEntities });
+        // Update entity flow: persisted count
+        this.captureEntityFlow('wave2_analyze', {
+          produced: wave2Entities.length,
+          passedQA: wave2Entities.length,
+          persisted: wave2Result.totalEntities,
+        });
         log('[WaveController] Wave 2 entities persisted', 'info', {
           entities: wave2Result.totalEntities,
         });
@@ -444,6 +566,31 @@ export class WaveController {
         this.captureAgentMetrics('wave3_analyze', { providers: [...allProviders], totalTokens, totalCalls }, { totalEntities: wave3Result.totalEntities, discoveredEntities: wave3Result.discoveredEntities });
       }
 
+      // Capture trace data from Wave 3 entities and agent instances
+      if (wave3Result.success) {
+        const w3Entities = wave3Result.agentOutputs.flatMap(o => o.entities);
+        this.captureEntityTraceData('wave3_analyze', w3Entities);
+        this.captureEntityFlow('wave3_analyze', {
+          produced: w3Entities.length,
+          passedQA: 0,
+          persisted: 0,
+        });
+        // Capture each Wave 3 agent as an instance
+        for (const output of wave3Result.agentOutputs) {
+          this.captureAgentInstance('wave3_analyze', {
+            agentId: `wave3_agent_${output.parentId || output.agentName}`,
+            agentType: 'Wave3DetailAgent',
+            parentEntity: output.parentId || output.agentName,
+            startTime: new Date(startTime).toISOString(),
+            endTime: new Date().toISOString(),
+            status: 'completed',
+            llmCalls: [],
+            entityCount: output.entities.length,
+            observationCount: output.entities.reduce((sum, e) => sum + (e.observations?.length || 0), 0),
+          });
+        }
+      }
+
       if (!wave3Result.success) {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
       } else {
@@ -460,6 +607,12 @@ export class WaveController {
           warnings: wave3QaReport.warnings.length,
         });
         this.captureStepMetrics('wave3_qa', { passed: wave3QaReport.passed, score: wave3QaReport.score });
+        // Capture QA trace result
+        this.captureQAResult('wave3_analyze', {
+          passed: wave3QaReport.passed,
+          score: wave3QaReport.score,
+          errors: wave3QaReport.errors.length > 0 ? wave3QaReport.errors : undefined,
+        });
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'qa', message: 'Wave 3: QA validation' });
         await new Promise(r => setTimeout(r, 50));
 
@@ -511,6 +664,13 @@ export class WaveController {
           }
         }
 
+        // Update entity flow: passedQA count
+        this.captureEntityFlow('wave3_analyze', {
+          produced: wave3Entities.length,
+          passedQA: wave3Entities.length,
+          persisted: 0,
+        });
+
         SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'classify', message: 'Wave 3: Classifying entities' });
         await new Promise(r => setTimeout(r, 100));
@@ -524,6 +684,12 @@ export class WaveController {
         await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
         await this.persistWaveResult(wave3Result);
         this.captureStepMetrics('wave3_persist', { entitiesPersisted: wave3Result.totalEntities });
+        // Update entity flow: persisted count
+        this.captureEntityFlow('wave3_analyze', {
+          produced: wave3Entities.length,
+          passedQA: wave3Entities.length,
+          persisted: wave3Result.totalEntities,
+        });
         log('[WaveController] Wave 3 entities persisted', 'info', {
           entities: wave3Result.totalEntities,
         });
@@ -1974,6 +2140,10 @@ export class WaveController {
           ...(captured?.tokensUsed && { tokensUsed: captured.tokensUsed }),
           ...(captured?.llmCalls && { llmCalls: captured.llmCalls }),
           ...(captured?.outputs && { outputs: captured.outputs }),
+          ...(captured?.agentInstances && { agentInstances: captured.agentInstances }),
+          ...(captured?.entityFlow && { entityFlow: captured.entityFlow }),
+          ...(captured?.qaResult && { qaResult: captured.qaResult }),
+          ...(captured?.llmCallEvents && { llmCallEvents: captured.llmCallEvents }),
         };
       });
 

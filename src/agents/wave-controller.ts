@@ -37,6 +37,8 @@ import type {
   TraceEntityFlow,
   TraceQAResult,
 } from '../trace-types.js';
+import { CgrQueryCache } from '../services/cgr-query-cache.js';
+import { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
 import type { KGEntity, KGRelation, BatchContext } from './kg-operators.js';
 import type { ComponentManifest } from '../types/component-manifest.js';
 import type {
@@ -80,6 +82,11 @@ export class WaveController {
     qaResult?: TraceQAResult;
   }> = new Map();
 
+  /** CGR query cache -- created at wave1_init, used by wave agents */
+  private cgrCache: CgrQueryCache | null = null;
+  /** CGR observation builder -- created at wave1_init, used by wave agents */
+  private cgrBuilder: CgrObservationBuilder | null = null;
+
   constructor(config: WaveControllerConfig) {
     this.repositoryPath = config.repositoryPath;
     this.team = config.team;
@@ -92,6 +99,16 @@ export class WaveController {
     this.graphDB = new GraphDatabaseAdapter(dbPath, this.team);
     this.reportAgent = new WorkflowReportAgent(this.repositoryPath);
     this.qaAgent = new QualityAssuranceAgent(this.repositoryPath, this.team);
+  }
+
+  /** Get the CGR query cache for downstream wave agents */
+  getCgrCache(): CgrQueryCache | null {
+    return this.cgrCache;
+  }
+
+  /** Get the CGR observation builder for downstream wave agents */
+  getCgrBuilder(): CgrObservationBuilder | null {
+    return this.cgrBuilder;
   }
 
   /** Capture LLM metrics from SemanticAnalyzer for a step and store outputs */
@@ -288,7 +305,21 @@ export class WaveController {
       // ---- Wave 1: L0 Project + L1 Components ----
       this.logWaveBanner('WAVE 1', 'L0 Project + L1 Components');
       this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'init', message: 'Wave 1: Loading manifest & planning' });
-      this.captureStepMetrics('wave1_init', { manifestEntries: flatEntries.length, existingEntities: existingEntities.length });
+
+      // Initialize CGR query cache and start async index refresh
+      this.cgrCache = new CgrQueryCache(this.repositoryPath);
+      this.cgrBuilder = new CgrObservationBuilder();
+      log('[WaveController] CGR index refresh started (30s timeout)', 'info');
+      await this.cgrCache.refreshIndex(30_000);
+      if (!this.cgrCache.isAvailable()) {
+        log('[WaveController] CGR unavailable -- continuing with LLM-only observations', 'warning');
+      }
+
+      this.captureStepMetrics('wave1_init', {
+        manifestEntries: flatEntries.length,
+        existingEntities: existingEntities.length,
+        cgrAvailable: this.cgrCache.isAvailable(),
+      });
 
       SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'analyze', message: 'Wave 1: Analyzing Project & Components' });
@@ -1109,6 +1140,12 @@ export class WaveController {
         log('[WaveController] Failed to save workflow report (non-fatal)', 'warning', {
           error: e instanceof Error ? e.message : String(e),
         });
+      }
+
+      // Log CGR stats for observability
+      if (this.cgrCache) {
+        const cgrStats = this.cgrCache.getStats();
+        log(`[WaveController] CGR stats: ${JSON.stringify(cgrStats)}`, 'info');
       }
 
       return summary;

@@ -30,7 +30,7 @@ export interface InsightDocument {
 }
 
 export interface PlantUMLDiagram {
-  type: 'architecture' | 'sequence' | 'use-cases' | 'class';
+  type: 'architecture' | 'relationship' | 'sequence' | 'use-cases' | 'class';
   name: string;
   content: string;
   pumlFile: string;
@@ -121,6 +121,8 @@ function toKebabCase(name: string): string {
 
 export class InsightGenerationAgent {
   private outputDir: string;
+  private pumlDir: string;
+  private imagesDir: string;
   private plantumlAvailable: boolean = false;
   private standardStylePath: string;
   private semanticAnalyzer: SemanticAnalyzer;
@@ -135,6 +137,8 @@ export class InsightGenerationAgent {
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
     this.outputDir = path.join(repositoryPath, 'knowledge-management', 'insights');
+    this.pumlDir = path.join(repositoryPath, '.data', 'knowledge-graph', 'insights', 'puml');
+    this.imagesDir = path.join(repositoryPath, '.data', 'knowledge-graph', 'insights', 'images');
     this.standardStylePath = path.join(repositoryPath, 'docs', 'puml', '_standard-style.puml');
     this.semanticAnalyzer = new SemanticAnalyzer();
     this.contentAnalyzer = new ContentAgnosticAnalyzer(repositoryPath);
@@ -206,12 +210,13 @@ export class InsightGenerationAgent {
                 observations: params.observations,
               },
             },
+            params.crossReferences,
           );
           successfulDiagrams = allDiagrams.filter(d => d.success);
           if (successfulDiagrams.length === 0) {
             log(`[InsightGen] All diagrams failed for ${params.entityName}, continuing with text-only`, 'warning');
           } else {
-            log(`[InsightGen] ${successfulDiagrams.length}/4 diagrams succeeded for ${params.entityName}`, 'info');
+            log(`[InsightGen] ${successfulDiagrams.length}/${allDiagrams.length} diagrams succeeded for ${params.entityName}`, 'info');
           }
         } catch (diagramErr) {
           log(`[InsightGen] Diagram generation failed for ${params.entityName}: ${diagramErr}`, 'warning');
@@ -1951,16 +1956,141 @@ Best practices, rules, and conventions for using this correctly. What should dev
     }
   }
 
-  private async generateAllDiagrams(name: string, data: any): Promise<PlantUMLDiagram[]> {
+  /**
+   * Generate a PlantUML relationship diagram showing an entity's position
+   * in the hierarchy: parent above, siblings at same level, children below.
+   * The current entity is highlighted with a distinct color.
+   */
+  private async generateRelationshipDiagram(
+    entityName: string,
+    crossReferences: CrossReferenceContext
+  ): Promise<PlantUMLDiagram> {
+    const kebabName = toKebabCase(entityName);
+    const pumlFile = path.join(this.pumlDir, `${kebabName}-relationship.puml`);
+    const pngFile = path.join(this.imagesDir, `${kebabName}-relationship.png`);
+
+    // Build PlantUML component diagram content
+    const lines: string[] = ['@startuml'];
+    lines.push('!include _standard-style.puml');
+    lines.push('');
+    lines.push("title Hierarchy Context: " + entityName);
+    lines.push('');
+
+    // Skinparam for current entity highlight
+    lines.push('skinparam component {');
+    lines.push('  BackgroundColor<<current>> #LightBlue');
+    lines.push('  BorderColor<<current>> #2060A0');
+    lines.push('  BackgroundColor<<parent>> #FFFFDD');
+    lines.push('  BackgroundColor<<sibling>> #F0F0F0');
+    lines.push('  BackgroundColor<<child>> #E8F5E8');
+    lines.push('}');
+    lines.push('');
+
+    // Parent at top
+    if (crossReferences.parent) {
+      const parentAlias = toKebabCase(crossReferences.parent.name);
+      lines.push(`[${crossReferences.parent.name}] <<parent>> as ${parentAlias}`);
+      lines.push(`${parentAlias} --> ${kebabName}`);
+      lines.push('');
+    }
+
+    // Current entity (highlighted)
+    lines.push(`[${entityName}] <<current>> as ${kebabName}`);
+    lines.push('');
+
+    // Siblings at same level (hidden arrows for layout)
+    for (const sib of crossReferences.siblings) {
+      const sibAlias = toKebabCase(sib.name);
+      lines.push(`[${sib.name}] <<sibling>> as ${sibAlias}`);
+      lines.push(`${sibAlias} -[hidden]- ${kebabName}`);
+    }
+    if (crossReferences.siblings.length > 0) {
+      lines.push('');
+    }
+
+    // Children below
+    for (const child of crossReferences.children) {
+      const childAlias = toKebabCase(child.name);
+      lines.push(`[${child.name}] <<child>> as ${childAlias}`);
+      lines.push(`${kebabName} --> ${childAlias}`);
+    }
+
+    lines.push('');
+    lines.push('@enduml');
+
+    const content = lines.join('\n');
+
+    // Write .puml file
+    try {
+      await fs.promises.writeFile(pumlFile, content, 'utf8');
+    } catch (err) {
+      log(`[InsightGen] Failed to write relationship PUML for ${entityName}: ${err}`, 'warning');
+      return {
+        type: 'relationship',
+        name: `${kebabName}-relationship`,
+        content,
+        pumlFile: '',
+        success: false
+      };
+    }
+
+    // Compile to PNG if plantuml is available (graceful fallback: still succeed with .puml only)
+    if (this.plantumlAvailable) {
+      try {
+        const { spawn } = await import('child_process');
+        const relativePath = path.relative(path.dirname(pumlFile), this.imagesDir);
+        const plantuml = spawn('plantuml', ['-tpng', pumlFile, '-o', relativePath]);
+
+        await new Promise<void>((resolve, reject) => {
+          plantuml.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`PlantUML exited with code ${code}`));
+          });
+          plantuml.on('error', reject);
+        });
+
+        if (fs.existsSync(pngFile)) {
+          return {
+            type: 'relationship',
+            name: `${kebabName}-relationship`,
+            content,
+            pumlFile,
+            pngFile,
+            success: true
+          };
+        }
+      } catch (err) {
+        log(`[InsightGen] PNG generation failed for relationship diagram ${entityName}: ${err}`, 'warning');
+      }
+    }
+
+    // Graceful fallback: .puml written, no PNG -- still mark as success per locked decision
+    return {
+      type: 'relationship',
+      name: `${kebabName}-relationship`,
+      content,
+      pumlFile,
+      pngFile: undefined,
+      success: true
+    };
+  }
+
+  private async generateAllDiagrams(name: string, data: any, crossReferences?: CrossReferenceContext): Promise<PlantUMLDiagram[]> {
     const diagrams: PlantUMLDiagram[] = [];
-    const diagramTypes: PlantUMLDiagram['type'][] = ['architecture', 'sequence', 'use-cases', 'class'];
+    // L1/L2 entities get architecture + relationship diagrams (drop generic sequence/use-cases/class)
+    const diagramTypes: PlantUMLDiagram['type'][] = ['architecture', 'relationship'];
 
     // PERFORMANCE OPTIMIZATION: Generate diagrams in parallel instead of sequentially
     log(`Generating ${diagramTypes.length} diagrams IN PARALLEL for ${name}`, 'info');
-    
+
     // Create diagram generation tasks for parallel execution
     const diagramTasks = diagramTypes.map(async (type): Promise<PlantUMLDiagram> => {
       try {
+        // Relationship diagrams use dedicated generator with cross-reference data
+        if (type === 'relationship') {
+          const entityName = data?.entityInfo?.name || name;
+          return await this.generateRelationshipDiagram(entityName, crossReferences || { children: [], siblings: [] });
+        }
         return await this.generatePlantUMLDiagram(type, name, data);
       } catch (error) {
         // Write error details to file for debugging
@@ -1972,13 +2102,13 @@ Best practices, rules, and conventions for using this correctly. What should dev
           dataKeys: Object.keys(data || {}),
           dataTypes: data ? Object.keys(data).reduce((acc, key) => ({ ...acc, [key]: typeof data[key] }), {}) : {}
         };
-        
+
         // PERFORMANCE OPTIMIZATION: Use async file operations
         const errorFile = path.join(this.outputDir, 'plantuml_errors.json');
-        await fs.promises.writeFile(errorFile, JSON.stringify(errorDetails, null, 2)).catch(e => 
+        await fs.promises.writeFile(errorFile, JSON.stringify(errorDetails, null, 2)).catch(e =>
           log('Failed to write error file', 'warning', e)
         );
-        
+
         log(`Failed to generate ${type} diagram`, 'warning', error);
         return {
           type,
@@ -1989,11 +2119,11 @@ Best practices, rules, and conventions for using this correctly. What should dev
         };
       }
     });
-    
+
     // Execute all diagram generation tasks in parallel and collect results
     const parallelDiagrams = await Promise.all(diagramTasks);
     diagrams.push(...parallelDiagrams);
-    
+
     log(`Completed parallel diagram generation for ${name}: ${diagrams.filter(d => d.success).length}/${diagrams.length} successful`, 'info');
 
     return diagrams;
@@ -2070,9 +2200,8 @@ Best practices, rules, and conventions for using this correctly. What should dev
       };
     }
 
-    // Write PlantUML file
-    const pumlDir = path.join(this.outputDir, 'puml');
-    const pumlFile = path.join(pumlDir, `${toKebabCase(name)}-${type}.puml`);
+    // Write PlantUML file to new .data/knowledge-graph/insights paths
+    const pumlFile = path.join(this.pumlDir, `${toKebabCase(name)}-${type}.puml`);
 
     try {
       await fs.promises.writeFile(pumlFile, validatedContent, 'utf8');
@@ -2156,12 +2285,11 @@ Best practices, rules, and conventions for using this correctly. What should dev
       // Generate PNG if PlantUML is available and syntax is valid
       let pngFile: string | undefined;
       try {
-        const imagesDir = path.join(this.outputDir, 'images');
-        pngFile = path.join(imagesDir, `${toKebabCase(name)}-${type}.png`);
+        pngFile = path.join(this.imagesDir, `${toKebabCase(name)}-${type}.png`);
 
         // Use -tpng to specify PNG output and direct output to correct images directory
         // Use relative path to avoid nested directory creation
-        const relativePath = path.relative(path.dirname(pumlFile), imagesDir);
+        const relativePath = path.relative(path.dirname(pumlFile), this.imagesDir);
         const plantuml = spawn('plantuml', ['-tpng', pumlFile, '-o', relativePath]);
 
         await new Promise<void>((resolve, reject) => {
@@ -3690,7 +3818,9 @@ ${pattern.implementation.usageNotes.map(note => `- ${note}`).join('\n')}
     const dirs = [
       this.outputDir,
       path.join(this.outputDir, 'puml'),
-      path.join(this.outputDir, 'images')
+      path.join(this.outputDir, 'images'),
+      this.pumlDir,
+      this.imagesDir
     ];
     
     // Create directories asynchronously in parallel

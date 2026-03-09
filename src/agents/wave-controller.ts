@@ -51,6 +51,17 @@ import type {
   Wave3Input,
 } from '../types/wave-types.js';
 
+/** Generic entity names that should be rejected -- too vague for a knowledge graph node */
+const GENERIC_ENTITY_NAMES = new Set([
+  'Component', 'SubComponent', 'Detail', 'Module', 'Service',
+  'System', 'Manager', 'Handler', 'Processor', 'Helper',
+  'Utils', 'Utility', 'Misc', 'Other', 'General', 'Main',
+  'Core', 'Base', 'Abstract', 'Default', 'Common', 'Shared',
+]);
+
+/** PascalCase validation regex -- entity names must start with uppercase and contain only alphanumerics */
+const PASCAL_CASE_REGEX = /^[A-Z][a-zA-Z0-9]*$/;
+
 /** Interface for wave agents that expose LLM metrics */
 interface WaveAgentWithMetrics {
   getLLMMetrics(): { providers: string[]; totalTokens: number; totalCalls: number };
@@ -1537,25 +1548,87 @@ export class WaveController {
   }
 
   /**
-   * Validate a single entity for content quality before persistence.
-   * Checks observation count and generic content.
+   * Unified constraint validation gate for entities before persistence.
+   * Runs four rule categories, collecting ALL failure reasons (no short-circuit).
+   *
+   * Rule 1: Entity naming (PascalCase, not generic, valid length)
+   * Rule 2: Observation count (>= 3 required)
+   * Rule 3: Content quality (multi-sentence, not all generic, code-grounded)
+   * Rule 4: Hierarchy integrity (valid level, parent exists, path depth)
    */
-  private validateEntityQuality(entity: SharedMemoryEntity): { valid: boolean; reason?: string } {
+  private validateEntityForPersistence(
+    entity: SharedMemoryEntity,
+    allEntityNames: Set<string>,
+  ): { valid: boolean; reasons: string[] } {
+    const reasons: string[] = [];
+
+    // ---- Rule 1: Entity naming ----
+    if (!PASCAL_CASE_REGEX.test(entity.name)) {
+      reasons.push(`Name '${entity.name}' is not PascalCase`);
+    }
+    if (GENERIC_ENTITY_NAMES.has(entity.name)) {
+      reasons.push(`Name '${entity.name}' is generic/blocklisted`);
+    }
+    if (entity.name.length < 3 || entity.name.length > 80) {
+      reasons.push(`Name '${entity.name}' invalid length (${entity.name.length})`);
+    }
+
+    // ---- Rule 2: Observation count ----
     const observations = entity.observations || [];
     const obsStrings = observations.map(obs => typeof obs === 'string' ? obs : obs.content);
-
-    // Reject entities with fewer than 3 observations
     if (obsStrings.length < 3) {
-      return { valid: false, reason: `insufficient observations (${obsStrings.length}/3 required)` };
+      reasons.push(`Insufficient observations (${obsStrings.length}/3 required)`);
     }
 
-    // Reject entities where ALL observations are generic
-    const genericCount = obsStrings.filter(obs => this.isGenericObservation(obs)).length;
-    if (genericCount === obsStrings.length) {
-      return { valid: false, reason: `all ${obsStrings.length} observations are generic/vague` };
+    // ---- Rule 3: Content quality ----
+    if (obsStrings.length > 0) {
+      // At least one observation must be multi-sentence (2+ periods or semicolons)
+      const hasMultiSentence = obsStrings.some(obs => {
+        const sentenceEnders = (obs.match(/[.;]/g) || []).length;
+        return sentenceEnders >= 2;
+      });
+      if (!hasMultiSentence) {
+        reasons.push('All observations are single-sentence stubs');
+      }
+
+      // Not all observations generic
+      const genericCount = obsStrings.filter(obs => this.isGenericObservation(obs)).length;
+      if (genericCount === obsStrings.length) {
+        reasons.push('All observations are generic');
+      }
+
+      // At least one observation should reference code
+      const codeRefPattern = /\/[\w/.-]+\.\w{1,5}|\.\w{2,4}\b|[A-Z][a-z]+[A-Z]\w+/;
+      const hasCodeRef = obsStrings.some(obs => codeRefPattern.test(obs));
+      if (!hasCodeRef) {
+        reasons.push('No code-grounded observations');
+      }
     }
 
-    return { valid: true };
+    // ---- Rule 4: Hierarchy integrity ----
+    const level = entity.hierarchyLevel;
+    if (level === undefined || level === null || level < 0 || level > 3) {
+      reasons.push(`Invalid hierarchy level (${level})`);
+    } else {
+      // L0 entities should NOT have parentEntityName
+      if (level === 0 && entity.parentEntityName) {
+        reasons.push(`L0 entity should not have parentEntityName ('${entity.parentEntityName}')`);
+      }
+      // If parentEntityName is set (non-L0), it must exist in the entity set
+      if (level > 0 && entity.parentEntityName && !allEntityNames.has(entity.parentEntityName)) {
+        reasons.push(`Parent '${entity.parentEntityName}' not found in entity set`);
+      }
+    }
+    // HierarchyPath depth should match level (field may exist on extended entity objects)
+    const hierarchyPath = (entity as any).hierarchyPath as string | undefined;
+    if (hierarchyPath) {
+      const pathDepth = hierarchyPath.split('/').filter(Boolean).length;
+      if (level !== undefined && level !== null && pathDepth !== level + 1) {
+        reasons.push(`HierarchyPath depth mismatch (path depth ${pathDepth}, expected ${level + 1})`);
+      }
+    }
+
+    return { valid: reasons.length === 0, reasons };
   }
 
   // --------------------------------------------------------------------------
@@ -1577,28 +1650,17 @@ export class WaveController {
       contentValidationMode: 'lenient',
     });
 
-    // Basic structural validation before persistence
-    const validEntities = sharedMemoryEntities.filter(e => {
-      const hasHierarchy = e.hierarchyLevel !== undefined && e.hierarchyLevel !== null;
-      const hasObservations = e.observations && e.observations.length > 0;
-      if (!hasHierarchy || !hasObservations) {
-        log(`[WaveController] Skipping entity ${e.name}: missing hierarchy or observations`, 'warning');
-        return false;
-      }
-      return true;
-    });
-
-    // Content quality validation
-    const totalBeforeQuality = validEntities.length;
-    const qualityFilteredEntities = validEntities.filter(e => {
-      const result = this.validateEntityQuality(e);
+    // Unified constraint validation gate
+    const allEntityNames = new Set(sharedMemoryEntities.map(e => e.name));
+    const qualityFilteredEntities = sharedMemoryEntities.filter(e => {
+      const result = this.validateEntityForPersistence(e, allEntityNames);
       if (!result.valid) {
-        log(`[WaveController] Content quality rejection: ${e.name} - ${result.reason}`, 'warning');
+        log(`[WaveController] Constraint rejection: ${e.name} - ${result.reasons.join('; ')}`, 'warning');
         return false;
       }
       return true;
     });
-    log(`[WaveController] Content quality gate: ${qualityFilteredEntities.length}/${totalBeforeQuality} entities passed`, 'info');
+    log(`[WaveController] Constraint gate: ${qualityFilteredEntities.length}/${sharedMemoryEntities.length} entities passed`, 'info');
 
     await persistenceAgent.persistEntities({
       entities: qualityFilteredEntities.map(e => ({

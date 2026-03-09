@@ -537,6 +537,11 @@ export class WaveController {
         failed: insightResult.failed,
         skippedDiagrams: insightResult.skippedDiagrams,
       });
+      this.captureStepMetrics('wave4_insights', {
+        generated: insightResult.generated,
+        failed: insightResult.failed,
+        skippedDiagrams: insightResult.skippedDiagrams,
+      });
 
       // Build and return final summary
       const summary = this.buildSummaryReport(startTime, waveResults);
@@ -544,12 +549,15 @@ export class WaveController {
       // Log structured summary
       this.logSummaryReport(summary);
 
+      // Mark wave4_insights as completed by advancing past the last step
+      // Use a post-completion update that sets currentStep beyond the sequence length
       this.updateProgress({
         currentWave: 4,
         totalWaves: 4,
         subPhase: 'insights',
         message: summary.success ? 'Wave analysis complete' : 'Wave analysis completed with errors',
-      });
+        _allComplete: true,
+      } as any);
 
       // Record all 17 sub-steps from stepsDetail for rich history trace
       try {
@@ -1525,7 +1533,8 @@ export class WaveController {
       // Preserve existing timestamps from previous progress writes so the dashboard
       // sees incremental transitions instead of all steps jumping at once.
       const lastIndex = WaveController.WAVE_STEP_SEQUENCE.length - 1;
-      const effectiveIndex = currentIndex >= 0 ? currentIndex : lastIndex;
+      const allComplete = (data as any)._allComplete === true;
+      const effectiveIndex = allComplete ? lastIndex + 1 : (currentIndex >= 0 ? currentIndex : lastIndex);
       const now = new Date().toISOString();
       const existingSteps = (existing as any).stepsDetail as Array<{
         name: string; status: string; wave: number;

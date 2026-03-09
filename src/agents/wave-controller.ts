@@ -74,6 +74,7 @@ export class WaveController {
     const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph');
     this.graphDB = new GraphDatabaseAdapter(dbPath, this.team);
     this.reportAgent = new WorkflowReportAgent(this.repositoryPath);
+    this.qaAgent = new QualityAssuranceAgent(this.repositoryPath, this.team);
   }
 
   /** Capture LLM metrics from SemanticAnalyzer for a step and store outputs */
@@ -151,6 +152,21 @@ export class WaveController {
         }
       } else {
         const wave1Entities = wave1Result.agentOutputs.flatMap(o => o.entities);
+
+        // QA gate: validate wave 1 output
+        const wave1QaEntities = wave1Entities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
+        const wave1QaReport = await this.qaAgent.validateWaveOutput('wave1_analyze', wave1QaEntities);
+        log('[WaveController] QA validation', 'info', {
+          wave: 1,
+          passed: wave1QaReport.passed,
+          score: wave1QaReport.score,
+          errors: wave1QaReport.errors.length,
+          warnings: wave1QaReport.warnings.length,
+        });
+        this.captureStepMetrics('wave1_qa', { passed: wave1QaReport.passed, score: wave1QaReport.score });
+        this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'qa', message: 'Wave 1: QA validation' });
+        await new Promise(r => setTimeout(r, 50));
+
         SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'classify', message: 'Wave 1: Classifying entities' });
         await new Promise(r => setTimeout(r, 100));
@@ -196,6 +212,21 @@ export class WaveController {
         }
       } else {
         const wave2Entities = wave2Result.agentOutputs.flatMap(o => o.entities);
+
+        // QA gate: validate wave 2 output
+        const wave2QaEntities = wave2Entities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
+        const wave2QaReport = await this.qaAgent.validateWaveOutput('wave2_analyze', wave2QaEntities);
+        log('[WaveController] QA validation', 'info', {
+          wave: 2,
+          passed: wave2QaReport.passed,
+          score: wave2QaReport.score,
+          errors: wave2QaReport.errors.length,
+          warnings: wave2QaReport.warnings.length,
+        });
+        this.captureStepMetrics('wave2_qa', { passed: wave2QaReport.passed, score: wave2QaReport.score });
+        this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'qa', message: 'Wave 2: QA validation' });
+        await new Promise(r => setTimeout(r, 50));
+
         SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'classify', message: 'Wave 2: Classifying entities' });
         await new Promise(r => setTimeout(r, 100));
@@ -237,6 +268,21 @@ export class WaveController {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
       } else {
         const wave3Entities = wave3Result.agentOutputs.flatMap(o => o.entities);
+
+        // QA gate: validate wave 3 output
+        const wave3QaEntities = wave3Entities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
+        const wave3QaReport = await this.qaAgent.validateWaveOutput('wave3_analyze', wave3QaEntities);
+        log('[WaveController] QA validation', 'info', {
+          wave: 3,
+          passed: wave3QaReport.passed,
+          score: wave3QaReport.score,
+          errors: wave3QaReport.errors.length,
+          warnings: wave3QaReport.warnings.length,
+        });
+        this.captureStepMetrics('wave3_qa', { passed: wave3QaReport.passed, score: wave3QaReport.score });
+        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'qa', message: 'Wave 3: QA validation' });
+        await new Promise(r => setTimeout(r, 50));
+
         SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'classify', message: 'Wave 3: Classifying entities' });
         await new Promise(r => setTimeout(r, 100));
@@ -1548,7 +1594,7 @@ export class WaveController {
   private updateProgress(data: {
     currentWave: number;
     totalWaves: number;
-    subPhase?: 'init' | 'analyze' | 'classify' | 'persist' | 'insights' | 'operators';
+    subPhase?: 'init' | 'analyze' | 'qa' | 'classify' | 'persist' | 'insights' | 'operators';
     message?: string;
   }): void {
     try {

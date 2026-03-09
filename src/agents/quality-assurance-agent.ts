@@ -2614,4 +2614,113 @@ Consider:
     }
     return 'Consider adjusting parameters';
   }
+
+  // --------------------------------------------------------------------------
+  // Wave-level output validation
+  // --------------------------------------------------------------------------
+
+  /**
+   * Validate wave output after analyze step, before classify/persist.
+   * Checks entity observation count, naming conventions, observation quality,
+   * and entity type validity. Returns a QualityAssuranceReport.
+   */
+  async validateWaveOutput(
+    waveName: string,
+    entities: Array<{ name: string; observations: string[]; type: string; level?: number }>,
+  ): Promise<QualityAssuranceReport> {
+    const startTime = new Date();
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    const validHierarchyTypes = ['Project', 'Component', 'SubComponent', 'Detail'];
+
+    // Generic observation patterns (replicates wave-controller's isGenericObservation logic)
+    const genericPatterns = [
+      /works?\s+well/i,
+      /important\s+(feature|component|part)/i,
+      /key\s+(component|feature|part|element)/i,
+      /provides?\s+(functionality|features?)/i,
+      /handles?\s+(various|different|multiple)/i,
+      /is\s+(a|an|the)\s+(main|core|key|important)/i,
+      /used\s+(for|to)\s+(manage|handle|process)/i,
+      /responsible\s+for/i,
+    ];
+
+    const isGeneric = (obs: string): boolean => {
+      if (obs.length < 50) return true;
+      const hasCodeRef = /[a-zA-Z_]\w*\.\w+|\/[\w/.-]+\.\w{1,5}|[A-Z][a-z]+[A-Z]\w+|\w+\(\)/.test(obs);
+      if (hasCodeRef) return false;
+      return genericPatterns.some(p => p.test(obs));
+    };
+
+    let entitiesWithFewObs = 0;
+    let entitiesWithBadNames = 0;
+    let entitiesWithGenericObs = 0;
+    let entitiesWithBadType = 0;
+
+    for (const entity of entities) {
+      // Check observation count
+      if (!entity.observations || entity.observations.length < 3) {
+        warnings.push(`Entity "${entity.name}" has only ${entity.observations?.length ?? 0} observations (minimum 3)`);
+        entitiesWithFewObs++;
+      }
+
+      // Check PascalCase naming
+      const pascalPattern = /^[A-Z][a-zA-Z0-9]*$/;
+      if (!pascalPattern.test(entity.name)) {
+        warnings.push(`Entity "${entity.name}" does not follow PascalCase convention`);
+        entitiesWithBadNames++;
+      }
+
+      // Check observation quality
+      if (entity.observations && entity.observations.length > 0) {
+        const genericCount = entity.observations.filter(obs => isGeneric(obs)).length;
+        if (genericCount === entity.observations.length) {
+          errors.push(`Entity "${entity.name}" has all generic observations`);
+          entitiesWithGenericObs++;
+        } else if (genericCount > entity.observations.length / 2) {
+          warnings.push(`Entity "${entity.name}" has ${genericCount}/${entity.observations.length} generic observations`);
+        }
+      }
+
+      // Check entity type validity
+      if (entity.type && !validHierarchyTypes.includes(entity.type)) {
+        warnings.push(`Entity "${entity.name}" has non-standard type "${entity.type}"`);
+        entitiesWithBadType++;
+      }
+    }
+
+    // Hard failures: all-generic content
+    // Soft warnings: naming, observation count, type
+
+    const structureCompliance = entities.length > 0
+      ? Math.round(100 * (1 - entitiesWithBadType / entities.length))
+      : 100;
+    const contentQuality = entities.length > 0
+      ? Math.round(100 * (1 - entitiesWithGenericObs / entities.length))
+      : 100;
+    const namingConventions = entities.length > 0
+      ? Math.round(100 * (1 - entitiesWithBadNames / entities.length))
+      : 100;
+    const completeness = entities.length > 0
+      ? Math.round(100 * (1 - entitiesWithFewObs / entities.length))
+      : 100;
+
+    const details = { structureCompliance, contentQuality, namingConventions, completeness };
+    const score = this.calculateOverallScore(details, errors.length, warnings.length);
+    const passed = errors.length === 0;
+
+    log(`[QA] Wave output validation: ${waveName} - ${passed ? 'PASS' : 'FAIL'} (score: ${score}, entities: ${entities.length}, errors: ${errors.length})`, 'info');
+
+    return {
+      stepName: waveName,
+      passed,
+      errors,
+      warnings,
+      corrected: false,
+      validationTime: startTime,
+      score,
+      details,
+    };
+  }
 }

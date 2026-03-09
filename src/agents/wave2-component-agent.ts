@@ -63,6 +63,11 @@ export class Wave2ComponentAgent {
     return { providers, totalTokens, totalCalls: calls.length };
   }
 
+  /** Return detailed per-call metrics for trace instrumentation */
+  getDetailedCalls(): Array<{ provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; latencyMs: number; operationType?: string; timestamp: number }> {
+    return this.llmService.getMetricsTracker().getCalls();
+  }
+
   /**
    * Execute Wave 2 analysis for a single L1 Component.
    *

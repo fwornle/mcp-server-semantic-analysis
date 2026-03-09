@@ -58,6 +58,11 @@ export class Wave1ProjectAgent {
     return { providers, totalTokens, totalCalls: calls.length };
   }
 
+  /** Return detailed per-call metrics for trace instrumentation */
+  getDetailedCalls(): Array<{ provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; latencyMs: number; operationType?: string; timestamp: number }> {
+    return this.llmService.getMetricsTracker().getCalls();
+  }
+
   // --------------------------------------------------------------------------
   // Main entry point
   // --------------------------------------------------------------------------

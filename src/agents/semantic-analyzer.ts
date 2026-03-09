@@ -95,6 +95,8 @@ export interface LLMCallMetrics {
   outputTokens: number;
   totalTokens: number;
   timestamp: number;
+  promptPreview?: string;
+  responsePreview?: string;
 }
 
 export interface StepLLMMetrics {
@@ -208,7 +210,7 @@ export class SemanticAnalyzer {
     return { ...SemanticAnalyzer.currentStepMetrics };
   }
 
-  private static recordCallMetrics(result: AnalysisResult): void {
+  private static recordCallMetrics(result: AnalysisResult, promptPreview?: string, responsePreview?: string): void {
     if (result.tokenUsage) {
       const metrics: LLMCallMetrics = {
         provider: result.provider,
@@ -217,6 +219,8 @@ export class SemanticAnalyzer {
         outputTokens: result.tokenUsage.outputTokens,
         totalTokens: result.tokenUsage.totalTokens,
         timestamp: Date.now(),
+        promptPreview,
+        responsePreview,
       };
 
       SemanticAnalyzer.currentStepMetrics.calls.push(metrics);
@@ -422,7 +426,7 @@ export class SemanticAnalyzer {
       const analysisResult = this.toAnalysisResult(result);
 
       // Record metrics for step-level aggregation
-      SemanticAnalyzer.recordCallMetrics(analysisResult);
+      SemanticAnalyzer.recordCallMetrics(analysisResult, prompt?.slice(0, 500), result.content?.slice(0, 500));
 
       return analysisResult;
     } catch (error: any) {
@@ -516,7 +520,7 @@ export class SemanticAnalyzer {
     });
 
     const analysisResult = this.toAnalysisResult(result);
-    SemanticAnalyzer.recordCallMetrics(analysisResult);
+    SemanticAnalyzer.recordCallMetrics(analysisResult, prompt?.slice(0, 500), result.content?.slice(0, 500));
     return analysisResult;
   }
 

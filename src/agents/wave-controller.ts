@@ -49,6 +49,12 @@ import type {
   Wave3Input,
 } from '../types/wave-types.js';
 
+/** Interface for wave agents that expose LLM metrics */
+interface WaveAgentWithMetrics {
+  getLLMMetrics(): { providers: string[]; totalTokens: number; totalCalls: number };
+  getDetailedCalls(): Array<{ provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; latencyMs: number; operationType?: string; timestamp: number; promptPreview?: string; responsePreview?: string }>;
+}
+
 // ============================================================================
 // WaveController
 // ============================================================================
@@ -92,10 +98,24 @@ export class WaveController {
   private captureStepMetrics(stepName: string, outputs?: Record<string, unknown>): void {
     const metrics = SemanticAnalyzer.getStepMetrics();
     SemanticAnalyzer.resetStepMetrics();
+    // Convert per-call records into TraceLLMCall format for UI drill-down
+    const llmCallEvents: TraceLLMCall[] = metrics.calls.map(c => ({
+      id: crypto.randomUUID(),
+      model: c.model || 'unknown',
+      provider: c.provider,
+      purpose: stepName,
+      durationMs: 0,
+      tokensIn: c.inputTokens,
+      tokensOut: c.outputTokens,
+      status: 'success' as const,
+      promptPreview: c.promptPreview,
+      responsePreview: c.responsePreview,
+    }));
     this.stepMetrics.set(stepName, {
       tokensUsed: metrics.totalTokens || undefined,
       llmCalls: metrics.totalCalls || undefined,
       llmProvider: metrics.providers?.join(', ') || undefined,
+      llmCallEvents: llmCallEvents.length > 0 ? llmCallEvents : undefined,
       outputs,
     });
   }
@@ -163,6 +183,24 @@ export class WaveController {
         stepName, error: e instanceof Error ? e.message : String(e),
       });
     }
+  }
+
+  /** Convert LLMCallMetrics from lib/llm into TraceLLMCall format */
+  private convertLLMMetricsToCalls(
+    calls: Array<{ provider: string; model: string; inputTokens: number; outputTokens: number; totalTokens: number; latencyMs: number; operationType?: string; timestamp: number; promptPreview?: string; responsePreview?: string }>,
+  ): TraceLLMCall[] {
+    return calls.map(c => ({
+      id: crypto.randomUUID(),
+      model: c.model,
+      provider: c.provider,
+      purpose: c.operationType || 'llm_call',
+      durationMs: c.latencyMs,
+      tokensIn: c.inputTokens,
+      tokensOut: c.outputTokens,
+      status: 'success' as const,
+      promptPreview: c.promptPreview,
+      responsePreview: c.responsePreview,
+    }));
   }
 
   /** Capture an agent instance for a step */
@@ -273,7 +311,6 @@ export class WaveController {
         });
         // Capture Wave 1 agent as a single instance
         if (wave1Agent) {
-          const w1Metrics = wave1Agent.getLLMMetrics();
           this.captureAgentInstance('wave1_analyze', {
             agentId: 'wave1_agent_project',
             agentType: 'Wave1ProjectAgent',
@@ -281,7 +318,7 @@ export class WaveController {
             startTime: new Date(startTime).toISOString(),
             endTime: new Date().toISOString(),
             status: 'completed',
-            llmCalls: [],
+            llmCalls: this.convertLLMMetricsToCalls(wave1Agent.getDetailedCalls()),
             entityCount: w1Entities.length,
             observationCount: w1Entities.reduce((sum, e) => sum + (e.observations?.length || 0), 0),
           });
@@ -424,8 +461,10 @@ export class WaveController {
           passedQA: 0,
           persisted: 0,
         });
-        // Capture each Wave 2 agent as an instance
-        for (const output of wave2Result.agentOutputs) {
+        // Capture each Wave 2 agent as an instance (agents array aligns with agentOutputs)
+        for (let i = 0; i < wave2Result.agentOutputs.length; i++) {
+          const output = wave2Result.agentOutputs[i];
+          const agent = wave2Agents[i] as WaveAgentWithMetrics | undefined;
           this.captureAgentInstance('wave2_analyze', {
             agentId: `wave2_agent_${output.parentId || output.agentName}`,
             agentType: 'Wave2ComponentAgent',
@@ -433,7 +472,7 @@ export class WaveController {
             startTime: new Date(startTime).toISOString(),
             endTime: new Date().toISOString(),
             status: 'completed',
-            llmCalls: [],
+            llmCalls: agent ? this.convertLLMMetricsToCalls(agent.getDetailedCalls()) : [],
             entityCount: output.entities.length,
             observationCount: output.entities.reduce((sum, e) => sum + (e.observations?.length || 0), 0),
           });
@@ -575,8 +614,10 @@ export class WaveController {
           passedQA: 0,
           persisted: 0,
         });
-        // Capture each Wave 3 agent as an instance
-        for (const output of wave3Result.agentOutputs) {
+        // Capture each Wave 3 agent as an instance (agents array aligns with agentOutputs)
+        for (let i = 0; i < wave3Result.agentOutputs.length; i++) {
+          const output = wave3Result.agentOutputs[i];
+          const agent = wave3Agents[i] as WaveAgentWithMetrics | undefined;
           this.captureAgentInstance('wave3_analyze', {
             agentId: `wave3_agent_${output.parentId || output.agentName}`,
             agentType: 'Wave3DetailAgent',
@@ -584,7 +625,7 @@ export class WaveController {
             startTime: new Date(startTime).toISOString(),
             endTime: new Date().toISOString(),
             status: 'completed',
-            llmCalls: [],
+            llmCalls: agent ? this.convertLLMMetricsToCalls(agent.getDetailedCalls()) : [],
             entityCount: output.entities.length,
             observationCount: output.entities.reduce((sum, e) => sum + (e.observations?.length || 0), 0),
           });

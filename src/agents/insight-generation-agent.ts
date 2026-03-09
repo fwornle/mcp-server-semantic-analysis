@@ -233,6 +233,12 @@ export class InsightGenerationAgent {
         additionalContext: hierarchyContextText,
       });
 
+      // --- Code Evidence section (all entity levels L0-L3) ---
+      const codeEvidenceSection = this.buildCodeEvidenceSection(params.observations);
+
+      // --- Diagram links section (only has content for L1/L2 with successful diagrams) ---
+      const diagramLinksSection = this.buildDiagramLinksSection(params.entityName, successfulDiagrams);
+
       // --- Cross-reference form 2: Structured Hierarchy Context section ---
       let hierarchySection = '';
       const hasParent = !!params.crossReferences.parent;
@@ -261,13 +267,16 @@ export class InsightGenerationAgent {
         }
       }
 
-      // Insert hierarchy section before the footer (--- line)
+      // Assemble sections: content -> code evidence -> diagrams -> hierarchy context
+      const appendedSections = codeEvidenceSection + diagramLinksSection + hierarchySection;
+
+      // Insert appended sections before the footer (--- line)
       let finalContent: string;
       const footerIndex = content.lastIndexOf('\n---\n');
-      if (footerIndex !== -1 && hierarchySection) {
-        finalContent = content.substring(0, footerIndex) + '\n' + hierarchySection + content.substring(footerIndex);
+      if (footerIndex !== -1 && appendedSections) {
+        finalContent = content.substring(0, footerIndex) + '\n' + appendedSections + content.substring(footerIndex);
       } else {
-        finalContent = content + hierarchySection;
+        finalContent = content + appendedSections;
       }
 
       // --- Write file ---
@@ -1954,6 +1963,105 @@ Best practices, rules, and conventions for using this correctly. What should dev
         }
       }
     }
+  }
+
+  /**
+   * Build a markdown section with CGR code evidence extracted from observations.
+   * Filters for [CGR] and [LLM+CGR] tagged observations, groups by type, caps at 15 items.
+   * Returns empty string if no CGR observations found (applies to ALL entity levels L0-L3).
+   */
+  private buildCodeEvidenceSection(observations: string[]): string {
+    // Filter for CGR-tagged observations
+    const cgrObservations = observations.filter(
+      obs => obs.includes('[CGR]') || obs.includes('[LLM+CGR]')
+    );
+
+    if (cgrObservations.length === 0) {
+      return '';
+    }
+
+    // Strip tag prefixes for cleaner display
+    const cleaned = cgrObservations.map(obs =>
+      obs.replace(/^\[CGR\]\s*/, '').replace(/^\[LLM\+CGR\]\s*/, '')
+    );
+
+    // Group by recognizable type
+    const structural: string[] = [];
+    const relationships: string[] = [];
+    const other: string[] = [];
+
+    for (const obs of cleaned) {
+      if (/\(class\)|\(function\)|\(method\)|\(interface\)|\(enum\)|\(type\)/.test(obs)) {
+        structural.push(obs);
+      } else if (/Calls:|Imports:|imports |calls /.test(obs)) {
+        relationships.push(obs);
+      } else {
+        other.push(obs);
+      }
+    }
+
+    // Cap total at 15 items
+    const allGrouped = [...structural, ...relationships, ...other].slice(0, 15);
+
+    let section = '\n## Code Evidence\n\nKey code artifacts grounding this entity\'s analysis:\n\n';
+
+    if (structural.length > 0) {
+      const items = allGrouped.filter(i => structural.includes(i));
+      if (items.length > 0) {
+        section += '**Structural:**\n';
+        for (const item of items) {
+          section += `- ${item}\n`;
+        }
+        section += '\n';
+      }
+    }
+
+    if (relationships.length > 0) {
+      const items = allGrouped.filter(i => relationships.includes(i));
+      if (items.length > 0) {
+        section += '**Relationships:**\n';
+        for (const item of items) {
+          section += `- ${item}\n`;
+        }
+        section += '\n';
+      }
+    }
+
+    const otherItems = allGrouped.filter(i => other.includes(i));
+    if (otherItems.length > 0) {
+      if (structural.length > 0 || relationships.length > 0) {
+        section += '**Other:**\n';
+      }
+      for (const item of otherItems) {
+        section += `- ${item}\n`;
+      }
+      section += '\n';
+    }
+
+    return section;
+  }
+
+  /**
+   * Build a markdown section with diagram image links for the insight document.
+   * Only includes successful diagrams. Uses relative paths from insight doc to images dir.
+   * Returns empty string if no successful diagrams.
+   */
+  private buildDiagramLinksSection(entityName: string, diagrams: PlantUMLDiagram[]): string {
+    const successful = diagrams.filter(d => d.success);
+    if (successful.length === 0) {
+      return '';
+    }
+
+    const kebabName = toKebabCase(entityName);
+    let section = '\n## Architecture Diagrams\n\n';
+
+    for (const diagram of successful) {
+      // Relative path from insight doc (in outputDir) to images (in imagesDir)
+      const relativePath = path.relative(this.outputDir, this.imagesDir);
+      section += `![${diagram.type}](${relativePath}/${kebabName}-${diagram.type}.png)\n\n`;
+    }
+
+    return section;
   }
 
   /**

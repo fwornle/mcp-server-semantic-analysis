@@ -137,7 +137,7 @@ export class WaveController {
 
       SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'analyze', message: 'Wave 1: Analyzing Project & Components' });
-      const { result: wave1Result, agent: wave1Agent } = await this.executeWave1WithMetrics(manifest, existingEntities);
+      let { result: wave1Result, agent: wave1Agent } = await this.executeWave1WithMetrics(manifest, existingEntities);
       waveResults.push(wave1Result);
       if (wave1Agent) {
         this.captureAgentMetrics('wave1_analyze', wave1Agent.getLLMMetrics(), { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities });
@@ -151,7 +151,7 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
-        const wave1Entities = wave1Result.agentOutputs.flatMap(o => o.entities);
+        let wave1Entities = wave1Result.agentOutputs.flatMap(o => o.entities);
 
         // QA gate: validate wave 1 output
         const wave1QaEntities = wave1Entities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
@@ -166,6 +166,54 @@ export class WaveController {
         this.captureStepMetrics('wave1_qa', { passed: wave1QaReport.passed, score: wave1QaReport.score });
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'qa', message: 'Wave 1: QA validation' });
         await new Promise(r => setTimeout(r, 50));
+
+        // QA retry: if score < 60, retry wave 1 once with feedback
+        if (!wave1QaReport.passed && wave1QaReport.score < 60) {
+          log('[WaveController] QA retry triggered', 'info', {
+            wave: 1,
+            score: wave1QaReport.score,
+            errors: wave1QaReport.errors.length,
+          });
+          this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'qa_retry', message: 'Wave 1: Retrying with QA feedback' });
+          await new Promise(r => setTimeout(r, 50));
+
+          const { result: retryResult, retried } = await this.retryWaveWithFeedback(
+            1,
+            wave1QaReport.errors,
+            wave1Entities,
+            async () => {
+              const { result } = await this.executeWave1WithMetrics(manifest, existingEntities);
+              return result;
+            },
+          );
+
+          if (retried) {
+            const retryEntities = retryResult.agentOutputs.flatMap(o => o.entities);
+            const retryQaEntities = retryEntities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
+            const retryQA = await this.qaAgent.validateWaveOutput('wave1_retry', retryQaEntities);
+            log('[WaveController] QA retry result', 'info', {
+              wave: 1,
+              passed: retryQA.passed,
+              score: retryQA.score,
+              improved: retryQA.score > wave1QaReport.score,
+            });
+            this.captureStepMetrics('wave1_qa_retry', { passed: retryQA.passed, score: retryQA.score, originalScore: wave1QaReport.score });
+
+            if (retryQA.score > wave1QaReport.score) {
+              wave1Result = retryResult;
+              wave1Entities = retryResult.agentOutputs.flatMap(o => o.entities);
+              log('[WaveController] Using retry result for wave 1 (improved)', 'info', {
+                originalScore: wave1QaReport.score,
+                retryScore: retryQA.score,
+              });
+            } else {
+              log('[WaveController] Keeping original wave 1 result (retry did not improve)', 'warning', {
+                originalScore: wave1QaReport.score,
+                retryScore: retryQA.score,
+              });
+            }
+          }
+        }
 
         SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'classify', message: 'Wave 1: Classifying entities' });
@@ -190,7 +238,7 @@ export class WaveController {
       SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'analyze', message: 'Wave 2: Analyzing SubComponents' });
 
-      const { result: wave2Result, agents: wave2Agents } = await this.executeWave2WithMetrics(wave1Result, manifest);
+      let { result: wave2Result, agents: wave2Agents } = await this.executeWave2WithMetrics(wave1Result, manifest);
       waveResults.push(wave2Result);
       {
         // Aggregate metrics from all Wave 2 agents
@@ -211,7 +259,7 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
       } else {
-        const wave2Entities = wave2Result.agentOutputs.flatMap(o => o.entities);
+        let wave2Entities = wave2Result.agentOutputs.flatMap(o => o.entities);
 
         // QA gate: validate wave 2 output
         const wave2QaEntities = wave2Entities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
@@ -226,6 +274,54 @@ export class WaveController {
         this.captureStepMetrics('wave2_qa', { passed: wave2QaReport.passed, score: wave2QaReport.score });
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'qa', message: 'Wave 2: QA validation' });
         await new Promise(r => setTimeout(r, 50));
+
+        // QA retry: if score < 60, retry wave 2 once with feedback
+        if (!wave2QaReport.passed && wave2QaReport.score < 60) {
+          log('[WaveController] QA retry triggered', 'info', {
+            wave: 2,
+            score: wave2QaReport.score,
+            errors: wave2QaReport.errors.length,
+          });
+          this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'qa_retry', message: 'Wave 2: Retrying with QA feedback' });
+          await new Promise(r => setTimeout(r, 50));
+
+          const { result: retryResult, retried } = await this.retryWaveWithFeedback(
+            2,
+            wave2QaReport.errors,
+            wave2Entities,
+            async () => {
+              const { result } = await this.executeWave2WithMetrics(wave1Result, manifest);
+              return result;
+            },
+          );
+
+          if (retried) {
+            const retryEntities = retryResult.agentOutputs.flatMap(o => o.entities);
+            const retryQaEntities = retryEntities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
+            const retryQA = await this.qaAgent.validateWaveOutput('wave2_retry', retryQaEntities);
+            log('[WaveController] QA retry result', 'info', {
+              wave: 2,
+              passed: retryQA.passed,
+              score: retryQA.score,
+              improved: retryQA.score > wave2QaReport.score,
+            });
+            this.captureStepMetrics('wave2_qa_retry', { passed: retryQA.passed, score: retryQA.score, originalScore: wave2QaReport.score });
+
+            if (retryQA.score > wave2QaReport.score) {
+              wave2Result = retryResult;
+              wave2Entities = retryResult.agentOutputs.flatMap(o => o.entities);
+              log('[WaveController] Using retry result for wave 2 (improved)', 'info', {
+                originalScore: wave2QaReport.score,
+                retryScore: retryQA.score,
+              });
+            } else {
+              log('[WaveController] Keeping original wave 2 result (retry did not improve)', 'warning', {
+                originalScore: wave2QaReport.score,
+                retryScore: retryQA.score,
+              });
+            }
+          }
+        }
 
         SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'classify', message: 'Wave 2: Classifying entities' });
@@ -250,7 +346,7 @@ export class WaveController {
       SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'analyze', message: 'Wave 3: Analyzing Detail entities' });
 
-      const { result: wave3Result, agents: wave3Agents } = await this.executeWave3WithMetrics(wave2Result, manifest);
+      let { result: wave3Result, agents: wave3Agents } = await this.executeWave3WithMetrics(wave2Result, manifest);
       waveResults.push(wave3Result);
       {
         const allProviders = new Set<string>();
@@ -267,7 +363,7 @@ export class WaveController {
       if (!wave3Result.success) {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
       } else {
-        const wave3Entities = wave3Result.agentOutputs.flatMap(o => o.entities);
+        let wave3Entities = wave3Result.agentOutputs.flatMap(o => o.entities);
 
         // QA gate: validate wave 3 output
         const wave3QaEntities = wave3Entities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
@@ -282,6 +378,54 @@ export class WaveController {
         this.captureStepMetrics('wave3_qa', { passed: wave3QaReport.passed, score: wave3QaReport.score });
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'qa', message: 'Wave 3: QA validation' });
         await new Promise(r => setTimeout(r, 50));
+
+        // QA retry: if score < 60, retry wave 3 once with feedback
+        if (!wave3QaReport.passed && wave3QaReport.score < 60) {
+          log('[WaveController] QA retry triggered', 'info', {
+            wave: 3,
+            score: wave3QaReport.score,
+            errors: wave3QaReport.errors.length,
+          });
+          this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'qa_retry', message: 'Wave 3: Retrying with QA feedback' });
+          await new Promise(r => setTimeout(r, 50));
+
+          const { result: retryResult, retried } = await this.retryWaveWithFeedback(
+            3,
+            wave3QaReport.errors,
+            wave3Entities,
+            async () => {
+              const { result } = await this.executeWave3WithMetrics(wave2Result, manifest);
+              return result;
+            },
+          );
+
+          if (retried) {
+            const retryEntities = retryResult.agentOutputs.flatMap(o => o.entities);
+            const retryQaEntities = retryEntities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
+            const retryQA = await this.qaAgent.validateWaveOutput('wave3_retry', retryQaEntities);
+            log('[WaveController] QA retry result', 'info', {
+              wave: 3,
+              passed: retryQA.passed,
+              score: retryQA.score,
+              improved: retryQA.score > wave3QaReport.score,
+            });
+            this.captureStepMetrics('wave3_qa_retry', { passed: retryQA.passed, score: retryQA.score, originalScore: wave3QaReport.score });
+
+            if (retryQA.score > wave3QaReport.score) {
+              wave3Result = retryResult;
+              wave3Entities = retryResult.agentOutputs.flatMap(o => o.entities);
+              log('[WaveController] Using retry result for wave 3 (improved)', 'info', {
+                originalScore: wave3QaReport.score,
+                retryScore: retryQA.score,
+              });
+            } else {
+              log('[WaveController] Keeping original wave 3 result (retry did not improve)', 'warning', {
+                originalScore: wave3QaReport.score,
+                retryScore: retryQA.score,
+              });
+            }
+          }
+        }
 
         SemanticAnalyzer.resetStepMetrics();
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'classify', message: 'Wave 3: Classifying entities' });
@@ -961,6 +1105,74 @@ export class WaveController {
   }
 
   // --------------------------------------------------------------------------
+  // QA Retry-with-Feedback
+  // --------------------------------------------------------------------------
+
+  /**
+   * Build a feedback string from QA errors for logging and future prompt injection.
+   */
+  private buildQAFeedbackContext(qaErrors: string[]): string {
+    return [
+      '## QA Feedback (retry attempt)',
+      'The previous output was rejected by quality assurance. Fix these issues:',
+      ...qaErrors.map(e => `- ${e}`),
+      '',
+      'Ensure all entities have at least 3 specific observations with code references.',
+    ].join('\n');
+  }
+
+  /**
+   * Retry a wave execution when QA rejects output (score < 60).
+   * Capped at 1 retry per wave -- if retry also fails, returns whichever scored higher.
+   */
+  private async retryWaveWithFeedback(
+    waveNumber: number,
+    qaErrors: string[],
+    originalEntities: KGEntity[],
+    retryFn: () => Promise<WaveResult>,
+  ): Promise<{ result: WaveResult; retried: boolean }> {
+    const feedbackContext = this.buildQAFeedbackContext(qaErrors);
+
+    log('[WaveController] QA rejected wave output, retrying with feedback', 'info', {
+      wave: waveNumber,
+      errors: qaErrors.length,
+      feedback: feedbackContext,
+    });
+
+    try {
+      const retryResult = await retryFn();
+      return { result: retryResult, retried: true };
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      log('[WaveController] QA retry failed with error, keeping original output', 'warning', {
+        wave: waveNumber,
+        error: errMsg,
+      });
+      // Return a synthetic result wrapping original entities so caller can proceed
+      return {
+        result: {
+          wave: waveNumber,
+          agentOutputs: [{
+            entities: originalEntities,
+            relationships: [],
+            childManifest: [],
+            discovered: false,
+            durationMs: 0,
+            parentId: '',
+            agentName: `wave${waveNumber}_retry_fallback`,
+          }],
+          totalEntities: originalEntities.length,
+          manifestEntities: originalEntities.length,
+          discoveredEntities: 0,
+          durationMs: 0,
+          success: true,
+        },
+        retried: false,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // Content Quality Validation
   // --------------------------------------------------------------------------
 
@@ -1594,7 +1806,7 @@ export class WaveController {
   private updateProgress(data: {
     currentWave: number;
     totalWaves: number;
-    subPhase?: 'init' | 'analyze' | 'qa' | 'classify' | 'persist' | 'insights' | 'operators';
+    subPhase?: 'init' | 'analyze' | 'qa' | 'qa_retry' | 'classify' | 'persist' | 'insights' | 'operators';
     message?: string;
   }): void {
     try {

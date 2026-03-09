@@ -913,6 +913,58 @@ export class WaveController {
   }
 
   // --------------------------------------------------------------------------
+  // Content Quality Validation
+  // --------------------------------------------------------------------------
+
+  /**
+   * Check whether a single observation is generic/vague.
+   * Generic = short, no code artifact references, matches vague phrases.
+   */
+  private isGenericObservation(obs: string): boolean {
+    // Too short to be meaningful
+    if (obs.length < 50) return true;
+
+    // Check for code artifact references (file paths, class/function names)
+    const hasCodeRef = /[a-zA-Z_]\w*\.\w+|\/[\w/.-]+\.\w{1,5}|[A-Z][a-z]+[A-Z]\w+|\w+\(\)/.test(obs);
+    if (hasCodeRef) return false;
+
+    // Generic vague phrases
+    const genericPatterns = [
+      /works?\s+well/i,
+      /important\s+(feature|component|part)/i,
+      /key\s+(component|feature|part|element)/i,
+      /provides?\s+(functionality|features?)/i,
+      /handles?\s+(various|different|multiple)/i,
+      /is\s+(a|an|the)\s+(main|core|key|important)/i,
+      /used\s+(for|to)\s+(manage|handle|process)/i,
+      /responsible\s+for/i,
+    ];
+    return genericPatterns.some(p => p.test(obs));
+  }
+
+  /**
+   * Validate a single entity for content quality before persistence.
+   * Checks observation count and generic content.
+   */
+  private validateEntityQuality(entity: SharedMemoryEntity): { valid: boolean; reason?: string } {
+    const observations = entity.observations || [];
+    const obsStrings = observations.map(obs => typeof obs === 'string' ? obs : obs.content);
+
+    // Reject entities with fewer than 3 observations
+    if (obsStrings.length < 3) {
+      return { valid: false, reason: `insufficient observations (${obsStrings.length}/3 required)` };
+    }
+
+    // Reject entities where ALL observations are generic
+    const genericCount = obsStrings.filter(obs => this.isGenericObservation(obs)).length;
+    if (genericCount === obsStrings.length) {
+      return { valid: false, reason: `all ${obsStrings.length} observations are generic/vague` };
+    }
+
+    return { valid: true };
+  }
+
+  // --------------------------------------------------------------------------
   // Persistence
   // --------------------------------------------------------------------------
 
@@ -927,8 +979,8 @@ export class WaveController {
     // Persist entities via PersistenceAgent
     const persistenceAgent = new PersistenceAgent(this.repositoryPath, this.graphDB, {
       ontologyTeam: this.team,
-      validationMode: 'disabled',
-      contentValidationMode: 'disabled',
+      validationMode: 'lenient',
+      contentValidationMode: 'lenient',
     });
 
     // Basic structural validation before persistence
@@ -942,8 +994,20 @@ export class WaveController {
       return true;
     });
 
+    // Content quality validation
+    const totalBeforeQuality = validEntities.length;
+    const qualityFilteredEntities = validEntities.filter(e => {
+      const result = this.validateEntityQuality(e);
+      if (!result.valid) {
+        log(`[WaveController] Content quality rejection: ${e.name} - ${result.reason}`, 'warning');
+        return false;
+      }
+      return true;
+    });
+    log(`[WaveController] Content quality gate: ${qualityFilteredEntities.length}/${totalBeforeQuality} entities passed`, 'info');
+
     await persistenceAgent.persistEntities({
-      entities: validEntities.map(e => ({
+      entities: qualityFilteredEntities.map(e => ({
         name: e.name,
         entityType: e.entityType,
         observations: e.observations.map(obs =>

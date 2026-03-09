@@ -30,6 +30,12 @@ import { createKGOperators } from './kg-operators.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { WorkflowReportAgent } from './workflow-report-agent.js';
 import { QualityAssuranceAgent } from './quality-assurance-agent.js';
+import type {
+  TraceLLMCall,
+  TraceAgentInstance,
+  TraceEntityFlow,
+  TraceQAResult,
+} from '../trace-types.js';
 import type { KGEntity, KGRelation, BatchContext } from './kg-operators.js';
 import type { ComponentManifest } from '../types/component-manifest.js';
 import type {
@@ -61,6 +67,10 @@ export class WaveController {
     llmCalls?: number;
     llmProvider?: string;
     outputs?: Record<string, unknown>;
+    llmCallEvents?: TraceLLMCall[];
+    agentInstances?: TraceAgentInstance[];
+    entityFlow?: TraceEntityFlow;
+    qaResult?: TraceQAResult;
   }> = new Map();
 
   constructor(config: WaveControllerConfig) {
@@ -97,6 +107,80 @@ export class WaveController {
       llmProvider: agentMetrics.providers.join(', ') || undefined,
       outputs,
     });
+  }
+
+  // --------------------------------------------------------------------------
+  // Trace Capture Methods (fire-and-forget, never throw)
+  // --------------------------------------------------------------------------
+
+  /** Capture an individual LLM call event for a step */
+  captureLLMCallEvent(stepName: string, call: TraceLLMCall): void {
+    try {
+      let entry = this.stepMetrics.get(stepName);
+      if (!entry) {
+        entry = {};
+        this.stepMetrics.set(stepName, entry);
+      }
+      if (!entry.llmCallEvents) {
+        entry.llmCallEvents = [];
+      }
+      entry.llmCallEvents.push(call);
+    } catch (e) {
+      log('[WaveController] Failed to capture LLM call event (non-fatal)', 'debug', {
+        stepName, error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /** Capture entity flow counters for a step */
+  captureEntityFlow(stepName: string, flow: TraceEntityFlow): void {
+    try {
+      let entry = this.stepMetrics.get(stepName);
+      if (!entry) {
+        entry = {};
+        this.stepMetrics.set(stepName, entry);
+      }
+      entry.entityFlow = flow;
+    } catch (e) {
+      log('[WaveController] Failed to capture entity flow (non-fatal)', 'debug', {
+        stepName, error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /** Capture QA validation result for a step */
+  captureQAResult(stepName: string, result: TraceQAResult): void {
+    try {
+      let entry = this.stepMetrics.get(stepName);
+      if (!entry) {
+        entry = {};
+        this.stepMetrics.set(stepName, entry);
+      }
+      entry.qaResult = result;
+    } catch (e) {
+      log('[WaveController] Failed to capture QA result (non-fatal)', 'debug', {
+        stepName, error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /** Capture an agent instance for a step */
+  captureAgentInstance(stepName: string, instance: TraceAgentInstance): void {
+    try {
+      let entry = this.stepMetrics.get(stepName);
+      if (!entry) {
+        entry = {};
+        this.stepMetrics.set(stepName, entry);
+      }
+      if (!entry.agentInstances) {
+        entry.agentInstances = [];
+      }
+      entry.agentInstances.push(instance);
+    } catch (e) {
+      log('[WaveController] Failed to capture agent instance (non-fatal)', 'debug', {
+        stepName, error: e instanceof Error ? e.message : String(e),
+      });
+    }
   }
 
   // --------------------------------------------------------------------------

@@ -23,6 +23,9 @@ import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 import type { KGEntity, KGRelation } from './kg-operators.js';
 import type { ComponentManifest, ComponentManifestEntry } from '../types/component-manifest.js';
 import type { Wave1Input, WaveAgentOutput, ChildManifestEntry, EntityTraceData } from '../types/wave-types.js';
+import type { CgrQueryCache } from '../services/cgr-query-cache.js';
+import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
+import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
 
 // ============================================================================
 // Wave1ProjectAgent
@@ -33,11 +36,15 @@ export class Wave1ProjectAgent {
   private team: string;
   private llmService: LLMService;
   private llmInitialized: boolean = false;
+  private cgrCache: CgrQueryCache | null;
+  private cgrBuilder: CgrObservationBuilder | null;
 
-  constructor(repositoryPath: string, team: string) {
+  constructor(repositoryPath: string, team: string, cgrCache?: CgrQueryCache | null, cgrBuilder?: CgrObservationBuilder | null) {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.llmService = new LLMService();
+    this.cgrCache = cgrCache ?? null;
+    this.cgrBuilder = cgrBuilder ?? null;
   }
 
   private async ensureLLMInitialized(): Promise<void> {
@@ -90,6 +97,7 @@ export class Wave1ProjectAgent {
     // Step 3: Analyze each L1 component
     const l1Entities: KGEntity[] = [];
     const allChildManifest: ChildManifestEntry[] = [];
+    const cgrPromptContextMap = new Map<string, string>(); // entityName -> cgrPromptContext
 
     for (const component of input.manifest.components) {
       log(`[Wave1ProjectAgent] Analyzing component: ${component.name}`, 'info');
@@ -114,10 +122,34 @@ export class Wave1ProjectAgent {
         );
       }
 
+      // CGR integration: query code graph for component-scoped entities
+      let cgrObservations: string[] = [];
+      let cgrPromptContext = '';
+      if (this.cgrCache?.isAvailable() && this.cgrBuilder) {
+        try {
+          await this.cgrCache.ensureReady();
+          const cgrEntities = await this.cgrCache.queryComponentEntities(component.name, component.keywords);
+          cgrObservations = this.cgrBuilder.buildStructuralObservations(cgrEntities, component.name);
+          if (cgrEntities.length > 0) {
+            const details = { entities: cgrEntities, callees: [], imports: [], signatures: cgrEntities.map(e => e.signature).filter((s): s is string => !!s) };
+            cgrPromptContext = this.cgrBuilder.formatForLLMPrompt(details);
+          }
+          if (cgrPromptContext) {
+            cgrPromptContextMap.set(component.name, cgrPromptContext);
+          }
+          log(`[Wave1] CGR for ${component.name}: ${cgrEntities.length} entities, ${cgrObservations.length} observations`, 'info');
+        } catch (err) {
+          log(`[Wave1] CGR query failed for ${component.name}, continuing without: ${err instanceof Error ? err.message : String(err)}`, 'warning');
+        }
+      }
+
+      // Combine CGR observations with LLM analysis observations
+      const combinedObservations = [...cgrObservations, ...analysis.observations];
+
       // Validate and enrich observations (enforce 3+ specific observations)
       const validatedObservations = await this.ensureMinimumObservations(
         component.name,
-        analysis.observations,
+        combinedObservations,
         {
           description: component.description,
           hierarchyPath: `${input.manifest.project.name}/${component.name}`,
@@ -152,12 +184,20 @@ export class Wave1ProjectAgent {
       for (const l1Entity of l1Entities) {
         try {
           const enrichStart = Date.now();
+          const entityCgrContext = cgrPromptContextMap.get(l1Entity.name) || '';
+          const cgrSection = entityCgrContext
+            ? `\n## Code Graph Evidence\n${entityCgrContext}\n`
+            : '';
+          const cgrTagInstructions = entityCgrContext
+            ? '\nIf <code_graph> data is provided, reference it in your observations. Prefix observations grounded in code graph data with [LLM+CGR]. Prefix observations from your own analysis with [LLM].'
+            : '';
+
           const enrichPrompt = `You are performing deep observation synthesis for the "${l1Entity.name}" component of the Coding project.
 
 ## Component Context
 Name: ${l1Entity.name}
 Hierarchy: ${input.manifest.project.name}/${l1Entity.name}
-
+${cgrSection}
 ## Initial Analysis
 ${l1Entity.observations.join('\n')}
 
@@ -168,7 +208,7 @@ Each observation MUST:
 - Include code file references where possible (file paths, class names, function names)
 - Be self-contained and informative to a new developer
 - Describe concrete behavior, not abstract platitudes
-
+${cgrTagInstructions}
 Return a JSON object: { "observations": ["obs1", "obs2", ...] }
 IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
 
@@ -201,9 +241,12 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
           }
 
           if (enrichedObs.length > 0) {
-            // Replace observations with enriched ones (per plan -- replace, not merge)
-            l1Entity.observations = enrichedObs;
-            log(`[Wave1] Enriched entity ${l1Entity.name} with multi-step analysis (${enrichedObs.length} observations)`, 'info');
+            // Auto-tag LLM observations based on CGR context presence
+            const taggedObs = SemanticAnalysisAgent.autoTagObservations(enrichedObs, !!entityCgrContext);
+            // Preserve any existing [CGR] observations, then replace LLM observations
+            const existingCgrObs = l1Entity.observations.filter(o => o.startsWith('[CGR]'));
+            l1Entity.observations = [...existingCgrObs, ...taggedObs];
+            log(`[Wave1] Enriched entity ${l1Entity.name} with multi-step analysis (${taggedObs.length} observations, CGR context: ${!!entityCgrContext})`, 'info');
           }
 
           // Attach trace data

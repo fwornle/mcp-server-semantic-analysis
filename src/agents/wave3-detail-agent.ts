@@ -16,6 +16,8 @@ import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 import type { KGEntity, KGRelation } from './kg-operators.js';
 import type { Wave3Input, WaveAgentOutput, ChildManifestEntry, AnalyzeEntityCodeInput } from '../types/wave-types.js';
 import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
+import type { CgrQueryCache } from '../services/cgr-query-cache.js';
+import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
 
 /** LLM response shape for L3 discovery */
 interface L3DiscoveryResponse {
@@ -31,11 +33,15 @@ export class Wave3DetailAgent {
   private team: string;
   private llmService: LLMService;
   private llmInitialized: boolean = false;
+  private cgrCache: CgrQueryCache | null;
+  private cgrBuilder: CgrObservationBuilder | null;
 
-  constructor(repositoryPath: string, team: string) {
+  constructor(repositoryPath: string, team: string, cgrCache?: CgrQueryCache | null, cgrBuilder?: CgrObservationBuilder | null) {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.llmService = new LLMService();
+    this.cgrCache = cgrCache ?? null;
+    this.cgrBuilder = cgrBuilder ?? null;
   }
 
   private async ensureLLMInitialized(): Promise<void> {
@@ -133,9 +139,44 @@ export class Wave3DetailAgent {
       }
     }
 
-    // Enrich each L3 entity via SemanticAnalysisAgent (per-entity, fresh instance)
+    // Enrich each L3 entity via CGR + SemanticAnalysisAgent (per-entity, fresh instance)
     if (!isMockLLMEnabled(this.repositoryPath)) {
       for (const entity of l3Entities) {
+        // CGR integration: query code graph for entity details + deep call graph
+        let cgrPrompt = '';
+        let hadCgrEvidence = false;
+        if (this.cgrCache?.isAvailable() && this.cgrBuilder) {
+          try {
+            const details = await this.cgrCache.queryEntityDetails(entity.name, input.scopedFiles);
+            const callGraph = await this.cgrCache.queryCallGraph(entity.name, 2);
+
+            const structuralObs = this.cgrBuilder.buildStructuralObservations(details.entities, entity.name);
+            const relationshipObs = this.cgrBuilder.buildRelationshipObservations(details.callees, details.imports);
+            const cgrObs = [...structuralObs, ...relationshipObs];
+
+            // Add dedicated call chain observations
+            if (callGraph.chains.length > 0) {
+              const uniqueChains = callGraph.chains.slice(0, 5);
+              for (const chain of uniqueChains) {
+                cgrObs.push(`[CGR] Call chain: ${chain.caller} -> ${chain.callee}`);
+              }
+            }
+
+            // Push CGR observations into entity before SAA call
+            entity.observations.push(...cgrObs);
+
+            cgrPrompt = this.cgrBuilder.formatForLLMPrompt(details, callGraph);
+            hadCgrEvidence = this.cgrBuilder.hasEvidence(details.entities);
+
+            if (!hadCgrEvidence && (entity.level ?? 0) >= 2) {
+              (entity as any)._noCgrEvidence = true;
+            }
+            log(`[Wave3] CGR for ${entity.name}: ${details.entities.length} entities, ${callGraph.chains.length} call chains, ${cgrObs.length} observations`, 'info');
+          } catch (err) {
+            log(`[Wave3] CGR query failed for ${entity.name}, continuing without: ${err instanceof Error ? err.message : String(err)}`, 'warning');
+          }
+        }
+
         const semanticAgent = new SemanticAnalysisAgent(this.repositoryPath);
         try {
           const analysisInput: AnalyzeEntityCodeInput = {
@@ -144,13 +185,17 @@ export class Wave3DetailAgent {
             codeFiles: input.scopedFiles,
             parentContext: input.l2Entity.observations,
             analysisDepth: 'deep',
+            cgrContext: cgrPrompt || undefined,
           };
           const analysisResult = await semanticAgent.analyzeEntityCode(analysisInput);
-          // Replace observations entirely (per plan -- replace, not merge)
-          entity.observations = analysisResult.observations;
+          // Auto-tag SAA observations based on CGR context presence
+          const taggedObs = SemanticAnalysisAgent.autoTagObservations(analysisResult.observations, !!cgrPrompt);
+          // Preserve existing [CGR] observations, then set LLM observations
+          const existingCgrObs = entity.observations.filter(o => o.startsWith('[CGR]'));
+          entity.observations = [...existingCgrObs, ...taggedObs];
           (entity as any)._analysisArtifacts = analysisResult.artifacts;
           (entity as any)._traceData = [analysisResult.traceData];
-          log(`[Wave3] Enriched entity ${entity.name} via SemanticAnalysisAgent (${analysisResult.observations.length} observations)`, 'info');
+          log(`[Wave3] Enriched entity ${entity.name} via SemanticAnalysisAgent (${taggedObs.length} observations, CGR context: ${!!cgrPrompt})`, 'info');
         } catch (err) {
           (entity as any)._shallowAnalysis = true;
           log(`[Wave3] SemanticAnalysisAgent failed for ${entity.name}, using shallow analysis: ${err instanceof Error ? err.message : String(err)}`, 'warning');

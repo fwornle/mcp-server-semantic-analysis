@@ -1953,14 +1953,23 @@ Extract and respond with JSON:
       `### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``
     ).join('\n\n');
 
+    // Inject CGR context as a dedicated section if provided
+    const cgrBlock = input.cgrContext
+      ? `\n## Code Graph Evidence\n${input.cgrContext}\n`
+      : '';
+
+    const cgrInstructions = input.cgrContext
+      ? `\nIf <code_graph> data is provided above, reference it in your observations. Prefix observations grounded in code graph data with [LLM+CGR]. Prefix observations from your own analysis with [LLM].`
+      : '';
+
     const prompt = `You are analyzing the "${input.entityName}" component (type: ${input.entityType}) of a software project.
-${parentContextBlock}
+${parentContextBlock}${cgrBlock}
 ## Code Files
 ${codeBlock}
 
 ## Instructions
 Analyze this code component and produce a JSON response with:
-1. "observations" - An array of 5+ detailed multi-paragraph observations about architecture, patterns, trade-offs, and implementation details. Each observation MUST reference specific files/functions. AVOID generic statements.
+1. "observations" - An array of 5+ detailed multi-paragraph observations about architecture, patterns, trade-offs, and implementation details. Each observation MUST reference specific files/functions. AVOID generic statements.${cgrInstructions}
 2. "patterns" - An array of architectural patterns discovered (e.g. "Observer pattern for event handling", "Repository pattern for data access")
 3. "architectureNotes" - An array of architecture observations (e.g. "Uses dependency injection via constructor", "Tight coupling between X and Y")
 4. "codeReferences" - An array of specific file/line references grounding the analysis (e.g. "src/auth.ts:45 - JWT validation")
@@ -2022,5 +2031,33 @@ Respond ONLY with a JSON object. Do not include markdown fences or any text outs
       artifacts,
       traceData,
     };
+  }
+
+  /**
+   * Auto-tag observations with provenance prefixes based on CGR context presence.
+   *
+   * - If hadCgrContext is true: scan each observation for code entity references
+   *   (PascalCase identifiers, file paths). If found and no tag present, prepend [LLM+CGR].
+   *   Otherwise prepend [LLM].
+   * - If hadCgrContext is false: prepend [LLM] to any untagged observations.
+   * - Skips observations already starting with [CGR], [LLM], or [LLM+CGR].
+   *
+   * @param observations - Raw observations from LLM response
+   * @param hadCgrContext - Whether CGR context was injected into the LLM prompt
+   * @returns Tagged observations
+   */
+  static autoTagObservations(observations: string[], hadCgrContext: boolean): string[] {
+    const tagPattern = /^\[(CGR|LLM|LLM\+CGR)\]/;
+    const codeRefPattern = /[A-Z][a-z]+[A-Z]|\.(ts|js|py|yaml|json)\b|\/[\w-]+\//;
+
+    return observations.map(obs => {
+      // Skip already-tagged observations
+      if (tagPattern.test(obs)) return obs;
+
+      if (hadCgrContext && codeRefPattern.test(obs)) {
+        return `[LLM+CGR] ${obs}`;
+      }
+      return `[LLM] ${obs}`;
+    });
   }
 }

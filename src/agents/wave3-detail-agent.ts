@@ -209,12 +209,19 @@ SubComponent (L2): ${input.l2Entity.name} - ${l2Description}
 ${fileSection}
 ${suggestedSection}
 ## Task
-Identify ${hasFiles ? '2-8' : '1-3'} Detail-level (L3) nodes that represent specific, notable aspects of this sub-component.
+Identify ${hasFiles ? '2-5' : '1-2'} Detail-level (L3) nodes that represent specific, notable aspects of this sub-component.
 
 CRITICAL RULE: Every L3 node you suggest MUST have verifiable code evidence in the source files above.
 - If no source files are available, suggest AT MOST 1-2 nodes based on strong parent context. Prefer suggesting fewer high-quality nodes over many speculative ones.
 - Do NOT invent entities that you cannot point to in the code. If a suggested node from the parent analysis has no code evidence, DISCARD it.
 - It is better to return an empty list than to hallucinate entities.
+
+ANTI-HALLUCINATION RULES:
+- DO NOT invent file paths, class names, or function names that are not in the Source Files above
+- DO NOT reference modules, packages, or libraries not visible in the source code
+- If you are uncertain whether something exists, DO NOT include it
+- Every observation MUST quote a specific artifact from the Source Files section
+- Prefer returning fewer high-quality entities over many speculative ones
 
 Good L3 nodes are:
 - Specific classes or modules with distinct behavior (e.g., "BatchScheduler", "LLMRetryPolicy")
@@ -325,15 +332,12 @@ Write as if this is the only documentation available about this detail.
           detail.observations = [detail.description || `Detail entity ${detail.name}`];
         }
 
-        // Require at least one observation with a code artifact reference
-        const hasCodeEvidence = detail.observations.some((obs: string) =>
-          /\.(ts|js|py|yaml|yml|json|md)\b/i.test(obs) ||
-          /[A-Z][a-z]+[A-Z]/.test(obs) ||
-          /\w+\.\w+\(/.test(obs) ||
-          /\/[\w-]+\//.test(obs),
-        );
-        if (!hasCodeEvidence) {
-          log(`[Wave3Agent] Filtered out L3 entity with no code evidence: ${detail.name}`, 'info');
+        // Require at least 2 observations with specific code artifact references
+        const evidenceCount = detail.observations.filter((obs: string) =>
+          this.hasSpecificCodeReference(obs),
+        ).length;
+        if (evidenceCount < 2) {
+          log(`[Wave3Agent] Filtered L3 entity '${detail.name}': insufficient code evidence (${evidenceCount}/${detail.observations.length} observations)`, 'info');
           return false;
         }
 
@@ -341,7 +345,7 @@ Write as if this is the only documentation available about this detail.
       });
 
       // Cap output to prevent runaway entity creation
-      const MAX_L3_PER_AGENT = 8;
+      const MAX_L3_PER_AGENT = 5;
       if (validDetails.length > MAX_L3_PER_AGENT) {
         log(`[Wave3Agent] Capping L3 entities: ${validDetails.length} -> ${MAX_L3_PER_AGENT}`, 'info');
       }
@@ -396,6 +400,21 @@ Write as if this is the only documentation available about this detail.
   // --------------------------------------------------------------------------
 
   /**
+   * Check if an observation contains a specific code reference.
+   * Checks for: file paths (containing / or .ts/.js/.py), PascalCase/camelCase identifiers,
+   * method call patterns, and line number references (:NN).
+   */
+  private hasSpecificCodeReference(obs: string): boolean {
+    return (
+      /\.(ts|js|py|yaml|yml|json|md|puml)\b/i.test(obs) ||        // file extensions
+      /[A-Z][a-z]+[A-Z]/.test(obs) ||                              // PascalCase/camelCase identifiers
+      /\w+\.\w+\(/.test(obs) ||                                    // method calls (e.g., obj.method())
+      /\/[\w-]+\//.test(obs) ||                                     // file paths (e.g., /src/agents/)
+      /:\d{1,5}\b/.test(obs)                                        // line number references (e.g., :31)
+    );
+  }
+
+  /**
    * Check if an observation is specific enough (references code artifacts).
    * Lenient check: focus on rejecting clearly generic, not validating specific patterns.
    */
@@ -407,10 +426,7 @@ Write as if this is the only documentation available about this detail.
 
     // Check for code artifact indicators
     const hasCodeRef =
-      /\.(ts|js|py|yaml|yml|json|md|puml)\b/i.test(obs) ||        // file extensions
-      /[A-Z][a-z]+[A-Z]/.test(obs) ||                              // PascalCase/camelCase
-      /\w+\.\w+\(/.test(obs) ||                                    // method calls
-      /\/[\w-]+\//.test(obs) ||                                     // file paths
+      this.hasSpecificCodeReference(obs) ||
       /\b(class|function|interface|module|implements|extends|import|export|constructor|async)\b/i.test(obs);
 
     return hasCodeRef;

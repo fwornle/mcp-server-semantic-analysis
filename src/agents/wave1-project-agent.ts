@@ -298,6 +298,13 @@ ${fileContentsBlock}
    - "Is an important component" (no specifics, no artifact reference)
    - "Processes data efficiently" (vague, no code artifact mentioned)
 
+ANTI-HALLUCINATION RULES:
+- Every component you identify MUST correspond to actual directories, modules, or systems visible in the repository
+- DO NOT invent components that you cannot point to in the codebase
+- Each observation MUST reference specific files, directories, or configuration artifacts
+- If you are uncertain whether a component exists, DO NOT include it
+- It is better to return fewer accurate components than many speculative ones
+
 3. Suggest sub-components (L2 nodes) that exist within this component. For each, provide name (PascalCase), description, and whether it's a new discovery beyond the manifest.
 
 ## Output Format (JSON)

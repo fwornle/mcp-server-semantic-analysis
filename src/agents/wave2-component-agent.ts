@@ -242,13 +242,20 @@ ${fileContents || '(no source files available)'}
    - "Is responsible for handling logic" (vague, no artifact)
    - "Works with other components" (meaningless boilerplate)
 
+ANTI-HALLUCINATION RULES:
+- Every sub-component you identify MUST correspond to actual code in the Source Files above
+- DO NOT invent sub-components, classes, or modules not visible in the source code
+- Each observation MUST reference specific files, classes, or functions FROM the Source Files section
+- If source files are empty or insufficient, return fewer sub-components rather than speculating
+- DO NOT reference file paths or code artifacts not shown in the Source Files section
+
 2. Identify additional sub-components NOT in the known list:
    - Only suggest sub-components that represent real, distinct architectural areas
    - Each must have clear file/directory evidence in the source code
 
 3. For ALL sub-components (known + discovered), suggest what Detail-level (L3) entities exist within them.
    - Only suggest L3 entities that have clear code evidence (specific files, classes, or modules)
-   - Limit to 3-6 L3 suggestions per sub-component — quality over quantity
+   - Limit to 3-4 L3 suggestions per sub-component — quality over quantity
    - Do NOT invent entities by combining unrelated concepts from different parts of the codebase
    - Do NOT suggest generic L3 names like "Configuration", "Utils", "Types", "Handler", "Manager"
 
@@ -352,8 +359,8 @@ Write as if this is the only documentation a new team member will read about thi
           (c: any) => c.name && !genericL3Names.has(c.name),
         );
 
-        // Cap at 6 L3 suggestions per L2 entity to control Wave 3 agent spawning
-        const MAX_L3_PER_L2 = 6;
+        // Cap at 4 L3 suggestions per L2 entity to control Wave 3 agent spawning
+        const MAX_L3_PER_L2 = 4;
         if (comp.suggestedL3Children.length > MAX_L3_PER_L2) {
           log(`[Wave2Agent] Capping L3 suggestions for ${comp.name}: ${comp.suggestedL3Children.length} -> ${MAX_L3_PER_L2}`, 'info');
           comp.suggestedL3Children = comp.suggestedL3Children.slice(0, MAX_L3_PER_L2);

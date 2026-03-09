@@ -29,6 +29,7 @@ import type { SharedMemoryEntity, EntityRelationship } from './persistence-agent
 import { createKGOperators } from './kg-operators.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { WorkflowReportAgent } from './workflow-report-agent.js';
+import { QualityAssuranceAgent } from './quality-assurance-agent.js';
 import type { KGEntity, KGRelation, BatchContext } from './kg-operators.js';
 import type { ComponentManifest } from '../types/component-manifest.js';
 import type {
@@ -53,6 +54,7 @@ export class WaveController {
   private failFast: boolean;
   private graphDB: GraphDatabaseAdapter;
   private reportAgent: WorkflowReportAgent;
+  private qaAgent: QualityAssuranceAgent;
   /** Per-step LLM metrics and outputs accumulated during execution */
   private stepMetrics: Map<string, {
     tokensUsed?: number;
@@ -819,7 +821,7 @@ export class WaveController {
 
       // Collect all L3 suggestions from Wave 2 agent outputs, with a global cap
       const allL3Suggestions = wave2Result.agentOutputs.flatMap(o => o.childManifest);
-      const MAX_TOTAL_L3_AGENTS = 80;
+      const MAX_TOTAL_L3_AGENTS = 50;
       if (allL3Suggestions.length > MAX_TOTAL_L3_AGENTS) {
         log(`[WaveController] Capping total L3 agent tasks: ${allL3Suggestions.length} -> ${MAX_TOTAL_L3_AGENTS}`, 'warning');
         allL3Suggestions.length = MAX_TOTAL_L3_AGENTS;

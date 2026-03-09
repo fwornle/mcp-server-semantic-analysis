@@ -325,10 +325,11 @@ export class WaveController {
       this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'analyze', message: 'Wave 1: Analyzing Project & Components' });
       let { result: wave1Result, agent: wave1Agent } = await this.executeWave1WithMetrics(manifest, existingEntities);
       waveResults.push(wave1Result);
+      const cgrStatsOutput = this.cgrCache ? { cgrStats: this.cgrCache.getStats() } : {};
       if (wave1Agent) {
-        this.captureAgentMetrics('wave1_analyze', wave1Agent.getLLMMetrics(), { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities });
+        this.captureAgentMetrics('wave1_analyze', wave1Agent.getLLMMetrics(), { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities, ...cgrStatsOutput });
       } else {
-        this.captureStepMetrics('wave1_analyze', { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities });
+        this.captureStepMetrics('wave1_analyze', { totalEntities: wave1Result.totalEntities, discoveredEntities: wave1Result.discoveredEntities, ...cgrStatsOutput });
       }
 
       // Capture trace data from Wave 1 entities
@@ -480,7 +481,8 @@ export class WaveController {
           totalTokens += m.totalTokens;
           totalCalls += m.totalCalls;
         }
-        this.captureAgentMetrics('wave2_analyze', { providers: [...allProviders], totalTokens, totalCalls }, { totalEntities: wave2Result.totalEntities, discoveredEntities: wave2Result.discoveredEntities });
+        const cgrStatsW2 = this.cgrCache ? { cgrStats: this.cgrCache.getStats() } : {};
+        this.captureAgentMetrics('wave2_analyze', { providers: [...allProviders], totalTokens, totalCalls }, { totalEntities: wave2Result.totalEntities, discoveredEntities: wave2Result.discoveredEntities, ...cgrStatsW2 });
       }
 
       // Capture trace data from Wave 2 entities and agent instances
@@ -633,7 +635,8 @@ export class WaveController {
           totalTokens += m.totalTokens;
           totalCalls += m.totalCalls;
         }
-        this.captureAgentMetrics('wave3_analyze', { providers: [...allProviders], totalTokens, totalCalls }, { totalEntities: wave3Result.totalEntities, discoveredEntities: wave3Result.discoveredEntities });
+        const cgrStatsW3 = this.cgrCache ? { cgrStats: this.cgrCache.getStats() } : {};
+        this.captureAgentMetrics('wave3_analyze', { providers: [...allProviders], totalTokens, totalCalls }, { totalEntities: wave3Result.totalEntities, discoveredEntities: wave3Result.discoveredEntities, ...cgrStatsW3 });
       }
 
       // Capture trace data from Wave 3 entities and agent instances
@@ -1142,10 +1145,13 @@ export class WaveController {
         });
       }
 
-      // Log CGR stats for observability
+      // Log CGR run summary for observability
       if (this.cgrCache) {
         const cgrStats = this.cgrCache.getStats();
-        log(`[WaveController] CGR stats: ${JSON.stringify(cgrStats)}`, 'info');
+        const hitRate = cgrStats.queriesMade > 0
+          ? Math.round((cgrStats.cacheHits / cgrStats.queriesMade) * 100)
+          : 0;
+        log(`[WaveController] CGR run summary: ${cgrStats.queriesMade} queries, ${cgrStats.cacheHits} cache hits (${hitRate}%), available=${cgrStats.available}`, 'info');
       }
 
       return summary;
@@ -1185,7 +1191,7 @@ export class WaveController {
     const waveStart = Date.now();
 
     try {
-      const wave1Agent = new Wave1ProjectAgent(this.repositoryPath, this.team);
+      const wave1Agent = new Wave1ProjectAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder);
       const output = await wave1Agent.execute({
         manifest,
         existingEntities,
@@ -1269,7 +1275,7 @@ export class WaveController {
             manifestChildren: childEntries,
           };
 
-          const agent = new Wave2ComponentAgent(this.repositoryPath, this.team);
+          const agent = new Wave2ComponentAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder);
           createdAgents.push(agent);
           return agent.execute(wave2Input);
         };
@@ -1391,7 +1397,7 @@ export class WaveController {
             suggestedChildren,
           };
 
-          const agent = new Wave3DetailAgent(this.repositoryPath, this.team);
+          const agent = new Wave3DetailAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder);
           createdAgents.push(agent);
           return agent.execute(wave3Input);
         };

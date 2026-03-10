@@ -2380,6 +2380,15 @@ export class WaveController {
         s => s.name === currentStepName,
       );
 
+      // If currentStep is a semantic substep (not in main sequence), only update
+      // currentStep field without touching stepsDetail or step counts
+      if (data.currentStep && currentIndex < 0) {
+        existing['currentStep'] = currentStepName;
+        Object.assign(existing, preserved);
+        fs.writeFileSync(this.progressFile, JSON.stringify(existing, null, 2));
+        return;
+      }
+
       // Build stepsDetail with granular sub-steps that map to dashboard agents.
       // Preserve existing timestamps from previous progress writes so the dashboard
       // sees incremental transitions instead of all steps jumping at once.

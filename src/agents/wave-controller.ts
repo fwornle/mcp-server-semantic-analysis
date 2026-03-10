@@ -331,6 +331,7 @@ export class WaveController {
         existingEntities: existingEntities.length,
         cgrAvailable: this.cgrCache.isAvailable(),
       });
+      await this.checkSingleStepPause('wave1_init');
 
       SemanticAnalyzer.resetStepMetrics();
       this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'analyze', message: 'Wave 1: Analyzing Project & Components' });
@@ -367,6 +368,8 @@ export class WaveController {
           });
         }
       }
+
+      await this.checkSingleStepPause('wave1_analyze');
 
       if (!wave1Result.success) {
         log('[WaveController] Wave 1 failed', 'error', { error: wave1Result.error });
@@ -460,6 +463,7 @@ export class WaveController {
         await this.runWithConcurrency(wave1ClassifyTasks, 2);
         this.captureStepMetrics('wave1_classify', { entitiesClassified: wave1Entities.length });
         log('[WaveController] Wave 1 classification complete', 'info', { entities: wave1Entities.length });
+        await this.checkSingleStepPause('wave1_classify');
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'persist', message: 'Wave 1: Persisting entities' });
         await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave1Result);
@@ -473,6 +477,7 @@ export class WaveController {
         log('[WaveController] Wave 1 entities persisted', 'info', {
           entities: wave1Result.totalEntities,
         });
+        await this.checkSingleStepPause('wave1_persist');
       }
 
       // ---- Wave 2: L2 SubComponents ----
@@ -505,23 +510,10 @@ export class WaveController {
           passedQA: 0,
           persisted: 0,
         });
-        // Capture each Wave 2 agent as an instance (agents array aligns with agentOutputs)
-        for (let i = 0; i < wave2Result.agentOutputs.length; i++) {
-          const output = wave2Result.agentOutputs[i];
-          const agent = wave2Agents[i] as WaveAgentWithMetrics | undefined;
-          this.captureAgentInstance('wave2_analyze', {
-            agentId: `wave2_agent_${output.parentId || output.agentName}`,
-            agentType: 'Wave2ComponentAgent',
-            parentEntity: output.parentId || output.agentName,
-            startTime: new Date(startTime).toISOString(),
-            endTime: new Date().toISOString(),
-            status: 'completed',
-            llmCalls: agent ? this.convertLLMMetricsToCalls(agent.getDetailedCalls()) : [],
-            entityCount: output.entities.length,
-            observationCount: output.entities.reduce((sum, e) => sum + (e.observations?.length || 0), 0),
-          });
-        }
+        // Agent instances already captured incrementally during runWithConcurrency
       }
+
+      await this.checkSingleStepPause('wave2_analyze');
 
       if (!wave2Result.success) {
         log('[WaveController] Wave 2 failed', 'error', { error: wave2Result.error });
@@ -615,6 +607,7 @@ export class WaveController {
         await this.runWithConcurrency(wave2ClassifyTasks, 2);
         this.captureStepMetrics('wave2_classify', { entitiesClassified: wave2Entities.length });
         log('[WaveController] Wave 2 classification complete', 'info', { entities: wave2Entities.length });
+        await this.checkSingleStepPause('wave2_classify');
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'persist', message: 'Wave 2: Persisting entities' });
         await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave2Result);
@@ -628,6 +621,7 @@ export class WaveController {
         log('[WaveController] Wave 2 entities persisted', 'info', {
           entities: wave2Result.totalEntities,
         });
+        await this.checkSingleStepPause('wave2_persist');
       }
 
       // ---- Wave 3: L3 Details ----
@@ -659,23 +653,10 @@ export class WaveController {
           passedQA: 0,
           persisted: 0,
         });
-        // Capture each Wave 3 agent as an instance (agents array aligns with agentOutputs)
-        for (let i = 0; i < wave3Result.agentOutputs.length; i++) {
-          const output = wave3Result.agentOutputs[i];
-          const agent = wave3Agents[i] as WaveAgentWithMetrics | undefined;
-          this.captureAgentInstance('wave3_analyze', {
-            agentId: `wave3_agent_${output.parentId || output.agentName}`,
-            agentType: 'Wave3DetailAgent',
-            parentEntity: output.parentId || output.agentName,
-            startTime: new Date(startTime).toISOString(),
-            endTime: new Date().toISOString(),
-            status: 'completed',
-            llmCalls: agent ? this.convertLLMMetricsToCalls(agent.getDetailedCalls()) : [],
-            entityCount: output.entities.length,
-            observationCount: output.entities.reduce((sum, e) => sum + (e.observations?.length || 0), 0),
-          });
-        }
+        // Agent instances already captured incrementally during runWithConcurrency
       }
+
+      await this.checkSingleStepPause('wave3_analyze');
 
       if (!wave3Result.success) {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
@@ -766,6 +747,7 @@ export class WaveController {
         await this.runWithConcurrency(wave3ClassifyTasks, 2);
         this.captureStepMetrics('wave3_classify', { entitiesClassified: wave3Entities.length });
         log('[WaveController] Wave 3 classification complete', 'info', { entities: wave3Entities.length });
+        await this.checkSingleStepPause('wave3_classify');
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'persist', message: 'Wave 3: Persisting entities' });
         await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
         await this.persistWaveResult(wave3Result);
@@ -779,6 +761,7 @@ export class WaveController {
         log('[WaveController] Wave 3 entities persisted', 'info', {
           entities: wave3Result.totalEntities,
         });
+        await this.checkSingleStepPause('wave3_persist');
       }
 
       // ---- Manifest Write-Back: Persist discovered L2 entities to YAML ----
@@ -868,6 +851,7 @@ export class WaveController {
             withEnrichedContext: withContext, durationMs: operatorTimings.conv,
           });
         } catch (e) { log('[WaveController] Conv operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
+        await this.checkSingleStepPause('operator_conv');
 
         // Aggr
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Entity Aggregation' });
@@ -887,6 +871,7 @@ export class WaveController {
             durationMs: operatorTimings.aggr,
           });
         } catch (e) { log('[WaveController] Aggr operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
+        await this.checkSingleStepPause('operator_aggr');
 
         // Embed
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Node Embedding' });
@@ -910,6 +895,7 @@ export class WaveController {
             newEmbeddings: afterEmbCount - beforeEmbCount, durationMs: operatorTimings.embed,
           });
         } catch (e) { log('[WaveController] Embed operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
+        await this.checkSingleStepPause('operator_embed');
 
         // Dedup
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Deduplication' });
@@ -930,6 +916,7 @@ export class WaveController {
             merged: deduped.merged, durationMs: operatorTimings.dedup,
           });
         } catch (e) { log('[WaveController] Dedup operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
+        await this.checkSingleStepPause('operator_dedup');
 
         // Pred
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Edge Prediction' });
@@ -950,6 +937,7 @@ export class WaveController {
             predictedEdges: predicted.edges.length, durationMs: operatorTimings.pred,
           });
         } catch (e) { log('[WaveController] Pred operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
+        await this.checkSingleStepPause('operator_pred');
 
         // Merge (structure fusion)
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Structure Fusion' });
@@ -974,6 +962,7 @@ export class WaveController {
             added: merged.added, updated: merged.updated, durationMs: operatorTimings.merge,
           });
         } catch (e) { log('[WaveController] Merge operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
+        await this.checkSingleStepPause('operator_merge');
 
         // Log operator pipeline summary
         const totalOperatorTime = Object.values(operatorTimings).reduce((s, t) => s + t, 0);
@@ -1292,8 +1281,29 @@ export class WaveController {
         };
       });
 
-      // Run agents with bounded concurrency
-      const outputs = await this.runWithConcurrency(agentTasks, this.maxAgentsPerWave);
+      // Run agents with bounded concurrency, flushing progress after each completes
+      let w2CompletedCount = 0;
+      const outputs = await this.runWithConcurrency(agentTasks, this.maxAgentsPerWave, (idx, output) => {
+        w2CompletedCount++;
+        // Capture agent instance incrementally
+        const agent = createdAgents[idx] as WaveAgentWithMetrics | undefined;
+        this.captureAgentInstance('wave2_analyze', {
+          agentId: `wave2_agent_${output.parentId || output.agentName}`,
+          agentType: 'Wave2ComponentAgent',
+          parentEntity: output.parentId || output.agentName,
+          startTime: new Date(waveStart).toISOString(),
+          endTime: new Date().toISOString(),
+          status: 'completed',
+          llmCalls: agent ? this.convertLLMMetricsToCalls(agent.getDetailedCalls()) : [],
+          entityCount: output.entities.length,
+          observationCount: output.entities.reduce((sum: number, e: KGEntity) => sum + (e.observations?.length || 0), 0),
+        });
+        // Flush progress so dashboard sees each agent complete
+        this.updateProgress({
+          currentWave: 2, totalWaves: 4, subPhase: 'analyze',
+          message: `Wave 2: ${w2CompletedCount}/${agentTasks.length} agents complete`,
+        });
+      });
 
       const totalEntities = outputs.reduce((sum, o) => sum + o.entities.length, 0);
       const manifestCount = outputs.reduce(
@@ -1414,8 +1424,29 @@ export class WaveController {
         };
       });
 
-      // Run agents with bounded concurrency
-      const outputs = await this.runWithConcurrency(agentTasks, this.maxAgentsPerWave);
+      // Run agents with bounded concurrency, flushing progress after each completes
+      let w3CompletedCount = 0;
+      const outputs = await this.runWithConcurrency(agentTasks, this.maxAgentsPerWave, (idx, output) => {
+        w3CompletedCount++;
+        // Capture agent instance incrementally
+        const agent = createdAgents[idx] as WaveAgentWithMetrics | undefined;
+        this.captureAgentInstance('wave3_analyze', {
+          agentId: `wave3_agent_${output.parentId || output.agentName}`,
+          agentType: 'Wave3DetailAgent',
+          parentEntity: output.parentId || output.agentName,
+          startTime: new Date(waveStart).toISOString(),
+          endTime: new Date().toISOString(),
+          status: 'completed',
+          llmCalls: agent ? this.convertLLMMetricsToCalls(agent.getDetailedCalls()) : [],
+          entityCount: output.entities.length,
+          observationCount: output.entities.reduce((sum: number, e: KGEntity) => sum + (e.observations?.length || 0), 0),
+        });
+        // Flush progress so dashboard sees each agent complete
+        this.updateProgress({
+          currentWave: 3, totalWaves: 4, subPhase: 'analyze',
+          message: `Wave 3: ${w3CompletedCount}/${agentTasks.length} agents complete`,
+        });
+      });
 
       const totalEntities = outputs.reduce((sum, o) => sum + o.entities.length, 0);
 
@@ -2072,6 +2103,7 @@ export class WaveController {
   private async runWithConcurrency<T>(
     tasks: Array<() => Promise<T>>,
     maxConcurrent: number,
+    onTaskComplete?: (index: number, result: T) => void,
   ): Promise<T[]> {
     if (tasks.length === 0) return [];
 
@@ -2089,6 +2121,10 @@ export class WaveController {
 
         try {
           results[taskIndex] = await tasks[taskIndex]();
+          // Fire completion callback for incremental progress updates
+          if (onTaskComplete) {
+            try { onTaskComplete(taskIndex, results[taskIndex]); } catch { /* non-fatal */ }
+          }
         } catch (error) {
           if (!hasError) {
             hasError = true;
@@ -2200,6 +2236,65 @@ export class WaveController {
    * can light up the correct agents (semantic_analysis, persistence, etc.).
    * Preserves debug state fields (singleStepMode, mockLLM, llmState).
    */
+  /**
+   * Check if single-step mode is enabled and pause until user advances.
+   * Reads singleStepMode from progress file, sets stepPaused=true, polls for resume.
+   */
+  private async checkSingleStepPause(stepName: string): Promise<void> {
+    try {
+      if (!fs.existsSync(this.progressFile)) return;
+
+      let progress = JSON.parse(fs.readFileSync(this.progressFile, 'utf8'));
+
+      if (!progress.singleStepMode) return;
+
+      log(`[WaveController] Single-step mode: Pausing after step '${stepName}'`, 'info');
+
+      // Set paused state
+      progress.stepPaused = true;
+      progress.pausedAtStep = stepName;
+      progress.pausedAt = new Date().toISOString();
+      fs.writeFileSync(this.progressFile, JSON.stringify(progress, null, 2));
+    } catch (initError) {
+      log(`[WaveController] Single-step mode: File access failed, skipping pause: ${initError}`, 'warning');
+      return;
+    }
+
+    // Poll for resume signal
+    const pollIntervalMs = 500;
+    let lastLogTime = Date.now();
+    const logIntervalMs = 300_000; // 5 minutes
+
+    while (true) {
+      let currentProgress: Record<string, any>;
+      try {
+        currentProgress = JSON.parse(fs.readFileSync(this.progressFile, 'utf8'));
+      } catch {
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+        continue;
+      }
+
+      // Single-step mode disabled — resume freely
+      if (!currentProgress.singleStepMode) {
+        log('[WaveController] Single-step mode disabled, resuming workflow', 'info');
+        return;
+      }
+
+      // stepPaused cleared — user clicked advance
+      if (!currentProgress.stepPaused) {
+        log(`[WaveController] Single-step mode: Advancing from step '${stepName}'`, 'info');
+        return;
+      }
+
+      if (Date.now() - lastLogTime > logIntervalMs) {
+        log(`[WaveController] Single-step mode: Still paused at '${stepName}'...`, 'info');
+        lastLogTime = Date.now();
+      }
+
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+  }
+
   private updateProgress(data: {
     currentWave: number;
     totalWaves: number;
@@ -2215,9 +2310,12 @@ export class WaveController {
         existing = JSON.parse(content);
       }
 
-      // Preserve debug state fields
+      // Preserve debug state fields (including single-step pause state)
       const preserved: Record<string, unknown> = {};
-      const preserveKeys = ['singleStepMode', 'mockLLM', 'llmState', 'debug'];
+      const preserveKeys = ['singleStepMode', 'mockLLM', 'llmState', 'debug',
+                            'stepPaused', 'pausedAtStep', 'pausedAt',
+                            'singleStepUpdatedAt', 'singleStepTimeout',
+                            'stepIntoSubsteps'];
       for (const key of preserveKeys) {
         if (key in existing) {
           preserved[key] = existing[key];
@@ -2276,12 +2374,19 @@ export class WaveController {
           : undefined;
         const usesLLM = llmPhases.has(step.phase);
         const captured = this.stepMetrics.get(step.name);
+        // Compute duration in ms from startTime/endTime for dashboard display
+        let durationMs: number | undefined;
+        if (startTime && endTime) {
+          durationMs = new Date(endTime).getTime() - new Date(startTime).getTime();
+          if (durationMs < 0) durationMs = 0;
+        }
         return {
           name: step.name,
           status,
           wave: step.wave,
           ...(startTime && { startTime }),
           ...(endTime && { endTime }),
+          ...(durationMs !== undefined && { duration: `${(durationMs / 1000).toFixed(2)}s` }),
           ...(usesLLM && captured?.llmProvider && { llmProvider: captured.llmProvider }),
           ...(usesLLM && !captured?.llmProvider && { llmProvider: 'pending' }),
           ...(captured?.tokensUsed && { tokensUsed: captured.tokensUsed }),

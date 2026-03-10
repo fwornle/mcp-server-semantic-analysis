@@ -463,7 +463,7 @@ export class WaveController {
         await this.runWithConcurrency(wave1ClassifyTasks, 2);
         this.captureStepMetrics('wave1_classify', { entitiesClassified: wave1Entities.length });
         log('[WaveController] Wave 1 classification complete', 'info', { entities: wave1Entities.length });
-        await this.checkSingleStepPause('wave1_classify');
+        await this.checkSingleStepPause('wave1_classify', true);
         this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'persist', message: 'Wave 1: Persisting entities' });
         await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave1Result);
@@ -477,7 +477,7 @@ export class WaveController {
         log('[WaveController] Wave 1 entities persisted', 'info', {
           entities: wave1Result.totalEntities,
         });
-        await this.checkSingleStepPause('wave1_persist');
+        await this.checkSingleStepPause('wave1_persist', true);
       }
 
       // ---- Wave 2: L2 SubComponents ----
@@ -607,7 +607,7 @@ export class WaveController {
         await this.runWithConcurrency(wave2ClassifyTasks, 2);
         this.captureStepMetrics('wave2_classify', { entitiesClassified: wave2Entities.length });
         log('[WaveController] Wave 2 classification complete', 'info', { entities: wave2Entities.length });
-        await this.checkSingleStepPause('wave2_classify');
+        await this.checkSingleStepPause('wave2_classify', true);
         this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'persist', message: 'Wave 2: Persisting entities' });
         await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave2Result);
@@ -621,7 +621,7 @@ export class WaveController {
         log('[WaveController] Wave 2 entities persisted', 'info', {
           entities: wave2Result.totalEntities,
         });
-        await this.checkSingleStepPause('wave2_persist');
+        await this.checkSingleStepPause('wave2_persist', true);
       }
 
       // ---- Wave 3: L3 Details ----
@@ -747,7 +747,7 @@ export class WaveController {
         await this.runWithConcurrency(wave3ClassifyTasks, 2);
         this.captureStepMetrics('wave3_classify', { entitiesClassified: wave3Entities.length });
         log('[WaveController] Wave 3 classification complete', 'info', { entities: wave3Entities.length });
-        await this.checkSingleStepPause('wave3_classify');
+        await this.checkSingleStepPause('wave3_classify', true);
         this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'persist', message: 'Wave 3: Persisting entities' });
         await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
         await this.persistWaveResult(wave3Result);
@@ -761,7 +761,7 @@ export class WaveController {
         log('[WaveController] Wave 3 entities persisted', 'info', {
           entities: wave3Result.totalEntities,
         });
-        await this.checkSingleStepPause('wave3_persist');
+        await this.checkSingleStepPause('wave3_persist', true);
       }
 
       // ---- Manifest Write-Back: Persist discovered L2 entities to YAML ----
@@ -2240,7 +2240,7 @@ export class WaveController {
    * Check if single-step mode is enabled and pause until user advances.
    * Reads singleStepMode from progress file, sets stepPaused=true, polls for resume.
    */
-  private async checkSingleStepPause(stepName: string): Promise<void> {
+  private async checkSingleStepPause(stepName: string, isSubstep: boolean = false): Promise<void> {
     try {
       if (!fs.existsSync(this.progressFile)) return;
 
@@ -2248,7 +2248,23 @@ export class WaveController {
 
       if (!progress.singleStepMode) return;
 
-      log(`[WaveController] Single-step mode: Pausing after step '${stepName}'`, 'info');
+      // For sub-steps, only pause if stepIntoSubsteps is enabled
+      if (isSubstep) {
+        // Small delay to let any in-flight file writes complete
+        await new Promise(resolve => setTimeout(resolve, 50));
+        try {
+          const freshProgress = JSON.parse(fs.readFileSync(this.progressFile, 'utf8'));
+          if (!freshProgress.stepIntoSubsteps) {
+            log(`[WaveController] Single-step mode: Skipping sub-step '${stepName}' (stepIntoSubsteps=false)`, 'debug');
+            return;
+          }
+          progress = freshProgress;
+        } catch {
+          if (!progress.stepIntoSubsteps) return;
+        }
+      }
+
+      log(`[WaveController] Single-step mode: Pausing after ${isSubstep ? 'sub-step' : 'step'} '${stepName}'`, 'info');
 
       // Set paused state
       progress.stepPaused = true;

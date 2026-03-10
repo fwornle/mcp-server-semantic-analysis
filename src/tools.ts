@@ -1035,63 +1035,12 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
     parameters: resolvedParameters
   });
 
-  // DEBUG/MOCK MODE: Pre-set settings in progress file BEFORE workflow starts
-  // This must happen BEFORE async/sync branching so it applies to both execution paths
-  // Honor BOTH the top-level 'debug' flag AND individual settings in 'parameters'
+  // Compute debug flags early (needed for both async and sync paths)
   const wantsMockLLM = debug || resolvedParameters?.mockLLM === true;
   const wantsSingleStep = debug || resolvedParameters?.singleStepMode === true;
   const wantsStepIntoSubsteps = debug || resolvedParameters?.stepIntoSubsteps === true;
 
   log(`Debug settings: debug=${debug}, mockLLM=${wantsMockLLM}, singleStepMode=${wantsSingleStep}, stepIntoSubsteps=${wantsStepIntoSubsteps}`, 'info');
-
-  if (wantsMockLLM || wantsSingleStep || wantsStepIntoSubsteps) {
-    // In Docker, use CODING_ROOT if available (container path differs from host path)
-    const effectiveRepoPath = process.env.CODING_ROOT || repositoryPath;
-    log(`Writing debug settings to ${effectiveRepoPath}/.data/workflow-progress.json`, 'info');
-    const progressFile = path.join(effectiveRepoPath, '.data', 'workflow-progress.json');
-    const dataDir = path.join(effectiveRepoPath, '.data');
-    mkdirSync(dataDir, { recursive: true });
-
-    let existingProgress: Record<string, any> = {};
-    if (existsSync(progressFile)) {
-      try {
-        existingProgress = JSON.parse(readFileSync(progressFile, 'utf-8'));
-      } catch {
-        // Ignore parse errors
-      }
-    }
-
-    const debugProgress: Record<string, any> = {
-      ...existingProgress,
-      status: 'starting', // Override stale terminal status to prevent SSE handler skipping
-    };
-
-    // Only set the flags that were explicitly requested
-    if (wantsSingleStep) {
-      debugProgress.singleStepMode = true;
-      debugProgress.stepPaused = false; // Will be set by first checkpoint
-      debugProgress.pausedAtStep = null;
-      debugProgress.singleStepUpdatedAt = new Date().toISOString();
-    }
-    if (wantsStepIntoSubsteps) {
-      debugProgress.stepIntoSubsteps = true;
-    }
-    if (wantsMockLLM) {
-      debugProgress.mockLLM = true;
-      debugProgress.mockLLMDelay = resolvedParameters?.mockLLMDelay ?? 500;
-      debugProgress.mockLLMUpdatedAt = new Date().toISOString();
-      // CRITICAL: Also set llmState.globalMode to 'mock' for full mock mode
-      // This ensures getLLMMode() returns 'mock' for all agents
-      debugProgress.llmState = {
-        globalMode: 'mock',
-        perAgentOverrides: existingProgress.llmState?.perAgentOverrides || {},
-        updatedAt: new Date().toISOString()
-      };
-    }
-
-    writeFileSync(progressFile, JSON.stringify(debugProgress, null, 2));
-    log(`Pre-set debug settings: singleStepMode=${wantsSingleStep}, stepIntoSubsteps=${wantsStepIntoSubsteps}, mockLLM=${wantsMockLLM}`, 'info');
-  }
 
   // If async_mode, spawn a SEPARATE PROCESS to run the workflow
   // This ensures workflow survives MCP disconnections
@@ -1105,12 +1054,60 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
 
     // CRITICAL: Clean up any existing running workflows before starting a new one
     // This prevents multiple workflows from conflicting on the shared progress file
+    // NOTE: Cleanup may overwrite progress file with { status: 'cancelled' }
+    // Debug settings MUST be written AFTER cleanup to avoid being clobbered
     const cleanup = await cleanupExistingWorkflows(effectiveRepoPath);
     if (cleanup.cleaned) {
       log(`Cleaned up existing workflow before starting new one`, 'info', {
         killedPids: cleanup.killedPids,
         previousWorkflowId: cleanup.staleWorkflowId,
       });
+    }
+
+    // DEBUG/MOCK MODE: Write settings to progress file AFTER cleanup
+    // (cleanup may overwrite progress file, so debug settings must come last)
+    if (wantsMockLLM || wantsSingleStep || wantsStepIntoSubsteps) {
+      log(`Writing debug settings to ${effectiveRepoPath}/.data/workflow-progress.json`, 'info');
+      const debugProgressFile = path.join(effectiveRepoPath, '.data', 'workflow-progress.json');
+      const dataDir = path.join(effectiveRepoPath, '.data');
+      mkdirSync(dataDir, { recursive: true });
+
+      let existingProgress: Record<string, any> = {};
+      if (existsSync(debugProgressFile)) {
+        try {
+          existingProgress = JSON.parse(readFileSync(debugProgressFile, 'utf-8'));
+        } catch {
+          // Ignore parse errors
+        }
+      }
+
+      const debugProgress: Record<string, any> = {
+        ...existingProgress,
+        status: 'starting',
+      };
+
+      if (wantsSingleStep) {
+        debugProgress.singleStepMode = true;
+        debugProgress.stepPaused = false;
+        debugProgress.pausedAtStep = null;
+        debugProgress.singleStepUpdatedAt = new Date().toISOString();
+      }
+      if (wantsStepIntoSubsteps) {
+        debugProgress.stepIntoSubsteps = true;
+      }
+      if (wantsMockLLM) {
+        debugProgress.mockLLM = true;
+        debugProgress.mockLLMDelay = resolvedParameters?.mockLLMDelay ?? 500;
+        debugProgress.mockLLMUpdatedAt = new Date().toISOString();
+        debugProgress.llmState = {
+          globalMode: 'mock',
+          perAgentOverrides: existingProgress.llmState?.perAgentOverrides || {},
+          updatedAt: new Date().toISOString()
+        };
+      }
+
+      writeFileSync(debugProgressFile, JSON.stringify(debugProgress, null, 2));
+      log(`Pre-set debug settings: singleStepMode=${wantsSingleStep}, stepIntoSubsteps=${wantsStepIntoSubsteps}, mockLLM=${wantsMockLLM}`, 'info');
     }
 
     // Store workflow info locally (for status queries before child writes progress)

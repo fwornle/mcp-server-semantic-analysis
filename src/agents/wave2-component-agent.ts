@@ -88,13 +88,20 @@ export class Wave2ComponentAgent {
   async execute(input: Wave2Input): Promise<WaveAgentOutput> {
     const startTime = Date.now();
     const parentName = input.l1Entity.name;
+    const onPhase = input.onPhase;
     log(`[Wave2Agent] Starting analysis for ${parentName}`, 'info');
+
+    // Phase: sem_data_prep — reading and preparing source files
+    if (onPhase) await onPhase('sem_data_prep');
 
     // Read component source files (already scoped by WaveController via CGR)
     const fileContents = await this.readComponentFiles(input.componentFiles, 10);
 
     let l2Entities: KGEntity[] = [];
     let childManifest: ChildManifestEntry[] = [];
+
+    // Phase: sem_llm_analysis — LLM analysis of sub-components
+    if (onPhase) await onPhase('sem_llm_analysis');
 
     if (isMockLLMEnabled(this.repositoryPath)) {
       // Mock mode: generate synthetic L2 entities from manifest only, no LLM call
@@ -170,6 +177,9 @@ export class Wave2ComponentAgent {
       }
     }
 
+    // Phase: sem_observation_gen — enriching entities with deep observations
+    if (onPhase) await onPhase('sem_observation_gen');
+
     // Enrich each L2 entity via CGR + SemanticAnalysisAgent (per-entity, fresh instance)
     if (!isMockLLMEnabled(this.repositoryPath)) {
       for (const entity of l2Entities) {
@@ -223,6 +233,9 @@ export class Wave2ComponentAgent {
         }
       }
     }
+
+    // Phase: sem_entity_transform — building final entities and relationships
+    if (onPhase) await onPhase('sem_entity_transform');
 
     // Build parent-child relationships
     const relationships = this.buildRelationships(l2Entities, input.l1Entity);

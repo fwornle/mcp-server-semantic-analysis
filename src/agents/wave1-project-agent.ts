@@ -88,11 +88,19 @@ export class Wave1ProjectAgent {
       await this.ensureLLMInitialized();
     }
 
+    const onPhase = input.onPhase;
+
+    // Phase: sem_data_prep — scanning files and preparing data
+    if (onPhase) await onPhase('sem_data_prep');
+
     // Step 1: Scan directory structure for project overview
     const directoryStructure = await this.scanDirectoryStructure(input.repositoryPath);
 
     // Step 2: Format existing KG entities as context
     const existingEntitiesContext = this.formatExistingEntities(input.existingEntities);
+
+    // Phase: sem_llm_analysis — LLM analysis of components
+    if (onPhase) await onPhase('sem_llm_analysis');
 
     // Step 3: Analyze each L1 component
     const l1Entities: KGEntity[] = [];
@@ -178,6 +186,9 @@ export class Wave1ProjectAgent {
       );
       allChildManifest.push(...children);
     }
+
+    // Phase: sem_observation_gen — enrichment and observation generation
+    if (onPhase) await onPhase('sem_observation_gen');
 
     // Step 3b: Multi-step enrichment -- second LLM call per L1 entity for deep observations
     if (!isMock) {
@@ -265,6 +276,9 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
         }
       }
     }
+
+    // Phase: sem_entity_transform — building final entities and relationships
+    if (onPhase) await onPhase('sem_entity_transform');
 
     // Step 4: Build L0 Project entity
     const projectSummary = this.buildProjectSummary(input.manifest, l1Entities);

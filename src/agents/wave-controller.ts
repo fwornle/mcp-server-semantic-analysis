@@ -1196,6 +1196,10 @@ export class WaveController {
         manifest,
         existingEntities,
         repositoryPath: this.repositoryPath,
+        onPhase: async (phase: string) => {
+          this.updateProgress({ currentStep: phase });
+          await this.checkSingleStepPause(phase, true);
+        },
       });
 
       return {
@@ -1273,6 +1277,9 @@ export class WaveController {
             componentFiles,
             componentKeywords,
             manifestChildren: childEntries,
+            onPhase: async (phase: string) => {
+              this.updateProgress({ currentStep: phase });
+            },
           };
 
           const agent = new Wave2ComponentAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder);
@@ -1416,6 +1423,9 @@ export class WaveController {
             },
             scopedFiles,
             suggestedChildren,
+            onPhase: async (phase: string) => {
+              this.updateProgress({ currentStep: phase });
+            },
           };
 
           const agent = new Wave3DetailAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder);
@@ -2312,10 +2322,11 @@ export class WaveController {
   }
 
   private updateProgress(data: {
-    currentWave: number;
-    totalWaves: number;
+    currentWave?: number;
+    totalWaves?: number;
     subPhase?: 'init' | 'analyze' | 'qa' | 'qa_retry' | 'classify' | 'persist' | 'insights' | 'operators';
     message?: string;
+    currentStep?: string;
   }): void {
     try {
       let existing: Record<string, unknown> = {};
@@ -2339,11 +2350,15 @@ export class WaveController {
       }
 
       // Determine the current sub-step name for agent graph highlighting
-      const effectivePhase = data.subPhase ?? 'analyze';
       let currentStepName: string;
-      if (effectivePhase === 'classify') {
+      if (data.currentStep) {
+        // Direct override — used by semantic substep callbacks
+        currentStepName = data.currentStep;
+      } else if (!data.currentWave) {
+        currentStepName = 'wave1_init';
+      } else if ((data.subPhase ?? 'analyze') === 'classify') {
         currentStepName = `wave${data.currentWave}_classify`;
-      } else if (effectivePhase === 'operators' && data.message) {
+      } else if ((data.subPhase ?? 'analyze') === 'operators' && data.message) {
         // Map operator messages to step names: "KG Operator: Context Convolution" -> "operator_conv"
         const opMap: Record<string, string> = {
           'Context Convolution': 'operator_conv',
@@ -2354,8 +2369,9 @@ export class WaveController {
           'Structure Fusion': 'operator_merge',
         };
         const opLabel = data.message.replace('KG Operator: ', '');
-        currentStepName = opMap[opLabel] ?? `wave${data.currentWave}_${effectivePhase}`;
+        currentStepName = opMap[opLabel] ?? `wave${data.currentWave}_operators`;
       } else {
+        const effectivePhase = data.subPhase ?? 'analyze';
         currentStepName = `wave${data.currentWave}_${effectivePhase}`;
       }
 

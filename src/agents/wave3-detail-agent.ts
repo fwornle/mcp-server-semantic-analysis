@@ -80,12 +80,19 @@ export class Wave3DetailAgent {
   async execute(input: Wave3Input): Promise<WaveAgentOutput> {
     const startTime = Date.now();
     const parentName = input.l2Entity.name;
+    const onPhase = input.onPhase;
     log(`[Wave3Agent] Starting detail analysis for ${parentName}`, 'info');
+
+    // Phase: sem_data_prep — reading and preparing scoped files
+    if (onPhase) await onPhase('sem_data_prep');
 
     // Read scoped source files
     const fileContents = await this.readScopedFiles(input.scopedFiles, 8);
 
     let l3Entities: KGEntity[] = [];
+
+    // Phase: sem_llm_analysis — LLM discovery of detail entities
+    if (onPhase) await onPhase('sem_llm_analysis');
 
     if (isMockLLMEnabled(this.repositoryPath)) {
       // Mock mode: generate 2 synthetic L3 entities per L2 node
@@ -138,6 +145,9 @@ export class Wave3DetailAgent {
         l3Entities.push(entity);
       }
     }
+
+    // Phase: sem_observation_gen — enriching entities with deep observations
+    if (onPhase) await onPhase('sem_observation_gen');
 
     // Enrich each L3 entity via CGR + SemanticAnalysisAgent (per-entity, fresh instance)
     if (!isMockLLMEnabled(this.repositoryPath)) {
@@ -202,6 +212,9 @@ export class Wave3DetailAgent {
         }
       }
     }
+
+    // Phase: sem_entity_transform — building final entities and relationships
+    if (onPhase) await onPhase('sem_entity_transform');
 
     // Build parent-child relationships
     const relationships = this.buildRelationships(l3Entities, input.l2Entity);

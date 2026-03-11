@@ -291,6 +291,25 @@ export class WaveController {
     const startTime = Date.now();
     const waveResults: WaveResult[] = [];
 
+    /** Build enriched step-complete event with attached stepMetrics */
+    const buildStepComplete = (stepName: string, nextStep: string, waveNum: number, waveStartTime: number) => {
+      const metrics = this.stepMetrics.get(stepName) || {};
+      return {
+        type: 'step-complete' as const,
+        stepName,
+        nextStep,
+        duration: Math.round((Date.now() - waveStartTime) / 1000),
+        wave: waveNum,
+        tokensUsed: metrics.tokensUsed,
+        llmCalls: metrics.llmCalls,
+        llmProvider: metrics.llmProvider,
+        agentInstances: metrics.agentInstances as Array<Record<string, unknown>> | undefined,
+        llmCallEvents: metrics.llmCallEvents as Array<Record<string, unknown>> | undefined,
+        entityFlow: metrics.entityFlow as Record<string, unknown> | undefined,
+        qaResult: metrics.qaResult as Record<string, unknown> | undefined,
+      };
+    };
+
     try {
       // Initialize graph database
       await this.graphDB.initialize();
@@ -482,7 +501,7 @@ export class WaveController {
       }
 
       // Signal wave 1 completion to state machine
-      dispatch({ type: 'step-complete', stepName: 'wave1', nextStep: 'wave2', duration: Math.round((Date.now() - startTime) / 1000) });
+      dispatch(buildStepComplete('wave1', 'wave2', 1, startTime));
 
       // ---- Wave 2: L2 SubComponents ----
       if (getState().status === 'cancelled') {
@@ -637,7 +656,7 @@ export class WaveController {
       }
 
       // Signal wave 2 completion to state machine
-      dispatch({ type: 'step-complete', stepName: 'wave2', nextStep: 'wave3', duration: Math.round((Date.now() - startTime) / 1000) });
+      dispatch(buildStepComplete('wave2', 'wave3', 2, startTime));
 
       // ---- Wave 3: L3 Details ----
       if (getState().status === 'cancelled') {
@@ -1073,7 +1092,7 @@ export class WaveController {
       }
 
       // Signal wave 3 completion to state machine (after KG operators)
-      dispatch({ type: 'step-complete', stepName: 'wave3', nextStep: 'wave4', duration: Math.round((Date.now() - startTime) / 1000) });
+      dispatch(buildStepComplete('wave3', 'wave4', 3, startTime));
 
       // ---- Insight Finalization: Generate insight documents ----
       if (getState().status === 'cancelled') {
@@ -1102,7 +1121,7 @@ export class WaveController {
       this.logSummaryReport(summary);
 
       // Signal wave 4 completion to state machine
-      dispatch({ type: 'step-complete', stepName: 'wave4', nextStep: 'done', duration: Math.round((Date.now() - startTime) / 1000) });
+      dispatch(buildStepComplete('wave4', 'done', 4, startTime));
 
       // Final substep-update to mark insights as the last active substep
       dispatch({ type: 'substep-update', substepId: 'wave4_insights_done', wave: 4, totalWaves: 4 });

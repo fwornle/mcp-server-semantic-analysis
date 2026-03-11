@@ -70,6 +70,15 @@ const StepCompleteEventSchema = z.object({
   stepName: z.string(),
   nextStep: z.string(),
   duration: z.number(),
+  // Trace data (optional — enriched by wave-controller)
+  wave: z.number().optional(),
+  tokensUsed: z.number().optional(),
+  llmCalls: z.number().optional(),
+  llmProvider: z.string().optional(),
+  agentInstances: z.array(z.record(z.string(), z.unknown())).optional(),
+  llmCallEvents: z.array(z.record(z.string(), z.unknown())).optional(),
+  entityFlow: z.record(z.string(), z.unknown()).optional(),
+  qaResult: z.record(z.string(), z.unknown()).optional(),
 });
 
 const PauseEventSchema = z.object({
@@ -213,6 +222,23 @@ function handleRunning(state: RunningState, event: WorkflowTransitionEvent): Wor
   switch (event.type) {
     case 'step-complete': {
       const newCompleted = [...state.progress.completedSteps, event.stepName];
+      // Accumulate enriched step detail for trace modal
+      const existingDetails = state.stepsDetail ? [...state.stepsDetail] : [];
+      existingDetails.push({
+        name: event.stepName,
+        status: 'completed',
+        duration: event.duration,
+        wave: event.wave,
+        startTime: new Date(Date.now() - event.duration * 1000).toISOString(),
+        endTime: new Date().toISOString(),
+        tokensUsed: event.tokensUsed,
+        llmCalls: event.llmCalls,
+        llmProvider: event.llmProvider,
+        agentInstances: event.agentInstances,
+        llmCallEvents: event.llmCallEvents,
+        entityFlow: event.entityFlow,
+        qaResult: event.qaResult,
+      });
       const result: RunningState = {
         ...state,
         subStatus: 'executing-step',
@@ -224,6 +250,7 @@ function handleRunning(state: RunningState, event: WorkflowTransitionEvent): Wor
           lastUpdate: now,
           elapsedSeconds: state.progress.elapsedSeconds + event.duration,
         },
+        stepsDetail: existingDetails,
       };
       return result;
     }
@@ -283,6 +310,7 @@ function handleRunning(state: RunningState, event: WorkflowTransitionEvent): Wor
         completedSteps: state.progress.completedSteps.length,
         duration: elapsed,
         summary: event.summary,
+        stepsDetail: state.stepsDetail,
       };
       return result;
     }

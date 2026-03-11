@@ -31,6 +31,23 @@ export type IdleState = z.infer<typeof IdleStateSchema>;
  * Running: workflow is actively executing.
  * subStatus distinguishes whether we are mid-step or between steps.
  */
+export const StepDetailSchema = z.object({
+  name: z.string(),
+  status: z.string(),
+  duration: z.number().optional(),
+  wave: z.number().optional(),
+  startTime: z.string().optional(),
+  endTime: z.string().optional(),
+  tokensUsed: z.number().optional(),
+  llmCalls: z.number().optional(),
+  llmProvider: z.string().optional(),
+  agentInstances: z.array(z.any()).optional(),
+  llmCallEvents: z.array(z.any()).optional(),
+  entityFlow: z.record(z.string(), z.unknown()).optional(),
+  qaResult: z.record(z.string(), z.unknown()).optional(),
+});
+export type StepDetail = z.infer<typeof StepDetailSchema>;
+
 export const RunningStateSchema = z.object({
   status: z.literal('running'),
   /** Whether currently inside a step or between steps */
@@ -39,6 +56,8 @@ export const RunningStateSchema = z.object({
   workflowName: z.string(),
   config: RunConfigSchema,
   progress: RunProgressSchema,
+  /** Accumulated step trace data for trace modal */
+  stepsDetail: z.array(StepDetailSchema).optional(),
 });
 export type RunningState = z.infer<typeof RunningStateSchema>;
 
@@ -79,6 +98,8 @@ export const CompletedStateSchema = z.object({
   duration: z.number(),
   /** Optional summary data from the workflow run */
   summary: z.record(z.string(), z.unknown()).optional(),
+  /** Accumulated step trace data carried from running state */
+  stepsDetail: z.array(StepDetailSchema).optional(),
 });
 export type CompletedState = z.infer<typeof CompletedStateSchema>;
 

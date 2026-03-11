@@ -12,7 +12,8 @@ import * as os from 'os';
 
 import { getState, dispatch, subscribe, reset, createProgressFileSubscriber } from './workflow-state-machine.js';
 import { InvalidTransitionError } from '../../../shared/workflow-types/transitions.js';
-import type { WorkflowState, WorkflowTransitionEvent } from '../../../shared/workflow-types/state.js';
+import type { WorkflowState } from '../../../shared/workflow-types/state.js';
+import type { WorkflowTransitionEvent } from '../../../shared/workflow-types/transitions.js';
 
 // Helper: a valid start event
 function makeStartEvent(): WorkflowTransitionEvent {

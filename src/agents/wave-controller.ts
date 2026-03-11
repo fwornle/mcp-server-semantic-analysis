@@ -481,6 +481,9 @@ export class WaveController {
         await this.checkSingleStepPause('wave1_persist', true);
       }
 
+      // Signal wave 1 completion to state machine
+      dispatch({ type: 'step-complete', stepName: 'wave1', nextStep: 'wave2', duration: Math.round((Date.now() - startTime) / 1000) });
+
       // ---- Wave 2: L2 SubComponents ----
       if (getState().status === 'cancelled') {
         process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
@@ -632,6 +635,9 @@ export class WaveController {
         });
         await this.checkSingleStepPause('wave2_persist', true);
       }
+
+      // Signal wave 2 completion to state machine
+      dispatch({ type: 'step-complete', stepName: 'wave2', nextStep: 'wave3', duration: Math.round((Date.now() - startTime) / 1000) });
 
       // ---- Wave 3: L3 Details ----
       if (getState().status === 'cancelled') {
@@ -1066,6 +1072,9 @@ export class WaveController {
         log('[WaveController] KG Operators phase failed (non-fatal)', 'warning', { error: errMsg });
       }
 
+      // Signal wave 3 completion to state machine (after KG operators)
+      dispatch({ type: 'step-complete', stepName: 'wave3', nextStep: 'wave4', duration: Math.round((Date.now() - startTime) / 1000) });
+
       // ---- Insight Finalization: Generate insight documents ----
       if (getState().status === 'cancelled') {
         process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
@@ -1091,6 +1100,9 @@ export class WaveController {
 
       // Log structured summary
       this.logSummaryReport(summary);
+
+      // Signal wave 4 completion to state machine
+      dispatch({ type: 'step-complete', stepName: 'wave4', nextStep: 'done', duration: Math.round((Date.now() - startTime) / 1000) });
 
       // Final substep-update to mark insights as the last active substep
       dispatch({ type: 'substep-update', substepId: 'wave4_insights_done', wave: 4, totalWaves: 4 });

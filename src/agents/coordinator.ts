@@ -26,6 +26,7 @@ import { SmartOrchestrator, createSmartOrchestrator, type StepResultWithMetadata
 import { AgentResponse, AgentIssue, createIssue, createDefaultMetadata, createDefaultRouting, createAgentResponse } from "../types/agent-response.js";
 import { UKBTraceReportManager } from "../utils/ukb-trace-report.js";
 import { isMockLLMEnabled, getMockDelay } from "../mock/llm-mock-service.js";
+import { compareSnapshots, writeComparisonLog } from "../utils/comparison-util.js";
 
 // Load mock mode timing configs
 const mockModeConfig = loadOrchestratorConfig().mock_mode;
@@ -154,7 +155,7 @@ export class CoordinatorAgent {
    */
   private writeProgressFile(execution: WorkflowExecution, workflow: WorkflowDefinition, currentStep?: string, runningSteps?: string[], batchProgress?: { currentBatch: number; totalBatches: number; batchId?: string }): void {
     try {
-      const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
+      const progressPath = `${this.repositoryPath}/.data/workflow-progress-legacy.json`;
       const abortPath = `${this.repositoryPath}/.data/workflow-abort.json`;
 
       // CRITICAL: Check for external abort signal FIRST (separate file to avoid race condition)
@@ -586,7 +587,7 @@ export class CoordinatorAgent {
    */
   private isWorkflowCancelled(): boolean {
     try {
-      const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
+      const progressPath = `${this.repositoryPath}/.data/workflow-progress-legacy.json`;
       if (fs.existsSync(progressPath)) {
         const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
         if (progress.status === 'cancelled') {
@@ -686,7 +687,7 @@ export class CoordinatorAgent {
    * @param isSubstep - If true, only pause when stepIntoSubsteps is enabled
    */
   private async checkSingleStepPause(stepName: string, isSubstep: boolean = false): Promise<void> {
-    const progressPath = `${this.repositoryPath}/.data/workflow-progress.json`;
+    const progressPath = `${this.repositoryPath}/.data/workflow-progress-legacy.json`;
 
     // Initial setup - these errors should NOT cause workflow to continue
     try {
@@ -2061,11 +2062,27 @@ export class CoordinatorAgent {
       // Write final progress file with completed status for external monitoring
       this.writeProgressFile(execution, workflow);
 
+      // Migration: Compare legacy and new progress files for divergence detection
+      try {
+        const legacyPath = `${this.repositoryPath}/.data/workflow-progress-legacy.json`;
+        const newPath = `${this.repositoryPath}/.data/workflow-progress.json`;
+        const logPath = `${this.repositoryPath}/.data/comparison-log.json`;
+        const divergences = compareSnapshots(legacyPath, newPath);
+        writeComparisonLog(divergences, logPath, legacyPath, newPath);
+        if (divergences.length > 0) {
+          process.stderr.write(`[Migration] ${divergences.length} divergence(s) detected after DAG workflow completion\n`);
+        } else {
+          process.stderr.write('[Migration] No divergences detected after DAG workflow completion\n');
+        }
+      } catch (compErr) {
+        process.stderr.write(`[Migration] Comparison failed (non-critical): ${compErr instanceof Error ? compErr.message : String(compErr)}\n`);
+      }
+
     } catch (error) {
       execution.status = "failed";
       execution.endTime = new Date();
       execution.errors.push(error instanceof Error ? error.message : String(error));
-      
+
       // ROLLBACK: Attempt to rollback changes if critical failure occurred
       if (execution.rollbackActions && execution.rollbackActions.length > 0) {
         log(`Attempting rollback due to workflow failure: ${executionId}`, "warning", {
@@ -4098,6 +4115,23 @@ export class CoordinatorAgent {
 
       // Write final progress file for dashboard
       this.writeProgressFile(execution, workflow);
+
+      // Migration: Compare legacy and new progress files for divergence detection
+      try {
+        const repoPath = parameters.repositoryPath || this.repositoryPath;
+        const legacyPath = `${repoPath}/.data/workflow-progress-legacy.json`;
+        const newPath = `${repoPath}/.data/workflow-progress.json`;
+        const logPath = `${repoPath}/.data/comparison-log.json`;
+        const batchDivergences = compareSnapshots(legacyPath, newPath);
+        writeComparisonLog(batchDivergences, logPath, legacyPath, newPath);
+        if (batchDivergences.length > 0) {
+          process.stderr.write(`[Migration] ${batchDivergences.length} divergence(s) detected after batch workflow completion\n`);
+        } else {
+          process.stderr.write('[Migration] No divergences detected after batch workflow completion\n');
+        }
+      } catch (compErr) {
+        process.stderr.write(`[Migration] Comparison failed (non-critical): ${compErr instanceof Error ? compErr.message : String(compErr)}\n`);
+      }
 
       // Finalize and save workflow report for dashboard history
       // For batch workflows: stepsCompleted = all workflow steps (they all run per batch)

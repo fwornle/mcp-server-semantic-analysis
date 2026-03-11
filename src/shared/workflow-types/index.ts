@@ -11,7 +11,7 @@ export {
   RunProgressSchema,
   type RunConfig,
   type RunProgress,
-} from './config';
+} from './config.js';
 
 // State machine discriminated union
 export {
@@ -31,7 +31,7 @@ export {
   type FailedState,
   type CancelledState,
   type WorkflowState,
-} from './state';
+} from './state.js';
 
 // Migration schemas and step types
 export {
@@ -40,7 +40,7 @@ export {
   WorkflowStateWithMigrationSchema,
   type StepStatus,
   type StepDefinition,
-} from './schemas';
+} from './schemas.js';
 
 // Typed state transitions
 export {
@@ -49,7 +49,7 @@ export {
   transition,
   type WorkflowTransitionEvent,
   type TransitionMap,
-} from './transitions';
+} from './transitions.js';
 
 // SSE event types (discriminated union on 'event' field)
 export {
@@ -59,7 +59,7 @@ export {
   type WorkflowSSEEvent,
   type StateChangeEvent,
   type InitialStateEvent,
-} from './events';
+} from './events.js';
 
 // Step status derivation (pure functions)
-export { deriveStepStatuses, deriveSubstepStatuses } from './derived';
+export { deriveStepStatuses, deriveSubstepStatuses } from './derived.js';

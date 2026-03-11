@@ -10,8 +10,8 @@
  */
 
 import { z } from 'zod';
-import { WorkflowStateSchema } from './state';
-import type { WorkflowTransitionEvent } from './transitions';
+import { WorkflowStateSchema } from './state.js';
+import type { WorkflowTransitionEvent } from './transitions.js';
 
 // ---------------------------------------------------------------------------
 // SSE event schemas

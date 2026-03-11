@@ -6,8 +6,8 @@
  * step statuses are always consistent with the state machine position.
  */
 
-import type { WorkflowState } from './state';
-import type { StepDefinition, StepStatus } from './schemas';
+import type { WorkflowState } from './state.js';
+import type { StepDefinition, StepStatus } from './schemas.js';
 
 /**
  * Derive the status of each step from the current workflow state.

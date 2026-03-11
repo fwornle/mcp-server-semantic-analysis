@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod';
-import { RunConfigSchema, RunProgressSchema } from './config';
+import { RunConfigSchema, RunProgressSchema } from './config.js';
 
 /** Why the workflow was paused */
 export const PauseReasonSchema = z.enum(['user-requested', 'single-step-boundary']);

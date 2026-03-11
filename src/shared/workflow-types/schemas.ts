@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod';
-import { WorkflowStateSchema } from './state';
+import { WorkflowStateSchema } from './state.js';
 
 // ---------------------------------------------------------------------------
 // Step types (migrated from workflow-events.ts)

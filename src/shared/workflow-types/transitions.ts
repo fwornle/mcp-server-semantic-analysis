@@ -21,8 +21,8 @@
  */
 
 import { z } from 'zod';
-import { RunConfigSchema } from './config';
-import { PauseReasonSchema } from './state';
+import { RunConfigSchema } from './config.js';
+import { PauseReasonSchema } from './state.js';
 import type {
   WorkflowState,
   RunningState,
@@ -31,7 +31,7 @@ import type {
   FailedState,
   CancelledState,
   IdleState,
-} from './state';
+} from './state.js';
 
 // ---------------------------------------------------------------------------
 // InvalidTransitionError

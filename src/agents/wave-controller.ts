@@ -50,6 +50,7 @@ import type {
   Wave2Input,
   Wave3Input,
 } from '../types/wave-types.js';
+import { dispatch, getState } from '../workflow-state-machine.js';
 
 /** Generic entity names that should be rejected -- too vague for a knowledge graph node */
 const GENERIC_ENTITY_NAMES = new Set([
@@ -315,7 +316,7 @@ export class WaveController {
 
       // ---- Wave 1: L0 Project + L1 Components ----
       this.logWaveBanner('WAVE 1', 'L0 Project + L1 Components');
-      this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'init', message: 'Wave 1: Loading manifest & planning' });
+      dispatch({ type: 'substep-update', substepId: 'wave1_init', wave: 1, totalWaves: 4 });
 
       // Initialize CGR query cache and start async index refresh
       this.cgrCache = new CgrQueryCache(this.repositoryPath);
@@ -334,7 +335,7 @@ export class WaveController {
       await this.checkSingleStepPause('wave1_init');
 
       SemanticAnalyzer.resetStepMetrics();
-      this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'analyze', message: 'Wave 1: Analyzing Project & Components' });
+      dispatch({ type: 'substep-update', substepId: 'wave1_analyze', wave: 1, totalWaves: 4 });
       let { result: wave1Result, agent: wave1Agent } = await this.executeWave1WithMetrics(manifest, existingEntities);
       waveResults.push(wave1Result);
       const cgrStatsOutput = this.cgrCache ? { cgrStats: this.cgrCache.getStats() } : {};
@@ -396,7 +397,7 @@ export class WaveController {
           score: wave1QaReport.score,
           errors: wave1QaReport.errors.length > 0 ? wave1QaReport.errors : undefined,
         });
-        this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'qa', message: 'Wave 1: QA validation' });
+        dispatch({ type: 'substep-update', substepId: 'wave1_qa', wave: 1, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 50));
 
         // QA retry: if score < 60, retry wave 1 once with feedback
@@ -406,7 +407,7 @@ export class WaveController {
             score: wave1QaReport.score,
             errors: wave1QaReport.errors.length,
           });
-          this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'qa_retry', message: 'Wave 1: Retrying with QA feedback' });
+          dispatch({ type: 'substep-update', substepId: 'wave1_qa_retry', wave: 1, totalWaves: 4 });
           await new Promise(r => setTimeout(r, 50));
 
           const { result: retryResult, retried } = await this.retryWaveWithFeedback(
@@ -455,7 +456,7 @@ export class WaveController {
         });
 
         SemanticAnalyzer.resetStepMetrics();
-        this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'classify', message: 'Wave 1: Classifying entities' });
+        dispatch({ type: 'substep-update', substepId: 'wave1_classify', wave: 1, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         const wave1ClassifyTasks = wave1Entities.map(entity => async () => {
           await this.classifyEntity(entity);
@@ -464,7 +465,7 @@ export class WaveController {
         this.captureStepMetrics('wave1_classify', { entitiesClassified: wave1Entities.length });
         log('[WaveController] Wave 1 classification complete', 'info', { entities: wave1Entities.length });
         await this.checkSingleStepPause('wave1_classify', true);
-        this.updateProgress({ currentWave: 1, totalWaves: 4, subPhase: 'persist', message: 'Wave 1: Persisting entities' });
+        dispatch({ type: 'substep-update', substepId: 'wave1_persist', wave: 1, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave1Result);
         this.captureStepMetrics('wave1_persist', { entitiesPersisted: wave1Result.totalEntities });
@@ -481,9 +482,13 @@ export class WaveController {
       }
 
       // ---- Wave 2: L2 SubComponents ----
+      if (getState().status === 'cancelled') {
+        process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
+        return this.buildSummaryReport(startTime, waveResults);
+      }
       this.logWaveBanner('WAVE 2', 'L2 SubComponents');
       SemanticAnalyzer.resetStepMetrics();
-      this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'analyze', message: 'Wave 2: Analyzing SubComponents' });
+      dispatch({ type: 'substep-update', substepId: 'wave2_analyze', wave: 2, totalWaves: 4 });
 
       let { result: wave2Result, agents: wave2Agents } = await this.executeWave2WithMetrics(wave1Result, manifest);
       waveResults.push(wave2Result);
@@ -540,7 +545,7 @@ export class WaveController {
           score: wave2QaReport.score,
           errors: wave2QaReport.errors.length > 0 ? wave2QaReport.errors : undefined,
         });
-        this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'qa', message: 'Wave 2: QA validation' });
+        dispatch({ type: 'substep-update', substepId: 'wave2_qa', wave: 2, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 50));
 
         // QA retry: if score < 60, retry wave 2 once with feedback
@@ -550,7 +555,7 @@ export class WaveController {
             score: wave2QaReport.score,
             errors: wave2QaReport.errors.length,
           });
-          this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'qa_retry', message: 'Wave 2: Retrying with QA feedback' });
+          dispatch({ type: 'substep-update', substepId: 'wave2_qa_retry', wave: 2, totalWaves: 4 });
           await new Promise(r => setTimeout(r, 50));
 
           const { result: retryResult, retried } = await this.retryWaveWithFeedback(
@@ -598,8 +603,12 @@ export class WaveController {
           persisted: 0,
         });
 
+        if (getState().status === 'cancelled') {
+          process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
+          return this.buildSummaryReport(startTime, waveResults);
+        }
         SemanticAnalyzer.resetStepMetrics();
-        this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'classify', message: 'Wave 2: Classifying entities' });
+        dispatch({ type: 'substep-update', substepId: 'wave2_classify', wave: 2, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         const wave2ClassifyTasks = wave2Entities.map(entity => async () => {
           await this.classifyEntity(entity);
@@ -608,7 +617,7 @@ export class WaveController {
         this.captureStepMetrics('wave2_classify', { entitiesClassified: wave2Entities.length });
         log('[WaveController] Wave 2 classification complete', 'info', { entities: wave2Entities.length });
         await this.checkSingleStepPause('wave2_classify', true);
-        this.updateProgress({ currentWave: 2, totalWaves: 4, subPhase: 'persist', message: 'Wave 2: Persisting entities' });
+        dispatch({ type: 'substep-update', substepId: 'wave2_persist', wave: 2, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         await this.persistWaveResult(wave2Result);
         this.captureStepMetrics('wave2_persist', { entitiesPersisted: wave2Result.totalEntities });
@@ -625,9 +634,13 @@ export class WaveController {
       }
 
       // ---- Wave 3: L3 Details ----
+      if (getState().status === 'cancelled') {
+        process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
+        return this.buildSummaryReport(startTime, waveResults);
+      }
       this.logWaveBanner('WAVE 3', 'L3 Detail Entities');
       SemanticAnalyzer.resetStepMetrics();
-      this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'analyze', message: 'Wave 3: Analyzing Detail entities' });
+      dispatch({ type: 'substep-update', substepId: 'wave3_analyze', wave: 3, totalWaves: 4 });
 
       let { result: wave3Result, agents: wave3Agents } = await this.executeWave3WithMetrics(wave2Result, manifest);
       waveResults.push(wave3Result);
@@ -680,7 +693,7 @@ export class WaveController {
           score: wave3QaReport.score,
           errors: wave3QaReport.errors.length > 0 ? wave3QaReport.errors : undefined,
         });
-        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'qa', message: 'Wave 3: QA validation' });
+        dispatch({ type: 'substep-update', substepId: 'wave3_qa', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 50));
 
         // QA retry: if score < 60, retry wave 3 once with feedback
@@ -690,7 +703,7 @@ export class WaveController {
             score: wave3QaReport.score,
             errors: wave3QaReport.errors.length,
           });
-          this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'qa_retry', message: 'Wave 3: Retrying with QA feedback' });
+          dispatch({ type: 'substep-update', substepId: 'wave3_qa_retry', wave: 3, totalWaves: 4 });
           await new Promise(r => setTimeout(r, 50));
 
           const { result: retryResult, retried } = await this.retryWaveWithFeedback(
@@ -738,8 +751,12 @@ export class WaveController {
           persisted: 0,
         });
 
+        if (getState().status === 'cancelled') {
+          process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
+          return this.buildSummaryReport(startTime, waveResults);
+        }
         SemanticAnalyzer.resetStepMetrics();
-        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'classify', message: 'Wave 3: Classifying entities' });
+        dispatch({ type: 'substep-update', substepId: 'wave3_classify', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         const wave3ClassifyTasks = wave3Entities.map(entity => async () => {
           await this.classifyEntity(entity);
@@ -748,7 +765,7 @@ export class WaveController {
         this.captureStepMetrics('wave3_classify', { entitiesClassified: wave3Entities.length });
         log('[WaveController] Wave 3 classification complete', 'info', { entities: wave3Entities.length });
         await this.checkSingleStepPause('wave3_classify', true);
-        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'persist', message: 'Wave 3: Persisting entities' });
+        dispatch({ type: 'substep-update', substepId: 'wave3_persist', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
         await this.persistWaveResult(wave3Result);
         this.captureStepMetrics('wave3_persist', { entitiesPersisted: wave3Result.totalEntities });
@@ -833,8 +850,13 @@ export class WaveController {
         // --- Run each operator with full trace logging and SSE visibility ---
         const operatorTimings: Record<string, number> = {};
 
+        if (getState().status === 'cancelled') {
+          process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
+          return this.buildSummaryReport(startTime, waveResults);
+        }
+
         // Conv
-        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Context Convolution' });
+        dispatch({ type: 'substep-update', substepId: 'operator_conv', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100)); // Allow SSE broadcast
         try {
           const convStart = Date.now();
@@ -854,7 +876,7 @@ export class WaveController {
         await this.checkSingleStepPause('operator_conv');
 
         // Aggr
-        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Entity Aggregation' });
+        dispatch({ type: 'substep-update', substepId: 'operator_aggr', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
           const aggrStart = Date.now();
@@ -874,7 +896,7 @@ export class WaveController {
         await this.checkSingleStepPause('operator_aggr');
 
         // Embed
-        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Node Embedding' });
+        dispatch({ type: 'substep-update', substepId: 'operator_embed', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
           const embedStart = Date.now();
@@ -898,7 +920,7 @@ export class WaveController {
         await this.checkSingleStepPause('operator_embed');
 
         // Dedup
-        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Deduplication' });
+        dispatch({ type: 'substep-update', substepId: 'operator_dedup', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
           const dedupStart = Date.now();
@@ -919,7 +941,7 @@ export class WaveController {
         await this.checkSingleStepPause('operator_dedup');
 
         // Pred
-        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Edge Prediction' });
+        dispatch({ type: 'substep-update', substepId: 'operator_pred', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
           const predStart = Date.now();
@@ -940,7 +962,7 @@ export class WaveController {
         await this.checkSingleStepPause('operator_pred');
 
         // Merge (structure fusion)
-        this.updateProgress({ currentWave: 3, totalWaves: 4, subPhase: 'operators', message: 'KG Operator: Structure Fusion' });
+        dispatch({ type: 'substep-update', substepId: 'operator_merge', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
           const mergeStart = Date.now();
@@ -1045,8 +1067,12 @@ export class WaveController {
       }
 
       // ---- Insight Finalization: Generate insight documents ----
+      if (getState().status === 'cancelled') {
+        process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
+        return this.buildSummaryReport(startTime, waveResults);
+      }
       this.logWaveBanner('FINALIZATION', 'Insight Document Generation');
-      this.updateProgress({ currentWave: 4, totalWaves: 4, subPhase: 'insights', message: 'Generating insight documents' });
+      dispatch({ type: 'substep-update', substepId: 'wave4_insights', wave: 4, totalWaves: 4 });
 
       const insightResult = await this.generateInsightsForWaveEntities(waveResults);
       log('[WaveController] Insight finalization complete', 'info', {
@@ -1066,15 +1092,8 @@ export class WaveController {
       // Log structured summary
       this.logSummaryReport(summary);
 
-      // Mark wave4_insights as completed by advancing past the last step
-      // Use a post-completion update that sets currentStep beyond the sequence length
-      this.updateProgress({
-        currentWave: 4,
-        totalWaves: 4,
-        subPhase: 'insights',
-        message: summary.success ? 'Wave analysis complete' : 'Wave analysis completed with errors',
-        _allComplete: true,
-      } as any);
+      // Final substep-update to mark insights as the last active substep
+      dispatch({ type: 'substep-update', substepId: 'wave4_insights_done', wave: 4, totalWaves: 4 });
 
       // Record all 17 sub-steps from stepsDetail for rich history trace
       try {
@@ -1197,7 +1216,7 @@ export class WaveController {
         existingEntities,
         repositoryPath: this.repositoryPath,
         onPhase: async (phase: string) => {
-          this.updateProgress({ currentStep: phase });
+          dispatch({ type: 'substep-update', substepId: phase });
           await this.checkSingleStepPause(phase, true);
         },
       });
@@ -1278,7 +1297,7 @@ export class WaveController {
             componentKeywords,
             manifestChildren: childEntries,
             onPhase: async (phase: string) => {
-              this.updateProgress({ currentStep: phase });
+              dispatch({ type: 'substep-update', substepId: phase });
             },
           };
 
@@ -1306,10 +1325,7 @@ export class WaveController {
           observationCount: output.entities.reduce((sum: number, e: KGEntity) => sum + (e.observations?.length || 0), 0),
         });
         // Flush progress so dashboard sees each agent complete
-        this.updateProgress({
-          currentWave: 2, totalWaves: 4, subPhase: 'analyze',
-          message: `Wave 2: ${w2CompletedCount}/${agentTasks.length} agents complete`,
-        });
+        dispatch({ type: 'substep-update', substepId: 'wave2_analyze', wave: 2, totalWaves: 4 });
       });
 
       const totalEntities = outputs.reduce((sum, o) => sum + o.entities.length, 0);
@@ -1424,7 +1440,7 @@ export class WaveController {
             scopedFiles,
             suggestedChildren,
             onPhase: async (phase: string) => {
-              this.updateProgress({ currentStep: phase });
+              dispatch({ type: 'substep-update', substepId: phase });
             },
           };
 
@@ -1452,10 +1468,7 @@ export class WaveController {
           observationCount: output.entities.reduce((sum: number, e: KGEntity) => sum + (e.observations?.length || 0), 0),
         });
         // Flush progress so dashboard sees each agent complete
-        this.updateProgress({
-          currentWave: 3, totalWaves: 4, subPhase: 'analyze',
-          message: `Wave 3: ${w3CompletedCount}/${agentTasks.length} agents complete`,
-        });
+        dispatch({ type: 'substep-update', substepId: 'wave3_analyze', wave: 3, totalWaves: 4 });
       });
 
       const totalEntities = outputs.reduce((sum, o) => sum + o.entities.length, 0);
@@ -2318,153 +2331,6 @@ export class WaveController {
       }
 
       await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-    }
-  }
-
-  private updateProgress(data: {
-    currentWave?: number;
-    totalWaves?: number;
-    subPhase?: 'init' | 'analyze' | 'qa' | 'qa_retry' | 'classify' | 'persist' | 'insights' | 'operators';
-    message?: string;
-    currentStep?: string;
-  }): void {
-    try {
-      let existing: Record<string, unknown> = {};
-
-      // Read existing progress file if it exists
-      if (fs.existsSync(this.progressFile)) {
-        const content = fs.readFileSync(this.progressFile, 'utf-8');
-        existing = JSON.parse(content);
-      }
-
-      // Preserve debug state fields (including single-step pause state)
-      const preserved: Record<string, unknown> = {};
-      const preserveKeys = ['singleStepMode', 'mockLLM', 'llmState', 'debug',
-                            'stepPaused', 'pausedAtStep', 'pausedAt',
-                            'singleStepUpdatedAt', 'singleStepTimeout',
-                            'stepIntoSubsteps'];
-      for (const key of preserveKeys) {
-        if (key in existing) {
-          preserved[key] = existing[key];
-        }
-      }
-
-      // Determine the current sub-step name for agent graph highlighting
-      let currentStepName: string;
-      if (data.currentStep) {
-        // Direct override — used by semantic substep callbacks
-        currentStepName = data.currentStep;
-      } else if (!data.currentWave) {
-        currentStepName = 'wave1_init';
-      } else if ((data.subPhase ?? 'analyze') === 'classify') {
-        currentStepName = `wave${data.currentWave}_classify`;
-      } else if ((data.subPhase ?? 'analyze') === 'operators' && data.message) {
-        // Map operator messages to step names: "KG Operator: Context Convolution" -> "operator_conv"
-        const opMap: Record<string, string> = {
-          'Context Convolution': 'operator_conv',
-          'Entity Aggregation': 'operator_aggr',
-          'Node Embedding': 'operator_embed',
-          'Deduplication': 'operator_dedup',
-          'Edge Prediction': 'operator_pred',
-          'Structure Fusion': 'operator_merge',
-        };
-        const opLabel = data.message.replace('KG Operator: ', '');
-        currentStepName = opMap[opLabel] ?? `wave${data.currentWave}_operators`;
-      } else {
-        const effectivePhase = data.subPhase ?? 'analyze';
-        currentStepName = `wave${data.currentWave}_${effectivePhase}`;
-      }
-
-      // Find current position in the ordered step sequence
-      const currentIndex = WaveController.WAVE_STEP_SEQUENCE.findIndex(
-        s => s.name === currentStepName,
-      );
-
-      // If currentStep is a semantic substep (not in main sequence), only update
-      // currentStep field without touching stepsDetail or step counts
-      if (data.currentStep && currentIndex < 0) {
-        existing['currentStep'] = currentStepName;
-        Object.assign(existing, preserved);
-        fs.writeFileSync(this.progressFile, JSON.stringify(existing, null, 2));
-        return;
-      }
-
-      // Build stepsDetail with granular sub-steps that map to dashboard agents.
-      // Preserve existing timestamps from previous progress writes so the dashboard
-      // sees incremental transitions instead of all steps jumping at once.
-      const lastIndex = WaveController.WAVE_STEP_SEQUENCE.length - 1;
-      const allComplete = (data as any)._allComplete === true;
-      const effectiveIndex = allComplete ? lastIndex + 1 : (currentIndex >= 0 ? currentIndex : lastIndex);
-      const now = new Date().toISOString();
-      const existingSteps = (existing as any).stepsDetail as Array<{
-        name: string; status: string; wave: number;
-        startTime?: string; endTime?: string;
-        llmProvider?: string;
-      }> | undefined;
-      // Steps that use LLM for analysis/classification/insights
-      const llmPhases = new Set(['analyze', 'classify', 'insights']);
-      const stepsDetail = WaveController.WAVE_STEP_SEQUENCE.map((step, idx) => {
-        const status = idx < effectiveIndex ? 'completed'
-          : idx === effectiveIndex ? 'running'
-          : 'pending';
-        const prev = existingSteps?.find(s => s.name === step.name);
-        // Preserve timestamps from previous writes
-        const startTime = prev?.startTime ?? (status !== 'pending' ? now : undefined);
-        const endTime = status === 'completed'
-          ? (prev?.endTime ?? now)  // keep original end time if already completed
-          : undefined;
-        const usesLLM = llmPhases.has(step.phase);
-        const captured = this.stepMetrics.get(step.name);
-        // Compute duration in ms from startTime/endTime for dashboard display
-        let durationMs: number | undefined;
-        if (startTime && endTime) {
-          durationMs = new Date(endTime).getTime() - new Date(startTime).getTime();
-          if (durationMs < 0) durationMs = 0;
-        }
-        return {
-          name: step.name,
-          status,
-          wave: step.wave,
-          ...(startTime && { startTime }),
-          ...(endTime && { endTime }),
-          ...(durationMs !== undefined && { duration: `${(durationMs / 1000).toFixed(2)}s` }),
-          ...(usesLLM && captured?.llmProvider && { llmProvider: captured.llmProvider }),
-          ...(usesLLM && !captured?.llmProvider && { llmProvider: 'pending' }),
-          ...(captured?.tokensUsed && { tokensUsed: captured.tokensUsed }),
-          ...(captured?.llmCalls && { llmCalls: captured.llmCalls }),
-          ...(captured?.outputs && { outputs: captured.outputs }),
-          ...(captured?.agentInstances && { agentInstances: captured.agentInstances }),
-          ...(captured?.entityFlow && { entityFlow: captured.entityFlow }),
-          ...(captured?.qaResult && { qaResult: captured.qaResult }),
-          ...(captured?.llmCallEvents && { llmCallEvents: captured.llmCallEvents }),
-        };
-      });
-
-      // Merge wave-specific data
-      const updated = {
-        ...existing,
-        ...preserved,
-        status: 'running',
-        currentStep: currentStepName,
-        currentWave: data.currentWave,
-        totalWaves: data.totalWaves,
-        totalSteps: WaveController.WAVE_STEP_SEQUENCE.length,
-        stepsDetail,
-        message: data.message ?? '',
-        lastUpdated: now,
-      };
-
-      // Ensure parent directory exists
-      const dir = path.dirname(this.progressFile);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-
-      fs.writeFileSync(this.progressFile, JSON.stringify(updated, null, 2));
-    } catch (error) {
-      log('[WaveController] Failed to update progress file', 'warning', {
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
   }
 

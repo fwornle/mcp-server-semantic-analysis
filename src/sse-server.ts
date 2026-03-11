@@ -12,6 +12,8 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { createServer } from "./server.js";
 import { log, logError } from "./logging.js";
 import { setServerInstance } from "./tools.js";
+import { createSSEBroadcaster } from "./workflow-sse-broadcaster.js";
+import { subscribe, getState } from "./workflow-state-machine.js";
 
 const PORT = parseInt(process.env.SEMANTIC_ANALYSIS_PORT || '3848', 10);
 
@@ -31,6 +33,10 @@ const HEARTBEAT_INTERVAL_MS = 15000;
 // Server startup time for uptime tracking
 const serverStartTime = Date.now();
 
+// Workflow state event broadcaster -- subscribes to state machine transitions
+const broadcaster = createSSEBroadcaster();
+subscribe(broadcaster.subscriber.bind(broadcaster));
+
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
   res.json({
@@ -40,7 +46,36 @@ app.get('/health', (_req: Request, res: Response) => {
     activeHeartbeats: Object.keys(heartbeatIntervals).length,
     heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
     uptime: Math.floor((Date.now() - serverStartTime) / 1000),
+    workflowEventClients: broadcaster.clientCount,
   });
+});
+
+// Workflow state event SSE endpoint -- typed state snapshots on every transition
+app.get('/workflow-events', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  // Add client -- broadcaster sends initial-state event with current WorkflowState
+  broadcaster.addClient(res, getState());
+
+  // Heartbeat every 15s to keep connection alive
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(': heartbeat\n\n');
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
+  // Cleanup on disconnect
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    broadcaster.removeClient(res);
+  });
+
+  log('New workflow-events SSE client connected', 'info');
 });
 
 // SSE endpoint for establishing the stream
@@ -135,6 +170,7 @@ app.listen(PORT, () => {
   log(`Semantic Analysis SSE Server listening on port ${PORT}`, 'info');
   log(`Health check: http://localhost:${PORT}/health`, 'info');
   log(`SSE endpoint: http://localhost:${PORT}/sse`, 'info');
+  log(`Workflow events: http://localhost:${PORT}/workflow-events`, 'info');
 });
 
 // Handle shutdown

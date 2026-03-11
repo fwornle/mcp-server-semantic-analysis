@@ -22,6 +22,8 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, openSyn
 import path from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
+import { getState, dispatch } from './workflow-state-machine.js';
+import { InvalidTransitionError } from './shared/workflow-types/transitions.js';
 
 // ES module compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -157,15 +159,25 @@ async function cleanupExistingWorkflows(repositoryPath: string): Promise<{
       }
     }
 
-    // Reset progress file if it shows running (to prevent dashboard showing stale)
+    // Cancel via state machine if currently running (transition to cancelled state)
     if (progressStatus === 'running') {
-      const resetProgress = {
-        status: 'cancelled',
-        message: 'Cancelled by new workflow start',
-        cancelledAt: new Date().toISOString(),
-        previousWorkflowId: result.staleWorkflowId,
-      };
-      writeFileSync(progressPath, JSON.stringify(resetProgress, null, 2));
+      try {
+        dispatch({ type: 'cancel', reason: 'Cancelled by new workflow start' });
+      } catch (err) {
+        // If state is already idle/completed/cancelled, InvalidTransitionError is expected
+        if (!(err instanceof InvalidTransitionError)) {
+          throw err;
+        }
+        // Fallback: write cancelled status directly to progress file for cross-process scenarios
+        // (the detached runner process has its own state machine instance)
+        const resetProgress = {
+          status: 'cancelled',
+          message: 'Cancelled by new workflow start',
+          cancelledAt: new Date().toISOString(),
+          previousWorkflowId: result.staleWorkflowId,
+        };
+        writeFileSync(progressPath, JSON.stringify(resetProgress, null, 2));
+      }
       result.cleaned = true;
     }
 
@@ -1064,6 +1076,29 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       });
     }
 
+    // Dispatch start event to in-process state machine (tracks workflow status
+    // in the MCP server process for getState() queries). The detached runner
+    // process has its own state machine instance and dispatches its own events.
+    try {
+      dispatch({
+        type: 'start',
+        config: {
+          singleStepMode: wantsSingleStep,
+          mockLLM: wantsMockLLM,
+          llmMode: wantsMockLLM ? 'mock' as const : 'public' as const,
+          stepIntoSubsteps: wantsStepIntoSubsteps,
+        },
+        workflowName: resolvedWorkflowName,
+        firstStep: 'initializing',
+      });
+    } catch (err) {
+      // If already running, log and continue (cleanup should have cancelled it)
+      if (err instanceof InvalidTransitionError) {
+        log(`State machine transition warning: ${err.message}`, 'warning');
+      }
+    }
+
+    // TODO(phase-19): Remove legacy debug settings write -- RunConfig is immutable on WorkflowState
     // DEBUG/MOCK MODE: Write settings to progress file AFTER cleanup
     // (cleanup may overwrite progress file, so debug settings must come last)
     if (wantsMockLLM || wantsSingleStep || wantsStepIntoSubsteps) {
@@ -1435,11 +1470,51 @@ function detectCrashedWorkflow(progressData: any, repositoryPath: string): any {
 }
 
 /**
- * Get workflow status from progress file or running workflow state
+ * Get workflow status -- prefers in-memory state machine, falls back to progress file.
+ *
+ * For in-process workflows (sync mode), getState() is authoritative.
+ * For detached workflows (async mode / separate process), the progress file
+ * is written by the runner's progress file subscriber and is the cross-process
+ * communication mechanism.
  */
 async function handleGetWorkflowStatus(args: any): Promise<any> {
   const { workflow_id, repository_path } = args;
 
+  // Check in-memory state machine first (authoritative for in-process workflows)
+  const machineState = getState();
+  if (machineState.status !== 'idle') {
+    // State machine has an active/terminal workflow -- use it directly
+    const statusEmoji = machineState.status === 'completed' ? '++' :
+                        machineState.status === 'failed' ? 'XX' :
+                        machineState.status === 'running' ? '>>' :
+                        machineState.status === 'cancelled' ? '--' : '||';
+
+    let statusText = `# Workflow Status (State Machine)\n\n`;
+    statusText += `**Status:** ${statusEmoji} ${machineState.status}\n`;
+
+    if (machineState.status === 'running' || machineState.status === 'paused') {
+      statusText += `**Workflow:** ${machineState.workflowName}\n`;
+      statusText += `**Current Step:** ${machineState.progress.currentStepName}\n`;
+      statusText += `**Steps Completed:** ${machineState.progress.completedSteps.length}\n`;
+      statusText += `**Elapsed:** ${machineState.progress.elapsedSeconds}s\n`;
+    } else if (machineState.status === 'completed') {
+      statusText += `**Workflow:** ${machineState.workflowName}\n`;
+      statusText += `**Steps Completed:** ${machineState.completedSteps}\n`;
+      statusText += `**Duration:** ${machineState.duration}s\n`;
+    } else if (machineState.status === 'failed') {
+      statusText += `**Workflow:** ${machineState.workflowName}\n`;
+      statusText += `**Failed Step:** ${machineState.failedStep}\n`;
+      statusText += `**Error:** ${machineState.error}\n`;
+    } else if (machineState.status === 'cancelled') {
+      statusText += `**Workflow:** ${machineState.workflowName}\n`;
+      statusText += `**Last Step:** ${machineState.lastStep}\n`;
+      statusText += `**Cancelled At:** ${machineState.cancelledAt}\n`;
+    }
+
+    return { content: [{ type: "text", text: statusText }] };
+  }
+
+  // Fall back to progress file for detached (async) workflows
   // Resolve repository path
   let repoPath = repository_path || '.';
   if (repoPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {

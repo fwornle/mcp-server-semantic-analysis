@@ -14,9 +14,9 @@
  */
 
 import { writeFileSync } from 'fs';
-import { transition, InvalidTransitionError } from '../../../shared/workflow-types/transitions.js';
-import type { WorkflowState } from '../../../shared/workflow-types/state.js';
-import type { WorkflowTransitionEvent } from '../../../shared/workflow-types/transitions.js';
+import { transition, InvalidTransitionError } from './shared/workflow-types/transitions.js';
+import type { WorkflowState } from './shared/workflow-types/state.js';
+import type { WorkflowTransitionEvent } from './shared/workflow-types/transitions.js';
 
 // Re-export for consumer convenience
 export { InvalidTransitionError };

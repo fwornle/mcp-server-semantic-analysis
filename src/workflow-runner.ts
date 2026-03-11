@@ -18,6 +18,8 @@ import * as path from 'path';
 import { CoordinatorAgent } from './agents/coordinator.js';
 import { log } from './logging.js';
 import { loadAllWorkflows, getConfigDir, loadWorkflowRunnerConfig } from './utils/workflow-loader.js';
+import { dispatch, subscribe, reset, createProgressFileSubscriber } from './workflow-state-machine.js';
+import { InvalidTransitionError } from './shared/workflow-types/transitions.js';
 
 // ============================================================================
 // CRASH RECOVERY: Module-level state for signal handlers
@@ -223,6 +225,7 @@ interface ProgressUpdate {
   batchIterations?: any;
 }
 
+/** @deprecated Remove after Phase 16 wave-controller migration (Plan 02). Use dispatch() + progress file subscriber instead. */
 function writeProgress(progressFile: string, update: ProgressUpdate): void {
   try {
     // CRITICAL: Preserve debug state fields that may have been set by the dashboard
@@ -267,8 +270,9 @@ function writeProgress(progressFile: string, update: ProgressUpdate): void {
 }
 
 /**
- * Write progress while preserving detailed data from coordinator
+ * Write progress while preserving detailed data from coordinator.
  * This merges status updates with existing batchIterations, stepsDetail, etc.
+ * @deprecated Remove after Phase 16 wave-controller migration (Plan 02). Use dispatch() + progress file subscriber instead.
  */
 function writeProgressPreservingDetails(progressFile: string, update: ProgressUpdate): void {
   try {
@@ -541,7 +545,53 @@ async function main(): Promise<void> {
     parameters
   });
 
-  // Initial progress update - include all metadata from the start
+  // Register progress file subscriber -- writes WorkflowState to disk on every transition
+  const unsubscribeProgressFile = subscribe(createProgressFileSubscriber(progressFile));
+
+  // Dispatch start event to the runner's state machine instance
+  try {
+    // Read debug settings from progress file if they were pre-set by tools.ts
+    let presetConfig: Record<string, any> = {};
+    if (fs.existsSync(progressFile)) {
+      try {
+        presetConfig = JSON.parse(fs.readFileSync(progressFile, 'utf-8'));
+      } catch { /* ignore */ }
+    }
+
+    dispatch({
+      type: 'start',
+      config: {
+        singleStepMode: presetConfig.singleStepMode || parameters?.singleStepMode || false,
+        mockLLM: presetConfig.mockLLM || parameters?.mockLLM || false,
+        llmMode: presetConfig.llmState?.globalMode || parameters?.llmMode || 'public',
+        stepIntoSubsteps: presetConfig.stepIntoSubsteps || parameters?.stepIntoSubsteps || false,
+      },
+      workflowName,
+      firstStep: workflowName === 'wave-analysis' ? 'wave1_init' : 'initializing',
+    });
+  } catch (err) {
+    // Reset and retry if state machine is in unexpected state (e.g., leftover from previous crash)
+    if (err instanceof InvalidTransitionError) {
+      log(`[WorkflowRunner] State machine in unexpected state, resetting: ${err.message}`, 'warning');
+      reset();
+      dispatch({
+        type: 'start',
+        config: {
+          singleStepMode: parameters?.singleStepMode || false,
+          mockLLM: parameters?.mockLLM || false,
+          llmMode: parameters?.llmMode || 'public',
+          stepIntoSubsteps: parameters?.stepIntoSubsteps || false,
+        },
+        workflowName,
+        firstStep: workflowName === 'wave-analysis' ? 'wave1_init' : 'initializing',
+      });
+    } else {
+      throw err;
+    }
+  }
+
+  // Legacy initial progress write for backward compatibility with dashboard
+  // TODO(phase-19): Remove -- progress file subscriber handles this via dispatch above
   writeProgress(progressFile, {
     workflowId,
     workflowName,
@@ -604,29 +654,42 @@ async function main(): Promise<void> {
       pid: process.pid
     });
 
-    // Start heartbeat to prevent "stale" status during long-running waves
-    // Dashboard marks workflows stale after 120s without an update; heartbeat fires every 30s
-    const heartbeatInterval = setInterval(() => {
-      writeProgressPreservingDetails(progressFile, {
-        workflowId,
-        workflowName: 'wave-analysis',
-        team: parameters?.team || 'unknown',
-        repositoryPath,
-        status: 'running',
-        message: 'Wave analysis running... (heartbeat)',
-        startTime: startTime.toISOString(),
-        lastUpdate: new Date().toISOString(),
-        elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
-        pid: process.pid
-      });
-      log('[WorkflowRunner] Wave-analysis heartbeat sent', 'debug');
-    }, loadWorkflowRunnerConfig().runner.heartbeat_interval_ms);
+    // Heartbeat removed -- the subscriber writes on every transition (~30 per run),
+    // and wave-controller's frequent transitions serve as natural heartbeats.
+    // If no transition occurs for >60s, that's a real hang, not a heartbeat issue.
 
     try {
       const result = await waveController.execute();
-      clearInterval(heartbeatInterval);
 
-      // Mark all stepsDetail as completed/failed based on result
+      // Dispatch complete or fail event via state machine
+      if (result.success) {
+        try {
+          dispatch({
+            type: 'complete',
+            summary: {
+              totalEntities: result.totalEntities,
+              waves: result.waves.length,
+              message: `Wave analysis completed: ${result.totalEntities} entities across ${result.waves.length} waves`,
+            },
+          });
+        } catch (err) {
+          if (!(err instanceof InvalidTransitionError)) throw err;
+        }
+        saveTraceHistory(repositoryPath, progressFile, 'wave-analysis');
+      } else {
+        try {
+          dispatch({
+            type: 'fail',
+            error: 'Wave analysis completed with errors',
+            step: 'wave-analysis',
+          });
+        } catch (err) {
+          if (!(err instanceof InvalidTransitionError)) throw err;
+        }
+      }
+
+      // Legacy: Also write final status to progress file for dashboard backward compat
+      // TODO(phase-19): Remove -- state machine subscriber handles this
       const finalStatus = result.success ? 'completed' : 'failed';
       const now = new Date().toISOString();
       let existingProgress: Record<string, any> = {};
@@ -653,18 +716,23 @@ async function main(): Promise<void> {
         stepsDetail: finalStepsDetail,
         pid: process.pid
       });
-      // Save trace history for completed workflows
-      if (result.success) {
-        saveTraceHistory(repositoryPath, progressFile, 'wave-analysis');
-      }
 
-      // Clean up PID and config files
+      // Clean up
+      unsubscribeProgressFile();
       try { fs.unlinkSync(pidFile); } catch (e) { /* ignore */ }
       try { fs.unlinkSync(configPath); } catch (e) { /* ignore */ }
       process.exit(result.success ? 0 : 1);
     } catch (error) {
-      clearInterval(heartbeatInterval);
       const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Dispatch fail event via state machine
+      try {
+        dispatch({ type: 'fail', error: errorMessage, step: 'wave-analysis' });
+      } catch (err) {
+        if (!(err instanceof InvalidTransitionError)) throw err;
+      }
+
+      // Legacy fallback write
       writeProgressPreservingDetails(progressFile, {
         workflowId,
         workflowName: 'wave-analysis',
@@ -678,6 +746,7 @@ async function main(): Promise<void> {
         elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
         pid: process.pid
       });
+      unsubscribeProgressFile();
       try { fs.unlinkSync(pidFile); } catch (e) { /* ignore */ }
       try { fs.unlinkSync(configPath); } catch (e) { /* ignore */ }
       process.exit(1);
@@ -717,41 +786,8 @@ async function main(): Promise<void> {
     const workflow = workflows.find(w => w.name === resolvedWorkflowName);
     const isBatchWorkflow = workflow?.type === 'iterative' || resolvedWorkflowName === 'batch-analysis';
 
-    // Update progress to running
-    writeProgress(progressFile, {
-      workflowId,
-      status: 'running',
-      message: `Executing ${resolvedWorkflowName}...`,
-      startTime: startTime.toISOString(),
-      lastUpdate: new Date().toISOString(),
-      elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
-      pid: process.pid
-    });
-
-    // Start background heartbeat to prevent "stale" status during long-running steps
-    // The dashboard marks workflows as stale after 120s without an update
-    // This sends a heartbeat every 30s regardless of what step is executing
-    // IMPORTANT: Use writeProgressPreservingDetails to not overwrite coordinator metadata
-    let heartbeatCount = 0;
-    const heartbeatInterval = setInterval(() => {
-      heartbeatCount++;
-      writeProgressPreservingDetails(progressFile, {
-        workflowId,
-        workflowName: resolvedWorkflowName,
-        team: parameters?.team || 'unknown',
-        repositoryPath,
-        status: 'running',
-        message: `Executing ${resolvedWorkflowName}... (heartbeat)`,
-        startTime: startTime.toISOString(),
-        lastUpdate: new Date().toISOString(),
-        elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
-        pid: process.pid
-      });
-      // Log memory on EVERY heartbeat for crash investigation
-      logMemoryUsage(`heartbeat #${heartbeatCount}`);
-      log(`[WorkflowRunner] Heartbeat sent`, 'debug');
-    }, loadWorkflowRunnerConfig().runner.heartbeat_interval_ms);
-    cleanupState.heartbeatInterval = heartbeatInterval;
+    // Heartbeat removed -- subscriber writes on every transition, and coordinator
+    // transitions serve as natural heartbeats. No separate interval needed.
 
     // Start watchdog timer to prevent indefinite hangs
     const MAX_WORKFLOW_DURATION_MS = loadWorkflowRunnerConfig().runner.max_duration_ms;
@@ -770,12 +806,36 @@ async function main(): Promise<void> {
         ? await coordinator.executeBatchWorkflow(resolvedWorkflowName, resolvedParameters)
         : await coordinator.executeWorkflow(resolvedWorkflowName, resolvedParameters);
     } finally {
-      // Always clear the heartbeat interval and watchdog timer
-      clearInterval(heartbeatInterval);
       clearTimeout(watchdogTimer);
     }
 
-    // Final success update - preserve workflowName, team, repositoryPath AND detailed trace data for dashboard
+    // Dispatch complete/fail event via state machine
+    if (execution.status === 'completed') {
+      try {
+        dispatch({
+          type: 'complete',
+          summary: {
+            steps: `${execution.currentStep}/${execution.totalSteps}`,
+            message: `Workflow ${execution.status}`,
+          },
+        });
+      } catch (err) {
+        if (!(err instanceof InvalidTransitionError)) throw err;
+      }
+    } else {
+      try {
+        dispatch({
+          type: 'fail',
+          error: `Workflow ${execution.status}`,
+          step: String(execution.currentStep),
+        });
+      } catch (err) {
+        if (!(err instanceof InvalidTransitionError)) throw err;
+      }
+    }
+
+    // Legacy: Final progress file write for dashboard backward compat
+    // TODO(phase-19): Remove -- state machine subscriber handles this
     writeProgressPreservingDetails(progressFile, {
       workflowId,
       workflowName: resolvedWorkflowName,
@@ -807,9 +867,17 @@ async function main(): Promise<void> {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
 
+    // Dispatch fail event via state machine
+    try {
+      dispatch({ type: 'fail', error: errorMessage, step: 'unknown' });
+    } catch (err) {
+      if (!(err instanceof InvalidTransitionError)) throw err;
+    }
+
+    // Legacy fallback write
     writeProgressPreservingDetails(progressFile, {
       workflowId,
-      workflowName: workflowName, // Use config's workflowName (resolvedWorkflowName not in scope here)
+      workflowName: workflowName,
       team: parameters?.team || 'unknown',
       repositoryPath,
       status: 'failed',
@@ -825,6 +893,9 @@ async function main(): Promise<void> {
     process.exit(1);
 
   } finally {
+    // Unsubscribe progress file subscriber to prevent leaks
+    unsubscribeProgressFile();
+
     try {
       await coordinator.shutdown();
     } catch (e) {

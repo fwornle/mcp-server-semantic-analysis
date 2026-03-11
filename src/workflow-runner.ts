@@ -57,23 +57,12 @@ async function gracefulCleanup(reason: string, exitCode: number = 1): Promise<vo
     clearTimeout(cleanupState.watchdogTimer);
   }
 
-  // Write final failure progress
-  if (cleanupState.progressFile && cleanupState.workflowId && cleanupState.startTime) {
-    try {
-      const update: ProgressUpdate = {
-        workflowId: cleanupState.workflowId,
-        status: 'failed',
-        error: reason,
-        message: `Workflow terminated: ${reason}`,
-        startTime: cleanupState.startTime.toISOString(),
-        lastUpdate: new Date().toISOString(),
-        elapsedSeconds: Math.round((Date.now() - cleanupState.startTime.getTime()) / 1000),
-        pid: process.pid
-      };
-      fs.writeFileSync(cleanupState.progressFile, JSON.stringify(update, null, 2));
-      log('[WorkflowRunner] Final progress written', 'info');
-    } catch (e) {
-      log('[WorkflowRunner] Failed to write final progress', 'error', e);
+  // Dispatch fail event via state machine (subscriber writes progress file)
+  try {
+    dispatch({ type: 'fail', error: reason, step: 'crash-recovery' });
+  } catch (e) {
+    if (!(e instanceof InvalidTransitionError)) {
+      log('[WorkflowRunner] Failed to dispatch fail event during cleanup', 'error', e);
     }
   }
 
@@ -199,137 +188,6 @@ interface WorkflowConfig {
   pidFile: string;
 }
 
-interface ProgressUpdate {
-  workflowId: string;
-  workflowName?: string;
-  team?: string;
-  repositoryPath?: string;
-  status: 'starting' | 'running' | 'completed' | 'failed';
-  currentStep?: string;
-  stepsCompleted?: number;
-  totalSteps?: number;
-  batchProgress?: {
-    currentBatch: number;
-    totalBatches: number;
-  };
-  message?: string;
-  error?: string;
-  startTime: string;
-  lastUpdate: string;
-  elapsedSeconds: number;
-  pid: number;
-  totalWaves?: number;
-  currentWave?: number;
-  completedSteps?: number;
-  stepsDetail?: Array<{ name: string; status: string; wave?: number; startTime?: string; endTime?: string }>;
-  batchIterations?: any;
-}
-
-/** @deprecated Remove after Phase 16 wave-controller migration (Plan 02). Use dispatch() + progress file subscriber instead. */
-function writeProgress(progressFile: string, update: ProgressUpdate): void {
-  try {
-    // CRITICAL: Preserve debug state fields that may have been set by the dashboard
-    // before the workflow started (singleStepMode, mockLLM, etc.)
-    let preservedDebugState: Record<string, any> = {};
-    if (fs.existsSync(progressFile)) {
-      try {
-        const existing = JSON.parse(fs.readFileSync(progressFile, 'utf-8'));
-        // Preserve all debug/test state fields
-        preservedDebugState = {
-          singleStepMode: existing.singleStepMode,
-          stepIntoSubsteps: existing.stepIntoSubsteps,
-          stepPaused: existing.stepPaused,
-          pausedAtStep: existing.pausedAtStep,
-          pausedAt: existing.pausedAt,
-          singleStepUpdatedAt: existing.singleStepUpdatedAt,
-          singleStepTimeout: existing.singleStepTimeout,
-          resumeRequestedAt: existing.resumeRequestedAt,
-          mockLLM: existing.mockLLM,
-          mockLLMDelay: existing.mockLLMDelay,
-          mockLLMUpdatedAt: existing.mockLLMUpdatedAt,
-          // CRITICAL: Preserve llmState for mock/local/public mode selection
-          llmState: existing.llmState,
-        };
-        // Remove undefined values
-        for (const key of Object.keys(preservedDebugState)) {
-          if (preservedDebugState[key] === undefined) {
-            delete preservedDebugState[key];
-          }
-        }
-      } catch {
-        // Ignore parse errors
-      }
-    }
-
-    // Merge preserved debug state with new update
-    const merged = { ...update, ...preservedDebugState };
-    fs.writeFileSync(progressFile, JSON.stringify(merged, null, 2));
-  } catch (e) {
-    log('[WorkflowRunner] Failed to write progress', 'error', e);
-  }
-}
-
-/**
- * Write progress while preserving detailed data from coordinator.
- * This merges status updates with existing batchIterations, stepsDetail, etc.
- * @deprecated Remove after Phase 16 wave-controller migration (Plan 02). Use dispatch() + progress file subscriber instead.
- */
-function writeProgressPreservingDetails(progressFile: string, update: ProgressUpdate): void {
-  try {
-    let existingData: Record<string, any> = {};
-    if (fs.existsSync(progressFile)) {
-      try {
-        existingData = JSON.parse(fs.readFileSync(progressFile, 'utf-8'));
-      } catch (e) {
-        // Ignore parse errors, start fresh
-      }
-    }
-
-    // Merge: new update takes precedence, but preserve detailed coordinator data
-    const merged: Record<string, any> = {
-      ...update,
-      // Preserve detailed trace data from coordinator (update takes precedence if provided)
-      batchIterations: update.batchIterations ?? existingData.batchIterations,
-      stepsDetail: update.stepsDetail ?? existingData.stepsDetail,
-      summary: existingData.summary,
-      multiAgent: existingData.multiAgent,
-      stepsRunning: existingData.stepsRunning,
-      stepsSkipped: existingData.stepsSkipped,
-      stepsFailed: existingData.stepsFailed,
-      batchProgress: existingData.batchProgress,
-      // Preserve wave controller progress fields (heartbeats must not clobber these)
-      currentStep: update.currentStep ?? existingData.currentStep,
-      currentWave: update.currentWave ?? existingData.currentWave,
-      totalWaves: update.totalWaves ?? existingData.totalWaves,
-      totalSteps: update.totalSteps ?? existingData.totalSteps,
-      // CRITICAL: Preserve debug/test state fields
-      singleStepMode: existingData.singleStepMode,
-      stepIntoSubsteps: existingData.stepIntoSubsteps,
-      stepPaused: existingData.stepPaused,
-      pausedAtStep: existingData.pausedAtStep,
-      pausedAt: existingData.pausedAt,
-      singleStepUpdatedAt: existingData.singleStepUpdatedAt,
-      singleStepTimeout: existingData.singleStepTimeout,
-      resumeRequestedAt: existingData.resumeRequestedAt,
-      mockLLM: existingData.mockLLM,
-      mockLLMDelay: existingData.mockLLMDelay,
-      mockLLMUpdatedAt: existingData.mockLLMUpdatedAt,
-      // CRITICAL: Preserve llmState for mock/local/public mode selection
-      llmState: existingData.llmState,
-    };
-
-    // Remove undefined/null fields
-    for (const key of Object.keys(merged)) {
-      if (merged[key] === undefined || merged[key] === null) {
-        delete merged[key];
-      }
-    }
-
-    fs.writeFileSync(progressFile, JSON.stringify(merged, null, 2));
-  } catch (e) {
-    log('[WorkflowRunner] Failed to write progress', 'error', e);
-  }
-}
 
 /**
  * Update step timing statistics after workflow completion
@@ -590,22 +448,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Legacy initial progress write for backward compatibility with dashboard
-  // TODO(phase-19): Remove -- progress file subscriber handles this via dispatch above
-  writeProgress(progressFile, {
-    workflowId,
-    workflowName,
-    team: parameters?.team || 'unknown',
-    repositoryPath,
-    status: 'starting',
-    message: 'Initializing workflow runner...',
-    startTime: startTime.toISOString(),
-    lastUpdate: new Date().toISOString(),
-    elapsedSeconds: 0,
-    totalSteps: 0, // Will be updated by coordinator
-    pid: process.pid
-  });
-
   // Wave-analysis routing -- separate from coordinator path
   if (workflowName === 'wave-analysis') {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -614,44 +456,6 @@ async function main(): Promise<void> {
       repositoryPath,
       team: parameters?.team || 'coding',
       progressFile
-    });
-
-    // Set initial totalSteps AND stepsDetail so dashboard wave sidebar shows
-    // proper pending states from the start (not empty until wave controller writes first update)
-    // 17 sub-steps: 3 waves × (analyze + classify + persist) + init + 6 kg-ops + insights
-    const initialStepsDetail = [
-      { name: 'wave1_init',      status: 'pending', wave: 1 },
-      { name: 'wave1_analyze',   status: 'pending', wave: 1 },
-      { name: 'wave1_classify',  status: 'pending', wave: 1 },
-      { name: 'wave1_persist',   status: 'pending', wave: 1 },
-      { name: 'wave2_analyze',   status: 'pending', wave: 2 },
-      { name: 'wave2_classify',  status: 'pending', wave: 2 },
-      { name: 'wave2_persist',   status: 'pending', wave: 2 },
-      { name: 'wave3_analyze',   status: 'pending', wave: 3 },
-      { name: 'wave3_classify',  status: 'pending', wave: 3 },
-      { name: 'wave3_persist',   status: 'pending', wave: 3 },
-      { name: 'operator_conv',   status: 'pending', wave: 3 },
-      { name: 'operator_aggr',   status: 'pending', wave: 3 },
-      { name: 'operator_embed',  status: 'pending', wave: 3 },
-      { name: 'operator_dedup',  status: 'pending', wave: 3 },
-      { name: 'operator_pred',   status: 'pending', wave: 3 },
-      { name: 'operator_merge',  status: 'pending', wave: 3 },
-      { name: 'wave4_insights',  status: 'pending', wave: 4 },
-    ];
-    writeProgressPreservingDetails(progressFile, {
-      workflowId,
-      workflowName: 'wave-analysis',
-      team: parameters?.team || 'unknown',
-      repositoryPath,
-      status: 'running',
-      message: 'Starting wave analysis...',
-      startTime: startTime.toISOString(),
-      lastUpdate: new Date().toISOString(),
-      elapsedSeconds: 0,
-      totalSteps: 17,  // 11 wave steps + 6 operator steps
-      totalWaves: 4,
-      stepsDetail: initialStepsDetail,
-      pid: process.pid
     });
 
     // Heartbeat removed -- the subscriber writes on every transition (~30 per run),
@@ -688,35 +492,6 @@ async function main(): Promise<void> {
         }
       }
 
-      // Legacy: Also write final status to progress file for dashboard backward compat
-      // TODO(phase-19): Remove -- state machine subscriber handles this
-      const finalStatus = result.success ? 'completed' : 'failed';
-      const now = new Date().toISOString();
-      let existingProgress: Record<string, any> = {};
-      try {
-        existingProgress = JSON.parse(fs.readFileSync(progressFile, 'utf-8'));
-      } catch (e) { /* ignore */ }
-      const finalStepsDetail = (existingProgress.stepsDetail || []).map((s: any) => ({
-        ...s,
-        status: s.status === 'pending' || s.status === 'running' ? finalStatus : s.status,
-        ...(s.status === 'pending' || s.status === 'running' ? { endTime: now } : {}),
-      }));
-
-      writeProgressPreservingDetails(progressFile, {
-        workflowId,
-        workflowName: 'wave-analysis',
-        team: parameters?.team || 'unknown',
-        repositoryPath,
-        status: finalStatus,
-        message: `Wave analysis ${result.success ? 'completed' : 'failed'}: ${result.totalEntities} entities across ${result.waves.length} waves`,
-        startTime: startTime.toISOString(),
-        lastUpdate: now,
-        elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
-        completedSteps: finalStepsDetail.filter((s: any) => s.status === 'completed').length,
-        stepsDetail: finalStepsDetail,
-        pid: process.pid
-      });
-
       // Clean up
       unsubscribeProgressFile();
       try { fs.unlinkSync(pidFile); } catch (e) { /* ignore */ }
@@ -732,20 +507,6 @@ async function main(): Promise<void> {
         if (!(err instanceof InvalidTransitionError)) throw err;
       }
 
-      // Legacy fallback write
-      writeProgressPreservingDetails(progressFile, {
-        workflowId,
-        workflowName: 'wave-analysis',
-        team: parameters?.team || 'unknown',
-        repositoryPath,
-        status: 'failed',
-        error: errorMessage,
-        message: `Wave analysis failed: ${errorMessage}`,
-        startTime: startTime.toISOString(),
-        lastUpdate: new Date().toISOString(),
-        elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
-        pid: process.pid
-      });
       unsubscribeProgressFile();
       try { fs.unlinkSync(pidFile); } catch (e) { /* ignore */ }
       try { fs.unlinkSync(configPath); } catch (e) { /* ignore */ }
@@ -834,24 +595,6 @@ async function main(): Promise<void> {
       }
     }
 
-    // Legacy: Final progress file write for dashboard backward compat
-    // TODO(phase-19): Remove -- state machine subscriber handles this
-    writeProgressPreservingDetails(progressFile, {
-      workflowId,
-      workflowName: resolvedWorkflowName,
-      team: parameters?.team || 'unknown',
-      repositoryPath,
-      status: execution.status === 'completed' ? 'completed' : 'failed',
-      currentStep: String(execution.currentStep),
-      stepsCompleted: typeof execution.currentStep === 'number' ? execution.currentStep : parseInt(String(execution.currentStep)) || 0,
-      totalSteps: execution.totalSteps,
-      message: `Workflow ${execution.status}`,
-      startTime: startTime.toISOString(),
-      lastUpdate: new Date().toISOString(),
-      elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
-      pid: process.pid
-    });
-
     log(`[WorkflowRunner] Workflow completed: ${execution.status}`, 'info', {
       duration: `${Math.round((Date.now() - startTime.getTime()) / 1000)}s`,
       steps: `${execution.currentStep}/${execution.totalSteps}`
@@ -873,21 +616,6 @@ async function main(): Promise<void> {
     } catch (err) {
       if (!(err instanceof InvalidTransitionError)) throw err;
     }
-
-    // Legacy fallback write
-    writeProgressPreservingDetails(progressFile, {
-      workflowId,
-      workflowName: workflowName,
-      team: parameters?.team || 'unknown',
-      repositoryPath,
-      status: 'failed',
-      error: errorMessage,
-      message: `Workflow failed: ${errorMessage}`,
-      startTime: startTime.toISOString(),
-      lastUpdate: new Date().toISOString(),
-      elapsedSeconds: Math.round((Date.now() - startTime.getTime()) / 1000),
-      pid: process.pid
-    });
 
     log(`[WorkflowRunner] Workflow failed: ${errorMessage}`, 'error', error);
     process.exit(1);

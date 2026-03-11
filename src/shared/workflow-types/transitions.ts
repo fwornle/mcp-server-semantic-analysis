@@ -12,6 +12,7 @@
  *   running ──complete──> completed
  *   running ──cancel──> cancelled
  *   running ──step-complete──> running (self-loop)
+ *   running ──substep-update──> running (self-loop, progress update)
  *   paused ──resume──> running
  *   paused ──cancel──> cancelled
  *   failed ──reset──> idle
@@ -101,6 +102,13 @@ const ResetEventSchema = z.object({
   type: z.literal('reset'),
 });
 
+const SubstepUpdateEventSchema = z.object({
+  type: z.literal('substep-update'),
+  substepId: z.string(),
+  wave: z.number().optional(),
+  totalWaves: z.number().optional(),
+});
+
 /** All possible workflow transition events as a discriminated union on 'type' */
 export const WorkflowTransitionEventSchema = z.discriminatedUnion('type', [
   StartEventSchema,
@@ -111,6 +119,7 @@ export const WorkflowTransitionEventSchema = z.discriminatedUnion('type', [
   CancelEventSchema,
   CompleteEventSchema,
   ResetEventSchema,
+  SubstepUpdateEventSchema,
 ]);
 
 export type WorkflowTransitionEvent = z.infer<typeof WorkflowTransitionEventSchema>;
@@ -125,7 +134,7 @@ export type WorkflowTransitionEvent = z.infer<typeof WorkflowTransitionEventSche
  */
 export type TransitionMap = {
   idle: Extract<WorkflowTransitionEvent, { type: 'start' }>;
-  running: Extract<WorkflowTransitionEvent, { type: 'pause' | 'fail' | 'cancel' | 'complete' | 'step-complete' }>;
+  running: Extract<WorkflowTransitionEvent, { type: 'pause' | 'fail' | 'cancel' | 'complete' | 'step-complete' | 'substep-update' }>;
   paused: Extract<WorkflowTransitionEvent, { type: 'resume' | 'cancel' }>;
   failed: Extract<WorkflowTransitionEvent, { type: 'reset' }>;
   completed: never;
@@ -274,6 +283,20 @@ function handleRunning(state: RunningState, event: WorkflowTransitionEvent): Wor
         completedSteps: state.progress.completedSteps.length,
         duration: elapsed,
         summary: event.summary,
+      };
+      return result;
+    }
+
+    case 'substep-update': {
+      const result: RunningState = {
+        ...state,
+        progress: {
+          ...state.progress,
+          currentSubstepId: event.substepId,
+          ...(event.wave !== undefined && { currentWave: event.wave }),
+          ...(event.totalWaves !== undefined && { totalWaves: event.totalWaves }),
+          lastUpdate: now,
+        },
       };
       return result;
     }

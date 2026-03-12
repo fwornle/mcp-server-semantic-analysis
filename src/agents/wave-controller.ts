@@ -39,6 +39,7 @@ import type {
 } from '../trace-types.js';
 import { CgrQueryCache } from '../services/cgr-query-cache.js';
 import { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
+import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 import type { KGEntity, KGRelation, BatchContext } from './kg-operators.js';
 import type { ComponentManifest } from '../types/component-manifest.js';
 import type {
@@ -291,9 +292,49 @@ export class WaveController {
     const startTime = Date.now();
     const waveResults: WaveResult[] = [];
 
-    /** Build enriched step-complete event with attached stepMetrics */
+    /** Aggregate all sub-step metrics (e.g. wave1_init, wave1_analyze, wave1_qa)
+     *  into a single combined metrics object for the wave-level step-complete event */
+    const aggregateWaveMetrics = (wavePrefix: string) => {
+      let totalTokens = 0;
+      let totalCalls = 0;
+      const providers = new Set<string>();
+      const allLLMCallEvents: TraceLLMCall[] = [];
+      const allAgentInstances: TraceAgentInstance[] = [];
+      let entityFlow: TraceEntityFlow | undefined;
+      let qaResult: TraceQAResult | undefined;
+
+      for (const [key, entry] of this.stepMetrics.entries()) {
+        if (!key.startsWith(wavePrefix + '_') && key !== wavePrefix) continue;
+        if (entry.tokensUsed) totalTokens += entry.tokensUsed;
+        if (entry.llmCalls) totalCalls += entry.llmCalls;
+        if (entry.llmProvider) {
+          for (const p of entry.llmProvider.split(', ')) providers.add(p);
+        }
+        if (entry.llmCallEvents) {
+          allLLMCallEvents.push(...entry.llmCallEvents);
+        }
+        if (entry.agentInstances) {
+          allAgentInstances.push(...entry.agentInstances);
+        }
+        // Use the last entityFlow/qaResult found (persist/qa sub-steps)
+        if (entry.entityFlow) entityFlow = entry.entityFlow;
+        if (entry.qaResult) qaResult = entry.qaResult;
+      }
+
+      return {
+        tokensUsed: totalTokens || undefined,
+        llmCalls: totalCalls || undefined,
+        llmProvider: providers.size > 0 ? [...providers].join(', ') : undefined,
+        llmCallEvents: allLLMCallEvents.length > 0 ? allLLMCallEvents as unknown as Array<Record<string, unknown>> : undefined,
+        agentInstances: allAgentInstances.length > 0 ? allAgentInstances as unknown as Array<Record<string, unknown>> : undefined,
+        entityFlow: entityFlow as unknown as Record<string, unknown> | undefined,
+        qaResult: qaResult as unknown as Record<string, unknown> | undefined,
+      };
+    };
+
+    /** Build enriched step-complete event with aggregated sub-step metrics */
     const buildStepComplete = (stepName: string, nextStep: string, waveNum: number, waveStartTime: number) => {
-      const metrics = this.stepMetrics.get(stepName) || {};
+      const metrics = aggregateWaveMetrics(stepName);
       return {
         type: 'step-complete' as const,
         stepName,
@@ -303,10 +344,10 @@ export class WaveController {
         tokensUsed: metrics.tokensUsed,
         llmCalls: metrics.llmCalls,
         llmProvider: metrics.llmProvider,
-        agentInstances: metrics.agentInstances as Array<Record<string, unknown>> | undefined,
-        llmCallEvents: metrics.llmCallEvents as Array<Record<string, unknown>> | undefined,
-        entityFlow: metrics.entityFlow as Record<string, unknown> | undefined,
-        qaResult: metrics.qaResult as Record<string, unknown> | undefined,
+        agentInstances: metrics.agentInstances,
+        llmCallEvents: metrics.llmCallEvents,
+        entityFlow: metrics.entityFlow,
+        qaResult: metrics.qaResult,
       };
     };
 
@@ -2022,6 +2063,14 @@ export class WaveController {
     if (allEntities.length === 0) {
       log('[WaveController] No entities to generate insights for', 'warning');
       return { generated: 0, failed: 0, skippedDiagrams: 0 };
+    }
+
+    // In mock mode, skip real insight generation (it makes LLM calls)
+    if (isMockLLMEnabled(this.repositoryPath)) {
+      const mockDelay = getMockDelay(this.repositoryPath);
+      await new Promise(resolve => setTimeout(resolve, mockDelay));
+      log('[WaveController] Mock mode: skipping insight generation', 'info', { entityCount: allEntities.length });
+      return { generated: allEntities.length, failed: 0, skippedDiagrams: 0 };
     }
 
     // Instantiate InsightGenerationAgent ONCE (constructor creates dirs, checks PlantUML)

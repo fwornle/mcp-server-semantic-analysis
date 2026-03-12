@@ -12,16 +12,16 @@
 # - local: Docker Model Runner (llama.cpp, localhost:12434)
 # - public: Cloud APIs (Groq/Anthropic/OpenAI based on tier)
 
-# Orchestrator - Special node that coordinates all agents
+# Wave Controller - Orchestrates hierarchical wave execution
 orchestrator:
   id: orchestrator
-  name: Orchestrator
-  shortName: Coordinator
+  name: Wave Controller
+  shortName: Waves
   icon: Play
-  description: "DAG-based workflow coordinator. Manages parallel execution with max 3 concurrent steps, handles dependencies, retries failed steps, and aggregates results."
+  description: "Hierarchical wave orchestration engine. Executes 4 sequential waves (Project→Component→Detail→Insights), each with parallel agents bounded by concurrency limits."
   usesLLM: false
   llmModel: null
-  techStack: "TypeScript DAG executor"
+  techStack: "Wave Controller"
   phase: 0
   row: -1
   col: 0.6         # Centered (aligned with single-agent column)

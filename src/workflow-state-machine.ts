@@ -13,7 +13,7 @@
  *   createProgressFileSubscriber() - Factory for disk-persistence subscriber
  */
 
-import { writeFileSync } from 'fs';
+import { readFileSync, writeFileSync } from 'fs';
 import { transition, InvalidTransitionError } from './shared/workflow-types/transitions.js';
 import type { WorkflowState } from './shared/workflow-types/state.js';
 import type { WorkflowTransitionEvent } from './shared/workflow-types/transitions.js';
@@ -117,7 +117,20 @@ export function reset(): void {
 export function createProgressFileSubscriber(progressFilePath: string): Subscriber {
   return (state: WorkflowState, _event: WorkflowTransitionEvent): void => {
     try {
-      writeFileSync(progressFilePath, JSON.stringify(state, null, 2));
+      // Merge with existing file to preserve wave-controller pause fields
+      // (stepPaused, pausedAtStep, pausedAt) that live outside state machine state
+      let merged: Record<string, unknown> = { ...state } as Record<string, unknown>;
+      try {
+        const existing = JSON.parse(readFileSync(progressFilePath, 'utf8'));
+        if (existing.stepPaused !== undefined) {
+          merged.stepPaused = existing.stepPaused;
+          merged.pausedAtStep = existing.pausedAtStep;
+          merged.pausedAt = existing.pausedAt;
+        }
+      } catch {
+        // File doesn't exist yet or unreadable — write fresh
+      }
+      writeFileSync(progressFilePath, JSON.stringify(merged, null, 2));
     } catch (err) {
       process.stderr.write(
         `[workflow-state-machine] Failed to write progress file: ${err instanceof Error ? err.message : String(err)}\n`

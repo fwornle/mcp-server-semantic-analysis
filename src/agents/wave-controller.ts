@@ -2300,7 +2300,9 @@ export class WaveController {
 
       let progress = JSON.parse(fs.readFileSync(this.progressFile, 'utf8'));
 
-      if (!progress.singleStepMode) return;
+      // singleStepMode lives under config (state machine format) or top-level (legacy)
+      const singleStepEnabled = progress.config?.singleStepMode || progress.singleStepMode;
+      if (!singleStepEnabled) return;
 
       // For sub-steps, only pause if stepIntoSubsteps is enabled
       if (isSubstep) {
@@ -2308,13 +2310,15 @@ export class WaveController {
         await new Promise(resolve => setTimeout(resolve, 50));
         try {
           const freshProgress = JSON.parse(fs.readFileSync(this.progressFile, 'utf8'));
-          if (!freshProgress.stepIntoSubsteps) {
+          const stepInto = freshProgress.config?.stepIntoSubsteps || freshProgress.stepIntoSubsteps;
+          if (!stepInto) {
             log(`[WaveController] Single-step mode: Skipping sub-step '${stepName}' (stepIntoSubsteps=false)`, 'debug');
             return;
           }
           progress = freshProgress;
         } catch {
-          if (!progress.stepIntoSubsteps) return;
+          const stepInto = progress.config?.stepIntoSubsteps || progress.stepIntoSubsteps;
+          if (!stepInto) return;
         }
       }
 
@@ -2345,7 +2349,8 @@ export class WaveController {
       }
 
       // Single-step mode disabled — resume freely
-      if (!currentProgress.singleStepMode) {
+      const stillEnabled = currentProgress.config?.singleStepMode || currentProgress.singleStepMode;
+      if (!stillEnabled) {
         log('[WaveController] Single-step mode disabled, resuming workflow', 'info');
         return;
       }

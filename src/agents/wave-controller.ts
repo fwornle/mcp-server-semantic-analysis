@@ -381,8 +381,12 @@ export class WaveController {
       // Initialize CGR query cache and start async index refresh
       this.cgrCache = new CgrQueryCache(this.repositoryPath);
       this.cgrBuilder = new CgrObservationBuilder();
-      log('[WaveController] CGR index refresh started (30s timeout)', 'info');
-      await this.cgrCache.refreshIndex(30_000);
+      if (isMockLLMEnabled(this.repositoryPath)) {
+        log('[WaveController] Mock mode: skipping CGR index refresh', 'info');
+      } else {
+        log('[WaveController] CGR index refresh started (30s timeout)', 'info');
+        await this.cgrCache.refreshIndex(30_000);
+      }
       if (!this.cgrCache.isAvailable()) {
         log('[WaveController] CGR unavailable -- continuing with LLM-only observations', 'warning');
       }
@@ -392,8 +396,9 @@ export class WaveController {
         existingEntities: existingEntities.length,
         cgrAvailable: this.cgrCache.isAvailable(),
       });
-      await this.checkSingleStepPause('wave1_init');
 
+      // Pause BEFORE analyze (user sees "about to analyze wave1")
+      await this.checkSingleStepPause('wave1_analyze', true);
       SemanticAnalyzer.resetStepMetrics();
       dispatch({ type: 'substep-update', substepId: 'wave1_analyze', wave: 1, totalWaves: 4 });
       let { result: wave1Result, agent: wave1Agent } = await this.executeWave1WithMetrics(manifest, existingEntities);
@@ -429,8 +434,6 @@ export class WaveController {
           });
         }
       }
-
-      await this.checkSingleStepPause('wave1_analyze');
 
       if (!wave1Result.success) {
         log('[WaveController] Wave 1 failed', 'error', { error: wave1Result.error });
@@ -515,6 +518,8 @@ export class WaveController {
           persisted: 0,
         });
 
+        // Pause BEFORE classify
+        await this.checkSingleStepPause('wave1_classify', true);
         SemanticAnalyzer.resetStepMetrics();
         dispatch({ type: 'substep-update', substepId: 'wave1_classify', wave: 1, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
@@ -524,10 +529,18 @@ export class WaveController {
         await this.runWithConcurrency(wave1ClassifyTasks, 2);
         this.captureStepMetrics('wave1_classify', { entitiesClassified: wave1Entities.length });
         log('[WaveController] Wave 1 classification complete', 'info', { entities: wave1Entities.length });
-        await this.checkSingleStepPause('wave1_classify', true);
+
+        // Pause BEFORE persist
+        await this.checkSingleStepPause('wave1_persist', true);
         dispatch({ type: 'substep-update', substepId: 'wave1_persist', wave: 1, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
-        await this.persistWaveResult(wave1Result);
+        if (isMockLLMEnabled(this.repositoryPath)) {
+          const mockDelay = getMockDelay(this.repositoryPath);
+          await new Promise(r => setTimeout(r, mockDelay));
+          log('[WaveController] Mock mode: skipping wave 1 persist', 'info');
+        } else {
+          await this.persistWaveResult(wave1Result);
+        }
         this.captureStepMetrics('wave1_persist', { entitiesPersisted: wave1Result.totalEntities });
         // Update entity flow: persisted count
         this.captureEntityFlow('wave1_analyze', {
@@ -538,11 +551,12 @@ export class WaveController {
         log('[WaveController] Wave 1 entities persisted', 'info', {
           entities: wave1Result.totalEntities,
         });
-        await this.checkSingleStepPause('wave1_persist', true);
       }
 
       // Signal wave 1 completion to state machine
       dispatch(buildStepComplete('wave1', 'wave2', 1, startTime));
+      // Macro-level pause between waves (respects single-step, ignores stepIntoSubsteps)
+      await this.checkSingleStepPause('wave1');
 
       // ---- Wave 2: L2 SubComponents ----
       if (getState().status === 'cancelled') {
@@ -550,6 +564,8 @@ export class WaveController {
         return this.buildSummaryReport(startTime, waveResults);
       }
       this.logWaveBanner('WAVE 2', 'L2 SubComponents');
+      // Pause BEFORE wave2 analyze
+      await this.checkSingleStepPause('wave2_analyze', true);
       SemanticAnalyzer.resetStepMetrics();
       dispatch({ type: 'substep-update', substepId: 'wave2_analyze', wave: 2, totalWaves: 4 });
 
@@ -580,8 +596,6 @@ export class WaveController {
         });
         // Agent instances already captured incrementally during runWithConcurrency
       }
-
-      await this.checkSingleStepPause('wave2_analyze');
 
       if (!wave2Result.success) {
         log('[WaveController] Wave 2 failed', 'error', { error: wave2Result.error });
@@ -670,6 +684,8 @@ export class WaveController {
           process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
           return this.buildSummaryReport(startTime, waveResults);
         }
+        // Pause BEFORE classify
+        await this.checkSingleStepPause('wave2_classify', true);
         SemanticAnalyzer.resetStepMetrics();
         dispatch({ type: 'substep-update', substepId: 'wave2_classify', wave: 2, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
@@ -679,10 +695,18 @@ export class WaveController {
         await this.runWithConcurrency(wave2ClassifyTasks, 2);
         this.captureStepMetrics('wave2_classify', { entitiesClassified: wave2Entities.length });
         log('[WaveController] Wave 2 classification complete', 'info', { entities: wave2Entities.length });
-        await this.checkSingleStepPause('wave2_classify', true);
+
+        // Pause BEFORE persist
+        await this.checkSingleStepPause('wave2_persist', true);
         dispatch({ type: 'substep-update', substepId: 'wave2_persist', wave: 2, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
-        await this.persistWaveResult(wave2Result);
+        if (isMockLLMEnabled(this.repositoryPath)) {
+          const mockDelay = getMockDelay(this.repositoryPath);
+          await new Promise(r => setTimeout(r, mockDelay));
+          log('[WaveController] Mock mode: skipping wave 2 persist', 'info');
+        } else {
+          await this.persistWaveResult(wave2Result);
+        }
         this.captureStepMetrics('wave2_persist', { entitiesPersisted: wave2Result.totalEntities });
         // Update entity flow: persisted count
         this.captureEntityFlow('wave2_analyze', {
@@ -693,11 +717,11 @@ export class WaveController {
         log('[WaveController] Wave 2 entities persisted', 'info', {
           entities: wave2Result.totalEntities,
         });
-        await this.checkSingleStepPause('wave2_persist', true);
       }
 
       // Signal wave 2 completion to state machine
       dispatch(buildStepComplete('wave2', 'wave3', 2, startTime));
+      await this.checkSingleStepPause('wave2');
 
       // ---- Wave 3: L3 Details ----
       if (getState().status === 'cancelled') {
@@ -705,6 +729,8 @@ export class WaveController {
         return this.buildSummaryReport(startTime, waveResults);
       }
       this.logWaveBanner('WAVE 3', 'L3 Detail Entities');
+      // Pause BEFORE wave3 analyze
+      await this.checkSingleStepPause('wave3_analyze', true);
       SemanticAnalyzer.resetStepMetrics();
       dispatch({ type: 'substep-update', substepId: 'wave3_analyze', wave: 3, totalWaves: 4 });
 
@@ -734,8 +760,6 @@ export class WaveController {
         });
         // Agent instances already captured incrementally during runWithConcurrency
       }
-
-      await this.checkSingleStepPause('wave3_analyze');
 
       if (!wave3Result.success) {
         log('[WaveController] Wave 3 failed', 'error', { error: wave3Result.error });
@@ -821,6 +845,8 @@ export class WaveController {
           process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
           return this.buildSummaryReport(startTime, waveResults);
         }
+        // Pause BEFORE classify
+        await this.checkSingleStepPause('wave3_classify', true);
         SemanticAnalyzer.resetStepMetrics();
         dispatch({ type: 'substep-update', substepId: 'wave3_classify', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
@@ -830,10 +856,18 @@ export class WaveController {
         await this.runWithConcurrency(wave3ClassifyTasks, 2);
         this.captureStepMetrics('wave3_classify', { entitiesClassified: wave3Entities.length });
         log('[WaveController] Wave 3 classification complete', 'info', { entities: wave3Entities.length });
-        await this.checkSingleStepPause('wave3_classify', true);
+
+        // Pause BEFORE persist
+        await this.checkSingleStepPause('wave3_persist', true);
         dispatch({ type: 'substep-update', substepId: 'wave3_persist', wave: 3, totalWaves: 4 });
-        await new Promise(r => setTimeout(r, 100)); // Allow SSE to broadcast persist step
-        await this.persistWaveResult(wave3Result);
+        await new Promise(r => setTimeout(r, 100));
+        if (isMockLLMEnabled(this.repositoryPath)) {
+          const mockDelay = getMockDelay(this.repositoryPath);
+          await new Promise(r => setTimeout(r, mockDelay));
+          log('[WaveController] Mock mode: skipping wave 3 persist', 'info');
+        } else {
+          await this.persistWaveResult(wave3Result);
+        }
         this.captureStepMetrics('wave3_persist', { entitiesPersisted: wave3Result.totalEntities });
         // Update entity flow: persisted count
         this.captureEntityFlow('wave3_analyze', {
@@ -844,7 +878,6 @@ export class WaveController {
         log('[WaveController] Wave 3 entities persisted', 'info', {
           entities: wave3Result.totalEntities,
         });
-        await this.checkSingleStepPause('wave3_persist', true);
       }
 
       // ---- Manifest Write-Back: Persist discovered L2 entities to YAML ----
@@ -921,136 +954,175 @@ export class WaveController {
           return this.buildSummaryReport(startTime, waveResults);
         }
 
+        // Mock mode: skip all KG operators (they do real graph work, not LLM calls)
+        const mockOperators = isMockLLMEnabled(this.repositoryPath);
+
         // Conv
+        await this.checkSingleStepPause('operator_conv', true);
         dispatch({ type: 'substep-update', substepId: 'operator_conv', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100)); // Allow SSE broadcast
         try {
-          const convStart = Date.now();
-          const convInputCount = currentEntities.length;
-          currentEntities = await kgOperators.contextConvolution(currentEntities, batchContext);
-          operatorTimings.conv = Date.now() - convStart;
-          const withContext = currentEntities.filter(e => e.enrichedContext).length;
-          log('[WaveController] OPERATOR TRACE: Conv complete', 'info', {
-            inputEntities: convInputCount, outputEntities: currentEntities.length,
-            withEnrichedContext: withContext, durationMs: operatorTimings.conv,
-          });
-          this.captureAgentMetrics('operator_conv', { providers: [], totalTokens: 0, totalCalls: 0 }, {
-            inputEntities: convInputCount, outputEntities: currentEntities.length,
-            withEnrichedContext: withContext, durationMs: operatorTimings.conv,
-          });
+          if (mockOperators) {
+            await new Promise(r => setTimeout(r, getMockDelay(this.repositoryPath)));
+            log('[WaveController] Mock mode: skipping Conv operator', 'info');
+            operatorTimings.conv = getMockDelay(this.repositoryPath);
+          } else {
+            const convStart = Date.now();
+            const convInputCount = currentEntities.length;
+            currentEntities = await kgOperators.contextConvolution(currentEntities, batchContext);
+            operatorTimings.conv = Date.now() - convStart;
+            const withContext = currentEntities.filter(e => e.enrichedContext).length;
+            log('[WaveController] OPERATOR TRACE: Conv complete', 'info', {
+              inputEntities: convInputCount, outputEntities: currentEntities.length,
+              withEnrichedContext: withContext, durationMs: operatorTimings.conv,
+            });
+            this.captureAgentMetrics('operator_conv', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+              inputEntities: convInputCount, outputEntities: currentEntities.length,
+              withEnrichedContext: withContext, durationMs: operatorTimings.conv,
+            });
+          }
         } catch (e) { log('[WaveController] Conv operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
-        await this.checkSingleStepPause('operator_conv');
 
         // Aggr
+        await this.checkSingleStepPause('operator_aggr', true);
         dispatch({ type: 'substep-update', substepId: 'operator_aggr', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
-          const aggrStart = Date.now();
-          const aggrInputCount = currentEntities.length;
-          const aggr = await kgOperators.entityAggregation(currentEntities);
-          currentEntities = [...aggr.core, ...aggr.nonCore];
-          operatorTimings.aggr = Date.now() - aggrStart;
-          log('[WaveController] OPERATOR TRACE: Aggr complete', 'info', {
-            inputEntities: aggrInputCount, core: aggr.core.length, nonCore: aggr.nonCore.length,
-            durationMs: operatorTimings.aggr,
-          });
-          this.captureAgentMetrics('operator_aggr', { providers: [], totalTokens: 0, totalCalls: 0 }, {
-            inputEntities: aggrInputCount, core: aggr.core.length, nonCore: aggr.nonCore.length,
-            durationMs: operatorTimings.aggr,
-          });
+          if (mockOperators) {
+            await new Promise(r => setTimeout(r, getMockDelay(this.repositoryPath)));
+            log('[WaveController] Mock mode: skipping Aggr operator', 'info');
+            operatorTimings.aggr = getMockDelay(this.repositoryPath);
+          } else {
+            const aggrStart = Date.now();
+            const aggrInputCount = currentEntities.length;
+            const aggr = await kgOperators.entityAggregation(currentEntities);
+            currentEntities = [...aggr.core, ...aggr.nonCore];
+            operatorTimings.aggr = Date.now() - aggrStart;
+            log('[WaveController] OPERATOR TRACE: Aggr complete', 'info', {
+              inputEntities: aggrInputCount, core: aggr.core.length, nonCore: aggr.nonCore.length,
+              durationMs: operatorTimings.aggr,
+            });
+            this.captureAgentMetrics('operator_aggr', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+              inputEntities: aggrInputCount, core: aggr.core.length, nonCore: aggr.nonCore.length,
+              durationMs: operatorTimings.aggr,
+            });
+          }
         } catch (e) { log('[WaveController] Aggr operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
-        await this.checkSingleStepPause('operator_aggr');
 
         // Embed
+        await this.checkSingleStepPause('operator_embed', true);
         dispatch({ type: 'substep-update', substepId: 'operator_embed', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
-          const embedStart = Date.now();
-          const embedInputCount = currentEntities.length;
-          const beforeEmbCount = currentEntities.filter(e => e.embedding && e.embedding.length > 0).length;
-          currentEntities = await kgOperators.nodeEmbedding(currentEntities);
-          operatorTimings.embed = Date.now() - embedStart;
-          const afterEmbCount = currentEntities.filter(e => e.embedding && e.embedding.length > 0).length;
-          const sampleEmb = currentEntities.find(e => e.embedding && e.embedding.length > 0);
-          log('[WaveController] OPERATOR TRACE: Embed complete', 'info', {
-            inputEntities: embedInputCount, embeddingsBefore: beforeEmbCount, embeddingsAfter: afterEmbCount,
-            newEmbeddings: afterEmbCount - beforeEmbCount, durationMs: operatorTimings.embed,
-            sampleDimensions: sampleEmb?.embedding?.length ?? 0,
-            sampleEntity: sampleEmb?.name ?? 'none',
-          });
-          this.captureAgentMetrics('operator_embed', { providers: [], totalTokens: 0, totalCalls: 0 }, {
-            inputEntities: embedInputCount, embeddingsBefore: beforeEmbCount, embeddingsAfter: afterEmbCount,
-            newEmbeddings: afterEmbCount - beforeEmbCount, durationMs: operatorTimings.embed,
-          });
+          if (mockOperators) {
+            await new Promise(r => setTimeout(r, getMockDelay(this.repositoryPath)));
+            log('[WaveController] Mock mode: skipping Embed operator', 'info');
+            operatorTimings.embed = getMockDelay(this.repositoryPath);
+          } else {
+            const embedStart = Date.now();
+            const embedInputCount = currentEntities.length;
+            const beforeEmbCount = currentEntities.filter(e => e.embedding && e.embedding.length > 0).length;
+            currentEntities = await kgOperators.nodeEmbedding(currentEntities);
+            operatorTimings.embed = Date.now() - embedStart;
+            const afterEmbCount = currentEntities.filter(e => e.embedding && e.embedding.length > 0).length;
+            const sampleEmb = currentEntities.find(e => e.embedding && e.embedding.length > 0);
+            log('[WaveController] OPERATOR TRACE: Embed complete', 'info', {
+              inputEntities: embedInputCount, embeddingsBefore: beforeEmbCount, embeddingsAfter: afterEmbCount,
+              newEmbeddings: afterEmbCount - beforeEmbCount, durationMs: operatorTimings.embed,
+              sampleDimensions: sampleEmb?.embedding?.length ?? 0,
+              sampleEntity: sampleEmb?.name ?? 'none',
+            });
+            this.captureAgentMetrics('operator_embed', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+              inputEntities: embedInputCount, embeddingsBefore: beforeEmbCount, embeddingsAfter: afterEmbCount,
+              newEmbeddings: afterEmbCount - beforeEmbCount, durationMs: operatorTimings.embed,
+            });
+          }
         } catch (e) { log('[WaveController] Embed operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
-        await this.checkSingleStepPause('operator_embed');
 
         // Dedup
+        await this.checkSingleStepPause('operator_dedup', true);
         dispatch({ type: 'substep-update', substepId: 'operator_dedup', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
-          const dedupStart = Date.now();
-          const dedupInputCount = currentEntities.length;
-          const deduped = await kgOperators.deduplication(currentEntities, accumulatedKG);
-          operatorTimings.dedup = Date.now() - dedupStart;
-          log('[WaveController] OPERATOR TRACE: Dedup complete', 'info', {
-            inputEntities: dedupInputCount, outputEntities: deduped.entities.length,
-            merged: deduped.merged, durationMs: operatorTimings.dedup,
-            mergeLog: deduped.mergeLog.slice(0, 5), // First 5 merges for trace
-          });
-          currentEntities = deduped.entities;
-          this.captureAgentMetrics('operator_dedup', { providers: [], totalTokens: 0, totalCalls: 0 }, {
-            inputEntities: dedupInputCount, outputEntities: deduped.entities.length,
-            merged: deduped.merged, durationMs: operatorTimings.dedup,
-          });
+          if (mockOperators) {
+            await new Promise(r => setTimeout(r, getMockDelay(this.repositoryPath)));
+            log('[WaveController] Mock mode: skipping Dedup operator', 'info');
+            operatorTimings.dedup = getMockDelay(this.repositoryPath);
+          } else {
+            const dedupStart = Date.now();
+            const dedupInputCount = currentEntities.length;
+            const deduped = await kgOperators.deduplication(currentEntities, accumulatedKG);
+            operatorTimings.dedup = Date.now() - dedupStart;
+            log('[WaveController] OPERATOR TRACE: Dedup complete', 'info', {
+              inputEntities: dedupInputCount, outputEntities: deduped.entities.length,
+              merged: deduped.merged, durationMs: operatorTimings.dedup,
+              mergeLog: deduped.mergeLog.slice(0, 5),
+            });
+            currentEntities = deduped.entities;
+            this.captureAgentMetrics('operator_dedup', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+              inputEntities: dedupInputCount, outputEntities: deduped.entities.length,
+              merged: deduped.merged, durationMs: operatorTimings.dedup,
+            });
+          }
         } catch (e) { log('[WaveController] Dedup operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
-        await this.checkSingleStepPause('operator_dedup');
 
         // Pred
+        await this.checkSingleStepPause('operator_pred', true);
         dispatch({ type: 'substep-update', substepId: 'operator_pred', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
-          const predStart = Date.now();
-          const relsBefore = currentRelations.length;
-          const predicted = await kgOperators.edgePrediction(currentEntities, { entities: currentEntities, relations: currentRelations });
-          operatorTimings.pred = Date.now() - predStart;
-          log('[WaveController] OPERATOR TRACE: Pred complete', 'info', {
-            inputEntities: currentEntities.length, relationsBefore: relsBefore,
-            predictedEdges: predicted.edges.length, durationMs: operatorTimings.pred,
-            topScores: predicted.scores.slice(0, 3).map(s => ({ from: s.from, to: s.to, score: s.score.toFixed(3) })),
-          });
-          currentRelations = [...currentRelations, ...predicted.edges];
-          this.captureAgentMetrics('operator_pred', { providers: [], totalTokens: 0, totalCalls: 0 }, {
-            inputEntities: currentEntities.length, relationsBefore: relsBefore,
-            predictedEdges: predicted.edges.length, durationMs: operatorTimings.pred,
-          });
+          if (mockOperators) {
+            await new Promise(r => setTimeout(r, getMockDelay(this.repositoryPath)));
+            log('[WaveController] Mock mode: skipping Pred operator', 'info');
+            operatorTimings.pred = getMockDelay(this.repositoryPath);
+          } else {
+            const predStart = Date.now();
+            const relsBefore = currentRelations.length;
+            const predicted = await kgOperators.edgePrediction(currentEntities, { entities: currentEntities, relations: currentRelations });
+            operatorTimings.pred = Date.now() - predStart;
+            log('[WaveController] OPERATOR TRACE: Pred complete', 'info', {
+              inputEntities: currentEntities.length, relationsBefore: relsBefore,
+              predictedEdges: predicted.edges.length, durationMs: operatorTimings.pred,
+              topScores: predicted.scores.slice(0, 3).map(s => ({ from: s.from, to: s.to, score: s.score.toFixed(3) })),
+            });
+            currentRelations = [...currentRelations, ...predicted.edges];
+            this.captureAgentMetrics('operator_pred', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+              inputEntities: currentEntities.length, relationsBefore: relsBefore,
+              predictedEdges: predicted.edges.length, durationMs: operatorTimings.pred,
+            });
+          }
         } catch (e) { log('[WaveController] Pred operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
-        await this.checkSingleStepPause('operator_pred');
 
         // Merge (structure fusion)
+        await this.checkSingleStepPause('operator_merge', true);
         dispatch({ type: 'substep-update', substepId: 'operator_merge', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         try {
-          const mergeStart = Date.now();
-          const merged = await kgOperators.structureMerge(
-            { entities: currentEntities, relations: currentRelations },
-            accumulatedKG
-          );
-          operatorTimings.merge = Date.now() - mergeStart;
-          log('[WaveController] OPERATOR TRACE: Merge complete', 'info', {
-            inputEntities: currentEntities.length, inputRelations: currentRelations.length,
-            outputEntities: merged.entities.length, outputRelations: merged.relations.length,
-            added: merged.added, updated: merged.updated, durationMs: operatorTimings.merge,
-          });
-          currentEntities = merged.entities;
-          currentRelations = merged.relations;
-          this.captureAgentMetrics('operator_merge', { providers: [], totalTokens: 0, totalCalls: 0 }, {
-            inputEntities: currentEntities.length, inputRelations: currentRelations.length,
-            outputEntities: merged.entities.length, outputRelations: merged.relations.length,
-            added: merged.added, updated: merged.updated, durationMs: operatorTimings.merge,
-          });
+          if (mockOperators) {
+            await new Promise(r => setTimeout(r, getMockDelay(this.repositoryPath)));
+            log('[WaveController] Mock mode: skipping Merge operator', 'info');
+            operatorTimings.merge = getMockDelay(this.repositoryPath);
+          } else {
+            const mergeStart = Date.now();
+            const merged = await kgOperators.structureMerge(
+              { entities: currentEntities, relations: currentRelations },
+              accumulatedKG
+            );
+            operatorTimings.merge = Date.now() - mergeStart;
+            log('[WaveController] OPERATOR TRACE: Merge complete', 'info', {
+              inputEntities: currentEntities.length, inputRelations: currentRelations.length,
+              outputEntities: merged.entities.length, outputRelations: merged.relations.length,
+              added: merged.added, updated: merged.updated, durationMs: operatorTimings.merge,
+            });
+            currentEntities = merged.entities;
+            currentRelations = merged.relations;
+            this.captureAgentMetrics('operator_merge', { providers: [], totalTokens: 0, totalCalls: 0 }, {
+              inputEntities: currentEntities.length, inputRelations: currentRelations.length,
+              outputEntities: merged.entities.length, outputRelations: merged.relations.length,
+              added: merged.added, updated: merged.updated, durationMs: operatorTimings.merge,
+            });
+          }
         } catch (e) { log('[WaveController] Merge operator FAILED', 'error', { error: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined }); }
-        await this.checkSingleStepPause('operator_merge');
 
         // Log operator pipeline summary
         const totalOperatorTime = Object.values(operatorTimings).reduce((s, t) => s + t, 0);
@@ -1071,6 +1143,10 @@ export class WaveController {
         }
 
         // === DIRECT GRAPH WRITE for operator-enriched fields ===
+        // In mock mode, skip direct graph write and re-persist
+        if (mockOperators) {
+          log('[WaveController] Mock mode: skipping direct graph write and re-persist', 'info');
+        } else {
         // Bypass the 7-layer persist pipeline — write embedding/role/enrichedContext
         // directly to existing graph nodes via graphDB.mergeNodeAttributes()
         log('[WaveController] Direct graph write: merging operator-enriched fields', 'info', {
@@ -1126,6 +1202,7 @@ export class WaveController {
           await this.persistWaveResult(refinedWaveResult);
           log('[WaveController] Operator-refined entities persisted via pipeline', 'info');
         } catch (e) { log('[WaveController] Re-persist after operators failed (non-fatal)', 'warning', { error: e instanceof Error ? e.message : String(e) }); }
+        } // end of !mockOperators else block
 
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
@@ -1134,6 +1211,7 @@ export class WaveController {
 
       // Signal wave 3 completion to state machine (after KG operators)
       dispatch(buildStepComplete('wave3', 'wave4', 3, startTime));
+      await this.checkSingleStepPause('wave3');
 
       // ---- Insight Finalization: Generate insight documents ----
       if (getState().status === 'cancelled') {

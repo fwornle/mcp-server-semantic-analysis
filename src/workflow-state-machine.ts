@@ -117,16 +117,25 @@ export function reset(): void {
 export function createProgressFileSubscriber(progressFilePath: string): Subscriber {
   return (state: WorkflowState, _event: WorkflowTransitionEvent): void => {
     try {
-      // Merge with existing file to preserve wave-controller pause fields
-      // (stepPaused, pausedAtStep, pausedAt) that live outside state machine state
+      // Merge with existing file to preserve fields that live outside state machine state:
+      // - wave-controller pause fields (stepPaused, pausedAtStep, pausedAt)
+      // - debug/mock fields (mockLLM, singleStepMode, stepIntoSubsteps, llmState)
+      //   These are pre-written by tools.ts and read by isMockLLMEnabled() at top level
       let merged: Record<string, unknown> = { ...state } as Record<string, unknown>;
       try {
         const existing = JSON.parse(readFileSync(progressFilePath, 'utf8'));
+        // Preserve pause state
         if (existing.stepPaused !== undefined) {
           merged.stepPaused = existing.stepPaused;
           merged.pausedAtStep = existing.pausedAtStep;
           merged.pausedAt = existing.pausedAt;
         }
+        // Preserve top-level debug fields (read by isMockLLMEnabled, wave-controller, dashboard)
+        if (existing.mockLLM !== undefined) merged.mockLLM = existing.mockLLM;
+        if (existing.mockLLMDelay !== undefined) merged.mockLLMDelay = existing.mockLLMDelay;
+        if (existing.singleStepMode !== undefined) merged.singleStepMode = existing.singleStepMode;
+        if (existing.stepIntoSubsteps !== undefined) merged.stepIntoSubsteps = existing.stepIntoSubsteps;
+        if (existing.llmState !== undefined) merged.llmState = existing.llmState;
       } catch {
         // File doesn't exist yet or unreadable — write fresh
       }

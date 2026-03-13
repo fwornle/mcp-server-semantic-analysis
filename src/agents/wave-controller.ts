@@ -376,6 +376,8 @@ export class WaveController {
 
       // ---- Wave 1: L0 Project + L1 Components ----
       this.logWaveBanner('WAVE 1', 'L0 Project + L1 Components');
+      // Pause BEFORE wave1 init (first pause of workflow)
+      await this.checkSingleStepPause('wave1_init', true);
       dispatch({ type: 'substep-update', substepId: 'wave1_init', wave: 1, totalWaves: 4 });
 
       // Initialize CGR query cache and start async index refresh

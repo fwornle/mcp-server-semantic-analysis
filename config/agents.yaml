@@ -35,8 +35,8 @@ agents:
   # - Phase 5+ (Finalization): Persist → Dedup → Validate
 
   - id: batch_scheduler
-    name: Batch Scheduler
-    shortName: Batch
+    name: Data Preparation
+    shortName: Prep
     icon: Calendar
     description: "Plans and tracks chronological batch windows. Divides git history into 50-commit batches for incremental processing with checkpoint-based resumption."
     usesLLM: false

@@ -18,10 +18,9 @@ single_step_debug:
 
 mock_mode:
   # Mock LLM mode settings for UI visualization/testing
-  # DEBUG: Increased values to debug visualization timing
-  min_step_time_ms: 1000      # Minimum step execution time in mock mode (1 second)
-  min_substep_time_ms: 800    # Minimum sub-step visibility time in mock mode (0.8 seconds)
-  default_llm_delay_ms: 500   # Simulated LLM call duration in mock mode (0.5 seconds)
+  min_step_time_ms: 200       # Minimum step execution time in mock mode
+  min_substep_time_ms: 150    # Minimum sub-step visibility time in mock mode
+  default_llm_delay_ms: 100   # Simulated LLM call duration in mock mode
 
 # Visualization settings for the dashboard workflow graph
 visualization:

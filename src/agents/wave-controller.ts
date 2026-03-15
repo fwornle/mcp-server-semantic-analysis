@@ -445,6 +445,10 @@ export class WaveController {
       } else {
         let wave1Entities = wave1Result.agentOutputs.flatMap(o => o.entities);
 
+        // Pause BEFORE QA
+        await this.checkSingleStepPause('wave1_qa', true);
+        dispatch({ type: 'substep-update', substepId: 'wave1_qa', wave: 1, totalWaves: 4 });
+
         // QA gate: validate wave 1 output
         const wave1QaEntities = wave1Entities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
         const wave1QaReport = await this.qaAgent.validateWaveOutput('wave1_analyze', wave1QaEntities);
@@ -462,8 +466,6 @@ export class WaveController {
           score: wave1QaReport.score,
           errors: wave1QaReport.errors.length > 0 ? wave1QaReport.errors : undefined,
         });
-        dispatch({ type: 'substep-update', substepId: 'wave1_qa', wave: 1, totalWaves: 4 });
-        await new Promise(r => setTimeout(r, 50));
 
         // QA retry: if score < 60, retry wave 1 once with feedback
         if (!wave1QaReport.passed && wave1QaReport.score < 60) {
@@ -520,15 +522,24 @@ export class WaveController {
           persisted: 0,
         });
 
-        // Pause BEFORE classify
-        await this.checkSingleStepPause('wave1_classify', true);
+        // Ontology classification with sub-step pauses
+        // Sub-step 1: Data preparation (match entities to ontology classes)
+        await this.checkSingleStepPause('onto_data_prep', true);
         SemanticAnalyzer.resetStepMetrics();
-        dispatch({ type: 'substep-update', substepId: 'wave1_classify', wave: 1, totalWaves: 4 });
+        dispatch({ type: 'substep-update', substepId: 'onto_data_prep', wave: 1, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
+
+        // Sub-step 2: LLM classification
+        await this.checkSingleStepPause('onto_llm_classify', true);
+        dispatch({ type: 'substep-update', substepId: 'onto_llm_classify', wave: 1, totalWaves: 4 });
         const wave1ClassifyTasks = wave1Entities.map(entity => async () => {
           await this.classifyEntity(entity);
         });
         await this.runWithConcurrency(wave1ClassifyTasks, 2);
+
+        // Sub-step 3: Apply classification results
+        await this.checkSingleStepPause('onto_apply_results', true);
+        dispatch({ type: 'substep-update', substepId: 'onto_apply_results', wave: 1, totalWaves: 4 });
         this.captureStepMetrics('wave1_classify', { entitiesClassified: wave1Entities.length });
         log('[WaveController] Wave 1 classification complete', 'info', { entities: wave1Entities.length });
 
@@ -607,6 +618,10 @@ export class WaveController {
       } else {
         let wave2Entities = wave2Result.agentOutputs.flatMap(o => o.entities);
 
+        // Pause BEFORE QA
+        await this.checkSingleStepPause('wave2_qa', true);
+        dispatch({ type: 'substep-update', substepId: 'wave2_qa', wave: 2, totalWaves: 4 });
+
         // QA gate: validate wave 2 output
         const wave2QaEntities = wave2Entities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
         const wave2QaReport = await this.qaAgent.validateWaveOutput('wave2_analyze', wave2QaEntities);
@@ -624,8 +639,6 @@ export class WaveController {
           score: wave2QaReport.score,
           errors: wave2QaReport.errors.length > 0 ? wave2QaReport.errors : undefined,
         });
-        dispatch({ type: 'substep-update', substepId: 'wave2_qa', wave: 2, totalWaves: 4 });
-        await new Promise(r => setTimeout(r, 50));
 
         // QA retry: if score < 60, retry wave 2 once with feedback
         if (!wave2QaReport.passed && wave2QaReport.score < 60) {
@@ -686,15 +699,21 @@ export class WaveController {
           process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
           return this.buildSummaryReport(startTime, waveResults);
         }
-        // Pause BEFORE classify
-        await this.checkSingleStepPause('wave2_classify', true);
+        // Ontology classification with sub-step pauses
+        await this.checkSingleStepPause('onto_data_prep', true);
         SemanticAnalyzer.resetStepMetrics();
-        dispatch({ type: 'substep-update', substepId: 'wave2_classify', wave: 2, totalWaves: 4 });
+        dispatch({ type: 'substep-update', substepId: 'onto_data_prep', wave: 2, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
+
+        await this.checkSingleStepPause('onto_llm_classify', true);
+        dispatch({ type: 'substep-update', substepId: 'onto_llm_classify', wave: 2, totalWaves: 4 });
         const wave2ClassifyTasks = wave2Entities.map(entity => async () => {
           await this.classifyEntity(entity);
         });
         await this.runWithConcurrency(wave2ClassifyTasks, 2);
+
+        await this.checkSingleStepPause('onto_apply_results', true);
+        dispatch({ type: 'substep-update', substepId: 'onto_apply_results', wave: 2, totalWaves: 4 });
         this.captureStepMetrics('wave2_classify', { entitiesClassified: wave2Entities.length });
         log('[WaveController] Wave 2 classification complete', 'info', { entities: wave2Entities.length });
 
@@ -768,6 +787,10 @@ export class WaveController {
       } else {
         let wave3Entities = wave3Result.agentOutputs.flatMap(o => o.entities);
 
+        // Pause BEFORE QA
+        await this.checkSingleStepPause('wave3_qa', true);
+        dispatch({ type: 'substep-update', substepId: 'wave3_qa', wave: 3, totalWaves: 4 });
+
         // QA gate: validate wave 3 output
         const wave3QaEntities = wave3Entities.map(e => ({ name: e.name, observations: e.observations || [], type: e.type || 'Unclassified', level: e.level }));
         const wave3QaReport = await this.qaAgent.validateWaveOutput('wave3_analyze', wave3QaEntities);
@@ -785,8 +808,6 @@ export class WaveController {
           score: wave3QaReport.score,
           errors: wave3QaReport.errors.length > 0 ? wave3QaReport.errors : undefined,
         });
-        dispatch({ type: 'substep-update', substepId: 'wave3_qa', wave: 3, totalWaves: 4 });
-        await new Promise(r => setTimeout(r, 50));
 
         // QA retry: if score < 60, retry wave 3 once with feedback
         if (!wave3QaReport.passed && wave3QaReport.score < 60) {
@@ -847,15 +868,21 @@ export class WaveController {
           process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
           return this.buildSummaryReport(startTime, waveResults);
         }
-        // Pause BEFORE classify
-        await this.checkSingleStepPause('wave3_classify', true);
+        // Ontology classification with sub-step pauses
+        await this.checkSingleStepPause('onto_data_prep', true);
         SemanticAnalyzer.resetStepMetrics();
-        dispatch({ type: 'substep-update', substepId: 'wave3_classify', wave: 3, totalWaves: 4 });
+        dispatch({ type: 'substep-update', substepId: 'onto_data_prep', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
+
+        await this.checkSingleStepPause('onto_llm_classify', true);
+        dispatch({ type: 'substep-update', substepId: 'onto_llm_classify', wave: 3, totalWaves: 4 });
         const wave3ClassifyTasks = wave3Entities.map(entity => async () => {
           await this.classifyEntity(entity);
         });
         await this.runWithConcurrency(wave3ClassifyTasks, 2);
+
+        await this.checkSingleStepPause('onto_apply_results', true);
+        dispatch({ type: 'substep-update', substepId: 'onto_apply_results', wave: 3, totalWaves: 4 });
         this.captureStepMetrics('wave3_classify', { entitiesClassified: wave3Entities.length });
         log('[WaveController] Wave 3 classification complete', 'info', { entities: wave3Entities.length });
 

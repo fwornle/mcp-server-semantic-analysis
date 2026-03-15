@@ -1474,6 +1474,7 @@ export class WaveController {
             manifestChildren: childEntries,
             onPhase: async (phase: string) => {
               dispatch({ type: 'substep-update', substepId: phase });
+              await this.checkSingleStepPause(phase, true);
             },
           };
 
@@ -1617,6 +1618,7 @@ export class WaveController {
             suggestedChildren,
             onPhase: async (phase: string) => {
               dispatch({ type: 'substep-update', substepId: phase });
+              await this.checkSingleStepPause(phase, true);
             },
           };
 

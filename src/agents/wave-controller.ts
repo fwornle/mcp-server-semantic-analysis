@@ -568,8 +568,7 @@ export class WaveController {
 
       // Signal wave 1 completion to state machine
       dispatch(buildStepComplete('wave1', 'wave2', 1, startTime));
-      // Macro-level pause between waves (respects single-step, ignores stepIntoSubsteps)
-      await this.checkSingleStepPause('wave1');
+      // No macro pause between waves — the next wave's first step pause is sufficient
 
       // ---- Wave 2: L2 SubComponents ----
       if (getState().status === 'cancelled') {
@@ -742,7 +741,6 @@ export class WaveController {
 
       // Signal wave 2 completion to state machine
       dispatch(buildStepComplete('wave2', 'wave3', 2, startTime));
-      await this.checkSingleStepPause('wave2');
 
       // ---- Wave 3: L3 Details ----
       if (getState().status === 'cancelled') {
@@ -1240,7 +1238,6 @@ export class WaveController {
 
       // Signal wave 3 completion to state machine (after KG operators)
       dispatch(buildStepComplete('wave3', 'wave4', 3, startTime));
-      await this.checkSingleStepPause('wave3');
 
       // ---- Insight Finalization: Generate insight documents ----
       if (getState().status === 'cancelled') {

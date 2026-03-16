@@ -238,6 +238,7 @@ function handleRunning(state: RunningState, event: WorkflowTransitionEvent): Wor
         llmCallEvents: event.llmCallEvents,
         entityFlow: event.entityFlow,
         qaResult: event.qaResult,
+        subSteps: (event as any).subSteps,
       });
       const result: RunningState = {
         ...state,

@@ -45,6 +45,7 @@ export const StepDetailSchema = z.object({
   llmCallEvents: z.array(z.any()).optional(),
   entityFlow: z.record(z.string(), z.unknown()).optional(),
   qaResult: z.record(z.string(), z.unknown()).optional(),
+  subSteps: z.array(z.record(z.string(), z.unknown())).optional(),
 });
 export type StepDetail = z.infer<typeof StepDetailSchema>;
 

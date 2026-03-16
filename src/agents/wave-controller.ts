@@ -335,6 +335,16 @@ export class WaveController {
     /** Build enriched step-complete event with aggregated sub-step metrics */
     const buildStepComplete = (stepName: string, nextStep: string, waveNum: number, waveStartTime: number) => {
       const metrics = aggregateWaveMetrics(stepName);
+      // Collect individual sub-step entries for trace drill-down
+      const subSteps: Array<Record<string, unknown>> = [];
+      for (const [key, entry] of this.stepMetrics.entries()) {
+        if (!key.startsWith(stepName + '_') && key !== stepName) continue;
+        subSteps.push({
+          name: key,
+          status: 'completed',
+          ...entry,
+        });
+      }
       return {
         type: 'step-complete' as const,
         stepName,
@@ -348,6 +358,7 @@ export class WaveController {
         llmCallEvents: metrics.llmCallEvents,
         entityFlow: metrics.entityFlow,
         qaResult: metrics.qaResult,
+        subSteps: subSteps.length > 0 ? subSteps : undefined,
       };
     };
 

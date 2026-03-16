@@ -131,10 +131,20 @@ export function createProgressFileSubscriber(progressFilePath: string): Subscrib
           merged.pausedAt = existing.pausedAt;
         }
         // Preserve top-level debug fields (read by isMockLLMEnabled, wave-controller, dashboard)
+        // IMPORTANT: Top-level fields are authoritative (set by user actions via REST/WS).
+        // Also sync them INTO config so both paths in wave-controller agree.
         if (existing.mockLLM !== undefined) merged.mockLLM = existing.mockLLM;
         if (existing.mockLLMDelay !== undefined) merged.mockLLMDelay = existing.mockLLMDelay;
+        // singleStepMode and stepIntoSubsteps: preserve existing top-level values
+        // AND ensure config matches (wave-controller reads top-level as authoritative)
         if (existing.singleStepMode !== undefined) merged.singleStepMode = existing.singleStepMode;
         if (existing.stepIntoSubsteps !== undefined) merged.stepIntoSubsteps = existing.stepIntoSubsteps;
+        // Sync config to match top-level (prevents config from reverting user changes)
+        if (merged.config && typeof merged.config === 'object') {
+          const cfg = merged.config as Record<string, unknown>;
+          if (existing.singleStepMode !== undefined) cfg.singleStepMode = existing.singleStepMode;
+          if (existing.stepIntoSubsteps !== undefined) cfg.stepIntoSubsteps = existing.stepIntoSubsteps;
+        }
         if (existing.llmState !== undefined) merged.llmState = existing.llmState;
       } catch {
         // File doesn't exist yet or unreadable — write fresh

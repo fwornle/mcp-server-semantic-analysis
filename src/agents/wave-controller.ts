@@ -377,7 +377,7 @@ export class WaveController {
       // ---- Wave 1: L0 Project + L1 Components ----
       this.logWaveBanner('WAVE 1', 'L0 Project + L1 Components');
       // Pause BEFORE wave1 init (first pause of workflow)
-      await this.checkSingleStepPause('wave1_init', true);
+      await this.checkSingleStepPause('wave1_init', false);
       dispatch({ type: 'substep-update', substepId: 'wave1_init', wave: 1, totalWaves: 4 });
 
       // Initialize CGR query cache and start async index refresh
@@ -400,7 +400,7 @@ export class WaveController {
       });
 
       // Pause BEFORE analyze (user sees "about to analyze wave1")
-      await this.checkSingleStepPause('wave1_analyze', true);
+      await this.checkSingleStepPause('wave1_analyze', false);
       SemanticAnalyzer.resetStepMetrics();
       dispatch({ type: 'substep-update', substepId: 'wave1_analyze', wave: 1, totalWaves: 4 });
       let { result: wave1Result, agent: wave1Agent } = await this.executeWave1WithMetrics(manifest, existingEntities);
@@ -446,7 +446,7 @@ export class WaveController {
         let wave1Entities = wave1Result.agentOutputs.flatMap(o => o.entities);
 
         // Pause BEFORE QA
-        await this.checkSingleStepPause('wave1_qa', true);
+        await this.checkSingleStepPause('wave1_qa', false);
         dispatch({ type: 'substep-update', substepId: 'wave1_qa', wave: 1, totalWaves: 4 });
 
         // QA gate: validate wave 1 output
@@ -468,7 +468,8 @@ export class WaveController {
         });
 
         // QA retry: if score < 60, retry wave 1 once with feedback
-        if (!wave1QaReport.passed && wave1QaReport.score < 60) {
+        // Skip retry in mock mode — mock entities always fail QA (short generic observations)
+        if (!isMockLLMEnabled(this.repositoryPath) && !wave1QaReport.passed && wave1QaReport.score < 60) {
           log('[WaveController] QA retry triggered', 'info', {
             wave: 1,
             score: wave1QaReport.score,
@@ -513,6 +514,10 @@ export class WaveController {
               });
             }
           }
+        } else if (isMockLLMEnabled(this.repositoryPath) && !wave1QaReport.passed) {
+          log('[WaveController] Mock mode: skipping QA retry (mock entities always fail QA)', 'info', {
+            wave: 1, score: wave1QaReport.score,
+          });
         }
 
         // Update entity flow: passedQA count
@@ -522,7 +527,10 @@ export class WaveController {
           persisted: 0,
         });
 
-        // Ontology classification with sub-step pauses
+        // Ontology classification — pause at macro step first, then sub-steps
+        await this.checkSingleStepPause('wave1_classify', false);
+        dispatch({ type: 'substep-update', substepId: 'wave1_classify', wave: 1, totalWaves: 4 });
+
         // Sub-step 1: Data preparation (match entities to ontology classes)
         await this.checkSingleStepPause('onto_data_prep', true);
         SemanticAnalyzer.resetStepMetrics();
@@ -544,7 +552,7 @@ export class WaveController {
         log('[WaveController] Wave 1 classification complete', 'info', { entities: wave1Entities.length });
 
         // Pause BEFORE persist
-        await this.checkSingleStepPause('wave1_persist', true);
+        await this.checkSingleStepPause('wave1_persist', false);
         dispatch({ type: 'substep-update', substepId: 'wave1_persist', wave: 1, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         if (isMockLLMEnabled(this.repositoryPath)) {
@@ -577,7 +585,7 @@ export class WaveController {
       }
       this.logWaveBanner('WAVE 2', 'L2 SubComponents');
       // Pause BEFORE wave2 analyze
-      await this.checkSingleStepPause('wave2_analyze', true);
+      await this.checkSingleStepPause('wave2_analyze', false);
       SemanticAnalyzer.resetStepMetrics();
       dispatch({ type: 'substep-update', substepId: 'wave2_analyze', wave: 2, totalWaves: 4 });
 
@@ -618,7 +626,7 @@ export class WaveController {
         let wave2Entities = wave2Result.agentOutputs.flatMap(o => o.entities);
 
         // Pause BEFORE QA
-        await this.checkSingleStepPause('wave2_qa', true);
+        await this.checkSingleStepPause('wave2_qa', false);
         dispatch({ type: 'substep-update', substepId: 'wave2_qa', wave: 2, totalWaves: 4 });
 
         // QA gate: validate wave 2 output
@@ -640,7 +648,8 @@ export class WaveController {
         });
 
         // QA retry: if score < 60, retry wave 2 once with feedback
-        if (!wave2QaReport.passed && wave2QaReport.score < 60) {
+        // Skip retry in mock mode — mock entities always fail QA (short generic observations)
+        if (!isMockLLMEnabled(this.repositoryPath) && !wave2QaReport.passed && wave2QaReport.score < 60) {
           log('[WaveController] QA retry triggered', 'info', {
             wave: 2,
             score: wave2QaReport.score,
@@ -685,6 +694,10 @@ export class WaveController {
               });
             }
           }
+        } else if (isMockLLMEnabled(this.repositoryPath) && !wave2QaReport.passed) {
+          log('[WaveController] Mock mode: skipping QA retry (mock entities always fail QA)', 'info', {
+            wave: 2, score: wave2QaReport.score,
+          });
         }
 
         // Update entity flow: passedQA count
@@ -698,7 +711,10 @@ export class WaveController {
           process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
           return this.buildSummaryReport(startTime, waveResults);
         }
-        // Ontology classification with sub-step pauses
+        // Ontology classification — pause at macro step first, then sub-steps
+        await this.checkSingleStepPause('wave2_classify', false);
+        dispatch({ type: 'substep-update', substepId: 'wave2_classify', wave: 2, totalWaves: 4 });
+
         await this.checkSingleStepPause('onto_data_prep', true);
         SemanticAnalyzer.resetStepMetrics();
         dispatch({ type: 'substep-update', substepId: 'onto_data_prep', wave: 2, totalWaves: 4 });
@@ -717,7 +733,7 @@ export class WaveController {
         log('[WaveController] Wave 2 classification complete', 'info', { entities: wave2Entities.length });
 
         // Pause BEFORE persist
-        await this.checkSingleStepPause('wave2_persist', true);
+        await this.checkSingleStepPause('wave2_persist', false);
         dispatch({ type: 'substep-update', substepId: 'wave2_persist', wave: 2, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         if (isMockLLMEnabled(this.repositoryPath)) {
@@ -749,7 +765,7 @@ export class WaveController {
       }
       this.logWaveBanner('WAVE 3', 'L3 Detail Entities');
       // Pause BEFORE wave3 analyze
-      await this.checkSingleStepPause('wave3_analyze', true);
+      await this.checkSingleStepPause('wave3_analyze', false);
       SemanticAnalyzer.resetStepMetrics();
       dispatch({ type: 'substep-update', substepId: 'wave3_analyze', wave: 3, totalWaves: 4 });
 
@@ -786,7 +802,7 @@ export class WaveController {
         let wave3Entities = wave3Result.agentOutputs.flatMap(o => o.entities);
 
         // Pause BEFORE QA
-        await this.checkSingleStepPause('wave3_qa', true);
+        await this.checkSingleStepPause('wave3_qa', false);
         dispatch({ type: 'substep-update', substepId: 'wave3_qa', wave: 3, totalWaves: 4 });
 
         // QA gate: validate wave 3 output
@@ -808,7 +824,8 @@ export class WaveController {
         });
 
         // QA retry: if score < 60, retry wave 3 once with feedback
-        if (!wave3QaReport.passed && wave3QaReport.score < 60) {
+        // Skip retry in mock mode — mock entities always fail QA (short generic observations)
+        if (!isMockLLMEnabled(this.repositoryPath) && !wave3QaReport.passed && wave3QaReport.score < 60) {
           log('[WaveController] QA retry triggered', 'info', {
             wave: 3,
             score: wave3QaReport.score,
@@ -853,6 +870,10 @@ export class WaveController {
               });
             }
           }
+        } else if (isMockLLMEnabled(this.repositoryPath) && !wave3QaReport.passed) {
+          log('[WaveController] Mock mode: skipping QA retry (mock entities always fail QA)', 'info', {
+            wave: 3, score: wave3QaReport.score,
+          });
         }
 
         // Update entity flow: passedQA count
@@ -866,7 +887,10 @@ export class WaveController {
           process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
           return this.buildSummaryReport(startTime, waveResults);
         }
-        // Ontology classification with sub-step pauses
+        // Ontology classification — pause at macro step first, then sub-steps
+        await this.checkSingleStepPause('wave3_classify', false);
+        dispatch({ type: 'substep-update', substepId: 'wave3_classify', wave: 3, totalWaves: 4 });
+
         await this.checkSingleStepPause('onto_data_prep', true);
         SemanticAnalyzer.resetStepMetrics();
         dispatch({ type: 'substep-update', substepId: 'onto_data_prep', wave: 3, totalWaves: 4 });
@@ -885,7 +909,7 @@ export class WaveController {
         log('[WaveController] Wave 3 classification complete', 'info', { entities: wave3Entities.length });
 
         // Pause BEFORE persist
-        await this.checkSingleStepPause('wave3_persist', true);
+        await this.checkSingleStepPause('wave3_persist', false);
         dispatch({ type: 'substep-update', substepId: 'wave3_persist', wave: 3, totalWaves: 4 });
         await new Promise(r => setTimeout(r, 100));
         if (isMockLLMEnabled(this.repositoryPath)) {
@@ -1239,12 +1263,13 @@ export class WaveController {
       // Signal wave 3 completion to state machine (after KG operators)
       dispatch(buildStepComplete('wave3', 'wave4', 3, startTime));
 
-      // ---- Insight Finalization: Generate insight documents ----
+      // ---- Wave 4: Insight Finalization ----
       if (getState().status === 'cancelled') {
         process.stderr.write('[WaveController] Workflow cancelled, stopping execution\n');
         return this.buildSummaryReport(startTime, waveResults);
       }
       this.logWaveBanner('FINALIZATION', 'Insight Document Generation');
+      await this.checkSingleStepPause('wave4_insights', false);
       dispatch({ type: 'substep-update', substepId: 'wave4_insights', wave: 4, totalWaves: 4 });
 
       const insightResult = await this.generateInsightsForWaveEntities(waveResults);
@@ -1258,6 +1283,8 @@ export class WaveController {
         failed: insightResult.failed,
         skippedDiagrams: insightResult.skippedDiagrams,
       });
+
+      // Wave 4 finalize — no pause, just summary report generation
 
       // Build and return final summary
       const summary = this.buildSummaryReport(startTime, waveResults);
@@ -1454,6 +1481,10 @@ export class WaveController {
       // Gather all child manifest entries from Wave 1
       const allChildManifest = wave1Result.agentOutputs.flatMap(o => o.childManifest);
 
+      // Shared phase lock: only one concurrent entity pauses at a time.
+      // Without this, N entities all pause/resume on the same file, causing N×4 sub-step repetitions.
+      let phaseLockHolder: string | null = null;
+
       // Build agent tasks for each L1 entity
       const agentTasks = l1Entities.map(l1Entity => {
         return async (): Promise<WaveAgentOutput> => {
@@ -1473,8 +1504,13 @@ export class WaveController {
             componentKeywords,
             manifestChildren: childEntries,
             onPhase: async (phase: string) => {
-              dispatch({ type: 'substep-update', substepId: phase });
-              await this.checkSingleStepPause(phase, true);
+              // Only one entity pauses per phase — others skip to avoid N×duplicate pauses
+              if (phaseLockHolder === null || phaseLockHolder === l1Entity.name) {
+                phaseLockHolder = l1Entity.name;
+                dispatch({ type: 'substep-update', substepId: phase });
+                await this.checkSingleStepPause(phase, true);
+                phaseLockHolder = null; // Release after resume
+              }
             },
           };
 
@@ -1584,6 +1620,9 @@ export class WaveController {
         }
       }
 
+      // Shared phase lock: only one concurrent entity pauses at a time (same as Wave 2)
+      let phaseLockHolder: string | null = null;
+
       // Build agent tasks for each L2 entity
       const agentTasks = l2Entities.map(l2Entity => {
         return async (): Promise<WaveAgentOutput> => {
@@ -1617,8 +1656,13 @@ export class WaveController {
             scopedFiles,
             suggestedChildren,
             onPhase: async (phase: string) => {
-              dispatch({ type: 'substep-update', substepId: phase });
-              await this.checkSingleStepPause(phase, true);
+              // Only one entity pauses per phase — others skip to avoid N×duplicate pauses
+              if (phaseLockHolder === null || phaseLockHolder === l2Entity.name) {
+                phaseLockHolder = l2Entity.name;
+                dispatch({ type: 'substep-update', substepId: phase });
+                await this.checkSingleStepPause(phase, true);
+                phaseLockHolder = null;
+              }
             },
           };
 
@@ -2455,44 +2499,76 @@ export class WaveController {
 
       let progress = JSON.parse(fs.readFileSync(this.progressFile, 'utf8'));
 
-      // singleStepMode lives under config (state machine format) or top-level (legacy)
-      const singleStepEnabled = progress.config?.singleStepMode || progress.singleStepMode;
-      if (!singleStepEnabled) return;
+      // Top-level fields are authoritative WHEN SET (written by user's latest action via REST/WS).
+      // Fall back to config.* when top-level is undefined (initial workflow start only sets config).
+      const singleStepEnabled = progress.singleStepMode !== undefined
+        ? progress.singleStepMode
+        : progress.config?.singleStepMode;
+      if (!singleStepEnabled) {
+        log(`[Step] SKIP '${stepName}' (singleStepMode off: top=${progress.singleStepMode}, config=${progress.config?.singleStepMode})`, 'debug');
+        return;
+      }
 
       // For sub-steps, only pause if stepIntoSubsteps is enabled
       if (isSubstep) {
-        // Small delay to let any in-flight file writes complete
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 100)); // 100ms to allow file writes to settle
         try {
-          const freshProgress = JSON.parse(fs.readFileSync(this.progressFile, 'utf8'));
-          const stepInto = freshProgress.config?.stepIntoSubsteps || freshProgress.stepIntoSubsteps;
+          const raw = fs.readFileSync(this.progressFile, 'utf8');
+          const freshProgress = JSON.parse(raw);
+          // Top-level is authoritative when set; fall back to config for initial state
+          const topVal = freshProgress.stepIntoSubsteps;
+          const cfgVal = freshProgress.config?.stepIntoSubsteps;
+          const stepInto = topVal !== undefined ? topVal : cfgVal;
+          log(`[Step] CHECK sub-step '${stepName}': stepInto decision=${stepInto} (top=${topVal}, config=${cfgVal})`, 'info');
           if (!stepInto) {
-            log(`[WaveController] Single-step mode: Skipping sub-step '${stepName}' (stepIntoSubsteps=false)`, 'debug');
+            log(`[Step] SKIP sub-step '${stepName}' (stepIntoSubsteps=false)`, 'info');
             return;
           }
           progress = freshProgress;
-        } catch {
-          const stepInto = progress.config?.stepIntoSubsteps || progress.stepIntoSubsteps;
+        } catch (e) {
+          log(`[Step] CHECK sub-step '${stepName}': file read error: ${e}`, 'warning');
+          const stepInto = progress.stepIntoSubsteps;
           if (!stepInto) return;
         }
       }
 
-      log(`[WaveController] Single-step mode: Pausing after ${isSubstep ? 'sub-step' : 'step'} '${stepName}'`, 'info');
+      // When pausing at a MAJOR step (not a sub-step), reset stepIntoSubsteps to true.
+      // This ensures sub-steps are shown and "Into" is available at each major step.
+      // "Step" (stepInto=false) is a ONE-SHOT skip for the current step's sub-steps only.
+      if (!isSubstep) {
+        try {
+          const resetProgress = JSON.parse(fs.readFileSync(this.progressFile, 'utf8'));
+          resetProgress.stepIntoSubsteps = true;
+          fs.writeFileSync(this.progressFile, JSON.stringify(resetProgress, null, 2));
+        } catch { /* best-effort */ }
+      }
 
-      // Set paused state
-      progress.stepPaused = true;
-      progress.pausedAtStep = stepName;
-      progress.pausedAt = new Date().toISOString();
-      fs.writeFileSync(this.progressFile, JSON.stringify(progress, null, 2));
+      log(`[Step] PAUSE at ${isSubstep ? 'sub-step' : 'STEP'} '${stepName}' (singleStep=${singleStepEnabled}, stepInto=${progress.stepIntoSubsteps || progress.config?.stepIntoSubsteps})`, 'info');
+
+      // Re-read progress file to get latest state (other writers may have updated it)
+      // then ONLY set pause fields. This prevents overwriting user changes (stepIntoSubsteps, etc.)
+      try {
+        const latest = JSON.parse(fs.readFileSync(this.progressFile, 'utf8'));
+        latest.stepPaused = true;
+        latest.pausedAtStep = stepName;
+        latest.pausedAt = new Date().toISOString();
+        fs.writeFileSync(this.progressFile, JSON.stringify(latest, null, 2));
+      } catch {
+        // Fall back to writing with current progress object
+        progress.stepPaused = true;
+        progress.pausedAtStep = stepName;
+        progress.pausedAt = new Date().toISOString();
+        fs.writeFileSync(this.progressFile, JSON.stringify(progress, null, 2));
+      }
     } catch (initError) {
-      log(`[WaveController] Single-step mode: File access failed, skipping pause: ${initError}`, 'warning');
+      log(`[Step] File access failed at '${stepName}', skipping pause: ${initError}`, 'warning');
       return;
     }
 
     // Poll for resume signal
     const pollIntervalMs = 500;
     let lastLogTime = Date.now();
-    const logIntervalMs = 300_000; // 5 minutes
+    const logIntervalMs = 30_000; // 30 seconds (was 5 min — too long for debugging)
 
     while (true) {
       let currentProgress: Record<string, any>;
@@ -2503,21 +2579,24 @@ export class WaveController {
         continue;
       }
 
-      // Single-step mode disabled — resume freely
-      const stillEnabled = currentProgress.config?.singleStepMode || currentProgress.singleStepMode;
+      // Single-step mode disabled — resume to continuous mode
+      const stillEnabled = currentProgress.singleStepMode !== undefined
+        ? currentProgress.singleStepMode
+        : currentProgress.config?.singleStepMode;
       if (!stillEnabled) {
-        log('[WaveController] Single-step mode disabled, resuming workflow', 'info');
+        log(`[Step] RESUME (continuous mode) — singleStepMode disabled while paused at '${stepName}'`, 'info');
         return;
       }
 
-      // stepPaused cleared — user clicked advance
+      // stepPaused cleared — user clicked Step/Into
       if (!currentProgress.stepPaused) {
-        log(`[WaveController] Single-step mode: Advancing from step '${stepName}'`, 'info');
+        const newStepInto = currentProgress.config?.stepIntoSubsteps || currentProgress.stepIntoSubsteps;
+        log(`[Step] ADVANCE from '${stepName}' (stepInto=${newStepInto})`, 'info');
         return;
       }
 
       if (Date.now() - lastLogTime > logIntervalMs) {
-        log(`[WaveController] Single-step mode: Still paused at '${stepName}'...`, 'info');
+        log(`[Step] Still paused at '${stepName}' (stepPaused=${currentProgress.stepPaused}, singleStep=${stillEnabled})`, 'debug');
         lastLogTime = Date.now();
       }
 

@@ -1076,31 +1076,9 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
       });
     }
 
-    // Dispatch start event to in-process state machine (tracks workflow status
-    // in the MCP server process for getState() queries). The detached runner
-    // process has its own state machine instance and dispatches its own events.
-    try {
-      dispatch({
-        type: 'start',
-        config: {
-          singleStepMode: wantsSingleStep,
-          mockLLM: wantsMockLLM,
-          llmMode: wantsMockLLM ? 'mock' as const : 'public' as const,
-          stepIntoSubsteps: wantsStepIntoSubsteps,
-        },
-        workflowName: resolvedWorkflowName,
-        firstStep: 'initializing',
-      });
-    } catch (err) {
-      // If already running, log and continue (cleanup should have cancelled it)
-      if (err instanceof InvalidTransitionError) {
-        log(`State machine transition warning: ${err.message}`, 'warning');
-      }
-    }
-
-    // TODO(phase-19): Remove legacy debug settings write -- RunConfig is immutable on WorkflowState
-    // DEBUG/MOCK MODE: Write settings to progress file AFTER cleanup
-    // (cleanup may overwrite progress file, so debug settings must come last)
+    // DEBUG/MOCK MODE: Write settings to progress file BEFORE dispatch.
+    // The dispatch triggers the state machine subscriber which writes to the same file.
+    // By writing first, the subscriber's merge logic preserves these settings.
     if (wantsMockLLM || wantsSingleStep || wantsStepIntoSubsteps) {
       log(`Writing debug settings to ${effectiveRepoPath}/.data/workflow-progress.json`, 'info');
       const debugProgressFile = path.join(effectiveRepoPath, '.data', 'workflow-progress.json');
@@ -1121,14 +1099,14 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
         status: 'starting',
       };
 
+      // ALWAYS write singleStepMode and stepIntoSubsteps as top-level fields
+      // so the wave-controller can read them without falling back to config
+      debugProgress.singleStepMode = !!wantsSingleStep;
+      debugProgress.stepIntoSubsteps = !!wantsStepIntoSubsteps;
       if (wantsSingleStep) {
-        debugProgress.singleStepMode = true;
         debugProgress.stepPaused = false;
         debugProgress.pausedAtStep = null;
         debugProgress.singleStepUpdatedAt = new Date().toISOString();
-      }
-      if (wantsStepIntoSubsteps) {
-        debugProgress.stepIntoSubsteps = true;
       }
       if (wantsMockLLM) {
         debugProgress.mockLLM = true;
@@ -1143,6 +1121,27 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
 
       writeFileSync(debugProgressFile, JSON.stringify(debugProgress, null, 2));
       log(`Pre-set debug settings: singleStepMode=${wantsSingleStep}, stepIntoSubsteps=${wantsStepIntoSubsteps}, mockLLM=${wantsMockLLM}`, 'info');
+    }
+
+    // Dispatch start event to in-process state machine AFTER debug settings are written.
+    // The subscriber's merge logic will preserve the debug settings we just wrote.
+    try {
+      dispatch({
+        type: 'start',
+        config: {
+          singleStepMode: wantsSingleStep,
+          mockLLM: wantsMockLLM,
+          llmMode: wantsMockLLM ? 'mock' as const : 'public' as const,
+          stepIntoSubsteps: wantsStepIntoSubsteps,
+        },
+        workflowName: resolvedWorkflowName,
+        firstStep: 'initializing',
+      });
+    } catch (err) {
+      // If already running, log and continue (cleanup should have cancelled it)
+      if (err instanceof InvalidTransitionError) {
+        log(`State machine transition warning: ${err.message}`, 'warning');
+      }
     }
 
     // Store workflow info locally (for status queries before child writes progress)

@@ -127,6 +127,7 @@ export class Wave1ProjectAgent {
           directoryStructure,
           existingEntitiesContext,
           fileContents,
+          input.docContext,
         );
       }
 
@@ -202,13 +203,16 @@ export class Wave1ProjectAgent {
           const cgrTagInstructions = entityCgrContext
             ? '\nIf <code_graph> data is provided, reference it in your observations. Prefix observations grounded in code graph data with [LLM+CGR]. Prefix observations from your own analysis with [LLM].'
             : '';
+          const docSection = input.docContext
+            ? `\n## Project Documentation\n${input.docContext}\n`
+            : '';
 
           const enrichPrompt = `You are performing deep observation synthesis for the "${l1Entity.name}" component of the Coding project.
 
 ## Component Context
 Name: ${l1Entity.name}
 Hierarchy: ${input.manifest.project.name}/${l1Entity.name}
-${cgrSection}
+${cgrSection}${docSection}
 ## Initial Analysis
 ${l1Entity.observations.join('\n')}
 
@@ -321,10 +325,13 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
     directoryStructure: string,
     existingEntitiesContext: string,
     representativeFiles: string[],
+    docContext?: string,
   ): Promise<ComponentAnalysis> {
     const fileContentsBlock = representativeFiles.length > 0
       ? representativeFiles.join('\n\n---\n\n')
       : '(No representative files found)';
+
+    const docSection = docContext ? `\n## Project Documentation\n${docContext}\n` : '';
 
     const prompt = `You are analyzing the ${component.name} component of the Coding project.
 
@@ -333,7 +340,7 @@ ${directoryStructure}
 
 ## Existing Knowledge
 ${existingEntitiesContext}
-
+${docSection}
 ## Component Definition
 Name: ${component.name}
 Description: ${component.description}

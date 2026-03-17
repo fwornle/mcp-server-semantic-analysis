@@ -267,6 +267,8 @@ export class Wave2ComponentAgent {
       ? input.l1Entity.observations[0]
       : `Component ${input.l1Entity.name}`;
 
+    const docSection = input.docContext ? `\n## Project Documentation\n${input.docContext}\n` : '';
+
     const prompt = `You are analyzing the ${input.l1Entity.name} component to identify its sub-components (L2 nodes).
 
 ## Parent Component
@@ -278,6 +280,7 @@ ${manifestList || '(none defined)'}
 
 ## Source Files
 ${fileContents || '(no source files available)'}
+${docSection}
 
 ## Task
 1. For each known sub-component, provide 5-7 specific observations. Each observation MUST:

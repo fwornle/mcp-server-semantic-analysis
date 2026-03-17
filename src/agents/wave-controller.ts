@@ -36,9 +36,12 @@ import type {
   TraceAgentInstance,
   TraceEntityFlow,
   TraceQAResult,
+  TraceCGRQuery,
 } from '../trace-types.js';
 import { CgrQueryCache } from '../services/cgr-query-cache.js';
 import { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
+import { DocumentationLinkerAgent } from './documentation-linker-agent.js';
+import type { DocumentationAnalysisResult } from './documentation-linker-agent.js';
 import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 import type { KGEntity, KGRelation, BatchContext } from './kg-operators.js';
 import type { ComponentManifest } from '../types/component-manifest.js';
@@ -90,6 +93,7 @@ export class WaveController {
     llmProvider?: string;
     outputs?: Record<string, unknown>;
     llmCallEvents?: TraceLLMCall[];
+    cgrQueryEvents?: TraceCGRQuery[];
     agentInstances?: TraceAgentInstance[];
     entityFlow?: TraceEntityFlow;
     qaResult?: TraceQAResult;
@@ -97,8 +101,12 @@ export class WaveController {
 
   /** CGR query cache -- created at wave1_init, used by wave agents */
   private cgrCache: CgrQueryCache | null = null;
+  /** Tracks which step is currently active for CGR query attribution */
+  private currentCGRStep = 'wave1_analyze';
   /** CGR observation builder -- created at wave1_init, used by wave agents */
   private cgrBuilder: CgrObservationBuilder | null = null;
+  /** Documentation analysis result -- populated during wave1_init, passed to wave agents */
+  private docAnalysis: DocumentationAnalysisResult | null = null;
 
   constructor(config: WaveControllerConfig) {
     this.repositoryPath = config.repositoryPath;
@@ -122,6 +130,23 @@ export class WaveController {
   /** Get the CGR observation builder for downstream wave agents */
   getCgrBuilder(): CgrObservationBuilder | null {
     return this.cgrBuilder;
+  }
+
+  /**
+   * Format doc analysis results as a compact context string for LLM prompts.
+   * Returns null when no analysis is available or it produced nothing useful.
+   */
+  private formatDocContext(): string | undefined {
+    if (!this.docAnalysis || this.docAnalysis.statistics.totalDocuments === 0) {
+      return undefined;
+    }
+    const { documents, statistics } = this.docAnalysis;
+    const docList = documents
+      .slice(0, 20)
+      .map(d => `- ${d.path}${d.title ? ` ("${d.title}")` : ''} [${d.type}]`)
+      .join('\n');
+    const moreCount = documents.length > 20 ? ` (and ${documents.length - 20} more)` : '';
+    return `## Project Documentation (${statistics.totalDocuments} files, ${statistics.totalLinks} code references)\n${docList}${moreCount}\n\nKey documented components: ${statistics.unresolvedReferences.slice(0, 10).join(', ')}`;
   }
 
   /** Capture LLM metrics from SemanticAnalyzer for a step and store outputs */
@@ -178,6 +203,25 @@ export class WaveController {
       entry.llmCallEvents.push(call);
     } catch (e) {
       log('[WaveController] Failed to capture LLM call event (non-fatal)', 'debug', {
+        stepName, error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  /** Capture a CGR query event for a step */
+  captureCGRQueryEvent(stepName: string, event: TraceCGRQuery): void {
+    try {
+      let entry = this.stepMetrics.get(stepName);
+      if (!entry) {
+        entry = {};
+        this.stepMetrics.set(stepName, entry);
+      }
+      if (!entry.cgrQueryEvents) {
+        entry.cgrQueryEvents = [];
+      }
+      entry.cgrQueryEvents.push(event);
+    } catch (e) {
+      log('[WaveController] Failed to capture CGR query event (non-fatal)', 'debug', {
         stepName, error: e instanceof Error ? e.message : String(e),
       });
     }
@@ -299,6 +343,7 @@ export class WaveController {
       let totalCalls = 0;
       const providers = new Set<string>();
       const allLLMCallEvents: TraceLLMCall[] = [];
+      const allCGRQueryEvents: TraceCGRQuery[] = [];
       const allAgentInstances: TraceAgentInstance[] = [];
       let entityFlow: TraceEntityFlow | undefined;
       let qaResult: TraceQAResult | undefined;
@@ -313,6 +358,9 @@ export class WaveController {
         if (entry.llmCallEvents) {
           allLLMCallEvents.push(...entry.llmCallEvents);
         }
+        if (entry.cgrQueryEvents) {
+          allCGRQueryEvents.push(...entry.cgrQueryEvents);
+        }
         if (entry.agentInstances) {
           allAgentInstances.push(...entry.agentInstances);
         }
@@ -326,6 +374,7 @@ export class WaveController {
         llmCalls: totalCalls || undefined,
         llmProvider: providers.size > 0 ? [...providers].join(', ') : undefined,
         llmCallEvents: allLLMCallEvents.length > 0 ? allLLMCallEvents as unknown as Array<Record<string, unknown>> : undefined,
+        cgrQueryEvents: allCGRQueryEvents.length > 0 ? allCGRQueryEvents as unknown as Array<Record<string, unknown>> : undefined,
         agentInstances: allAgentInstances.length > 0 ? allAgentInstances as unknown as Array<Record<string, unknown>> : undefined,
         entityFlow: entityFlow as unknown as Record<string, unknown> | undefined,
         qaResult: qaResult as unknown as Record<string, unknown> | undefined,
@@ -356,6 +405,7 @@ export class WaveController {
         llmProvider: metrics.llmProvider,
         agentInstances: metrics.agentInstances,
         llmCallEvents: metrics.llmCallEvents,
+        cgrQueryEvents: metrics.cgrQueryEvents,
         entityFlow: metrics.entityFlow,
         qaResult: metrics.qaResult,
         subSteps: subSteps.length > 0 ? subSteps : undefined,
@@ -392,7 +442,9 @@ export class WaveController {
       dispatch({ type: 'substep-update', substepId: 'wave1_init', wave: 1, totalWaves: 4 });
 
       // Initialize CGR query cache and start async index refresh
-      this.cgrCache = new CgrQueryCache(this.repositoryPath);
+      this.cgrCache = new CgrQueryCache(this.repositoryPath, (event) => {
+        this.captureCGRQueryEvent(this.currentCGRStep, event);
+      });
       this.cgrBuilder = new CgrObservationBuilder();
       if (isMockLLMEnabled(this.repositoryPath)) {
         log('[WaveController] Mock mode: skipping CGR index refresh', 'info');
@@ -404,14 +456,33 @@ export class WaveController {
         log('[WaveController] CGR unavailable -- continuing with LLM-only observations', 'warning');
       }
 
+      // Documentation analysis: scan .md and .puml files for project context
+      dispatch({ type: 'substep-update', substepId: 'wave_docs', wave: 1, totalWaves: 4 });
+      try {
+        const docLinker = new DocumentationLinkerAgent(this.repositoryPath);
+        this.docAnalysis = await docLinker.analyzeDocumentation();
+        log('[WaveController] Documentation analysis complete', 'info', {
+          documents: this.docAnalysis.statistics.totalDocuments,
+          links: this.docAnalysis.statistics.totalLinks,
+        });
+      } catch (err) {
+        log('[WaveController] Documentation analysis failed (non-fatal)', 'warning', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        this.docAnalysis = null;
+      }
+
       this.captureStepMetrics('wave1_init', {
         manifestEntries: flatEntries.length,
         existingEntities: existingEntities.length,
         cgrAvailable: this.cgrCache.isAvailable(),
+        docDocuments: this.docAnalysis?.statistics.totalDocuments ?? 0,
+        docLinks: this.docAnalysis?.statistics.totalLinks ?? 0,
       });
 
       // Pause BEFORE analyze (user sees "about to analyze wave1")
       await this.checkSingleStepPause('wave1_analyze', false);
+      this.currentCGRStep = 'wave1_analyze';
       SemanticAnalyzer.resetStepMetrics();
       dispatch({ type: 'substep-update', substepId: 'wave1_analyze', wave: 1, totalWaves: 4 });
       let { result: wave1Result, agent: wave1Agent } = await this.executeWave1WithMetrics(manifest, existingEntities);
@@ -597,6 +668,7 @@ export class WaveController {
       this.logWaveBanner('WAVE 2', 'L2 SubComponents');
       // Pause BEFORE wave2 analyze
       await this.checkSingleStepPause('wave2_analyze', false);
+      this.currentCGRStep = 'wave2_analyze';
       SemanticAnalyzer.resetStepMetrics();
       dispatch({ type: 'substep-update', substepId: 'wave2_analyze', wave: 2, totalWaves: 4 });
 
@@ -777,6 +849,7 @@ export class WaveController {
       this.logWaveBanner('WAVE 3', 'L3 Detail Entities');
       // Pause BEFORE wave3 analyze
       await this.checkSingleStepPause('wave3_analyze', false);
+      this.currentCGRStep = 'wave3_analyze';
       SemanticAnalyzer.resetStepMetrics();
       dispatch({ type: 'substep-update', substepId: 'wave3_analyze', wave: 3, totalWaves: 4 });
 
@@ -1429,6 +1502,7 @@ export class WaveController {
         manifest,
         existingEntities,
         repositoryPath: this.repositoryPath,
+        docContext: this.formatDocContext(),
         onPhase: async (phase: string) => {
           dispatch({ type: 'substep-update', substepId: phase });
           await this.checkSingleStepPause(phase, true);
@@ -1514,6 +1588,7 @@ export class WaveController {
             componentFiles,
             componentKeywords,
             manifestChildren: childEntries,
+            docContext: this.formatDocContext(),
             onPhase: async (phase: string) => {
               // Only one entity pauses per phase — others skip to avoid N×duplicate pauses
               if (phaseLockHolder === null || phaseLockHolder === l1Entity.name) {
@@ -1666,6 +1741,7 @@ export class WaveController {
             },
             scopedFiles,
             suggestedChildren,
+            docContext: this.formatDocContext(),
             onPhase: async (phase: string) => {
               // Only one entity pauses per phase — others skip to avoid N×duplicate pauses
               if (phaseLockHolder === null || phaseLockHolder === l2Entity.name) {

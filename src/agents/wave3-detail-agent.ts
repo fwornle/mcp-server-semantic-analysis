@@ -261,6 +261,8 @@ export class Wave3DetailAgent {
           .join('\n')}\n`
       : '';
 
+    const docSection = input.docContext ? `\n## Project Documentation\n${input.docContext}\n` : '';
+
     const prompt = `You are analyzing the ${input.l2Entity.name} sub-component to identify its detail-level knowledge nodes.
 
 ## Hierarchy Context
@@ -270,7 +272,7 @@ SubComponent (L2): ${input.l2Entity.name} - ${l2Description}
 
 ## Source Files
 ${fileSection}
-${suggestedSection}
+${suggestedSection}${docSection}
 ## Task
 Identify ${hasFiles ? '2-5' : '1-2'} Detail-level (L3) nodes that represent specific, notable aspects of this sub-component.
 

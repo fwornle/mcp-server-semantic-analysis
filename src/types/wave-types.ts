@@ -241,6 +241,8 @@ export interface Wave1Input {
   existingEntities: KGEntity[];
   /** Absolute path to the repository being analyzed */
   repositoryPath: string;
+  /** Optional documentation context from DocumentationLinkerAgent (injected into LLM prompts) */
+  docContext?: string;
   /** Optional callback invoked at each semantic phase transition (for single-step pause support) */
   onPhase?: (phase: string) => Promise<void>;
 }
@@ -258,6 +260,8 @@ export interface Wave2Input {
   componentKeywords: string[];
   /** Pre-defined L2 children from the component manifest (may be extended by discovery) */
   manifestChildren: ChildManifestEntry[];
+  /** Optional documentation context from DocumentationLinkerAgent (injected into LLM prompts) */
+  docContext?: string;
   /** Optional callback invoked at each semantic phase transition (for single-step pause support) */
   onPhase?: (phase: string) => Promise<void>;
 }
@@ -275,6 +279,8 @@ export interface Wave3Input {
   scopedFiles: string[];
   /** L3 children suggested by Wave 2 agent -- used as discovery seeds, not authoritative */
   suggestedChildren?: ChildManifestEntry[];
+  /** Optional documentation context from DocumentationLinkerAgent (injected into LLM prompts) */
+  docContext?: string;
   /** Optional callback invoked at each semantic phase transition (for single-step pause support) */
   onPhase?: (phase: string) => Promise<void>;
 }

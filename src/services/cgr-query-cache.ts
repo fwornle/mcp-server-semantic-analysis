@@ -11,9 +11,11 @@
  * @module services/cgr-query-cache
  */
 
+import * as crypto from 'crypto';
 import { CodeGraphAgent } from '../agents/code-graph-agent.js';
 import type { CodeEntity, CodeRelationship } from '../agents/code-graph-agent.js';
 import { log } from '../logging.js';
+import type { TraceCGRQuery } from '../trace-types.js';
 
 // ============================================================================
 // Result Interfaces
@@ -71,8 +73,12 @@ export class CgrQueryCache {
   /** Running cache hit counter for stats */
   private cacheHits = 0;
 
-  constructor(repositoryPath: string) {
+  /** Optional callback fired after each query with trace event data */
+  private onQuery?: (event: TraceCGRQuery) => void;
+
+  constructor(repositoryPath: string, onQuery?: (event: TraceCGRQuery) => void) {
     this.cgrAgent = new CodeGraphAgent(repositoryPath);
+    this.onQuery = onQuery;
   }
 
   /**
@@ -139,18 +145,29 @@ export class CgrQueryCache {
     if (cached) {
       this.cacheHits++;
       this.queriesMade++;
+      this.onQuery?.({
+        id: crypto.randomUUID(),
+        queryType: 'component_entities',
+        entityName: componentName,
+        resultCount: cached.entities.length,
+        durationMs: 0,
+        cacheHit: true,
+        status: 'success',
+      });
       return cached.entities;
     }
+
+    const safeName = this.sanitizeCypher(componentName);
+    const cypher = `MATCH (f:File)-[:DEFINES]->(e) WHERE toLower(f.file_path) CONTAINS toLower('${safeName}') RETURN e LIMIT 50`;
+    const t0 = Date.now();
 
     try {
       await this.ensureReady();
       this.queriesMade++;
 
-      const safeName = this.sanitizeCypher(componentName);
-      const cypher = `MATCH (f:File)-[:DEFINES]->(e) WHERE toLower(f.file_path) CONTAINS toLower('${safeName}') RETURN e LIMIT 50`;
-
       const result = await this.cgrAgent.runCypherQuery(cypher);
       const entities: CodeEntity[] = Array.isArray(result) ? result.map((r: any) => this.mapToCodeEntity(r)) : [];
+      const durationMs = Date.now() - t0;
 
       // Cache the result
       this.cache.set(componentName, {
@@ -160,10 +177,32 @@ export class CgrQueryCache {
         fetchedAt: Date.now(),
       });
 
+      this.onQuery?.({
+        id: crypto.randomUUID(),
+        queryType: 'component_entities',
+        entityName: componentName,
+        cypherQuery: cypher,
+        resultCount: entities.length,
+        durationMs,
+        cacheHit: false,
+        status: 'success',
+      });
+
       return entities;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       log(`[CgrQueryCache] queryComponentEntities failed for ${componentName}: ${msg}`, 'warning');
+      this.onQuery?.({
+        id: crypto.randomUUID(),
+        queryType: 'component_entities',
+        entityName: componentName,
+        cypherQuery: cypher,
+        resultCount: 0,
+        durationMs: Date.now() - t0,
+        cacheHit: false,
+        status: 'failed',
+        error: msg,
+      });
       return [];
     }
   }
@@ -176,14 +215,15 @@ export class CgrQueryCache {
     const empty: CgrEntityDetails = { entities: [], callees: [], imports: [], signatures: [] };
     if (!this.available) return empty;
 
+    const safeName = this.sanitizeCypher(entityName);
+    const entityQuery = `MATCH (e) WHERE toLower(e.name) = toLower('${safeName}') RETURN e LIMIT 10`;
+    const t0 = Date.now();
+
     try {
       await this.ensureReady();
       this.queriesMade++;
 
-      const safeName = this.sanitizeCypher(entityName);
-
       // Query for entity signatures
-      const entityQuery = `MATCH (e) WHERE toLower(e.name) = toLower('${safeName}') RETURN e LIMIT 10`;
       const entityResult = await this.cgrAgent.runCypherQuery(entityQuery);
       const entities: CodeEntity[] = Array.isArray(entityResult)
         ? entityResult.map((r: any) => this.mapToCodeEntity(r))
@@ -207,10 +247,32 @@ export class CgrQueryCache {
         .map(e => e.signature)
         .filter((s): s is string => !!s);
 
+      this.onQuery?.({
+        id: crypto.randomUUID(),
+        queryType: 'entity_details',
+        entityName,
+        cypherQuery: entityQuery,
+        resultCount: entities.length,
+        durationMs: Date.now() - t0,
+        cacheHit: false,
+        status: 'success',
+      });
+
       return { entities, callees, imports, signatures };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       log(`[CgrQueryCache] queryEntityDetails failed for ${entityName}: ${msg}`, 'warning');
+      this.onQuery?.({
+        id: crypto.randomUUID(),
+        queryType: 'entity_details',
+        entityName,
+        cypherQuery: entityQuery,
+        resultCount: 0,
+        durationMs: Date.now() - t0,
+        cacheHit: false,
+        status: 'failed',
+        error: msg,
+      });
       return empty;
     }
   }
@@ -223,12 +285,13 @@ export class CgrQueryCache {
     const empty: CgrCallGraphResult = { chains: [], depth };
     if (!this.available) return empty;
 
+    const safeName = this.sanitizeCypher(entityName);
+    const cypher = `MATCH path = (e)-[:CALLS*1..${depth}]->(callee) WHERE toLower(e.name) = toLower('${safeName}') UNWIND relationships(path) AS rel RETURN startNode(rel).name AS caller, endNode(rel).name AS callee, startNode(rel).qualified_name AS callerQN, endNode(rel).qualified_name AS calleeQN LIMIT 50`;
+    const t0 = Date.now();
+
     try {
       await this.ensureReady();
       this.queriesMade++;
-
-      const safeName = this.sanitizeCypher(entityName);
-      const cypher = `MATCH path = (e)-[:CALLS*1..${depth}]->(callee) WHERE toLower(e.name) = toLower('${safeName}') UNWIND relationships(path) AS rel RETURN startNode(rel).name AS caller, endNode(rel).name AS callee, startNode(rel).qualified_name AS callerQN, endNode(rel).qualified_name AS calleeQN LIMIT 50`;
 
       const result = await this.cgrAgent.runCypherQuery(cypher);
       const chains = Array.isArray(result)
@@ -240,10 +303,32 @@ export class CgrQueryCache {
           }))
         : [];
 
+      this.onQuery?.({
+        id: crypto.randomUUID(),
+        queryType: 'call_graph',
+        entityName,
+        cypherQuery: cypher,
+        resultCount: chains.length,
+        durationMs: Date.now() - t0,
+        cacheHit: false,
+        status: 'success',
+      });
+
       return { chains, depth };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       log(`[CgrQueryCache] queryCallGraph failed for ${entityName}: ${msg}`, 'warning');
+      this.onQuery?.({
+        id: crypto.randomUUID(),
+        queryType: 'call_graph',
+        entityName,
+        cypherQuery: cypher,
+        resultCount: 0,
+        durationMs: Date.now() - t0,
+        cacheHit: false,
+        status: 'failed',
+        error: msg,
+      });
       return empty;
     }
   }

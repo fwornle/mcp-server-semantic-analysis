@@ -107,6 +107,8 @@ export class WaveController {
   private cgrBuilder: CgrObservationBuilder | null = null;
   /** Documentation analysis result -- populated during wave1_init, passed to wave agents */
   private docAnalysis: DocumentationAnalysisResult | null = null;
+  /** Track all entity names persisted across waves — used for cross-wave parent validation */
+  private persistedEntityNames: Set<string> = new Set();
 
   constructor(config: WaveControllerConfig) {
     this.repositoryPath = config.repositoryPath;
@@ -427,8 +429,13 @@ export class WaveController {
 
       // Load existing KG entities for context enrichment
       const existingEntities = await this.loadExistingEntities();
+      // Seed persisted entity names from existing graph (for cross-wave parent validation)
+      for (const e of existingEntities) {
+        this.persistedEntityNames.add(e.name);
+      }
       log('[WaveController] Existing entities loaded', 'info', {
         count: existingEntities.length,
+        seededNames: this.persistedEntityNames.size,
       });
 
       // Start workflow report for history
@@ -1977,9 +1984,9 @@ export class WaveController {
       if (level === 0 && entity.parentEntityName) {
         reasons.push(`L0 entity should not have parentEntityName ('${entity.parentEntityName}')`);
       }
-      // If parentEntityName is set (non-L0), it must exist in the entity set
-      if (level > 0 && entity.parentEntityName && !allEntityNames.has(entity.parentEntityName)) {
-        reasons.push(`Parent '${entity.parentEntityName}' not found in entity set`);
+      // If parentEntityName is set (non-L0), it must exist in current wave OR prior waves
+      if (level > 0 && entity.parentEntityName && !allEntityNames.has(entity.parentEntityName) && !this.persistedEntityNames.has(entity.parentEntityName)) {
+        reasons.push(`Parent '${entity.parentEntityName}' not found in entity set or prior waves`);
       }
     }
     // HierarchyPath depth should match level (field may exist on extended entity objects)
@@ -2025,6 +2032,12 @@ export class WaveController {
     });
     log(`[WaveController] Constraint gate: ${qualityFilteredEntities.length}/${sharedMemoryEntities.length} entities passed`, 'info');
 
+    // Track persisted entity names for cross-wave parent validation
+    const persistedNames = new Set(qualityFilteredEntities.map(e => e.name));
+    for (const name of persistedNames) {
+      this.persistedEntityNames.add(name);
+    }
+
     await persistenceAgent.persistEntities({
       entities: qualityFilteredEntities.map(e => ({
         name: e.name,
@@ -2044,8 +2057,13 @@ export class WaveController {
       team: this.team,
     });
 
-    // Persist relationship edges via GraphDatabaseAdapter
+    // Persist relationship edges — only where both endpoints exist (prevents orphan edges)
+    let relSkipped = 0;
     for (const rel of allRelationships) {
+      if (!this.persistedEntityNames.has(rel.from) || !this.persistedEntityNames.has(rel.to)) {
+        relSkipped++;
+        continue;
+      }
       try {
         await this.graphDB.storeRelationship({
           from: rel.from,
@@ -2057,6 +2075,9 @@ export class WaveController {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+    if (relSkipped > 0) {
+      log(`[WaveController] Skipped ${relSkipped} relations with missing endpoints`, 'info');
     }
 
     log(`[WaveController] Wave ${waveResult.wave} persistence complete`, 'info', {

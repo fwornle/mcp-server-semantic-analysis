@@ -351,42 +351,106 @@ export class CodeGraphAgent {
    * Can be called directly for explicit Cypher queries
    */
   async runCypherQuery(query: string): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const docker = spawn('docker', [
-        'exec', '-i', 'code-graph-rag-memgraph-1',
-        'mgconsole', '--output-format=csv'
-      ]);
+    const host = this.memgraphHost || 'coding-memgraph';
+    const port = this.memgraphPort || 7687;
+
+    // Use Python mgclient from CGR venv (available in Docker container)
+    // Falls back to mgconsole or docker exec for host-machine usage
+    const cgrVenvPython = '/coding/integrations/code-graph-rag/.venv/bin/python';
+    const hasCgrVenv = fs.existsSync(cgrVenvPython);
+
+    if (hasCgrVenv) {
+      return this.runCypherViaPython(query, host, port, cgrVenvPython);
+    }
+
+    // Fallback: mgconsole (host machine or container with it installed)
+    return this.runCypherViaMgconsole(query, host, port);
+  }
+
+  private async runCypherViaPython(query: string, host: string, port: number, pythonPath: string): Promise<any> {
+    return new Promise((resolve) => {
+      // Escape single quotes in query for Python string
+      const escapedQuery = query.replace(/'/g, "\\'");
+      const script = `
+import mgclient, json, sys
+try:
+    conn = mgclient.connect(host='${host}', port=${port})
+    cursor = conn.cursor()
+    cursor.execute('${escapedQuery}')
+    cols = [d.name for d in cursor.description] if cursor.description else []
+    rows = cursor.fetchall()
+    result = [dict(zip(cols, [str(v) if v is not None else None for v in row])) for row in rows]
+    print(json.dumps(result))
+    conn.close()
+except Exception as e:
+    print(json.dumps({"error": str(e)}), file=sys.stderr)
+    sys.exit(1)
+`;
+      const proc = spawn(pythonPath, ['-c', script]);
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+      proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+      proc.on('close', (code: number | null) => {
+        if (code !== 0) {
+          log(`[CodeGraphAgent] Python Cypher query failed: ${stderr.trim()}`, 'warning');
+          resolve(null);
+          return;
+        }
+        try {
+          const results = JSON.parse(stdout.trim());
+          if (Array.isArray(results) && results.length === 1) {
+            const keys = Object.keys(results[0]);
+            if (keys.some(k => k.includes('count') || k.includes('Count'))) {
+              resolve(results[0]);
+              return;
+            }
+          }
+          resolve(results);
+        } catch (e) {
+          log(`[CodeGraphAgent] Failed to parse Python Cypher result: ${e}`, 'warning');
+          resolve(null);
+        }
+      });
+
+      proc.on('error', (err: Error) => {
+        log(`[CodeGraphAgent] Python process failed: ${err.message}`, 'warning');
+        resolve(null);
+      });
+    });
+  }
+
+  private async runCypherViaMgconsole(query: string, host: string, port: number): Promise<any> {
+    return new Promise((resolve) => {
+      let proc: ReturnType<typeof spawn>;
+      const hasMgconsole = fs.existsSync('/usr/bin/mgconsole') || fs.existsSync('/usr/local/bin/mgconsole');
+
+      if (hasMgconsole) {
+        proc = spawn('mgconsole', ['--host', host, '--port', String(port), '--output-format=csv']);
+      } else {
+        const containerName = process.env.MEMGRAPH_CONTAINER || 'coding-memgraph';
+        proc = spawn('docker', ['exec', '-i', containerName, 'mgconsole', '--output-format=csv']);
+      }
 
       let stdout = '';
       let stderr = '';
 
-      docker.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
+      proc.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
+      proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
 
-      docker.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      docker.on('close', (code) => {
+      proc.on('close', (code: number | null) => {
         if (code !== 0) {
           log(`[CodeGraphAgent] Cypher query failed: ${stderr}`, 'warning');
           resolve(null);
           return;
         }
-
         try {
-          // Parse CSV output - first line is headers, rest are data rows
           const lines = stdout.trim().split('\n').filter(l => l.trim());
-          if (lines.length === 0) {
-            resolve([]);
-            return;
-          }
-
-          // Parse CSV header and rows
+          if (lines.length === 0) { resolve([]); return; }
           const headers = this.parseCSVLine(lines[0]);
           const results: any[] = [];
-
           for (let i = 1; i < lines.length; i++) {
             const values = this.parseCSVLine(lines[i]);
             const row: Record<string, any> = {};
@@ -395,8 +459,6 @@ export class CodeGraphAgent {
             }
             results.push(row);
           }
-
-          // Return array of results (or first result for count queries)
           if (results.length === 1 && headers.some(h => h.includes('count') || h.includes('Count'))) {
             resolve(results[0]);
           } else {
@@ -408,14 +470,13 @@ export class CodeGraphAgent {
         }
       });
 
-      docker.on('error', (err) => {
-        log(`[CodeGraphAgent] Docker exec failed: ${err}`, 'warning');
+      proc.on('error', (err: Error) => {
+        log(`[CodeGraphAgent] Query process failed: ${err.message}`, 'warning');
         resolve(null);
       });
 
-      // Send query to mgconsole
-      docker.stdin.write(query + ';\n');
-      docker.stdin.end();
+      proc.stdin?.write(query + ';\n');
+      proc.stdin?.end();
     });
   }
 

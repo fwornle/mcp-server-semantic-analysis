@@ -463,8 +463,14 @@ export class WaveController {
         log('[WaveController] CGR unavailable -- continuing with LLM-only observations', 'warning');
       }
 
+      this.captureStepMetrics('wave1_init', {
+        manifestEntries: flatEntries.length,
+        existingEntities: existingEntities.length,
+        cgrAvailable: this.cgrCache.isAvailable(),
+      });
+
       // Documentation analysis: scan .md and .puml files for project context
-      dispatch({ type: 'substep-update', substepId: 'wave_docs', wave: 1, totalWaves: 4 });
+      dispatch({ type: 'substep-update', substepId: 'wave1_docs', wave: 1, totalWaves: 4 });
       try {
         const docLinker = new DocumentationLinkerAgent(this.repositoryPath);
         this.docAnalysis = await docLinker.analyzeDocumentation();
@@ -472,20 +478,18 @@ export class WaveController {
           documents: this.docAnalysis.statistics.totalDocuments,
           links: this.docAnalysis.statistics.totalLinks,
         });
+        this.captureStepMetrics('wave1_docs', {
+          documents: this.docAnalysis.statistics.totalDocuments,
+          links: this.docAnalysis.statistics.totalLinks,
+          unresolvedReferences: this.docAnalysis.statistics.unresolvedReferences,
+        });
       } catch (err) {
         log('[WaveController] Documentation analysis failed (non-fatal)', 'warning', {
           error: err instanceof Error ? err.message : String(err),
         });
         this.docAnalysis = null;
+        this.captureStepMetrics('wave1_docs', { error: err instanceof Error ? err.message : 'unknown' });
       }
-
-      this.captureStepMetrics('wave1_init', {
-        manifestEntries: flatEntries.length,
-        existingEntities: existingEntities.length,
-        cgrAvailable: this.cgrCache.isAvailable(),
-        docDocuments: this.docAnalysis?.statistics.totalDocuments ?? 0,
-        docLinks: this.docAnalysis?.statistics.totalLinks ?? 0,
-      });
 
       // Pause BEFORE analyze (user sees "about to analyze wave1")
       await this.checkSingleStepPause('wave1_analyze', false);

@@ -241,8 +241,8 @@ export class InsightGenerationAgent {
       // --- Code Evidence section (all entity levels L0-L3) ---
       const codeEvidenceSection = this.buildCodeEvidenceSection(params.observations);
 
-      // --- Diagram links section (only has content for L1/L2 with successful diagrams) ---
-      const diagramLinksSection = this.buildDiagramLinksSection(params.entityName, successfulDiagrams);
+      // --- Diagram links section (only appends diagrams the LLM didn't embed inline) ---
+      const diagramLinksSection = this.buildDiagramLinksSection(params.entityName, successfulDiagrams, content);
 
       // --- Cross-reference form 2: Structured Hierarchy Context section ---
       let hierarchySection = '';
@@ -409,6 +409,15 @@ export class InsightGenerationAgent {
 
     // DEEP INSIGHT GENERATION: Use LLM to synthesize meaningful insights from observations
     // This generates a coherent narrative rather than just listing observations
+    // Build diagram references for inline placement by LLM
+    const relativePath = path.relative(this.outputDir, this.imagesDir);
+    const availableDiagrams = diagrams
+      .filter(d => d.success)
+      .map(d => ({
+        type: d.type,
+        markdownRef: `![${entityName} — ${d.type.charAt(0).toUpperCase() + d.type.slice(1)}](${relativePath}/${d.name}.png)`,
+      }));
+
     let deepInsightContent: string | null = null;
     if (this.semanticAnalyzer && observations.length > 0) {
       try {
@@ -419,6 +428,7 @@ export class InsightGenerationAgent {
           relations,
           serenaAnalysis,
           additionalContext: params.additionalContext,
+          availableDiagrams,
         });
         log(`Generated deep insight content (${deepInsightContent?.length || 0} chars)`, 'info');
       } catch (error) {
@@ -515,24 +525,8 @@ export class InsightGenerationAgent {
       }
     }
 
-    // Diagrams section - display all successful diagrams (always shown)
-    const successfulDiagrams = diagrams.filter(d => d.success);
-    if (successfulDiagrams.length > 0) {
-      sections.push(`## Diagrams\n`);
-
-      // Order: architecture first, then sequence, class, use-cases
-      const diagramOrder = ['architecture', 'sequence', 'class', 'use-cases'];
-      const orderedDiagrams = successfulDiagrams.sort((a, b) =>
-        diagramOrder.indexOf(a.type) - diagramOrder.indexOf(b.type)
-      );
-
-      for (const diagram of orderedDiagrams) {
-        const diagramTitle = diagram.type.charAt(0).toUpperCase() + diagram.type.slice(1).replace('-', ' ');
-        sections.push(`### ${diagramTitle}\n`);
-        sections.push(`![${entityName} ${diagramTitle}](images/${diagram.name}.png)\n`);
-        sections.push('');
-      }
-    }
+    // Diagrams are appended by buildDiagramLinksSection after LLM content generation
+    // (avoids duplicate sections and uses correct relative paths)
 
     // Footer
     sections.push(`---\n`);
@@ -570,6 +564,7 @@ export class InsightGenerationAgent {
     relations: Array<{ from: string; to: string; relationType: string }>;
     serenaAnalysis: SerenaAnalysisResult | null;
     additionalContext?: string;
+    availableDiagrams?: Array<{ type: string; markdownRef: string }>;
   }): Promise<string> {
     const { entityName, entityType, observations, relations, serenaAnalysis } = params;
 
@@ -599,10 +594,19 @@ export class InsightGenerationAgent {
 
     const additionalContextText = params.additionalContext || '';
 
+    // Build diagram placement instructions if diagrams are available
+    const diagrams = params.availableDiagrams || [];
+    const diagramInstructions = diagrams.length > 0
+      ? `\n\n**AVAILABLE DIAGRAMS — embed these naturally in the text:**
+${diagrams.map(d => `- ${d.type} diagram: \`${d.markdownRef}\``).join('\n')}
+
+Place each diagram image reference (the markdown syntax above, exactly as shown) at the point in the text where it best supports the narrative. For example, place an architecture diagram right after discussing the system's structure, or a relationship diagram after explaining how components connect. Do NOT create a separate "Diagrams" section — weave them into the prose.`
+      : '';
+
     const prompt = `You are a technical documentation expert creating a comprehensive insight document for "${entityName}" (type: ${entityType}).
 
 **CRITICAL GROUNDING RULES:**
-1. PRESERVE ALL specific file paths, class names, function names from observations - these are your primary source of truth
+1. PRESERVE ALL specific file paths, class names, function names from observations — these are your primary source of truth
 2. DO NOT invent patterns (like "microservices", "event-driven") unless explicitly mentioned
 3. Build your analysis FROM the observations, don't add ungrounded information
 
@@ -611,6 +615,7 @@ ${observationsText}
 ${relationsText}
 ${codeContextText}
 ${additionalContextText}
+${diagramInstructions}
 
 **Generate a comprehensive technical insight document with these sections:**
 
@@ -634,7 +639,8 @@ Best practices, rules, and conventions for using this correctly. What should dev
 - Each section should have substantive content (3-5 paragraphs where appropriate)
 - ALWAYS ground your analysis in the specific observations provided
 - Reference actual file paths, class names, and implementation details from observations
-- If observations don't support a section, write a brief note and move on rather than inventing content`;
+- If observations don't support a section, write a brief note and move on rather than inventing content
+- Embed available diagram images inline at natural points in the narrative — do NOT group them in a separate section`;
 
     try {
       const result = await this.semanticAnalyzer.analyzeContent(prompt, {
@@ -2051,19 +2057,29 @@ Best practices, rules, and conventions for using this correctly. What should dev
    * Only includes successful diagrams. Uses relative paths from insight doc to images dir.
    * Returns empty string if no successful diagrams.
    */
-  private buildDiagramLinksSection(entityName: string, diagrams: PlantUMLDiagram[]): string {
-    const successful = diagrams.filter(d => d.success);
+  private buildDiagramLinksSection(entityName: string, diagrams: PlantUMLDiagram[], existingContent: string): string {
+    const successful = diagrams.filter(d => d.success && d.pngFile);
     if (successful.length === 0) {
       return '';
     }
 
     const kebabName = toKebabCase(entityName);
-    let section = '\n## Architecture Diagrams\n\n';
+    const relativePath = path.relative(this.outputDir, this.imagesDir);
 
-    for (const diagram of successful) {
-      // Relative path from insight doc (in outputDir) to images (in imagesDir)
-      const relativePath = path.relative(this.outputDir, this.imagesDir);
-      section += `![${diagram.type}](${relativePath}/${kebabName}-${diagram.type}.png)\n\n`;
+    // Only append diagrams the LLM didn't already embed inline
+    const missing = successful.filter(d => {
+      const pngName = `${kebabName}-${d.type}.png`;
+      return !existingContent.includes(pngName);
+    });
+
+    if (missing.length === 0) {
+      return ''; // LLM embedded all diagrams — nothing to append
+    }
+
+    let section = '\n## Diagrams\n\n';
+    for (const diagram of missing) {
+      const title = diagram.type.charAt(0).toUpperCase() + diagram.type.slice(1).replace(/-/g, ' ');
+      section += `![${entityName} — ${title}](${relativePath}/${kebabName}-${diagram.type}.png)\n\n`;
     }
 
     return section;
@@ -2079,6 +2095,9 @@ Best practices, rules, and conventions for using this correctly. What should dev
     crossReferences: CrossReferenceContext
   ): Promise<PlantUMLDiagram> {
     const kebabName = toKebabCase(entityName);
+    // PlantUML 1.2020 can't handle hyphens in aliases with inline colors — use underscores
+    const toAlias = (name: string) => toKebabCase(name).replace(/-/g, '_');
+    const entityAlias = toAlias(entityName);
     const pumlFile = path.join(this.pumlDir, `${kebabName}-relationship.puml`);
     const pngFile = path.join(this.imagesDir, `${kebabName}-relationship.png`);
 
@@ -2092,34 +2111,29 @@ Best practices, rules, and conventions for using this correctly. What should dev
     // Color constants for inline component coloring (avoids skinparam conflict with style include)
     const COLORS = { current: '#LightBlue', parent: '#FFFFDD', sibling: '#F0F0F0', child: '#E8F5E8' };
 
-
-    // Parent at top
+    // PlantUML 1.2020 requires all components declared before arrows when using inline colors.
+    // Phase 1: Declare all components
     if (crossReferences.parent) {
-      const parentAlias = toKebabCase(crossReferences.parent.name);
-      lines.push(`[${crossReferences.parent.name}] as ${parentAlias} ${COLORS.parent}`);
-      lines.push(`${parentAlias} --> ${kebabName}`);
-      lines.push('');
+      lines.push(`[${crossReferences.parent.name}] as ${toAlias(crossReferences.parent.name)} ${COLORS.parent}`);
     }
-
-    // Current entity (highlighted)
-    lines.push(`[${entityName}] as ${kebabName} ${COLORS.current}`);
+    lines.push(`[${entityName}] as ${entityAlias} ${COLORS.current}`);
+    for (const sib of crossReferences.siblings) {
+      lines.push(`[${sib.name}] as ${toAlias(sib.name)} ${COLORS.sibling}`);
+    }
+    for (const child of crossReferences.children) {
+      lines.push(`[${child.name}] as ${toAlias(child.name)} ${COLORS.child}`);
+    }
     lines.push('');
 
-    // Siblings at same level (hidden arrows for layout)
+    // Phase 2: Declare all relationships
+    if (crossReferences.parent) {
+      lines.push(`${toAlias(crossReferences.parent.name)} --> ${entityAlias}`);
+    }
     for (const sib of crossReferences.siblings) {
-      const sibAlias = toKebabCase(sib.name);
-      lines.push(`[${sib.name}] as ${sibAlias} ${COLORS.sibling}`);
-      lines.push(`${sibAlias} -[hidden]- ${kebabName}`);
+      lines.push(`${toAlias(sib.name)} -[hidden]- ${entityAlias}`);
     }
-    if (crossReferences.siblings.length > 0) {
-      lines.push('');
-    }
-
-    // Children below
     for (const child of crossReferences.children) {
-      const childAlias = toKebabCase(child.name);
-      lines.push(`[${child.name}] as ${childAlias} ${COLORS.child}`);
-      lines.push(`${kebabName} --> ${childAlias}`);
+      lines.push(`${entityAlias} --> ${toAlias(child.name)}`);
     }
 
     lines.push('');

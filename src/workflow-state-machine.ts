@@ -149,6 +149,9 @@ export function createProgressFileSubscriber(progressFilePath: string): Subscrib
       } catch {
         // File doesn't exist yet or unreadable — write fresh
       }
+      // Always write a top-level lastUpdate for the dashboard health check
+      // (progress.lastUpdate is nested inside the state machine state)
+      merged.lastUpdate = ('progress' in state ? (state.progress as any)?.lastUpdate : null) || new Date().toISOString();
       writeFileSync(progressFilePath, JSON.stringify(merged, null, 2));
     } catch (err) {
       process.stderr.write(

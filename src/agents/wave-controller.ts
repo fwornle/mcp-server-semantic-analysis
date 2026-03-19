@@ -127,10 +127,15 @@ export class WaveController {
   /** Update lastUpdate timestamp in progress file to keep heartbeat fresh */
   private touchProgress(): void {
     try {
+      const now = new Date().toISOString();
       const content = fs.readFileSync(this.progressFile, 'utf-8');
-      const progress = JSON.parse(content);
-      progress.lastUpdate = new Date().toISOString();
-      fs.writeFileSync(this.progressFile, JSON.stringify(progress, null, 2));
+      const data = JSON.parse(content);
+      data.lastUpdate = now;
+      // Also update nested progress.lastUpdate (read by dashboard health check)
+      if (data.progress) {
+        data.progress.lastUpdate = now;
+      }
+      fs.writeFileSync(this.progressFile, JSON.stringify(data, null, 2));
     } catch {
       // Non-fatal
     }

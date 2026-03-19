@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawnSync, execSync } from 'child_process';
 import { log } from '../logging.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { FilenameTracer } from '../utils/filename-tracer.js';
@@ -170,6 +171,9 @@ export class InsightGenerationAgent {
     generateDiagrams: boolean;
   }): Promise<{ filePath: string; diagramCount: number; success: boolean }> {
     try {
+      // Ensure output directories exist (async init from constructor)
+      await this.ensureDirectoriesReady();
+
       log(`[InsightGen] Generating insight for ${params.entityName} (type=${params.entityType}, diagrams=${params.generateDiagrams})`, 'info');
 
       // --- Cross-reference form 1: Build hierarchy context for LLM narrative injection ---
@@ -198,6 +202,7 @@ export class InsightGenerationAgent {
 
       // --- Diagrams (conditional: L1/L2 only) ---
       let successfulDiagrams: PlantUMLDiagram[] = [];
+      process.stderr.write(`[InsightGen] Diagram gate: generateDiagrams=${params.generateDiagrams} plantumlAvailable=${this.plantumlAvailable} entity=${params.entityName}\n`);
       if (params.generateDiagrams && this.plantumlAvailable) {
         try {
           const allDiagrams = await this.generateAllDiagrams(
@@ -2084,32 +2089,26 @@ Best practices, rules, and conventions for using this correctly. What should dev
     lines.push("title Hierarchy Context: " + entityName);
     lines.push('');
 
-    // Skinparam for current entity highlight
-    lines.push('skinparam component {');
-    lines.push('  BackgroundColor<<current>> #LightBlue');
-    lines.push('  BorderColor<<current>> #2060A0');
-    lines.push('  BackgroundColor<<parent>> #FFFFDD');
-    lines.push('  BackgroundColor<<sibling>> #F0F0F0');
-    lines.push('  BackgroundColor<<child>> #E8F5E8');
-    lines.push('}');
-    lines.push('');
+    // Color constants for inline component coloring (avoids skinparam conflict with style include)
+    const COLORS = { current: '#LightBlue', parent: '#FFFFDD', sibling: '#F0F0F0', child: '#E8F5E8' };
+
 
     // Parent at top
     if (crossReferences.parent) {
       const parentAlias = toKebabCase(crossReferences.parent.name);
-      lines.push(`[${crossReferences.parent.name}] <<parent>> as ${parentAlias}`);
+      lines.push(`[${crossReferences.parent.name}] as ${parentAlias} ${COLORS.parent}`);
       lines.push(`${parentAlias} --> ${kebabName}`);
       lines.push('');
     }
 
     // Current entity (highlighted)
-    lines.push(`[${entityName}] <<current>> as ${kebabName}`);
+    lines.push(`[${entityName}] as ${kebabName} ${COLORS.current}`);
     lines.push('');
 
     // Siblings at same level (hidden arrows for layout)
     for (const sib of crossReferences.siblings) {
       const sibAlias = toKebabCase(sib.name);
-      lines.push(`[${sib.name}] <<sibling>> as ${sibAlias}`);
+      lines.push(`[${sib.name}] as ${sibAlias} ${COLORS.sibling}`);
       lines.push(`${sibAlias} -[hidden]- ${kebabName}`);
     }
     if (crossReferences.siblings.length > 0) {
@@ -2119,7 +2118,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
     // Children below
     for (const child of crossReferences.children) {
       const childAlias = toKebabCase(child.name);
-      lines.push(`[${child.name}] <<child>> as ${childAlias}`);
+      lines.push(`[${child.name}] as ${childAlias} ${COLORS.child}`);
       lines.push(`${kebabName} --> ${childAlias}`);
     }
 
@@ -2146,29 +2145,46 @@ Best practices, rules, and conventions for using this correctly. What should dev
     if (this.plantumlAvailable) {
       try {
         const { spawn } = await import('child_process');
-        const relativePath = path.relative(path.dirname(pumlFile), this.imagesDir);
-        const plantuml = spawn('plantuml', ['-tpng', pumlFile, '-o', relativePath]);
 
-        await new Promise<void>((resolve, reject) => {
-          plantuml.on('close', (code) => {
-            if (code === 0) resolve();
-            else reject(new Error(`PlantUML exited with code ${code}`));
-          });
-          plantuml.on('error', reject);
+        // Syntax check first — avoids generating error-image PNGs
+        const syntaxOk = await new Promise<boolean>((resolve) => {
+          const check = spawn('plantuml', ['-checkonly', pumlFile]);
+          check.on('close', (code) => resolve(code === 0));
+          check.on('error', () => resolve(false));
         });
 
-        if (fs.existsSync(pngFile)) {
-          return {
-            type: 'relationship',
-            name: `${kebabName}-relationship`,
-            content,
-            pumlFile,
-            pngFile,
-            success: true
-          };
+        if (!syntaxOk) {
+          log(`[InsightGen] Relationship PUML syntax error for ${entityName}, skipping PNG`, 'warning');
+        } else {
+          const relativePath = path.relative(path.dirname(pumlFile), this.imagesDir);
+          const plantuml = spawn('plantuml', ['-tpng', pumlFile, '-o', relativePath]);
+
+          const exitCode = await new Promise<number>((resolve) => {
+            plantuml.on('close', (code) => resolve(code ?? 1));
+            plantuml.on('error', () => resolve(1));
+          });
+
+          if (exitCode !== 0 && fs.existsSync(pngFile)) {
+            // PlantUML exit 200 writes an error-image PNG — delete it
+            fs.unlinkSync(pngFile);
+            log(`[InsightGen] Deleted error-image PNG for ${entityName} (exit ${exitCode})`, 'warning');
+          }
+
+          if (exitCode === 0 && fs.existsSync(pngFile)) {
+            return {
+              type: 'relationship',
+              name: `${kebabName}-relationship`,
+              content,
+              pumlFile,
+              pngFile,
+              success: true
+            };
+          }
         }
       } catch (err) {
         log(`[InsightGen] PNG generation failed for relationship diagram ${entityName}: ${err}`, 'warning');
+        // Clean up any error-image PNG
+        if (fs.existsSync(pngFile)) fs.unlinkSync(pngFile);
       }
     }
 
@@ -2415,6 +2431,11 @@ Best practices, rules, and conventions for using this correctly. What should dev
         }
       } catch (error) {
         log(`Failed to generate PNG for ${type} diagram`, 'warning', error);
+        // Clean up error-image PNG (PlantUML exit 200 writes an error image)
+        if (pngFile && fs.existsSync(pngFile)) {
+          fs.unlinkSync(pngFile);
+          log(`Deleted error-image PNG at ${pngFile}`, 'warning');
+        }
         pngFile = undefined;
       }
 
@@ -3921,8 +3942,9 @@ ${pattern.implementation.usageNotes.map(note => `- ${note}`).join('\n')}
 
 
   // Utility methods
+  private _dirsReady: Promise<void> | null = null;
+
   private initializeDirectories(): void {
-    // PERFORMANCE OPTIMIZATION: Use async directory creation to avoid blocking
     const dirs = [
       this.outputDir,
       path.join(this.outputDir, 'puml'),
@@ -3930,39 +3952,52 @@ ${pattern.implementation.usageNotes.map(note => `- ${note}`).join('\n')}
       this.pumlDir,
       this.imagesDir
     ];
-    
-    // Create directories asynchronously in parallel
-    Promise.all(dirs.map(async dir => {
+
+    // Store promise so callers can await directory readiness
+    this._dirsReady = Promise.all(dirs.map(async dir => {
       try {
         await fs.promises.mkdir(dir, { recursive: true });
       } catch (error) {
-        // Directory might already exist, ignore EEXIST errors
         if ((error as any).code !== 'EEXIST') {
           log(`Failed to create directory ${dir}`, 'warning', error);
         }
       }
-    })).catch(error => {
+    })).then(async () => {
+      // Copy _standard-style.puml into puml output dirs so relative !include resolves
+      if (fs.existsSync(this.standardStylePath)) {
+        const styleContent = await fs.promises.readFile(this.standardStylePath, 'utf8');
+        for (const dir of [this.pumlDir, path.join(this.outputDir, 'puml')]) {
+          const target = path.join(dir, '_standard-style.puml');
+          try {
+            await fs.promises.writeFile(target, styleContent, 'utf8');
+          } catch {
+            // Non-fatal
+          }
+        }
+      }
+    }).catch(error => {
       log('Directory initialization failed', 'warning', error);
     });
   }
 
-  private async checkPlantUMLAvailability(): Promise<void> {
+  /** Await this before any file I/O to ensure directories exist */
+  public async ensureDirectoriesReady(): Promise<void> {
+    if (this._dirsReady) await this._dirsReady;
+  }
+
+  private checkPlantUMLAvailability(): void {
     try {
-      const { spawn } = await import('child_process');
-      const plantuml = spawn('plantuml', ['-version']);
-      
-      plantuml.on('close', (code) => {
-        this.plantumlAvailable = code === 0;
-        log(`PlantUML availability: ${this.plantumlAvailable}`, 'info');
-      });
-      
-      plantuml.on('error', () => {
-        this.plantumlAvailable = false;
-        log('PlantUML not available - diagram generation disabled', 'warning');
-      });
+      const result = spawnSync('plantuml', ['-version'], { timeout: 15000 });
+      this.plantumlAvailable = result.status === 0;
+      if (!this.plantumlAvailable) {
+        process.stderr.write(`[InsightGen] PlantUML check: status=${result.status} signal=${result.signal} error=${result.error}\n`);
+      }
+      log(`PlantUML availability: ${this.plantumlAvailable}`, 'info');
     } catch (error) {
       this.plantumlAvailable = false;
-      log('Could not check PlantUML availability', 'warning', error);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[InsightGen] PlantUML check EXCEPTION: ${errMsg}\n`);
+      log(`PlantUML not available: ${errMsg}`, 'warning');
     }
   }
 

@@ -124,6 +124,18 @@ export class WaveController {
     this.qaAgent = new QualityAssuranceAgent(this.repositoryPath, this.team);
   }
 
+  /** Update lastUpdate timestamp in progress file to keep heartbeat fresh */
+  private touchProgress(): void {
+    try {
+      const content = fs.readFileSync(this.progressFile, 'utf-8');
+      const progress = JSON.parse(content);
+      progress.lastUpdate = new Date().toISOString();
+      fs.writeFileSync(this.progressFile, JSON.stringify(progress, null, 2));
+    } catch {
+      // Non-fatal
+    }
+  }
+
   /** Get the CGR query cache for downstream wave agents */
   getCgrCache(): CgrQueryCache | null {
     return this.cgrCache;
@@ -337,6 +349,11 @@ export class WaveController {
   async execute(): Promise<WaveExecutionResult> {
     const startTime = Date.now();
     const waveResults: WaveResult[] = [];
+
+    // Global heartbeat: update lastUpdate every 30s to prevent stale/frozen detection
+    const globalHeartbeat = setInterval(() => this.touchProgress(), 30_000);
+    // Initial touch
+    this.touchProgress();
 
     /** Aggregate all sub-step metrics (e.g. wave1_init, wave1_analyze, wave1_qa)
      *  into a single combined metrics object for the wave-level step-complete event */
@@ -1486,6 +1503,8 @@ export class WaveController {
         discoveredEntities: 0,
         error: errorMsg,
       };
+    } finally {
+      clearInterval(globalHeartbeat);
     }
   }
 
@@ -2373,6 +2392,8 @@ export class WaveController {
             }
           }
 
+          process.stderr.write(`[WaveController] Insight: ${entity.name} level=${entityLevel} diagrams=${generateDiagrams}\n`);
+
           const result = await insightAgent.generateEntityInsight({
             entityName: entity.name,
             entityType: entity.type,
@@ -2382,6 +2403,8 @@ export class WaveController {
             generateDiagrams,
           });
 
+          process.stderr.write(`[WaveController] Result: ${entity.name} success=${result.success} diagramCount=${result.diagramCount}\n`);
+
           if (result.success) {
             generated++;
 
@@ -2389,6 +2412,9 @@ export class WaveController {
             if (generateDiagrams && result.diagramCount < 2) {
               skippedDiagrams++;
             }
+
+            // Emit progress event per entity to keep lastUpdate fresh (prevents stale detection)
+            dispatch({ type: 'substep-update', substepId: 'wave4_insights', wave: 4, totalWaves: 4 });
 
             // Update entity metadata with insight document path
             try {

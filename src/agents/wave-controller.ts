@@ -124,17 +124,51 @@ export class WaveController {
     this.qaAgent = new QualityAssuranceAgent(this.repositoryPath, this.team);
   }
 
-  /** Update lastUpdate timestamp in progress file to keep heartbeat fresh */
+  /** Update lastUpdate timestamp and live metrics in progress file */
   private touchProgress(): void {
     try {
       const now = new Date().toISOString();
       const content = fs.readFileSync(this.progressFile, 'utf-8');
       const data = JSON.parse(content);
       data.lastUpdate = now;
-      // Also update nested progress.lastUpdate (read by dashboard health check)
       if (data.progress) {
         data.progress.lastUpdate = now;
       }
+
+      // Flush live step metrics into stepsDetail for the tracer UI
+      // stepsDetail entries are only created on step-complete, so we must create
+      // a running-wave entry if it doesn't exist yet.
+      if (!data.stepsDetail) data.stepsDetail = [];
+      const waveNames = ['wave1', 'wave2', 'wave3', 'wave4'];
+      for (const waveName of waveNames) {
+        // Check if any metrics exist for this wave
+        let tokens = 0, calls = 0;
+        const providers = new Set<string>();
+        const subSteps: Array<Record<string, unknown>> = [];
+        for (const [key, entry] of this.stepMetrics.entries()) {
+          if (!key.startsWith(waveName + '_') && key !== waveName) continue;
+          const e = entry as any;
+          if (e.tokensUsed) tokens += e.tokensUsed;
+          if (e.llmCalls) calls += e.llmCalls;
+          if (e.llmProvider) for (const p of e.llmProvider.split(', ')) providers.add(p);
+          subSteps.push({ name: key, status: e.outputs ? 'completed' : 'running', ...e });
+        }
+        if (calls === 0 && subSteps.length === 0) continue;
+
+        // Find or create the stepsDetail entry
+        let step = data.stepsDetail.find((s: any) => s.name === waveName);
+        if (!step) {
+          step = { name: waveName, status: 'running', subSteps: [] };
+          data.stepsDetail.push(step);
+        }
+        // Only update non-completed waves (don't overwrite final metrics)
+        if (step.status === 'completed') continue;
+        step.tokensUsed = tokens || undefined;
+        step.llmCalls = calls || undefined;
+        step.llmProvider = providers.size > 0 ? [...providers].join(', ') : undefined;
+        step.subSteps = subSteps;
+      }
+
       fs.writeFileSync(this.progressFile, JSON.stringify(data, null, 2));
     } catch {
       // Non-fatal

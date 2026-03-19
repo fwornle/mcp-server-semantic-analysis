@@ -2592,6 +2592,14 @@ Best practices, rules, and conventions for using this correctly. What should dev
       return `note as ${noteId}\n${cleanContent}\nend note`;
     });
 
+    // Fix 5b: Strip note blocks entirely — diagrams are embedded in markdown which provides context
+    // Remove "note as X ... end note" blocks
+    fixed = fixed.replace(/\bnote\s+as\s+\w+\n[\s\S]*?\nend\s+note\s*/g, '');
+    // Remove "note right/left/top/bottom of X ... end note" blocks
+    fixed = fixed.replace(/\bnote\s+(?:right|left|top|bottom)\s+of\s+\w+\n[\s\S]*?\nend\s+note\s*/g, '');
+    // Remove inline "note right of X : text" lines
+    fixed = fixed.replace(/^\s*note\s+(?:right|left|top|bottom)\s+of\s+\w+\s*:.*$/gm, '');
+
     // Fix 6: Floating notes with \n at end of file - also needs multi-line format
     fixed = fixed.replace(/\bnote\s+"([^"]*)\\n([^"]*)"/g, (_match, part1, part2) => {
       const noteId = `AutoNote${noteCounter++}`;
@@ -2877,7 +2885,7 @@ Labels: A --> B : "uses" or A --> B : processes
 - Show these real components as PlantUML components with appropriate stereotypes
 - Group related components into meaningful packages (max 3-4 packages)
 - Show logical data flow with --> arrows between components
-- Include a brief summary note about the entity's purpose
+- Do NOT include notes in the diagram — the surrounding markdown text provides context
 - PREFER vertical layout (top-to-bottom) over horizontal
 - Keep the diagram focused - max 8-10 components for clarity
 - DO NOT use generic placeholder names - use actual names from observations
@@ -2889,7 +2897,7 @@ ${architectureSyntaxRules}`;
 - Show ${patternCount} identified patterns as components (max 10)
 - Group related patterns into packages by category
 - Show meaningful relationships between components using --> arrows
-- Include a summary note with key metrics
+- Do NOT include notes in the diagram — the surrounding markdown text provides context
 - PREFER vertical layout (top-to-bottom) over horizontal
 ${architectureSyntaxRules}`;
       }

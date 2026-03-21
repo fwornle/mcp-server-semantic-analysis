@@ -1158,6 +1158,24 @@ export class PersistenceAgent {
     }
 
     try {
+      // QUALITY GATE: Reject entities whose observations are entirely speculative
+      // (no actual code evidence — just LLM guesses based on naming patterns)
+      const speculativePatterns = [
+        'no direct code evidence', 'absence of source files', 'reasonable to infer',
+        'reasonable to assume', 'no specific source files', 'although no direct',
+        'given the absence', 'parent analysis suggested', 'parent context implies',
+      ];
+      const obsTexts = entity.observations.map((o: any) => typeof o === 'string' ? o : o.content || '');
+      if (obsTexts.length > 0) {
+        const allSpeculative = obsTexts.every((o: string) =>
+          speculativePatterns.some(p => o.toLowerCase().includes(p))
+        );
+        if (allSpeculative) {
+          log(`Rejecting speculative entity "${entity.name}" — all ${obsTexts.length} observations lack code evidence`, 'warning');
+          return '';
+        }
+      }
+
       // FUZZY NAME DEDUP: Before creating, check if a similar entity already exists
       const team = this.config.ontologyTeam || 'coding';
       const existingEntities = allEntities || [];

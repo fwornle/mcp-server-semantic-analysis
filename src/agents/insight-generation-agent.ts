@@ -134,12 +134,16 @@ export class InsightGenerationAgent {
   private webSearchAgent: WebSearchAgent;
   // Cached ontology descriptions loaded from ontology JSON files
   private ontologyDescriptions: Map<string, string> = new Map();
+  // Redactor for stripping secrets/PII from insight documents (shared with LSL)
+  private redactor: { redact: (text: string) => string; getStats: () => any } | null = null;
 
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
     this.outputDir = path.join(repositoryPath, 'knowledge-management', 'insights');
     this.pumlDir = path.join(repositoryPath, '.data', 'knowledge-graph', 'insights', 'puml');
-    this.imagesDir = path.join(repositoryPath, '.data', 'knowledge-graph', 'insights', 'images');
+    // Images go into knowledge-management/insights/images/ so markdown relative links (images/X.png) work
+    // in both filesystem and VKB viewer contexts
+    this.imagesDir = path.join(repositoryPath, 'knowledge-management', 'insights', 'images');
     this.standardStylePath = path.join(repositoryPath, 'docs', 'puml', '_standard-style.puml');
     this.semanticAnalyzer = new SemanticAnalyzer();
     this.contentAnalyzer = new ContentAgnosticAnalyzer(repositoryPath);
@@ -150,6 +154,33 @@ export class InsightGenerationAgent {
     this.checkPlantUMLAvailability();
     // Load ontology descriptions asynchronously (will be available for most calls)
     this.loadOntologyDescriptions();
+    // Initialize redactor (shared with LSL) for stripping secrets/PII from insight documents
+    this.initializeRedactor();
+  }
+
+  /** Load the ConfigurableRedactor from the LSL module (async, best-effort) */
+  private async initializeRedactor(): Promise<void> {
+    try {
+      const redactorPath = path.join(this.repositoryPath, 'src', 'live-logging', 'ConfigurableRedactor.js');
+      if (!fs.existsSync(redactorPath)) {
+        log('[InsightGen] Redactor module not found — insight documents will NOT be redacted', 'warning');
+        return;
+      }
+      const { default: ConfigurableRedactor } = await import(redactorPath);
+      const instance = new ConfigurableRedactor({ projectPath: this.repositoryPath, debug: false });
+      await instance.initialize();
+      this.redactor = instance;
+      const stats = instance.getStats();
+      log(`[InsightGen] Redactor initialized: ${stats.patternsActive} patterns active`, 'info');
+    } catch (err) {
+      log(`[InsightGen] Failed to initialize redactor: ${err}`, 'warning');
+    }
+  }
+
+  /** Redact secrets/PII from text. Returns text unchanged if redactor not available. */
+  private redactContent(text: string): string {
+    if (!this.redactor) return text;
+    return this.redactor.redact(text);
   }
 
   /**
@@ -283,6 +314,9 @@ export class InsightGenerationAgent {
       } else {
         finalContent = content + appendedSections;
       }
+
+      // --- Redact secrets/PII before writing ---
+      finalContent = this.redactContent(finalContent);
 
       // --- Write file ---
       const filePath = path.join(this.outputDir, `${params.entityName}.md`);
@@ -1910,6 +1944,8 @@ Best practices, rules, and conventions for using this correctly. What should dev
     }
 
     try {
+      // Redact secrets/PII before writing insight document
+      content = this.redactContent(content);
       await fs.promises.writeFile(filePath, content, 'utf8');
       FilenameTracer.trace('FILE_WRITTEN', 'generateInsightDocument',
         filePath, 'File successfully written'

@@ -226,6 +226,8 @@ export class WaveController {
       llmCallEvents: llmCallEvents.length > 0 ? llmCallEvents : undefined,
       outputs,
     });
+    // Immediately flush to progress file so tracer shows live substep data
+    this.touchProgress();
   }
 
   /** Capture LLM metrics directly from a wave agent's getLLMMetrics() */
@@ -236,6 +238,8 @@ export class WaveController {
       llmProvider: agentMetrics.providers.join(', ') || undefined,
       outputs,
     });
+    // Immediately flush to progress file so tracer shows live substep data
+    this.touchProgress();
   }
 
   // --------------------------------------------------------------------------
@@ -389,8 +393,8 @@ export class WaveController {
     const startTime = Date.now();
     const waveResults: WaveResult[] = [];
 
-    // Global heartbeat: update lastUpdate every 30s to prevent stale/frozen detection
-    const globalHeartbeat = setInterval(() => this.touchProgress(), 30_000);
+    // Global heartbeat: update lastUpdate every 5s for live tracer substep updates
+    const globalHeartbeat = setInterval(() => this.touchProgress(), 5_000);
     // Initial touch
     this.touchProgress();
 

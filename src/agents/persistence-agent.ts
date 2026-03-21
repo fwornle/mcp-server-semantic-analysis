@@ -909,8 +909,13 @@ export class PersistenceAgent {
       }
     }
 
-    // Return null if no match — don't fallback to "Coding" (avoids flower pattern)
-    return bestMatch?.name || null;
+    // If a specific parent was found, use it. Otherwise fall back to "Coding" root.
+    // Connected nodes (even to root) are always better than orphaned/unconnected nodes.
+    if (bestMatch) return bestMatch.name;
+
+    // Check if 'Coding' project exists in allEntities
+    const codingProject = allEntities.find(e => e.name === 'Coding' && e.entityType === 'Project');
+    return codingProject ? 'Coding' : null;
   }
 
   private async updateEntityRelationships(
@@ -938,7 +943,7 @@ export class PersistenceAgent {
       if (hasParent) continue;
 
       const parentName = this.findBestParent(entity.name, sharedMemory.entities);
-      if (!parentName) continue; // No matching parent — leave unlinked (avoids flower)
+      if (!parentName) continue; // No matching parent and no root project
 
       const relation: EntityRelationship = {
         from: parentName,
@@ -1402,7 +1407,7 @@ export class PersistenceAgent {
             });
           }
         }
-        // If no parent found, leave unlinked — avoids flower pattern
+        // If no parent found (no matching component AND no root project), leave unlinked
       }
 
       const graphEntity = {

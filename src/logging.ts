@@ -22,8 +22,12 @@ const FLUSH_INTERVAL_MS = 100; // Flush every 100ms
 const MAX_BUFFER_SIZE = 50; // Flush when buffer has 50 entries
 
 export function setupLogging(): void {
-  // Create logs directory
-  logDir = path.join(process.cwd(), "logs");
+  // Use CODING_REPO/.data/logs/ for a stable, centralized log location.
+  // Falls back to CWD only if CODING_REPO is not set.
+  // Previously used process.cwd() which scattered logs/ directories into
+  // whatever project the agent happened to be working in.
+  const baseDir = process.env.CODING_REPO || process.cwd();
+  logDir = path.join(baseDir, ".data", "logs");
   if (!fs.existsSync(logDir)) {
     fs.mkdirSync(logDir, { recursive: true });
   }

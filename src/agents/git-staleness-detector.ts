@@ -14,7 +14,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import OpenAI from "openai";
 import { log } from "../logging.js";
-import { LLMService } from '../../../../lib/llm/dist/index.js';
+import { LLMService } from '@rapid/llm-proxy';
 import type { GitCommit, GitFileChange } from "./git-history-agent.js";
 import { EmbeddingCache, getSharedEmbeddingCache } from "../utils/embedding-cache.js";
 import { isMockLLMEnabled, getMockDelay } from "../mock/llm-mock-service.js";

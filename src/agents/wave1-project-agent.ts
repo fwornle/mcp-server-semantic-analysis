@@ -18,7 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
-import { LLMService } from '../../../../lib/llm/dist/index.js';
+import { LLMService } from '@rapid/llm-proxy';
 import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 import type { KGEntity, KGRelation } from './kg-operators.js';
 import type { ComponentManifest, ComponentManifestEntry } from '../types/component-manifest.js';

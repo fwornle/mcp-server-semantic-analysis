@@ -25,6 +25,7 @@
     "@anthropic-ai/sdk": "^0.57.0",
     "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.0.3",
+    "@rapid/llm-proxy": "git+https://bmw.ghe.com/adpnext-apps/rapid-llm-proxy.git",
     "@types/cheerio": "^0.22.35",
     "axios": "^1.6.0",
     "cheerio": "^1.0.0-rc.12",

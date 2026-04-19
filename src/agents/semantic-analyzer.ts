@@ -4,8 +4,8 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { isMockLLMEnabled, mockSemanticAnalysis, getLLMMode, type LLMMode } from "../mock/llm-mock-service.js";
-import { LLMService } from "../../../../lib/llm/dist/index.js";
-import type { LLMCompletionResult, MockServiceInterface } from "../../../../lib/llm/dist/types.js";
+import { LLMService } from "@rapid/llm-proxy";
+import type { LLMCompletionResult, MockServiceInterface } from "@rapid/llm-proxy";
 
 // ES module compatible __dirname
 const __filename = fileURLToPath(import.meta.url);

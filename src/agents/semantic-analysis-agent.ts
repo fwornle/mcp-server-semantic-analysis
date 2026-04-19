@@ -4,7 +4,7 @@ import { log } from '../logging.js';
 import type { IntelligentQueryResult } from './code-graph-agent.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
-import { LLMService } from '../../../../lib/llm/dist/index.js';
+import { LLMService } from '@rapid/llm-proxy';
 import type { AnalyzeEntityCodeInput, AnalyzeEntityCodeResult, AnalysisArtifacts, EntityTraceData } from '../types/wave-types.js';
 
 export interface CodeFile {

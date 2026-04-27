@@ -96,6 +96,11 @@ export interface EntityMetadata {
   // Entity rename tracking
   renamedFrom?: string;               // Previous entity name if renamed
   renamedAt?: string;                 // Timestamp when entity was renamed
+  // Mixed-topic detection — set when an entity's observations span
+  // multiple unrelated subjects (Jaccard similarity below threshold).
+  // Surfaced in the VKB UI for review/manual split.
+  mixed_topics?: boolean;
+  mixed_topics_pairs?: Array<{ a: number; b: number; similarity: number }>;
   // Ontology classification metadata
   ontology?: {
     ontologyName?: string;              // Display name for UI (e.g. "Component", "Detail")
@@ -276,37 +281,171 @@ export class PersistenceAgent {
   }
 
   /**
-   * Calculate Jaccard similarity between PascalCase entity names.
-   * Splits on capital letters to extract word components.
-   * @returns similarity score between 0 (no overlap) and 1 (identical)
+   * Generic words that recur across unrelated topics. They don't carry
+   * topical meaning on their own — "hook" and "integration" appearing in
+   * two entity names is not evidence the entities are about the same
+   * thing. We exclude them from the overlap calculation AND require at
+   * least one shared NON-generic word before we'll consider a name match.
+   *
+   * Without this, names like "GSD Statusline and Hook Integration" and
+   * "LSL Health Hook Integration" hit Jaccard ≥ 0.7 and got merged into
+   * one multi-topic entity.
    */
-  private calculateNameSimilarity(name1: string, name2: string): number {
+  private static readonly GENERIC_NAME_WORDS = new Set([
+    'and', 'the', 'for', 'with', 'from', 'into',
+    'hook', 'hooks', 'system', 'service', 'services',
+    'integration', 'integrations', 'manager', 'management',
+    'handler', 'handlers', 'config', 'configuration',
+    'update', 'updates', 'fix', 'fixes', 'change', 'changes',
+    'health', 'status', 'state', 'check', 'checks',
+    'support', 'enabled', 'disabled', 'helper', 'utils',
+    'process', 'pattern', 'detail', 'component', 'subcomponent',
+    'project', 'module', 'library', 'tool', 'feature',
+    'data', 'info', 'note', 'misc', 'general',
+  ]);
+
+  /**
+   * Calculate Jaccard similarity between PascalCase entity names — but
+   * only over non-generic words (see GENERIC_NAME_WORDS).
+   *
+   * Returns:
+   *   - similarity (Jaccard over non-generic words)
+   *   - sharedNonGeneric (size of the intersection on non-generic words)
+   *
+   * Callers gate on BOTH similarity >= threshold AND sharedNonGeneric >= 1
+   * so that two names whose only overlap is "hook" + "integration" do NOT
+   * merge regardless of how high the raw Jaccard happens to be.
+   */
+  private calculateNameSimilarity(name1: string, name2: string): { similarity: number; sharedNonGeneric: number } {
     const splitPascal = (name: string): Set<string> => {
       const words = name.match(/[A-Z][a-z]+|[A-Z]+(?=[A-Z]|$)/g) || [];
       return new Set(words.map(w => w.toLowerCase()).filter(w => w.length > 2));
     };
-    const words1 = splitPascal(name1);
-    const words2 = splitPascal(name2);
+    const stripGeneric = (s: Set<string>): Set<string> =>
+      new Set([...s].filter(w => !PersistenceAgent.GENERIC_NAME_WORDS.has(w)));
 
-    if (words1.size === 0 && words2.size === 0) return 1;
-    if (words1.size === 0 || words2.size === 0) return 0;
+    const w1 = stripGeneric(splitPascal(name1));
+    const w2 = stripGeneric(splitPascal(name2));
 
-    const intersection = new Set([...words1].filter(w => words2.has(w)));
-    const union = new Set([...words1, ...words2]);
+    if (w1.size === 0 && w2.size === 0) return { similarity: 1, sharedNonGeneric: 0 };
+    if (w1.size === 0 || w2.size === 0) return { similarity: 0, sharedNonGeneric: 0 };
 
-    return union.size > 0 ? intersection.size / union.size : 0;
+    const intersection = new Set([...w1].filter(w => w2.has(w)));
+    const union = new Set([...w1, ...w2]);
+    const similarity = union.size > 0 ? intersection.size / union.size : 0;
+    return { similarity, sharedNonGeneric: intersection.size };
   }
 
   /**
-   * Find the best fuzzy match for a new entity name among existing entities.
-   * Returns the matching entity if similarity >= threshold, null otherwise.
+   * Content-similarity veto for a name-based fuzzy match.
+   *
+   * Even after the name-overlap gate, two entities can have the same
+   * non-generic word in their names while their observations describe
+   * completely different work. This second gate compares observation
+   * content (Jaccard over non-stopword tokens) and refuses the merge
+   * when the content is too dissimilar.
+   *
+   * MIN_CONTENT_SIMILARITY is intentionally low (0.15) — observations
+   * are typically short, sparse, and use varied vocabulary, so even
+   * legitimate same-topic entities don't always score high. The point
+   * is to catch the obvious cases where two observations have ZERO
+   * topical overlap (e.g., GSD changelog bullet vs LSL tmux indicator
+   * description, both happening to mention "hook").
+   *
+   * Future enhancement: replace Jaccard with an embedding-based cosine
+   * similarity using the existing semantic-analyzer / Qdrant pipeline.
    */
-  private findFuzzyMatch(newName: string, existingMap: Map<string, any>, threshold: number = 0.7): { name: string; entity: any; similarity: number } | null {
+  private static readonly MIN_CONTENT_SIMILARITY = 0.15;
+
+  private extractObservationText(entity: any): string {
+    const obs = Array.isArray(entity?.observations) ? entity.observations : [];
+    return obs.map((o: any) => (typeof o === 'string' ? o : o?.content ?? '')).join(' ');
+  }
+
+  /**
+   * Detect when an entity's observations span multiple unrelated topics.
+   *
+   * Even if the entity is created legitimately from a single source, the
+   * upstream pattern extractor occasionally bundles multiple unrelated
+   * bullets into one pattern (e.g. "GSD Statusline and Hook Integration"
+   * mixed a GSD changelog summary with an LSL tmux indicator description).
+   * Treat each observation (or each top-level bullet within a single
+   * observation string) as a topic candidate, compute pairwise Jaccard
+   * over non-stopword tokens, and if any pair scores below the
+   * coherence threshold, mark the entity mixed_topics so the dashboard
+   * can surface it for split/review.
+   *
+   * Returns the offending pair indices when a mismatch is found, or null
+   * when the entity is topically coherent.
+   */
+  private static readonly MIXED_TOPIC_THRESHOLD = 0.10;
+
+  private detectMixedTopics(entity: any): { pairs: Array<{ a: number; b: number; similarity: number }> } | null {
+    // Treat each top-level "- " bullet as a separate observation when the
+    // entity has a single multi-bullet string (the failure mode we saw).
+    const rawObs = Array.isArray(entity?.observations) ? entity.observations : [];
+    const flat: string[] = [];
+    for (const o of rawObs) {
+      const text = typeof o === 'string' ? o : (o?.content ?? '');
+      if (!text) continue;
+      const bullets = text.split(/\n(?=\s*[-*]\s)/).map((s: string) => s.trim()).filter((s: string) => s.length > 0);
+      if (bullets.length > 1) {
+        flat.push(...bullets);
+      } else {
+        flat.push(text);
+      }
+    }
+
+    if (flat.length < 2) return null;
+
+    const pairs: Array<{ a: number; b: number; similarity: number }> = [];
+    for (let i = 0; i < flat.length; i++) {
+      for (let j = i + 1; j < flat.length; j++) {
+        const sim = this.calculateJaccardSimilarity(flat[i], flat[j]);
+        if (sim < PersistenceAgent.MIXED_TOPIC_THRESHOLD) {
+          pairs.push({ a: i, b: j, similarity: sim });
+        }
+      }
+    }
+
+    return pairs.length > 0 ? { pairs } : null;
+  }
+
+  private isContentCompatible(newEntity: any, existingEntity: any): { compatible: boolean; similarity: number } {
+    const newText = this.extractObservationText(newEntity);
+    const existingText = this.extractObservationText(existingEntity);
+
+    // If either side has no observations yet, fall back to allowing the
+    // merge — there's no content to disagree with. This keeps brand-new
+    // entities discoverable via the name match.
+    if (!newText.trim() || !existingText.trim()) {
+      return { compatible: true, similarity: 1 };
+    }
+
+    const similarity = this.calculateJaccardSimilarity(newText, existingText);
+    return {
+      compatible: similarity >= PersistenceAgent.MIN_CONTENT_SIMILARITY,
+      similarity
+    };
+  }
+
+  /**
+   * Find the best fuzzy match for a new entity name among existing
+   * entities.  Returns the matching entity only if BOTH conditions hold:
+   *
+   *   - Jaccard similarity over non-generic words >= threshold (default 0.85)
+   *   - At least one shared non-generic word
+   *
+   * The threshold was raised from 0.7 → 0.85 after we found 3-word names
+   * routinely hitting 0.66+ on a single shared word, producing false
+   * merges of unrelated topics into one entity.
+   */
+  private findFuzzyMatch(newName: string, existingMap: Map<string, any>, threshold: number = 0.85): { name: string; entity: any; similarity: number } | null {
     let bestMatch: { name: string; entity: any; similarity: number } | null = null;
 
     for (const [existingName, existingEntity] of existingMap) {
-      const similarity = this.calculateNameSimilarity(newName, existingName);
-      if (similarity >= threshold && (!bestMatch || similarity > bestMatch.similarity)) {
+      const { similarity, sharedNonGeneric } = this.calculateNameSimilarity(newName, existingName);
+      if (similarity >= threshold && sharedNonGeneric >= 1 && (!bestMatch || similarity > bestMatch.similarity)) {
         bestMatch = { name: existingName, entity: existingEntity, similarity };
       }
     }
@@ -1158,6 +1297,18 @@ export class PersistenceAgent {
     }
 
     try {
+      // QUALITY GATE: Detect mixed-topic observation bundles. Don't reject —
+      // upstream still wants the data — but stamp the entity so the
+      // dashboard surfaces it for review/split. (Future enhancement:
+      // auto-split into one entity per topical cluster.)
+      const mixed = this.detectMixedTopics(entity);
+      if (mixed) {
+        entity.metadata = entity.metadata || {};
+        entity.metadata.mixed_topics = true;
+        entity.metadata.mixed_topics_pairs = mixed.pairs;
+        log(`Entity "${entity.name}" tagged mixed_topics — ${mixed.pairs.length} unrelated pair(s) within its observations`, 'warning');
+      }
+
       // QUALITY GATE: Reject entities whose observations are entirely speculative
       // (no actual code evidence — just LLM guesses based on naming patterns)
       const speculativePatterns = [
@@ -1186,8 +1337,13 @@ export class PersistenceAgent {
         }
         // Skip exact match (GraphDB handles that), only check fuzzy
         if (!existingMap.has(entity.name)) {
-          const fuzzyMatch = this.findFuzzyMatch(entity.name, existingMap, 0.7);
+          const fuzzyMatch = this.findFuzzyMatch(entity.name, existingMap);
           if (fuzzyMatch) {
+            const veto = this.isContentCompatible(entity, fuzzyMatch.entity);
+            if (!veto.compatible) {
+              log(`Fuzzy dedup VETOED in storeEntityToGraph: "${entity.name}" name-matched "${fuzzyMatch.name}" (${fuzzyMatch.similarity.toFixed(2)}) but observation content similarity is only ${veto.similarity.toFixed(3)} — keeping as separate entities`, 'info');
+              // Fall through to create as a new entity — leave fuzzyMatch unused.
+            } else {
             log(`Fuzzy dedup in storeEntityToGraph: "${entity.name}" matches existing "${fuzzyMatch.name}" (${fuzzyMatch.similarity.toFixed(2)}) — merging into existing`, 'info');
             // Merge observations into existing entity instead of creating new
             const existing = fuzzyMatch.entity;
@@ -1207,6 +1363,7 @@ export class PersistenceAgent {
               log(`Merged ${newObs.length} observations into "${fuzzyMatch.name}"`, 'info');
             }
             return fuzzyMatch.name; // Return existing entity name, skip creation
+            }
           }
         }
       }
@@ -3345,12 +3502,17 @@ export class PersistenceAgent {
 
           // Fuzzy name dedup: if no exact match, check for semantically similar names
           if (!existingEntity && existingEntityMap.size > 0) {
-            const fuzzyMatch = this.findFuzzyMatch(entity.name, existingEntityMap, 0.7);
+            const fuzzyMatch = this.findFuzzyMatch(entity.name, existingEntityMap);
             if (fuzzyMatch) {
-              log(`Fuzzy dedup: "${entity.name}" matches existing "${fuzzyMatch.name}" (similarity: ${fuzzyMatch.similarity.toFixed(2)}) — merging observations`, 'info');
-              existingEntity = fuzzyMatch.entity;
-              // Use the existing entity's name for the update
-              entity.name = fuzzyMatch.name;
+              const veto = this.isContentCompatible(entity, fuzzyMatch.entity);
+              if (!veto.compatible) {
+                log(`Fuzzy dedup VETOED: "${entity.name}" name-matched "${fuzzyMatch.name}" (${fuzzyMatch.similarity.toFixed(2)}) but observation content similarity is only ${veto.similarity.toFixed(3)} — keeping as separate entities`, 'info');
+              } else {
+                log(`Fuzzy dedup: "${entity.name}" matches existing "${fuzzyMatch.name}" (similarity: ${fuzzyMatch.similarity.toFixed(2)}) — merging observations`, 'info');
+                existingEntity = fuzzyMatch.entity;
+                // Use the existing entity's name for the update
+                entity.name = fuzzyMatch.name;
+              }
             }
           }
 

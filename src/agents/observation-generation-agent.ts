@@ -439,7 +439,7 @@ Respond with JSON (no markdown fences):
   "whatItIs": "1-2 sentences: what this code evolution pattern represents",
   "whyItMatters": "1-2 sentences: why this evolution trend matters for the codebase",
   "guidance": "1-2 sentences: actionable guidance based on this evolution trend",
-  "trendInsight": "1 sentence: what the trend direction suggests about the codebase trajectory"
+  "trendInsight": "1 sentence: what the trend direction suggests about the codebase direction"
 }`;
 
         const result = await this.semanticAnalyzer.analyzeContent(prompt, {

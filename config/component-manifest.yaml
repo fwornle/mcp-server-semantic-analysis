@@ -65,24 +65,6 @@ components:
       - redis
     children: []
 
-  - name: Trajectory
-    level: 1
-    description: "AI trajectory and planning system managing project milestones, GSD workflow, phase planning, and implementation task tracking."
-    aliases:
-      - GSD
-      - planning
-      - milestone
-      - phases
-    keywords:
-      - trajectory
-      - milestone
-      - planning
-      - phase
-      - GSD
-      - roadmap
-      - spec
-    children: []
-
   - name: KnowledgeManagement
     level: 1
     description: "Knowledge graph storage, query, and lifecycle management including the VKB server, graph database, entity persistence, and knowledge decay tracking."

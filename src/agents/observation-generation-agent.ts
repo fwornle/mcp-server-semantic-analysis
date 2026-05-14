@@ -316,11 +316,17 @@ Related Files: ${relatedFiles || 'none'}
 
 Respond with JSON (no markdown fences):
 {
-  "entityName": "PascalCaseName describing this decision pattern",
+  "entityName": "PascalCaseName for the DOMAIN CONCEPT (e.g. TmuxStatusline, DockerComposeServices, GraphologyPersistence)",
   "whatItIs": "1-2 sentences: what this architectural decision represents and how it manifests in the codebase",
   "whyItMatters": "1-2 sentences: why this decision matters for maintainability, performance, or developer experience",
   "guidance": "1-2 sentences: actionable guidance for developers working with this pattern"
-}`;
+}
+
+NAMING RULES:
+- Name the DOMAIN CONCEPT or TECHNOLOGY being discussed, NOT the type of change
+- BAD: BugFixPattern, RefactorPattern, UpdatePattern, CodeCleanup, ConfigurationChanges
+- GOOD: TmuxStatusline, GraphologyKnowledgeGraph, DockerComposeOrchestration, WebpackBundleConfig
+- The name should answer "what topic area is this about?" not "what kind of change happened?"`;
 
         const result = await this.semanticAnalyzer.analyzeContent(prompt, {
           analysisType: 'raw',
@@ -337,9 +343,16 @@ Respond with JSON (no markdown fences):
       }
 
       // Use LLM-generated entity name if available (NAME-02), otherwise generate from decision data
-      const entityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))
+      const rawEntityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))
         ? synthesizedContent.entityName
         : this.generateEntityName(decision.type, decision.description);
+
+      // Reject process-activity names that describe change types rather than domain concepts
+      if (this.isProcessActivityName(rawEntityName)) {
+        log(`Rejecting process-activity entity name: ${rawEntityName}`, 'info');
+        return null;
+      }
+      const entityName = rawEntityName;
 
       const observations: (string | ObservationTemplate)[] = [];
 
@@ -435,12 +448,18 @@ Related Commits: ${commitMessages || 'none'}
 
 Respond with JSON (no markdown fences):
 {
-  "entityName": "PascalCaseName describing this evolution pattern",
+  "entityName": "PascalCaseName for the DOMAIN CONCEPT (e.g. TmuxStatusline, DockerComposeServices, BazelBuildSystem)",
   "whatItIs": "1-2 sentences: what this code evolution pattern represents",
   "whyItMatters": "1-2 sentences: why this evolution trend matters for the codebase",
   "guidance": "1-2 sentences: actionable guidance based on this evolution trend",
   "trendInsight": "1 sentence: what the trend direction suggests about the codebase direction"
-}`;
+}
+
+NAMING RULES:
+- Name the DOMAIN CONCEPT or TECHNOLOGY being discussed, NOT the type of change
+- BAD: BugFixPattern, RefactorPattern, UpdatePattern, CodeCleanup, SolutionPattern1
+- GOOD: TmuxStatusline, GraphologyKnowledgeGraph, DockerComposeOrchestration, WebpackBundleConfig
+- The name should answer "what topic area is this about?" not "what kind of change happened?"`;
 
         const result = await this.semanticAnalyzer.analyzeContent(prompt, {
           analysisType: 'raw',
@@ -456,9 +475,16 @@ Respond with JSON (no markdown fences):
       }
 
       // Use LLM-generated entity name if available (NAME-02), otherwise generate from pattern data
-      const entityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))
+      const rawEvEntityName = (synthesizedContent?.entityName && /^[A-Z][a-zA-Z]+/.test(synthesizedContent.entityName))
         ? synthesizedContent.entityName
         : this.generateEntityName('CodeEvolution', pattern.pattern);
+
+      // Reject process-activity names
+      if (this.isProcessActivityName(rawEvEntityName)) {
+        log(`Rejecting process-activity entity name: ${rawEvEntityName}`, 'info');
+        return null;
+      }
+      const entityName = rawEvEntityName;
 
       const observations: (string | ObservationTemplate)[] = [];
 
@@ -1749,6 +1775,16 @@ If no meaningful correlation exists, return { "hasCorrelation": false }`;
   }
 
   // Helper methods
+
+  /**
+   * Reject entity names that describe process activities (bug fixes, updates, refactors)
+   * rather than actual domain concepts. These produce log-like insights instead of knowledge docs.
+   */
+  private isProcessActivityName(name: string): boolean {
+    const processPatterns = /^(BugFix|HotFix|Update|Refactor|Change|Modification|Solution|Fix|Cleanup|Migration|Upgrade|Patch|Revision|Adjustment|Correction|Enhancement|Improvement|Maintenance|KnowledgeBase(Update|Change))\w*(Pattern|Issue|Task|Activity)?$/i;
+    return processPatterns.test(name);
+  }
+
   private generateEntityName(type: string, description: string): string {
     // Create a clean, PascalCase entity name
     // Entity types are determined by ontology classification, not naming convention

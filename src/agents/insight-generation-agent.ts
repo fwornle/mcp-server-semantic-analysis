@@ -269,6 +269,15 @@ export class InsightGenerationAgent {
         additionalContext: hierarchyContextText,
       });
 
+      // If LLM synthesis was unavailable, skip writing this insight file
+      if (content === null) {
+        return {
+          filePath: '',
+          diagramCount: successfulDiagrams.length,
+          success: false,
+        };
+      }
+
       // --- Code Evidence section (all entity levels L0-L3) ---
       const codeEvidenceSection = this.buildCodeEvidenceSection(params.observations);
 
@@ -421,7 +430,7 @@ export class InsightGenerationAgent {
     relations?: Array<{ from: string; to: string; relationType: string }>;
     diagrams?: Array<{ name: string; type: string; success: boolean }>;
     additionalContext?: string;
-  }): Promise<string> {
+  }): Promise<string | null> {
     const { entityName, entityType, observations, relations = [], diagrams = [] } = params;
 
     log(`Generating technical documentation for ${entityName} from ${observations.length} observations`, 'info');
@@ -485,78 +494,18 @@ export class InsightGenerationAgent {
     sections.push(`${overview}\n`);
 
     // USE DEEP INSIGHT CONTENT if available (LLM-generated analysis)
-    // Otherwise fall back to simple bullet point formatting
+    // If LLM synthesis failed, return null to signal "do not write this file"
+    // Writing raw observations as bullet points produces log-like garbage that
+    // defeats the purpose of insights (domain knowledge documents for context injection)
     if (deepInsightContent) {
       // Deep insight already contains structured sections
       sections.push(deepInsightContent);
       sections.push('');
     } else {
-      // FALLBACK: Simple bullet point formatting
-      // What It Is - descriptions and implementations (avoid duplication with How It Works)
-      const whatItIsItems = [...categorized.descriptions, ...categorized.implementations];
-      if (whatItIsItems.length > 0) {
-        sections.push(`## What It Is\n`);
-        for (const item of whatItIsItems.slice(0, 4)) {
-          sections.push(`- ${item}\n`);
-        }
-        sections.push('');
-      }
-
-      // How It Works - workflows only (not implementations, to avoid duplication)
-      if (categorized.workflows.length > 0) {
-        sections.push(`## How It Works\n`);
-        for (const item of categorized.workflows.slice(0, 5)) {
-          sections.push(`- ${item}\n`);
-        }
-        sections.push('');
-      }
-
-      // Other details (remaining uncategorized observations)
-      if (categorized.other.length > 0) {
-        sections.push(`## Additional Details\n`);
-        for (const item of categorized.other.slice(0, 3)) {
-          sections.push(`- ${item}\n`);
-        }
-        sections.push('');
-      }
-
-      // Code Structure (from Serena analysis)
-      if (serenaAnalysis && (serenaAnalysis.symbols.length > 0 || serenaAnalysis.fileStructures.length > 0)) {
-        sections.push(`## Code Structure\n`);
-        sections.push(this.serenaAnalyzer.formatCodeStructureSummary(serenaAnalysis));
-        sections.push('');
-      }
-
-      // Usage / Rules
-      if (categorized.rules.length > 0) {
-        sections.push(`## Usage Guidelines\n`);
-        for (const rule of categorized.rules) {
-          sections.push(`- ${rule}\n`);
-        }
-        sections.push('');
-      }
-
-      // Related Entities
-      if (relations.length > 0) {
-        sections.push(`## Related Entities\n`);
-        const outgoing = relations.filter(r => r.from === entityName);
-        const incoming = relations.filter(r => r.to === entityName);
-
-        if (outgoing.length > 0) {
-          sections.push(`### Dependencies\n`);
-          for (const rel of outgoing.slice(0, 10)) {
-            sections.push(`- ${rel.to} (${rel.relationType})\n`);
-          }
-        }
-
-        if (incoming.length > 0) {
-          sections.push(`### Used By\n`);
-          for (const rel of incoming.slice(0, 10)) {
-            sections.push(`- ${rel.from} (${rel.relationType})\n`);
-          }
-        }
-        sections.push('');
-      }
+      // NO FALLBACK: Return null to prevent writing a low-quality insight document.
+      // The entity retains its observations in the graph and will be retried on next refresh.
+      log(`Skipping insight file for ${entityName}: LLM synthesis unavailable`, 'info');
+      return null;
     }
 
     // Diagrams are appended by buildDiagramLinksSection after LLM content generation
@@ -643,6 +592,9 @@ Place each diagram image reference (the markdown syntax above, exactly as shown)
 1. PRESERVE ALL specific file paths, class names, function names from observations — these are your primary source of truth
 2. DO NOT invent patterns (like "microservices", "event-driven") unless explicitly mentioned
 3. Build your analysis FROM the observations, don't add ungrounded information
+4. SYNTHESIZE observations into coherent domain knowledge — do NOT write a chronological log of changes
+5. OMIT dates, commit hashes, and incremental change history — focus on the CURRENT state and design
+6. This document will be re-injected as context for future work — write it as a reference manual, not a changelog
 
 **Source Observations:**
 ${observationsText}
@@ -1103,7 +1055,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
                 const summaryDoc = await this.generateInsightDocument(
                   gitAnalysis, vibeAnalysis, semanticAnalysis, categoryCatalog, webResults
                 );
-                insightDocuments.push(summaryDoc);
+                if (summaryDoc) insightDocuments.push(summaryDoc);
                 log(`Generated category summary insight for ${category} (${categoryPatterns.length} patterns)`, 'info');
               } catch (err: any) {
                 log(`Failed to generate category summary for ${category}: ${err.message}`, 'error');
@@ -1117,7 +1069,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         const insightDocument = await this.generateInsightDocument(
           gitAnalysis, vibeAnalysis, semanticAnalysis, patternCatalog, webResults
         );
-        insightDocuments.push(insightDocument);
+        if (insightDocument) insightDocuments.push(insightDocument);
       }
 
       const processingTime = Date.now() - startTime;
@@ -1820,7 +1772,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
     webResults?: any,
     entityInfo?: { name: string; type: string; observations: string[] },
     relations?: Array<{ from: string; to: string; relationType: string }>
-  ): Promise<InsightDocument> {
+  ): Promise<InsightDocument | null> {
     // Use entity name if provided, otherwise generate from analysis
     // CONVENTION: .md files use PascalCase (entity name), diagrams use kebab-case
     let name: string;           // PascalCase for .md file
@@ -1852,7 +1804,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
     // FIX: Validate content generation BEFORE creating diagrams to prevent orphan PNGs
     // This ensures we don't create diagram files if content generation will fail
     log('Pre-validating content generation before diagrams...', 'info');
-    let content: string;
+    let content: string | null;
     let diagrams: PlantUMLDiagram[] = [];
 
     try {
@@ -1869,6 +1821,10 @@ Best practices, rules, and conventions for using this correctly. What should dev
         entityInfo,  // NEW: Pass entity info for observation-based generation
         relations    // NEW: Pass relations for entity connections
       });
+      if (!content) {
+        log(`Content generation returned null for ${name} - LLM synthesis unavailable`, 'warning');
+        return null;
+      }
       log(`Content validation passed, content length: ${content.length}`, 'info');
     } catch (contentError: any) {
       // Content generation failed - don't create any diagrams
@@ -1911,6 +1867,11 @@ Best practices, rules, and conventions for using this correctly. What should dev
       entityInfo,  // NEW: Pass entity info
       relations    // NEW: Pass relations
     });
+
+    if (!content) {
+      log(`generateInsightContent returned null for ${name}, skipping file write`, 'warning');
+      return null;
+    }
 
     log(`generateInsightContent completed, content length: ${content.length}`, 'debug');
 
@@ -3429,7 +3390,7 @@ SemanticAnalysisAgent --> InsightGenerationAgent
 @enduml`;
   }
 
-  private async generateInsightContent(data: any): Promise<string> {
+  private async generateInsightContent(data: any): Promise<string | null> {
     const {
       title,
       timestamp,
@@ -6501,6 +6462,11 @@ class SolutionPattern {
         relations: currentAnalysis?.relations || [],
         diagrams
       });
+
+      if (!content) {
+        log(`LLM synthesis failed for ${entityInfo.name} during refresh - skipping`, 'warning');
+        return null;
+      }
 
       // Save the document
       // CONVENTION: .md files use PascalCase (entity name)

@@ -40,6 +40,8 @@ export class Wave3DetailAgent {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.llmService = new LLMService();
+    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    attachTokenLogger(this.llmService, 'wave3-detail-agent');
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;
   }

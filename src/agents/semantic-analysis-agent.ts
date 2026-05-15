@@ -72,6 +72,8 @@ export class SemanticAnalysisAgent {
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
     this.llmService = new LLMService();
+    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    attachTokenLogger(this.llmService, 'semantic-analysis-agent');
   }
 
   private async ensureLLMInitialized(): Promise<void> {

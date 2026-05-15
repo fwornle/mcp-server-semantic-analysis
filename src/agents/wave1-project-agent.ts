@@ -43,6 +43,8 @@ export class Wave1ProjectAgent {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.llmService = new LLMService();
+    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    attachTokenLogger(this.llmService, 'wave1-project-agent');
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;
   }

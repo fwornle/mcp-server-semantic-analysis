@@ -280,6 +280,8 @@ export class SemanticAnalyzer {
   constructor() {
     // Create LLM service with mode resolver and mock service wiring
     this.llmService = new LLMService();
+    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    attachTokenLogger(this.llmService, 'semantic-analyzer');
 
     // Wire mode resolver: delegates to static getLLMModeForAgent()
     this.llmService.setModeResolver((agentId) =>

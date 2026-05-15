@@ -47,6 +47,8 @@ export class Wave2ComponentAgent {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.llmService = new LLMService();
+    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    attachTokenLogger(this.llmService, 'wave2-component-agent');
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;
   }

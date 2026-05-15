@@ -102,6 +102,8 @@ export class GitStalenessDetector {
     // Use shared disk-backed embedding cache
     this.embeddingCache = getSharedEmbeddingCache();
     this.llmService = new LLMService();
+    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    attachTokenLogger(this.llmService, 'git-staleness-detector');
     this.initializeClients();
   }
 

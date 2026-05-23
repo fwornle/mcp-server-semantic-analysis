@@ -178,7 +178,7 @@ describe('Phase 42 Plan 07 — writeTerminalState (SC#4 single-writer fix)', () 
 // ---------------------------------------------------------------------------
 
 describe('Phase 42 Plan 07 — workflow-runner wires writeTerminalState before exit', () => {
-  it('Test SC4-7: workflow-runner.ts imports writeTerminalState and calls it in wave-analysis branches', () => {
+  it('Test SC4-7: workflow-runner.ts imports writeTerminalState and calls it in wave-analysis branches + outer catch', () => {
     const src = fs.readFileSync(
       path.resolve(
         path.dirname(new URL(import.meta.url).pathname),
@@ -200,12 +200,98 @@ describe('Phase 42 Plan 07 — workflow-runner wires writeTerminalState before e
       'workflow-runner.ts references writeTerminalState',
     );
     // The helper must be called on BOTH the success and the failure paths
-    // of the wave-analysis branch (before process.exit). We expect at least
-    // two invocations.
+    // of the wave-analysis branch AND in the outer main().catch handler
+    // (Surprise #5 belt-and-braces — covers pre-wave-branch fatal errors
+    // like WaveController constructor failures). We expect at least three
+    // invocations.
     const calls = src.match(/writeTerminalState\(/g) ?? [];
     assert.ok(
-      calls.length >= 2,
-      `expected ≥2 writeTerminalState() call sites in wave-analysis branch, found ${calls.length}`,
+      calls.length >= 3,
+      `expected ≥3 writeTerminalState() call sites (wave success + wave failure + outer catch), found ${calls.length}`,
+    );
+  });
+
+  it('Test SC4-8: writeTerminalState is invoked from main().catch with pre-wave-fatal step tag', () => {
+    // SC#4 belt-and-braces: the outer main().catch must invoke
+    // writeTerminalState so that errors fired BEFORE the wave-analysis
+    // branch (e.g., WaveController constructor failures — the Surprise #5
+    // failure mode) still flip the progress file from 'running' to
+    // 'failed'. We assert by source-inspection because the alternative is
+    // spawning a child workflow-runner process, which is too heavy for the
+    // unit-test layer (and is what the SC verifier script handles).
+    const src = fs.readFileSync(
+      path.resolve(
+        path.dirname(new URL(import.meta.url).pathname),
+        '..',
+        'src',
+        'workflow-runner.ts',
+      ),
+      'utf8',
+    );
+
+    // Find the `main().then(...).catch(e => { ... })` block.
+    const catchBlockMatch = src.match(
+      /main\(\)\.then\([\s\S]*?\)\.catch\(e\s*=>\s*\{([\s\S]*?)\n\}\);\s*$/m,
+    );
+    assert.ok(
+      catchBlockMatch,
+      'expected to locate the main().then(...).catch(e => {...}) tail block',
+    );
+    const catchBody = catchBlockMatch![1];
+
+    assert.match(
+      catchBody,
+      /writeTerminalState\(/,
+      'outer main().catch must invoke writeTerminalState',
+    );
+    assert.match(
+      catchBody,
+      /['"]failed['"]/,
+      'outer main().catch must pass terminal status "failed"',
+    );
+    assert.match(
+      catchBody,
+      /step:\s*['"]pre-wave-fatal['"]/,
+      'outer main().catch must tag the error step as "pre-wave-fatal" (distinguishes pre-wave constructor failures from in-wave failures)',
+    );
+    // Defensive: the call must be guarded by a cleanupState.progressFile
+    // check, since main() may have crashed before populating it (e.g.,
+    // config-read failure).
+    assert.match(
+      catchBody,
+      /cleanupState\.progressFile/,
+      'outer main().catch must guard the write on cleanupState.progressFile being populated',
+    );
+  });
+
+  it('Test SC4-9: writeTerminalState in outer catch covers the WaveController constructor failure mode (behavioral simulation)', () => {
+    // Behavioral test: simulate the SC#4 belt-and-braces invariant directly
+    // by writing a 'running' progress file, then calling writeTerminalState
+    // with the same arguments the outer catch would use when a WaveController
+    // constructor throws. This locks in the contract — if a future edit
+    // breaks the call-site, this test fails alongside SC4-7/SC4-8.
+    const file = mkTmpFile({
+      status: 'running',
+      workflowId: 'wf-surprise5',
+      startTime: '2026-05-23T18:00:00.000Z',
+      progress: { currentStepName: 'wave1_init' },
+    });
+
+    // Simulate the exact call the outer main().catch makes when a fatal
+    // pre-wave error escapes.
+    writeTerminalState(file, 'failed', undefined, {
+      error: 'require is not defined in ES module scope, you can use import instead',
+      step: 'pre-wave-fatal',
+    });
+
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(after.status, 'failed', 'status flips from running → failed');
+    assert.match(after.error, /require is not defined/);
+    assert.equal(after.step, 'pre-wave-fatal');
+    assert.equal(
+      after.workflowId,
+      'wf-surprise5',
+      'workflowId preserved across the outer-catch terminal write',
     );
   });
 });

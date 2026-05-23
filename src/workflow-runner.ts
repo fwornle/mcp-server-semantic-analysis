@@ -683,5 +683,37 @@ main().then(() => {
   const errMsg = e instanceof Error ? (e.stack || e.message) : String(e);
   process.stderr.write(`[workflow-runner] Fatal error: ${errMsg}\n`);
   log('Fatal error in workflow runner', 'error', { message: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined });
+
+  // Phase 42 Plan 07 — SC#4 belt-and-braces extension. The wave-analysis
+  // branch's inner try/catch only covers the body AFTER `new WaveController()`
+  // returns. Errors fired BEFORE the wave-analysis branch (e.g., the
+  // WaveController constructor itself throwing — exactly the Surprise #5
+  // failure mode where the constructor's now-fixed CommonJS require() blew
+  // up under ESM) escape that try/catch and land here. Without this
+  // write, the progress file stays `status: 'running'` forever from the
+  // dashboard's perspective (Plan 02 VERIFY-FAIL.md captured this exact
+  // mode at 12:35:07Z).
+  //
+  // We read the progress file path from cleanupState (populated by
+  // main() once config is parsed). If main() crashed before reaching
+  // that population (config-read failure), progressFile is undefined
+  // and we have no destination to write — that's an acceptable
+  // degradation since the dashboard never started tracking the run.
+  if (cleanupState.progressFile) {
+    try {
+      writeTerminalState(cleanupState.progressFile, 'failed', undefined, {
+        error: e instanceof Error ? e.message : String(e),
+        step: 'pre-wave-fatal',
+      });
+    } catch (writeErr) {
+      // Best-effort — terminal write must never throw past process.exit().
+      process.stderr.write(
+        `[workflow-runner] terminal write in outer catch failed: ${
+          writeErr instanceof Error ? writeErr.message : String(writeErr)
+        }\n`,
+      );
+    }
+  }
+
   process.exit(1);
 });

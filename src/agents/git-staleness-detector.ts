@@ -18,6 +18,7 @@ import { LLMService } from '@rapid/llm-proxy';
 import type { GitCommit, GitFileChange } from "./git-history-agent.js";
 import { EmbeddingCache, getSharedEmbeddingCache } from "../utils/embedding-cache.js";
 import { isMockLLMEnabled, getMockDelay } from "../mock/llm-mock-service.js";
+import { attachTokenLogger } from "../utils/token-usage-logger.js";
 
 // ============================================================================
 // Interfaces
@@ -102,7 +103,7 @@ export class GitStalenessDetector {
     // Use shared disk-backed embedding cache
     this.embeddingCache = getSharedEmbeddingCache();
     this.llmService = new LLMService();
-    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    // Phase 42 Plan 07 — Surprise #5 fix: CommonJS require() → static ESM import.
     attachTokenLogger(this.llmService, 'git-staleness-detector');
     this.initializeClients();
   }

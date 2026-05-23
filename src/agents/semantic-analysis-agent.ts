@@ -6,6 +6,7 @@ import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
 import { LLMService } from '@rapid/llm-proxy';
 import type { AnalyzeEntityCodeInput, AnalyzeEntityCodeResult, AnalysisArtifacts, EntityTraceData } from '../types/wave-types.js';
+import { attachTokenLogger } from '../utils/token-usage-logger.js';
 
 export interface CodeFile {
   path: string;
@@ -72,7 +73,7 @@ export class SemanticAnalysisAgent {
   constructor(repositoryPath: string = '.') {
     this.repositoryPath = repositoryPath;
     this.llmService = new LLMService();
-    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    // Phase 42 Plan 07 — Surprise #5 fix: CommonJS require() → static ESM import.
     attachTokenLogger(this.llmService, 'semantic-analysis-agent');
   }
 

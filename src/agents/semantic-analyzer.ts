@@ -6,6 +6,7 @@ import { spawn } from "child_process";
 import { isMockLLMEnabled, mockSemanticAnalysis, getLLMMode, type LLMMode } from "../mock/llm-mock-service.js";
 import { LLMService } from "@rapid/llm-proxy";
 import type { LLMCompletionResult, MockServiceInterface } from "@rapid/llm-proxy";
+import { attachTokenLogger } from "../utils/token-usage-logger.js";
 
 // ES module compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -280,7 +281,8 @@ export class SemanticAnalyzer {
   constructor() {
     // Create LLM service with mode resolver and mock service wiring
     this.llmService = new LLMService();
-    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    // Phase 42 Plan 07 — Surprise #5 fix: CommonJS require() → static ESM import
+    // (pre-existing ESM regression from commit 12fc1f5, predates Phase 42).
     attachTokenLogger(this.llmService, 'semantic-analyzer');
 
     // Wire mode resolver: delegates to static getLLMModeForAgent()

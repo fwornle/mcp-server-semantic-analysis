@@ -15,6 +15,7 @@ import * as path from 'path';
 import { log } from '../logging.js';
 import { LLMService } from '@rapid/llm-proxy';
 import { isMockLLMEnabled, getMockDelay } from '../mock/llm-mock-service.js';
+import { attachTokenLogger } from '../utils/token-usage-logger.js';
 import type { KGEntity, KGRelation } from './kg-operators.js';
 import type { Wave2Input, WaveAgentOutput, ChildManifestEntry, AnalyzeEntityCodeInput } from '../types/wave-types.js';
 import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
@@ -62,7 +63,7 @@ export class Wave2ComponentAgent {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.llmService = new LLMService();
-    const { attachTokenLogger } = require('../utils/token-usage-logger');
+    // Phase 42 Plan 07 — Surprise #5 fix: CommonJS require() → static ESM import.
     attachTokenLogger(this.llmService, 'wave2-component-agent');
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;

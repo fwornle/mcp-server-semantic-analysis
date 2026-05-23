@@ -55,8 +55,8 @@ import { Level } from 'level';
 // ---------------------------------------------------------------------------
 
 const __filename = fileURLToPath(import.meta.url);
-// dist/migration/migrate-leveldb-to-kmcore.test.js → up 3 levels to submodule root
-const SUBMODULE_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
+// dist/migration/migrate-leveldb-to-kmcore.test.js — go up 2 levels to submodule root
+const SUBMODULE_ROOT = path.resolve(path.dirname(__filename), '..', '..');
 const SCRIPT_PATH = path.join(SUBMODULE_ROOT, 'scripts', 'migrate-leveldb-to-kmcore.mjs');
 // Coding repo root: submodule is at integrations/mcp-server-semantic-analysis
 const CODING_ROOT = path.resolve(SUBMODULE_ROOT, '..', '..');
@@ -346,9 +346,12 @@ describe('migrate-leveldb-to-kmcore (Phase 42 Plan 05)', () => {
         metadata: { created_at: '2026-03-07T12:38:24.946Z', last_updated: '2026-03-21T06:36:53.211Z' },
       },
       {
-        name: 'WeirdConfig',
-        entityType: 'Config',
-        id: 'fixturecfg00099',
+        // FrobnicatedWidget is intentionally a class name NOT in any of the
+        // shipped ontology files — exercises RESEARCH §6 Risk 3 (ad-hoc
+        // wave-pipeline classes that don't appear in coding-ontology.json).
+        name: 'FrobNode',
+        entityType: 'FrobnicatedWidget',
+        id: 'fixturefrb00099',
         observations: ['specialized-class entity'],
         team: 'coding',
         metadata: { created_at: '2026-03-07T12:38:24.946Z', last_updated: '2026-03-21T06:36:53.211Z' },
@@ -364,17 +367,17 @@ describe('migrate-leveldb-to-kmcore (Phase 42 Plan 05)', () => {
 
     const entities = readMigratedEntities(target);
     const detail = entities.find((e) => e.name === 'KnownDetail');
-    const config = entities.find((e) => e.name === 'WeirdConfig');
+    const frob = entities.find((e) => e.name === 'FrobNode');
     assert.ok(detail);
-    assert.ok(config);
+    assert.ok(frob);
     assert.equal(detail!.ontologyClass, 'Detail');
-    assert.equal(config!.ontologyClass, 'Config');
+    assert.equal(frob!.ontologyClass, 'FrobnicatedWidget');
     const detailMeta = detail!.metadata as Record<string, unknown>;
-    const configMeta = config!.metadata as Record<string, unknown>;
+    const frobMeta = frob!.metadata as Record<string, unknown>;
     // Detail is in the ontology — should NOT carry the unregistered flag (or flag === false).
     assert.notEqual(detailMeta.ontologyClassUnregistered, true);
-    // Config is NOT in the ontology — must carry the flag === true.
-    assert.equal(configMeta.ontologyClassUnregistered, true);
+    // FrobnicatedWidget is NOT in the ontology — must carry the flag === true.
+    assert.equal(frobMeta.ontologyClassUnregistered, true);
   });
 
   it('Test 4: descriptionSegments — joined description + migration provenance', async () => {

@@ -678,6 +678,10 @@ main().then(() => {
   log('[WorkflowRunner] Main function completed, exiting', 'info');
   process.exit(0);
 }).catch(e => {
-  log('Fatal error in workflow runner', 'error', e);
+  // Phase 42 Plan 07 — log the actual error message/stack instead of an empty
+  // Data:{} (the log() helper doesn't unwrap Error objects' message/stack).
+  const errMsg = e instanceof Error ? (e.stack || e.message) : String(e);
+  process.stderr.write(`[workflow-runner] Fatal error: ${errMsg}\n`);
+  log('Fatal error in workflow runner', 'error', { message: e instanceof Error ? e.message : String(e), stack: e instanceof Error ? e.stack : undefined });
   process.exit(1);
 });

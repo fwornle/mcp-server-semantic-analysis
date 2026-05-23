@@ -211,10 +211,10 @@ describe('Phase 42 Plan 06 — canonical-mapper (Task 1)', () => {
 
 describe('Phase 42 Plan 06 — wave-controller persistWithKmCore + dedup rewire (Task 2)', () => {
   // -------------------------------------------------------------------------
-  // Test 7: With KM_CORE_PERSISTENCE=km-core, wave-controller's persistence
-  //         routes through kmCoreAdapter (NOT persistenceAgent.persistEntities).
-  //         Tested by inspecting the SOURCE FILE: the km-core branch's call
-  //         site exists and contains the storeEntity invocation.
+  // Test 7: wave-controller's persistence routes through kmCoreAdapter
+  //         unconditionally (Phase 42 Plan 07 Phase B1 — flag removed).
+  //         Tested by inspecting the SOURCE FILE: persistWithKmCore exists
+  //         and contains storeEntity + storeRelationship invocations.
   // -------------------------------------------------------------------------
   it('Test 7: wave-controller.ts contains persistWithKmCore branch that calls kmCoreAdapter.storeEntity', () => {
     const src = readWaveControllerSource();
@@ -232,21 +232,30 @@ describe('Phase 42 Plan 06 — wave-controller persistWithKmCore + dedup rewire 
   });
 
   // -------------------------------------------------------------------------
-  // Test 8: With the flag OFF (default), the legacy persistenceAgent.persistEntities
-  //         call site is preserved verbatim.
+  // Test 8 (Phase 42 Plan 07 Phase B1 rewrite): the KM_CORE_PERSISTENCE flag
+  // has been removed; the legacy persistenceAgent.persistEntities branch was
+  // deleted from wave-controller.ts. Assert the inverse:
+  //   - wave-controller.ts has NO `getPersistenceBackend` reference.
+  //   - wave-controller.ts has NO `persistenceAgent.persistEntities` call site.
+  //   - wave-controller.ts no longer imports PersistenceAgent as a runtime
+  //     class (the SharedMemoryEntity type-only import is allowed).
   // -------------------------------------------------------------------------
-  it('Test 8: legacy persistenceAgent.persistEntities call site preserved in wave-controller.ts (no flag)', () => {
+  it('Test 8: KM_CORE_PERSISTENCE flag + legacy persistEntities path removed from wave-controller.ts', () => {
     const src = readWaveControllerSource();
-    assert.match(
+    assert.doesNotMatch(
+      src,
+      /getPersistenceBackend\b/,
+      'getPersistenceBackend reference must be gone (flag removed in Phase B1)',
+    );
+    assert.doesNotMatch(
       src,
       /persistenceAgent\.persistEntities/,
-      'legacy persistenceAgent.persistEntities call site remains',
+      'legacy persistenceAgent.persistEntities call site must be gone',
     );
-    // The flag-gated branch should use getPersistenceBackend()
-    assert.match(
+    assert.doesNotMatch(
       src,
-      /getPersistenceBackend\(\)\s*===\s*'km-core'/,
-      'flag is checked via getPersistenceBackend() === "km-core"',
+      /^import\s+\{[^}]*\bPersistenceAgent\b[^}]*\}/m,
+      'wave-controller must not import PersistenceAgent as a runtime symbol',
     );
   });
 

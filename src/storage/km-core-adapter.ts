@@ -6,9 +6,10 @@
  * `tools.ts`) call on `GraphDatabaseService` / `GraphDatabaseAdapter`, but
  * routes the calls through km-core's canonical `GraphKMStore` instead.
  *
- * Used behind the `KM_CORE_PERSISTENCE=km-core` feature flag during the
- * strangler migration. Both backends coexist until Plan 7 deletes the
- * legacy GraphDatabaseService and the flag.
+ * The `KM_CORE_PERSISTENCE` feature flag was deleted in Phase 42 Plan 07
+ * Phase B1; this adapter is now the unconditional persistence backend in
+ * wave-controller. GraphDatabaseService is still in tree (deferred), but
+ * wave-controller no longer reads from it for the persist path.
  *
  * Surface (RESEARCH §3 — caller heat map of GraphDatabaseService methods):
  *

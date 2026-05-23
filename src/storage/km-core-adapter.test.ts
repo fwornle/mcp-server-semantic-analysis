@@ -1,18 +1,20 @@
 /**
- * Unit tests for the km-core strangler adapter + persistence-backend feature flag.
+ * Unit tests for the km-core strangler adapter.
  *
  * Phase 42 Plan 01 — TDD red/green for:
- *   - getPersistenceBackend() env-var gate (Tests 1-3)
  *   - createKmCoreAdapter() factory + hot-path surface (Tests 4-5)
  *   - Wave-controller bypass write rewire (Tests 6-8, added in Task 2)
+ *
+ * Phase 42 Plan 07 Phase B1 update: the persistence-backend feature flag
+ * (`KM_CORE_PERSISTENCE`) has been REMOVED. The previous persistence-flag
+ * describe-block (Tests 1-3) is gone — km-core is now unconditional.
  *
  * Run via: `npm run build && node --test dist/storage/km-core-adapter.test.js`
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getPersistenceBackend } from '../config/persistence-flag.js';
 import { createKmCoreAdapter, type KmCoreAdapter } from './km-core-adapter.js';
 
 // ---------------------------------------------------------------------------
@@ -114,40 +116,10 @@ function freshEntity(name: string, klass: string): StubEntity {
 }
 
 // ---------------------------------------------------------------------------
-// Section 1: getPersistenceBackend() — Tests 1, 2, 3 (D-51a feature flag)
+// Section 1: getPersistenceBackend() — REMOVED in Phase 42 Plan 07 Phase B1.
+// The persistence-flag module + its describe-block (Tests 1-3) were deleted
+// when the km-core path became unconditional.
 // ---------------------------------------------------------------------------
-
-describe('persistence-flag — getPersistenceBackend', () => {
-  let savedEnv: string | undefined;
-  beforeEach(() => {
-    savedEnv = process.env.KM_CORE_PERSISTENCE;
-  });
-  afterEach(() => {
-    if (savedEnv === undefined) delete process.env.KM_CORE_PERSISTENCE;
-    else process.env.KM_CORE_PERSISTENCE = savedEnv;
-  });
-
-  it('feature flag — Test 1: returns legacy when KM_CORE_PERSISTENCE is unset', () => {
-    delete process.env.KM_CORE_PERSISTENCE;
-    assert.equal(getPersistenceBackend(), 'legacy');
-  });
-
-  it('feature flag — Test 2: returns km-core when KM_CORE_PERSISTENCE is km-core', () => {
-    process.env.KM_CORE_PERSISTENCE = 'km-core';
-    assert.equal(getPersistenceBackend(), 'km-core');
-  });
-
-  it('feature flag — Test 3: returns legacy for any other value (defensive default)', () => {
-    process.env.KM_CORE_PERSISTENCE = 'something-else';
-    assert.equal(getPersistenceBackend(), 'legacy');
-
-    process.env.KM_CORE_PERSISTENCE = '';
-    assert.equal(getPersistenceBackend(), 'legacy');
-
-    process.env.KM_CORE_PERSISTENCE = 'KM-CORE'; // wrong casing — strict literal match
-    assert.equal(getPersistenceBackend(), 'legacy');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Section 2: createKmCoreAdapter() — Tests 4, 5 (hot-path surface + cold-path stubs)

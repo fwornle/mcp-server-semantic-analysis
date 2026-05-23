@@ -21,9 +21,10 @@ import { loadComponentManifest, flattenManifestEntries, writeManifestDiscoveries
 import type { DiscoveredManifestEntry } from '../types/component-manifest.js';
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
 import { createKmCoreAdapter, type KmCoreAdapter } from '../storage/km-core-adapter.js';
-import { getPersistenceBackend } from '../config/persistence-flag.js';
+// Phase 42 Plan 07 Phase B1 — KM_CORE_PERSISTENCE feature flag REMOVED.
+// km-core is now the unconditional persistence backend. Legacy graphDB writes
+// (operator-bypass + per-wave persistEntities) have been deleted.
 import { Wave1ProjectAgent } from './wave1-project-agent.js';
-import { PersistenceAgent } from './persistence-agent.js';
 import { InsightGenerationAgent } from './insight-generation-agent.js';
 import { OntologyClassificationAgent } from './ontology-classification-agent.js';
 import type { CrossReferenceContext } from './insight-generation-agent.js';
@@ -492,47 +493,46 @@ export class WaveController {
       await this.graphDB.initialize();
       log('[WaveController] GraphDatabaseAdapter initialized', 'info');
 
-      // === Phase 42 strangler — opt-in km-core adapter ===
-      // When KM_CORE_PERSISTENCE=km-core, also stand up a GraphKMStore-backed
-      // adapter. Used by the bypass write path (line ~1373) to fix the
-      // Phase 10 embedding bug. The default (legacy) path leaves
-      // this.kmCoreAdapter undefined and the existing graphDB.mergeAttributes
-      // branch runs verbatim.
+      // === Phase 42 Plan 07 Phase B1 — km-core adapter unconditional ===
+      // The KM_CORE_PERSISTENCE feature flag has been REMOVED. km-core is now
+      // the only persistence backend. Bootstrap a GraphKMStore-backed adapter
+      // against the canonical-shape migrated store; if bootstrap throws, the
+      // wave run aborts (km-core is no longer optional).
       //
-      // Phase 42 Plan 07: dbPath/exportDir now point at
-      // .data/knowledge-graph-migrated/{leveldb,exports} — the canonical-shape
-      // store produced by Plan 5's migration script. The legacy graphDB
-      // continues to use .data/knowledge-graph/. The two stores will drift
-      // after each ukb full until a follow-up phase merges them (documented
-      // as the "two LevelDB dirs" deviation in 42-07-SUMMARY.md).
-      if (getPersistenceBackend() === 'km-core') {
-        try {
-          // Dynamic import — km-core is a peer package resolved at runtime
-          // via node_modules/@fwornle/km-core. Static `import` at the top of
-          // this file would force every legacy run to load km-core too.
-          const km = await import('@fwornle/km-core');
-          const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'leveldb');
-          const exportDir = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'exports');
-          const ontologyDir = path.join(this.repositoryPath, '.data', 'ontologies');
-          const store = new km.GraphKMStore({
-            dbPath,
-            exportDir,
-            ontologyDir,
-            domains: [this.team],
-            debounceMs: 5000,
-          });
-          await store.open();
-          this.kmCoreAdapter = createKmCoreAdapter({ store, team: this.team });
-          log('[WaveController] km-core adapter initialized (KM_CORE_PERSISTENCE=km-core)', 'info', {
-            dbPath, exportDir, ontologyDir,
-          });
-        } catch (e) {
-          // Bootstrap failure must NOT crash the wave run — fall back to legacy.
-          log('[WaveController] km-core adapter bootstrap failed; falling back to legacy graphDB', 'warning', {
-            error: e instanceof Error ? e.message : String(e),
-          });
-          this.kmCoreAdapter = undefined;
-        }
+      // dbPath/exportDir point at .data/knowledge-graph-migrated/{leveldb,exports}
+      // — the canonical-shape store produced by Plan 5's migration script.
+      // The legacy graphDB (this.graphDB) continues to back the still-deferred
+      // read paths (content-validation-agent + various callers) until a
+      // follow-up phase completes the read-side migration. The two LevelDB
+      // dirs (.data/knowledge-graph/ + .data/knowledge-graph-migrated/) will
+      // drift after each ukb full until that follow-up phase merges them
+      // (documented as a deviation in 42-07-SUMMARY.md).
+      try {
+        const km = await import('@fwornle/km-core');
+        const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'leveldb');
+        const exportDir = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'exports');
+        const ontologyDir = path.join(this.repositoryPath, '.data', 'ontologies');
+        const store = new km.GraphKMStore({
+          dbPath,
+          exportDir,
+          ontologyDir,
+          domains: [this.team],
+          debounceMs: 5000,
+        });
+        await store.open();
+        this.kmCoreAdapter = createKmCoreAdapter({ store, team: this.team });
+        log('[WaveController] km-core adapter initialized (unconditional)', 'info', {
+          dbPath, exportDir, ontologyDir,
+        });
+      } catch (e) {
+        // Bootstrap failure is now fatal — the legacy persistence-agent path
+        // was removed in Phase B1. Surface to the caller so the workflow
+        // dispatcher can transition to `failed` instead of running silently
+        // against an unconfigured backend.
+        log('[WaveController] km-core adapter bootstrap failed (fatal — no legacy fallback)', 'error', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+        throw e;
       }
 
       // Load component manifest
@@ -1429,19 +1429,15 @@ export class WaveController {
             try {
               // Write directly to graph node — no pipeline, no transformation
               const nodeId = `${this.team}:${entity.name}`;
-              // === Phase 42 D-52b — strangler-gated bypass write ===
-              // When the km-core adapter is active, route the merge through
-              // it (km-core's GraphKMStore.mergeAttributes at line 854
-              // delegates to Graphology's mergeNodeAttributes — this resolves
-              // the Phase 10 embedding bug because km-core does not have the
-              // 7-layer pipeline that swallowed the write). Otherwise fall
-              // back to the legacy graphDB.mergeAttributes call (preserved
-              // verbatim so the flag is reversible).
-              if (this.kmCoreAdapter) {
-                await this.kmCoreAdapter.mergeAttributes(nodeId, enrichedAttrs);
-              } else {
-                await this.graphDB.mergeAttributes(nodeId, enrichedAttrs);
+              // === Phase 42 D-52b — bypass write (Phase 10 fix) ===
+              // The km-core adapter is now the unconditional backend
+              // (Phase 42 Plan 07 Phase B1). km-core's GraphKMStore.mergeAttributes
+              // delegates to Graphology's mergeNodeAttributes, sidestepping
+              // the 7-layer pipeline that swallowed the embedding write.
+              if (!this.kmCoreAdapter) {
+                throw new Error('kmCoreAdapter not bootstrapped — initialize() should have thrown');
               }
+              await this.kmCoreAdapter.mergeAttributes(nodeId, enrichedAttrs);
               directWriteSuccess++;
             } catch (e) {
               directWriteFail++;
@@ -2147,15 +2143,9 @@ export class WaveController {
     const allEntities = waveResult.agentOutputs.flatMap(o => o.entities);
     const allRelationships = waveResult.agentOutputs.flatMap(o => o.relationships);
 
-    // Convert KGEntity to SharedMemoryEntity format for PersistenceAgent
+    // Convert KGEntity to SharedMemoryEntity format for the constraint gate
+    // (the canonical km-core write below also consumes this shape).
     const sharedMemoryEntities = allEntities.map(e => this.mapEntityToSharedMemory(e));
-
-    // Persist entities via PersistenceAgent
-    const persistenceAgent = new PersistenceAgent(this.repositoryPath, this.graphDB, {
-      ontologyTeam: this.team,
-      validationMode: 'lenient',
-      contentValidationMode: 'lenient',
-    });
 
     // Unified constraint validation gate
     const allEntityNames = new Set(sharedMemoryEntities.map(e => e.name));
@@ -2175,72 +2165,26 @@ export class WaveController {
       this.persistedEntityNames.add(name);
     }
 
-    // Phase 42 Plan 06 — flag-gated km-core write path.
-    // When KM_CORE_PERSISTENCE=km-core AND the adapter bootstrapped
-    // successfully (see initialize()), route the entity + relationship
-    // writes through km-core's GraphKMStore instead of the 7-layer
-    // persistence-agent pipeline (D-52b). Per-entity / per-relation errors
-    // are fail-soft (Phase 41 resolveEntities precedent — T-42-06-03).
-    //
-    // Legacy path (flag off / adapter undefined): unchanged.
-    if (getPersistenceBackend() === 'km-core' && this.kmCoreAdapter) {
-      const result = await this.persistWithKmCore(
-        qualityFilteredEntities,
-        allRelationships,
-        this.runId,
-      );
-      log(`[WaveController] km-core persistence complete (wave ${waveResult.wave})`, 'info', {
-        entitiesStored: result.entitiesStored,
-        entityErrors: result.entityErrors,
-        relationshipsStored: result.relationshipsStored,
-        relationshipErrors: result.relationshipErrors,
-        relationshipsSkipped: result.relationshipsSkipped,
-      });
-      return;
+    // Phase 42 Plan 07 Phase B1 — km-core is the only persistence path.
+    // The KM_CORE_PERSISTENCE feature flag and the legacy 7-layer
+    // persistence-agent.persistEntities branch have been removed. Per-entity /
+    // per-relation errors are fail-soft (Phase 41 resolveEntities precedent —
+    // T-42-06-03). initialize() guarantees this.kmCoreAdapter is bootstrapped.
+    if (!this.kmCoreAdapter) {
+      throw new Error('persistWaveResult: kmCoreAdapter not bootstrapped — initialize() should have thrown');
     }
-
-    // ---- Legacy 7-layer path (default; preserved verbatim) ----
-    await persistenceAgent.persistEntities({
-      entities: qualityFilteredEntities.map(e => ({
-        name: e.name,
-        entityType: e.entityType,
-        observations: e.observations.map(obs =>
-          typeof obs === 'string' ? obs : obs.content,
-        ),
-        significance: e.significance,
-        metadata: e.metadata,
-        parentId: e.parentEntityName,
-        level: e.hierarchyLevel,
-        // Operator-enriched fields (set by conv, aggr, embed operators)
-        ...((e as any).embedding ? { embedding: (e as any).embedding } : {}),
-        ...((e as any).role ? { role: (e as any).role } : {}),
-        ...((e as any).enrichedContext ? { enrichedContext: (e as any).enrichedContext } : {}),
-      })),
-      team: this.team,
+    const result = await this.persistWithKmCore(
+      qualityFilteredEntities,
+      allRelationships,
+      this.runId,
+    );
+    log(`[WaveController] km-core persistence complete (wave ${waveResult.wave})`, 'info', {
+      entitiesStored: result.entitiesStored,
+      entityErrors: result.entityErrors,
+      relationshipsStored: result.relationshipsStored,
+      relationshipErrors: result.relationshipErrors,
+      relationshipsSkipped: result.relationshipsSkipped,
     });
-
-    // Persist relationship edges — only where both endpoints exist (prevents orphan edges)
-    let relSkipped = 0;
-    for (const rel of allRelationships) {
-      if (!this.persistedEntityNames.has(rel.from) || !this.persistedEntityNames.has(rel.to)) {
-        relSkipped++;
-        continue;
-      }
-      try {
-        await this.graphDB.storeRelationship({
-          from: rel.from,
-          to: rel.to,
-          relationType: rel.type,
-        });
-      } catch (error) {
-        log(`[WaveController] Failed to persist relationship ${rel.from} -> ${rel.to}`, 'warning', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    if (relSkipped > 0) {
-      log(`[WaveController] Skipped ${relSkipped} relations with missing endpoints`, 'info');
-    }
 
     log(`[WaveController] Wave ${waveResult.wave} persistence complete`, 'info', {
       entities: allEntities.length,
@@ -2249,7 +2193,7 @@ export class WaveController {
   }
 
   /**
-   * Phase 42 Plan 06 — flag-gated km-core write path.
+   * Phase 42 Plan 06+07 — unconditional km-core write path.
    *
    * Iterates the wave-constraint-filtered entities + relationships and routes
    * each through the Plan 01 km-core adapter:
@@ -2261,8 +2205,10 @@ export class WaveController {
    * resilience precedent; T-42-06-03 threat-model mitigation).
    *
    * Returns counters for the summary log. The legacy 7-layer pipeline
-   * (persistence-agent.persistEntities) is BYPASSED entirely when the flag
-   * is on (D-52b) — Plan 7 deletes persistence-agent.ts.
+   * (persistence-agent.persistEntities) has been removed from the wave
+   * controller in Plan 07 Phase B1 (D-52b). persistence-agent.ts itself
+   * is deferred to a follow-up phase per the architectural-surprise
+   * cascade (see 42-07-SUMMARY.md).
    */
   private async persistWithKmCore(
     entities: SharedMemoryEntity[],

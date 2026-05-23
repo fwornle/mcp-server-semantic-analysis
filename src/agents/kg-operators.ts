@@ -31,6 +31,11 @@ const EDGE_PREDICTION_THRESHOLD = parseFloat(process.env.EDGE_PREDICTION_THRESHO
 export interface KGEntity {
   id: string;
   name: string;
+  /**
+   * @deprecated alias of `entityType`; preserved for back-compat through
+   * Phase 42. Remove in Phase 43 after every kg-operators caller reads from
+   * `entityType` / `ontologyClass` instead.
+   */
   type: string;
   observations: string[];
   significance: number;
@@ -44,6 +49,24 @@ export interface KGEntity {
   parentId?: string;       // Entity name of parent node (L0/L1/L2 scaffold)
   level?: number;          // 0=Project, 1=Component, 2=SubComponent, 3=Detail
   hierarchyPath?: string;  // Slash-separated path: "Coding/KnowledgeManagement/OnlineLearning"
+  // ---------------------------------------------------------------------
+  // Phase 42 Plan 06 — canonical km-core Entity-compatible field additions.
+  // All optional; the legacy `type` field stays for back-compat (see
+  // deprecation note above). The coordinator's `as KGEntity` cast is no
+  // longer lossy once these are declared on the interface.
+  // ---------------------------------------------------------------------
+  /** Canonical entityType (mirrors km-core Entity.entityType). When set,
+   *  preferred over `type`. Wave1/2/3 agents stamp this via
+   *  `canonical-mapper.toCanonicalEntity`. */
+  entityType?: string;
+  /** Canonical ontologyClass (mirrors km-core Entity.ontologyClass). One of
+   *  Project / Component / SubComponent / Detail for the wave pipeline. */
+  ontologyClass?: string;
+  /** Free-form metadata bag (mirrors km-core Entity.metadata). Carries the
+   *  Phase 39 descriptionSegments[] + provenance + hierarchy fields. */
+  metadata?: Record<string, unknown>;
+  /** Phase 39 CF-D37 top-level legacyId. System === 'B' for wave-analysis. */
+  legacyId?: { system: 'B'; id: string };
 }
 
 export interface KGRelation {

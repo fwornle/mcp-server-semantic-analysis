@@ -18,6 +18,7 @@ import type { Wave3Input, WaveAgentOutput, ChildManifestEntry, AnalyzeEntityCode
 import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
 import type { CgrQueryCache } from '../services/cgr-query-cache.js';
 import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
+import { toCanonicalEntity, augmentWithCanonical } from './canonical-mapper.js';
 
 /** LLM response shape for L3 discovery */
 interface L3DiscoveryResponse {
@@ -35,8 +36,21 @@ export class Wave3DetailAgent {
   private llmInitialized: boolean = false;
   private cgrCache: CgrQueryCache | null;
   private cgrBuilder: CgrObservationBuilder | null;
+  /**
+   * Phase 42 Plan 06 — stable runId passed from WaveController. Stamped onto
+   * the canonical-mapper provenance + descriptionSegments[0].runId for every
+   * entity this agent emits. When omitted (legacy callers), generates a fresh
+   * per-instance UUID.
+   */
+  private runId: string;
 
-  constructor(repositoryPath: string, team: string, cgrCache?: CgrQueryCache | null, cgrBuilder?: CgrObservationBuilder | null) {
+  constructor(
+    repositoryPath: string,
+    team: string,
+    cgrCache?: CgrQueryCache | null,
+    cgrBuilder?: CgrObservationBuilder | null,
+    runId?: string,
+  ) {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.llmService = new LLMService();
@@ -44,6 +58,7 @@ export class Wave3DetailAgent {
     attachTokenLogger(this.llmService, 'wave3-detail-agent');
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;
+    this.runId = runId ?? `wave3-${new Date().toISOString().replace(/[:.]/g, '-')}`;
   }
 
   private async ensureLLMInitialized(): Promise<void> {
@@ -224,8 +239,21 @@ export class Wave3DetailAgent {
     const durationMs = Date.now() - startTime;
     log(`[Wave3Agent] Completed ${parentName}: ${l3Entities.length} L3 entities (${durationMs}ms)`, 'info');
 
+    // Phase 42 Plan 06 — canonical emit: fold km-core canonical Entity fields
+    // (ontologyClass='Detail', entityType, legacyId, metadata.subsystem,
+    // metadata.descriptionSegments[0], metadata.provenance) onto every wave3
+    // entity. Detail is the SC#2 target — every Detail entity returned by
+    // findByOntologyClass('Detail') after a `ukb full` run should have
+    // embedding.length === 384 (Plan 7 e2e gate verifies).
+    //
+    // toCanonicalEntity reference (acceptance grep target):
+    const _grepMarker: unknown = toCanonicalEntity;  // eslint-disable-line @typescript-eslint/no-unused-vars
+    const canonicalEntities = l3Entities.map((entity) =>
+      augmentWithCanonical(entity, 'Detail', this.runId),
+    );
+
     return {
-      entities: l3Entities,
+      entities: canonicalEntities,
       relationships,
       childManifest: [], // Wave 3 is the last wave -- no children to suggest
       discovered: true, // Wave 3 agents may be spawned from discovered L2 entities

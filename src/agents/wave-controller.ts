@@ -117,6 +117,11 @@ export class WaveController {
   private docAnalysis: DocumentationAnalysisResult | null = null;
   /** Track all entity names persisted across waves — used for cross-wave parent validation */
   private persistedEntityNames: Set<string> = new Set();
+  /** Phase 42 Plan 06 — stable runId for the current `ukb full` invocation.
+   *  Stamped on every entity emitted by wave1/wave2/wave3 via
+   *  `canonical-mapper.toCanonicalEntity`. Initialized at the start of
+   *  `execute()` (matches the existing executionId pattern at line ~546). */
+  private runId: string = `wave-analysis-${new Date().toISOString().replace(/[:.]/g, '-')}`;
 
   constructor(config: WaveControllerConfig) {
     this.repositoryPath = config.repositoryPath;
@@ -544,6 +549,9 @@ export class WaveController {
 
       // Start workflow report for history
       const executionId = `wave-analysis-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      // Phase 42 Plan 06 — stable runId shared with wave1/wave2/wave3 agents
+      // for canonical-mapper provenance + descriptionSegments stamping.
+      this.runId = executionId;
       this.reportAgent.startWorkflowReport('wave-analysis', executionId, { team: this.team });
 
       // ---- Wave 1: L0 Project + L1 Components ----
@@ -1626,7 +1634,7 @@ export class WaveController {
     const waveStart = Date.now();
 
     try {
-      const wave1Agent = new Wave1ProjectAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder);
+      const wave1Agent = new Wave1ProjectAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder, this.runId);
       const output = await wave1Agent.execute({
         manifest,
         existingEntities,
@@ -1729,7 +1737,7 @@ export class WaveController {
             },
           };
 
-          const agent = new Wave2ComponentAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder);
+          const agent = new Wave2ComponentAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder, this.runId);
           createdAgents.push(agent);
           return agent.execute(wave2Input);
         };
@@ -1882,7 +1890,7 @@ export class WaveController {
             },
           };
 
-          const agent = new Wave3DetailAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder);
+          const agent = new Wave3DetailAgent(this.repositoryPath, this.team, this.cgrCache, this.cgrBuilder, this.runId);
           createdAgents.push(agent);
           return agent.execute(wave3Input);
         };

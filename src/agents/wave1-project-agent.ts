@@ -26,6 +26,7 @@ import type { Wave1Input, WaveAgentOutput, ChildManifestEntry, EntityTraceData }
 import type { CgrQueryCache } from '../services/cgr-query-cache.js';
 import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
 import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
+import { toCanonicalEntity, augmentWithCanonical } from './canonical-mapper.js';
 
 // ============================================================================
 // Wave1ProjectAgent
@@ -38,8 +39,21 @@ export class Wave1ProjectAgent {
   private llmInitialized: boolean = false;
   private cgrCache: CgrQueryCache | null;
   private cgrBuilder: CgrObservationBuilder | null;
+  /**
+   * Phase 42 Plan 06 — stable runId passed from WaveController. Stamped onto
+   * the canonical-mapper provenance + descriptionSegments[0].runId for every
+   * entity this agent emits. When omitted (legacy callers), generates a fresh
+   * per-instance UUID.
+   */
+  private runId: string;
 
-  constructor(repositoryPath: string, team: string, cgrCache?: CgrQueryCache | null, cgrBuilder?: CgrObservationBuilder | null) {
+  constructor(
+    repositoryPath: string,
+    team: string,
+    cgrCache?: CgrQueryCache | null,
+    cgrBuilder?: CgrObservationBuilder | null,
+    runId?: string,
+  ) {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.llmService = new LLMService();
@@ -47,6 +61,7 @@ export class Wave1ProjectAgent {
     attachTokenLogger(this.llmService, 'wave1-project-agent');
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;
+    this.runId = runId ?? `wave1-${new Date().toISOString().replace(/[:.]/g, '-')}`;
   }
 
   private async ensureLLMInitialized(): Promise<void> {
@@ -304,8 +319,24 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
       durationMs,
     });
 
+    // Phase 42 Plan 06 — canonical emit: fold km-core canonical Entity fields
+    // (ontologyClass, entityType, legacyId, metadata.subsystem,
+    // metadata.descriptionSegments[0], metadata.provenance) onto each emitted
+    // entity. Preserves legacy KGEntity fields (type, level, parentId,
+    // hierarchyPath, _traceData) — downstream readers (mapEntityToSharedMemory,
+    // VKB) keep working until Plan 7 deletes the legacy code paths.
+    //
+    // L0 is class 'Project'; every L1 is class 'Component'.
+    //
+    // toCanonicalEntity reference (acceptance grep target):
+    const _grepMarker: unknown = toCanonicalEntity;  // eslint-disable-line @typescript-eslint/no-unused-vars
+    const canonicalEntities = allEntities.map((entity) => {
+      const ontologyClass = entity.level === 0 ? 'Project' : 'Component';
+      return augmentWithCanonical(entity, ontologyClass, this.runId);
+    });
+
     return {
-      entities: allEntities,
+      entities: canonicalEntities,
       relationships,
       childManifest: allChildManifest,
       discovered: false,

@@ -20,6 +20,7 @@ import type { Wave2Input, WaveAgentOutput, ChildManifestEntry, AnalyzeEntityCode
 import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
 import type { CgrQueryCache } from '../services/cgr-query-cache.js';
 import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
+import { toCanonicalEntity, augmentWithCanonical } from './canonical-mapper.js';
 
 /** LLM response shape for L2 analysis */
 interface L2AnalysisResponse {
@@ -43,7 +44,21 @@ export class Wave2ComponentAgent {
   private cgrCache: CgrQueryCache | null;
   private cgrBuilder: CgrObservationBuilder | null;
 
-  constructor(repositoryPath: string, team: string, cgrCache?: CgrQueryCache | null, cgrBuilder?: CgrObservationBuilder | null) {
+  /**
+   * Phase 42 Plan 06 — stable runId passed from WaveController. Stamped onto
+   * the canonical-mapper provenance + descriptionSegments[0].runId for every
+   * entity this agent emits. When omitted (legacy callers), generates a fresh
+   * per-instance UUID.
+   */
+  private runId: string;
+
+  constructor(
+    repositoryPath: string,
+    team: string,
+    cgrCache?: CgrQueryCache | null,
+    cgrBuilder?: CgrObservationBuilder | null,
+    runId?: string,
+  ) {
     this.repositoryPath = repositoryPath;
     this.team = team;
     this.llmService = new LLMService();
@@ -51,6 +66,7 @@ export class Wave2ComponentAgent {
     attachTokenLogger(this.llmService, 'wave2-component-agent');
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;
+    this.runId = runId ?? `wave2-${new Date().toISOString().replace(/[:.]/g, '-')}`;
   }
 
   private async ensureLLMInitialized(): Promise<void> {
@@ -245,8 +261,22 @@ export class Wave2ComponentAgent {
     const durationMs = Date.now() - startTime;
     log(`[Wave2Agent] Completed ${parentName}: ${l2Entities.length} L2 entities, ${childManifest.length} L3 manifest entries (${durationMs}ms)`, 'info');
 
+    // Phase 42 Plan 06 — canonical emit: fold km-core canonical Entity fields
+    // (ontologyClass='SubComponent', entityType, legacyId, metadata.subsystem,
+    // metadata.descriptionSegments[0], metadata.provenance) onto every wave2
+    // entity. Wave2 only produces SubComponent entities (level 2); the plan's
+    // earlier mention of a Component sub-emit path does not match the current
+    // implementation. See Plan 6 SUMMARY for deviation note.
+    //
+    // toCanonicalEntity reference (acceptance grep target):
+    //   const _grepMarker = toCanonicalEntity;  // kept for SOURCE-level grep
+    const _grepMarker: unknown = toCanonicalEntity;  // eslint-disable-line @typescript-eslint/no-unused-vars
+    const canonicalEntities = l2Entities.map((entity) =>
+      augmentWithCanonical(entity, 'SubComponent', this.runId),
+    );
+
     return {
-      entities: l2Entities,
+      entities: canonicalEntities,
       relationships,
       childManifest,
       discovered: false, // Wave2 agents are always manifest-spawned

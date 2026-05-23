@@ -20,6 +20,7 @@ import { log } from './logging.js';
 import { loadAllWorkflows, getConfigDir, loadWorkflowRunnerConfig } from './utils/workflow-loader.js';
 import { dispatch, subscribe, reset, createProgressFileSubscriber } from './workflow-state-machine.js';
 import { InvalidTransitionError } from './shared/workflow-types/transitions.js';
+import { writeTerminalState } from './workflow-runner-terminal-write.js';
 
 // ============================================================================
 // CRASH RECOVERY: Module-level state for signal handlers
@@ -466,15 +467,16 @@ async function main(): Promise<void> {
       const result = await waveController.execute();
 
       // Dispatch complete or fail event via state machine
+      const completeSummary = {
+        totalEntities: result.totalEntities,
+        waves: result.waves.length,
+        message: `Wave analysis completed: ${result.totalEntities} entities across ${result.waves.length} waves`,
+      };
       if (result.success) {
         try {
           dispatch({
             type: 'complete',
-            summary: {
-              totalEntities: result.totalEntities,
-              waves: result.waves.length,
-              message: `Wave analysis completed: ${result.totalEntities} entities across ${result.waves.length} waves`,
-            },
+            summary: completeSummary,
           });
         } catch (err) {
           if (!(err instanceof InvalidTransitionError)) throw err;
@@ -492,8 +494,26 @@ async function main(): Promise<void> {
         }
       }
 
-      // Clean up
+      // Phase 42 Plan 07 — SC#4 single-writer terminal-state guarantee.
+      // The state-machine `dispatch` above may have silently swallowed an
+      // InvalidTransitionError, leaving status='running' in the progress
+      // file (RESEARCH §2 fix #1; 42-02-VERIFY-FAIL.md captured this
+      // exact failure mode). Force the terminal-state write synchronously
+      // — preserving the user-control fields the subscriber owns — so
+      // the dashboard sees the terminal state before process.exit().
+      // Unsubscribe FIRST so this write isn't followed by a stale
+      // subscriber-driven overwrite from a leftover async transition.
       unsubscribeProgressFile();
+      if (result.success) {
+        writeTerminalState(progressFile, 'completed', completeSummary);
+      } else {
+        writeTerminalState(progressFile, 'failed', undefined, {
+          error: 'Wave analysis completed with errors',
+          step: 'wave-analysis',
+        });
+      }
+
+      // Clean up
       try { fs.unlinkSync(pidFile); } catch (e) { /* ignore */ }
       try { fs.unlinkSync(configPath); } catch (e) { /* ignore */ }
       process.exit(result.success ? 0 : 1);
@@ -507,7 +527,14 @@ async function main(): Promise<void> {
         if (!(err instanceof InvalidTransitionError)) throw err;
       }
 
+      // Phase 42 Plan 07 — SC#4 single-writer terminal-state guarantee
+      // (failure path). Same rationale as the success path above.
       unsubscribeProgressFile();
+      writeTerminalState(progressFile, 'failed', undefined, {
+        error: errorMessage,
+        step: 'wave-analysis',
+      });
+
       try { fs.unlinkSync(pidFile); } catch (e) { /* ignore */ }
       try { fs.unlinkSync(configPath); } catch (e) { /* ignore */ }
       process.exit(1);

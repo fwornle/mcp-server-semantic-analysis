@@ -498,19 +498,26 @@ export class WaveController {
       // Phase 10 embedding bug. The default (legacy) path leaves
       // this.kmCoreAdapter undefined and the existing graphDB.mergeAttributes
       // branch runs verbatim.
+      //
+      // Phase 42 Plan 07: dbPath/exportDir now point at
+      // .data/knowledge-graph-migrated/{leveldb,exports} — the canonical-shape
+      // store produced by Plan 5's migration script. The legacy graphDB
+      // continues to use .data/knowledge-graph/. The two stores will drift
+      // after each ukb full until a follow-up phase merges them (documented
+      // as the "two LevelDB dirs" deviation in 42-07-SUMMARY.md).
       if (getPersistenceBackend() === 'km-core') {
         try {
           // Dynamic import — km-core is a peer package resolved at runtime
           // via node_modules/@fwornle/km-core. Static `import` at the top of
           // this file would force every legacy run to load km-core too.
           const km = await import('@fwornle/km-core');
-          const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph');
-          const exportDir = path.join(this.repositoryPath, '.data', 'exports');
+          const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'leveldb');
+          const exportDir = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'exports');
           const ontologyDir = path.join(this.repositoryPath, '.data', 'ontologies');
           const store = new km.GraphKMStore({
             dbPath,
             exportDir,
-            ontologyDir, // Plan 3 flattens this directory; gated by flag until then.
+            ontologyDir,
             domains: [this.team],
             debounceMs: 5000,
           });

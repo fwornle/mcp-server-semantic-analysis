@@ -59,19 +59,18 @@ class StubGraphKMStore {
     this.byId.set(id, { ...existing, ...attrs });
   }
 
-  async putEntity(entity: StubEntity, _opts?: unknown): Promise<StubEntity> {
-    this.putEntityCalls.push(entity);
-    this.byName.set(entity.name, entity);
-    this.byId.set(entity.id, entity);
-    return entity;
+  async putEntity(entity: StubEntity, _opts?: unknown): Promise<string> {
+    // km-core's putEntity returns EntityId; stamp one if the caller omitted.
+    const id = entity.id ?? `01902b78-3c4a-7000-9000-${String(this.putEntityCalls.length).padStart(12, '0')}`;
+    const stored = { ...entity, id };
+    this.putEntityCalls.push(stored);
+    this.byName.set(stored.name, stored);
+    this.byId.set(stored.id, stored);
+    return id;
   }
 
   async getEntity(id: string): Promise<StubEntity | undefined> {
     return this.byId.get(id);
-  }
-
-  async findByName(name: string): Promise<StubEntity | undefined> {
-    return this.byName.get(name);
   }
 
   async findByOntologyClass(klass: string): Promise<StubEntity[]> {
@@ -80,6 +79,7 @@ class StubGraphKMStore {
     return out;
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async *iterate(): AsyncIterable<StubEntity> {
     for (const e of this.byName.values()) yield e;
   }
@@ -199,7 +199,7 @@ describe('km-core-adapter — surface', () => {
 // ---------------------------------------------------------------------------
 
 describe('km-core-adapter — mergeAttributes', () => {
-  it('resolves nodeId (team:name) to EntityId via findByName, then delegates to store.mergeAttributes', async () => {
+  it('resolves nodeId (team:name) to EntityId via iterate scan, then delegates to store.mergeAttributes', async () => {
     const store = new StubGraphKMStore();
     const e = freshEntity('TranscriptAdapter', 'Detail');
     store.seed(e);

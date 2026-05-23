@@ -2,7 +2,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logging.js';
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
-import { createOntologySystem, type OntologySystem, type UnifiedInferenceEngine } from '../ontology/index.js';
+import { createOntologySystem, type OntologySystem, type UnifiedInferenceEngine, LegacyOntologyAdapter } from '../ontology/index.js';
+// Phase 42-03: km-core's OntologyRegistry replaces B's deleted ontology-load
+// class. Root-barrel import (sub-path '/ontology' is not resolvable under this
+// submodule's tsconfig — see Phase 42-01 SUMMARY deviation #2).
+import { OntologyRegistry } from '@fwornle/km-core';
 import { ContentValidationAgent, type EntityValidationReport } from './content-validation-agent.js';
 import { CheckpointManager } from '../utils/checkpoint-manager.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
@@ -492,6 +496,15 @@ export class PersistenceAgent {
         }
       };
 
+      // Phase 42-03: construct km-core registry + adapter explicitly. The
+      // ontology directory is the flattened `.data/ontologies/` (8 JSONs at root).
+      const ontologyDir = path.join(
+        process.env.KNOWLEDGE_BASE_PATH || process.cwd(),
+        '.data/ontologies',
+      );
+      const registry = new OntologyRegistry({ ontologyDir });
+      const adapter = new LegacyOntologyAdapter(registry);
+
       this.ontologySystem = await createOntologySystem({
         enabled: true,
         team: this.config.ontologyTeam,
@@ -504,7 +517,7 @@ export class PersistenceAgent {
           minConfidence: this.config.ontologyMinConfidence
         },
         caching: { enabled: true, maxEntries: 100 }
-      }, inferenceEngine);
+      }, inferenceEngine, adapter);
 
       log('Ontology system initialized successfully', 'info', {
         team: this.config.ontologyTeam

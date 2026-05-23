@@ -15,7 +15,14 @@ import {
   OntologyConfigManager,
   ExtendedOntologyConfig,
 } from "./ontology/OntologyConfigManager.js";
-import { OntologyManager } from "./ontology/OntologyManager.js";
+// Phase 42-03: legacy ontology-load class deleted. km-core's OntologyRegistry
+// (re-exported from the root barrel — the older moduleResolution: node in this
+// submodule does not honor the '/ontology' sub-path) is the new source of truth.
+// tools.ts itself does not currently instantiate the registry (was a dead import
+// pre-Phase-42-03); the explicit import below is retained as a build-time
+// guarantee that km-core resolves correctly when the wave-controller bootstrap
+// flips on Phase 10's flag.
+import { OntologyRegistry } from "@fwornle/km-core";
 import { OntologyValidator } from "./ontology/OntologyValidator.js";
 import fs from "fs/promises";
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, openSync, closeSync, readdirSync, appendFileSync } from "fs";

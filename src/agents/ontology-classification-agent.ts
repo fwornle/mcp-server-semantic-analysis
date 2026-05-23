@@ -13,12 +13,22 @@ import {
   OntologyConfigManager,
   ExtendedOntologyConfig,
 } from '../ontology/OntologyConfigManager.js';
-import { OntologyManager } from '../ontology/OntologyManager.js';
+// Phase 42-03: legacy ontology-load class deleted; this agent now constructs
+// km-core's OntologyRegistry directly and wraps it in LegacyOntologyAdapter
+// so the still-B-specific Validator + Classifier keep working unchanged.
+import { LegacyOntologyAdapter } from '../ontology/LegacyOntologyAdapter.js';
 import { OntologyValidator } from '../ontology/OntologyValidator.js';
 import { OntologyClassifier } from '../ontology/OntologyClassifier.js';
 import { createHeuristicClassifier } from '../ontology/heuristics/index.js';
 import type { OntologyClassification } from '../ontology/types.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
+// km-core OntologyRegistry — single-level directory walk, atomic reload.
+// The root-barrel import is used (not the '/ontology' sub-path) because the
+// submodule's tsconfig uses `moduleResolution: node` which does not honor
+// package.json `exports` sub-paths (same precedent as Phase 42-01 SUMMARY
+// deviation #2). Functionally equivalent — OntologyRegistry is re-exported
+// from the root barrel.
+import { OntologyRegistry } from '@fwornle/km-core';
 
 /**
  * Ontology metadata to be attached to entities
@@ -116,7 +126,8 @@ export interface ClassificationProcessResult {
  */
 export class OntologyClassificationAgent {
   private configManager: OntologyConfigManager | null = null;
-  private ontologyManager: OntologyManager | null = null;
+  // Phase 42-03: was the legacy ontology-load class; now the km-core registry adapter.
+  private ontology: LegacyOntologyAdapter | null = null;
   private validator: OntologyValidator | null = null;
   private classifier: OntologyClassifier | null = null;
   private semanticAnalyzer: SemanticAnalyzer;
@@ -182,22 +193,19 @@ export class OntologyClassificationAgent {
       // Initialize config manager
       await this.configManager.initialize();
 
-      // Create ontology manager with config
+      // Phase 42-03: construct km-core's OntologyRegistry directly. It does a
+      // single-level scan of `.data/ontologies/` (flattened in Task 1 of this
+      // plan). The Docker bind-mount maps the repo into `/coding` so a host-
+      // path and a container-path both resolve via path.join(basePath,
+      // '.data/ontologies').
       const config = this.configManager.getConfig();
-      this.ontologyManager = new OntologyManager({
-        enabled: config.enabled,
-        upperOntologyPath: config.upperOntologyPath,
-        lowerOntologyPath: config.lowerOntologyPath,
-        team: config.team,
-        validation: config.validation,
-        classification: config.classification,
-        caching: config.caching,
-      });
+      const ontologyDir = path.join(this.basePath, '.data/ontologies');
+      const registry = new OntologyRegistry({ ontologyDir });
+      this.ontology = new LegacyOntologyAdapter(registry);
 
-      await this.ontologyManager.initialize();
-
-      // Create validator and classifier
-      this.validator = new OntologyValidator(this.ontologyManager);
+      // Create validator and classifier (signatures unchanged — both now accept
+      // LegacyOntologyAdapter where they used to accept the deleted legacy class).
+      this.validator = new OntologyValidator(this.ontology);
 
       const heuristicClassifier = createHeuristicClassifier();
 
@@ -246,7 +254,7 @@ export class OntologyClassificationAgent {
       };
 
       this.classifier = new OntologyClassifier(
-        this.ontologyManager,
+        this.ontology,
         this.validator,
         heuristicClassifier,
         llmInferenceEngine as any
@@ -782,8 +790,8 @@ export class OntologyClassificationAgent {
     return {
       initialized: this.initialized,
       team: this.team,
-      ontologyLoaded: this.ontologyManager !== null,
-      classesAvailable: this.ontologyManager?.getAllEntityClasses().length || 0,
+      ontologyLoaded: this.ontology !== null,
+      classesAvailable: this.ontology?.getAllEntityClasses().length || 0,
     };
   }
 }

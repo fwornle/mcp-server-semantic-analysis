@@ -1,6 +1,20 @@
 import { log } from "../logging.js";
 import OpenAI from "openai";
 import { loadAgentTuningConfig } from "../utils/workflow-loader.js";
+// Phase 42 Plan 06 (D-50a) — local mergeEntityGroup DELETED in favor of
+// km-core's shared mergeEntities primitive. When DeduplicationAgent is
+// constructed with an injected km-core GraphKMStore, the dedup sweep
+// resolves entity names to EntityIds via findByName-style iteration and
+// calls mergeEntities directly. When no store is injected (the legacy
+// orphan path — RESEARCH §3 says this module has zero src/ consumers
+// today), the dedup loop logs to stderr and skips the merge (preserves
+// wave run resilience per plan <action> step 2).
+import { mergeEntities } from '@fwornle/km-core';
+import type {
+  GraphKMStore,
+  Entity as KmCoreEntity,
+  EntityId,
+} from '@fwornle/km-core';
 
 export interface SimilarityConfig {
   embeddingModel?: string;
@@ -336,10 +350,16 @@ export class DeduplicationAgent {
 
       result.duplicatesFound = duplicateGroups.length;
 
-      // Merge duplicate groups
+      // Phase 42 Plan 06 (D-50a) — merge duplicate groups via km-core's
+      // shared `mergeEntities` primitive. The local `mergeEntityGroup`
+      // function was DELETED. When a km-core store is injected via
+      // `setKmCoreStore`, the loop resolves each duplicate name to its
+      // EntityId and invokes mergeEntities atomically. When no store is
+      // present, the merge is skipped and recorded as a review-required
+      // conflict (preserves wave run resilience).
       for (const group of duplicateGroups) {
         try {
-          const mergeResult = await this.mergeEntityGroup(group);
+          const mergeResult = await this.mergeDuplicateGroup(group);
           if (mergeResult.success) {
             result.entitiesMerged++;
             result.entitiesRemoved += group.entities.length - 1;
@@ -553,25 +573,126 @@ export class DeduplicationAgent {
     );
   }
 
-  private async mergeEntityGroup(group: DuplicateGroup): Promise<{ success: boolean; mergedEntity?: Entity }> {
+  // ---------------------------------------------------------------------
+  // Phase 42 Plan 06 (D-50a) — km-core mergeEntities adoption.
+  //
+  // The previous local `mergeEntityGroup` function has been DELETED.
+  // The replacement `mergeDuplicateGroup` below forwards to km-core's
+  // shared `mergeEntities` primitive (Phase 41 `@fwornle/km-core/maintenance`,
+  // re-exported from the root barrel — see Plan 42-01 SUMMARY's exports-map
+  // deviation). The km-core primitive is the canonical entity-merge op for
+  // Phases 41 (A), 42 (B), and 43 (C); local merge logic is gone.
+  // ---------------------------------------------------------------------
+
+  /** Optional km-core store injected by callers that want the dedup loop to
+   *  perform real atomic merges. When undefined (orphan path — this module
+   *  currently has zero src/ consumers per RESEARCH §3), the dedup loop logs
+   *  a stderr line and skips the merge while still counting the group. */
+  private kmCoreStore?: GraphKMStore;
+  /** Stable runId carried into the mergeEntities provenance stamp. */
+  private kmCoreRunId?: string;
+
+  /**
+   * Inject a km-core GraphKMStore for atomic entity merges. Callers must
+   * also supply a stable runId so the provenance stamps written to the
+   * survivor reflect the dedup invocation. Mirrors Phase 41 resolveEntities
+   * caller-supplied provenance pattern.
+   */
+  setKmCoreStore(store: GraphKMStore, runId: string): void {
+    this.kmCoreStore = store;
+    this.kmCoreRunId = runId;
+  }
+
+  /** Resolve an entity name to a km-core EntityId via store.iterate scan.
+   *  km-core 0.1.0 has no findByName; the iterate-and-match approach matches
+   *  the Plan 01 strangler adapter. Returns undefined if the name is not
+   *  present in the store. */
+  private async findKmCoreIdByName(name: string): Promise<EntityId | undefined> {
+    if (!this.kmCoreStore) return undefined;
+    for await (const e of this.kmCoreStore.iterate()) {
+      const entity = e as KmCoreEntity;
+      if (entity.name === name) return entity.id;
+    }
+    return undefined;
+  }
+
+  /**
+   * Forward a duplicate group to km-core's mergeEntities. The survivor is
+   * `group.suggestedMerge` (preserves the existing keepMostSignificant
+   * heuristic encoded by `findDuplicatesInBatch` -> `createDuplicateGroup`).
+   * Duplicates are every other entity in the group.
+   *
+   * When `this.kmCoreStore` is undefined (orphan path): log a stderr line
+   * and return success:false so the caller counts this group as
+   * conflictsRequiringReview. Does NOT throw.
+   *
+   * When a duplicate's name cannot be resolved via findByName-style
+   * iteration: log a stderr line and skip THAT name. If the survivor
+   * itself cannot be resolved, the whole group is skipped (success:false).
+   */
+  private async mergeDuplicateGroup(group: DuplicateGroup): Promise<{ success: boolean; mergedEntity?: Entity }> {
     try {
-      // Check if automatic merge is safe
+      // Confidence gate (preserved verbatim from the deleted mergeEntityGroup).
       if (group.confidence < 0.8) {
         log(`Low confidence merge for group ${group.id}: ${group.confidence}`, "warning");
         return { success: false };
       }
 
-      // Perform the merge
-      const mergedEntity = group.suggestedMerge;
-      
-      log(`Merged ${group.entities.length} entities into: ${mergedEntity.name}`, "info", {
+      if (!this.kmCoreStore || !this.kmCoreRunId) {
+        process.stderr.write(
+          `[deduplication] skipping merge for group ${group.id} — no km-core store injected (use setKmCoreStore)\n`,
+        );
+        return { success: false };
+      }
+
+      const survivorName = group.suggestedMerge.name;
+      const survivorId = await this.findKmCoreIdByName(survivorName);
+      if (!survivorId) {
+        process.stderr.write(
+          `[deduplication] skipping merge — survivor entity '${survivorName}' not in km-core store\n`,
+        );
+        return { success: false };
+      }
+
+      const duplicateIds: EntityId[] = [];
+      for (const dup of group.entities) {
+        if (dup.name === survivorName) continue;
+        const dupId = await this.findKmCoreIdByName(dup.name);
+        if (!dupId) {
+          process.stderr.write(
+            `[deduplication] skipping merge — entity '${dup.name}' not in km-core store\n`,
+          );
+          continue;
+        }
+        duplicateIds.push(dupId);
+      }
+
+      if (duplicateIds.length === 0) {
+        process.stderr.write(
+          `[deduplication] skipping merge for group ${group.id} — no resolvable duplicate ids\n`,
+        );
+        return { success: false };
+      }
+
+      await mergeEntities(this.kmCoreStore, survivorId, duplicateIds, {
+        provenance: {
+          provider: 'wave-controller',
+          model: 'phase-42-dedup',
+          runId: this.kmCoreRunId,
+          timestamp: new Date().toISOString(),
+        },
+        reason: `DeduplicationAgent group ${group.id} (sim=${group.similarity.toFixed(3)}, conf=${group.confidence.toFixed(3)})`,
+      });
+
+      log(`Merged ${group.entities.length} entities into: ${survivorName}`, "info", {
         groupId: group.id,
         similarity: group.similarity,
         confidence: group.confidence,
+        survivorId: String(survivorId),
+        duplicates: duplicateIds.length,
       });
 
-      return { success: true, mergedEntity };
-      
+      return { success: true, mergedEntity: group.suggestedMerge };
     } catch (error) {
       log(`Failed to merge group ${group.id}`, "error", error);
       return { success: false };

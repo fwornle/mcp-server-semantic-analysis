@@ -2168,6 +2168,31 @@ export class WaveController {
       this.persistedEntityNames.add(name);
     }
 
+    // Phase 42 Plan 06 — flag-gated km-core write path.
+    // When KM_CORE_PERSISTENCE=km-core AND the adapter bootstrapped
+    // successfully (see initialize()), route the entity + relationship
+    // writes through km-core's GraphKMStore instead of the 7-layer
+    // persistence-agent pipeline (D-52b). Per-entity / per-relation errors
+    // are fail-soft (Phase 41 resolveEntities precedent — T-42-06-03).
+    //
+    // Legacy path (flag off / adapter undefined): unchanged.
+    if (getPersistenceBackend() === 'km-core' && this.kmCoreAdapter) {
+      const result = await this.persistWithKmCore(
+        qualityFilteredEntities,
+        allRelationships,
+        this.runId,
+      );
+      log(`[WaveController] km-core persistence complete (wave ${waveResult.wave})`, 'info', {
+        entitiesStored: result.entitiesStored,
+        entityErrors: result.entityErrors,
+        relationshipsStored: result.relationshipsStored,
+        relationshipErrors: result.relationshipErrors,
+        relationshipsSkipped: result.relationshipsSkipped,
+      });
+      return;
+    }
+
+    // ---- Legacy 7-layer path (default; preserved verbatim) ----
     await persistenceAgent.persistEntities({
       entities: qualityFilteredEntities.map(e => ({
         name: e.name,
@@ -2214,6 +2239,117 @@ export class WaveController {
       entities: allEntities.length,
       relationships: allRelationships.length,
     });
+  }
+
+  /**
+   * Phase 42 Plan 06 — flag-gated km-core write path.
+   *
+   * Iterates the wave-constraint-filtered entities + relationships and routes
+   * each through the Plan 01 km-core adapter:
+   *   - `kmCoreAdapter.storeEntity(entity, { team })` for entity writes.
+   *   - `kmCoreAdapter.storeRelationship(from, to, type, metadata)` for edges.
+   *
+   * Both calls are wrapped in try/catch so a single failed entity does not
+   * abort the wave's persistence sweep (matches Phase 41 resolveEntities
+   * resilience precedent; T-42-06-03 threat-model mitigation).
+   *
+   * Returns counters for the summary log. The legacy 7-layer pipeline
+   * (persistence-agent.persistEntities) is BYPASSED entirely when the flag
+   * is on (D-52b) — Plan 7 deletes persistence-agent.ts.
+   */
+  private async persistWithKmCore(
+    entities: SharedMemoryEntity[],
+    relationships: KGRelation[],
+    runId: string,
+  ): Promise<{
+    entitiesStored: number;
+    entityErrors: number;
+    relationshipsStored: number;
+    relationshipErrors: number;
+    relationshipsSkipped: number;
+  }> {
+    if (!this.kmCoreAdapter) {
+      throw new Error('persistWithKmCore called without kmCoreAdapter bootstrapped');
+    }
+
+    let entitiesStored = 0;
+    let entityErrors = 0;
+    let relationshipsStored = 0;
+    let relationshipErrors = 0;
+    let relationshipsSkipped = 0;
+
+    // ---- Entity sweep ----
+    for (const e of entities) {
+      try {
+        await this.kmCoreAdapter.storeEntity(
+          {
+            name: e.name,
+            entityType: e.entityType,
+            // canonical fields stamped by wave1/wave2/wave3 emit (Plan 06 Task 1)
+            ontologyClass: (e as { ontologyClass?: unknown }).ontologyClass,
+            legacyId: (e as { legacyId?: unknown }).legacyId,
+            observations: e.observations.map((obs) =>
+              typeof obs === 'string' ? obs : obs.content,
+            ),
+            significance: e.significance,
+            metadata: e.metadata,
+            parentId: e.parentEntityName,
+            level: e.hierarchyLevel,
+            // Operator-enriched fields ride along for the adapter's metadata mapping
+            ...((e as { embedding?: unknown }).embedding
+              ? { embedding: (e as { embedding?: unknown }).embedding }
+              : {}),
+            ...((e as { role?: unknown }).role
+              ? { role: (e as { role?: unknown }).role }
+              : {}),
+            ...((e as { enrichedContext?: unknown }).enrichedContext
+              ? { enrichedContext: (e as { enrichedContext?: unknown }).enrichedContext }
+              : {}),
+          },
+          { team: this.team },
+        );
+        entitiesStored += 1;
+      } catch (err) {
+        entityErrors += 1;
+        process.stderr.write(
+          `[WaveController] km-core storeEntity failed for ${e.name} (runId=${runId}): ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
+
+    // ---- Relationship sweep ----
+    for (const rel of relationships) {
+      if (!this.persistedEntityNames.has(rel.from) || !this.persistedEntityNames.has(rel.to)) {
+        relationshipsSkipped += 1;
+        continue;
+      }
+      try {
+        await this.kmCoreAdapter.storeRelationship(
+          rel.from,
+          rel.to,
+          rel.type,
+          { weight: rel.weight, source: rel.source, batchId: rel.batchId, runId },
+        );
+        relationshipsStored += 1;
+      } catch (err) {
+        relationshipErrors += 1;
+        process.stderr.write(
+          `[WaveController] km-core storeRelationship failed for ${rel.from} -> ${rel.to} (${rel.type}, runId=${runId}): ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
+
+    return {
+      entitiesStored,
+      entityErrors,
+      relationshipsStored,
+      relationshipErrors,
+      relationshipsSkipped,
+    };
   }
 
   /**

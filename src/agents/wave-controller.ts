@@ -20,6 +20,8 @@ import { log } from '../logging.js';
 import { loadComponentManifest, flattenManifestEntries, writeManifestDiscoveries } from '../types/component-manifest.js';
 import type { DiscoveredManifestEntry } from '../types/component-manifest.js';
 import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
+import { createKmCoreAdapter, type KmCoreAdapter } from '../storage/km-core-adapter.js';
+import { getPersistenceBackend } from '../config/persistence-flag.js';
 import { Wave1ProjectAgent } from './wave1-project-agent.js';
 import { PersistenceAgent } from './persistence-agent.js';
 import { InsightGenerationAgent } from './insight-generation-agent.js';
@@ -84,6 +86,12 @@ export class WaveController {
   private maxAgentsPerWave: number;
   private failFast: boolean;
   private graphDB: GraphDatabaseAdapter;
+  /**
+   * km-core strangler adapter (Phase 42 D-51). Constructed only when
+   * KM_CORE_PERSISTENCE=km-core; remains undefined on the legacy path so
+   * the legacy graphDB.mergeAttributes branch runs verbatim.
+   */
+  private kmCoreAdapter?: KmCoreAdapter;
   private reportAgent: WorkflowReportAgent;
   private qaAgent: QualityAssuranceAgent;
   /** Per-step LLM metrics and outputs accumulated during execution */
@@ -478,6 +486,42 @@ export class WaveController {
       // Initialize graph database
       await this.graphDB.initialize();
       log('[WaveController] GraphDatabaseAdapter initialized', 'info');
+
+      // === Phase 42 strangler — opt-in km-core adapter ===
+      // When KM_CORE_PERSISTENCE=km-core, also stand up a GraphKMStore-backed
+      // adapter. Used by the bypass write path (line ~1373) to fix the
+      // Phase 10 embedding bug. The default (legacy) path leaves
+      // this.kmCoreAdapter undefined and the existing graphDB.mergeAttributes
+      // branch runs verbatim.
+      if (getPersistenceBackend() === 'km-core') {
+        try {
+          // Dynamic import — km-core is a peer package resolved at runtime
+          // via node_modules/@fwornle/km-core. Static `import` at the top of
+          // this file would force every legacy run to load km-core too.
+          const km = await import('@fwornle/km-core');
+          const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph');
+          const exportDir = path.join(this.repositoryPath, '.data', 'exports');
+          const ontologyDir = path.join(this.repositoryPath, '.data', 'ontologies');
+          const store = new km.GraphKMStore({
+            dbPath,
+            exportDir,
+            ontologyDir, // Plan 3 flattens this directory; gated by flag until then.
+            domains: [this.team],
+            debounceMs: 5000,
+          });
+          await store.open();
+          this.kmCoreAdapter = createKmCoreAdapter({ store, team: this.team });
+          log('[WaveController] km-core adapter initialized (KM_CORE_PERSISTENCE=km-core)', 'info', {
+            dbPath, exportDir, ontologyDir,
+          });
+        } catch (e) {
+          // Bootstrap failure must NOT crash the wave run — fall back to legacy.
+          log('[WaveController] km-core adapter bootstrap failed; falling back to legacy graphDB', 'warning', {
+            error: e instanceof Error ? e.message : String(e),
+          });
+          this.kmCoreAdapter = undefined;
+        }
+      }
 
       // Load component manifest
       const manifest = loadComponentManifest();
@@ -1370,7 +1414,19 @@ export class WaveController {
             try {
               // Write directly to graph node — no pipeline, no transformation
               const nodeId = `${this.team}:${entity.name}`;
-              await this.graphDB.mergeAttributes(nodeId, enrichedAttrs);
+              // === Phase 42 D-52b — strangler-gated bypass write ===
+              // When the km-core adapter is active, route the merge through
+              // it (km-core's GraphKMStore.mergeAttributes at line 854
+              // delegates to Graphology's mergeNodeAttributes — this resolves
+              // the Phase 10 embedding bug because km-core does not have the
+              // 7-layer pipeline that swallowed the write). Otherwise fall
+              // back to the legacy graphDB.mergeAttributes call (preserved
+              // verbatim so the flag is reversible).
+              if (this.kmCoreAdapter) {
+                await this.kmCoreAdapter.mergeAttributes(nodeId, enrichedAttrs);
+              } else {
+                await this.graphDB.mergeAttributes(nodeId, enrichedAttrs);
+              }
               directWriteSuccess++;
             } catch (e) {
               directWriteFail++;

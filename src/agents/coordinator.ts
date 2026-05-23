@@ -33,6 +33,110 @@ const mockModeConfig = loadOrchestratorConfig().mock_mode;
 const MOCK_MODE_MIN_STEP_TIME_MS = mockModeConfig.min_step_time_ms;
 const MOCK_MODE_MIN_SUBSTEP_TIME_MS = mockModeConfig.min_substep_time_ms;
 
+// ---------------------------------------------------------------------------
+// Phase 42 Plan 02 — field-preserving allowlist for progress JSON writes.
+// Mirrors the state-machine subscriber's allowlist (workflow-state-machine.ts
+// :117-162) so coordinator's writeProgressFile no longer clobbers fields the
+// subscriber preserves. RESEARCH §2 fix #3.
+// ---------------------------------------------------------------------------
+
+const PROGRESS_PRESERVE_KEYS = [
+  'stepPaused',
+  'pausedAtStep',
+  'pausedAt',
+  'mockLLM',
+  'mockLLMDelay',
+  'singleStepMode',
+  'stepIntoSubsteps',
+  'llmState',
+] as const;
+
+const PROGRESS_PRESERVE_NESTED: ReadonlyArray<readonly [string, string]> = [
+  ['config', 'singleStepMode'],
+] as const;
+
+/**
+ * Read-modify-write helper that preserves the state-machine subscriber's
+ * allowlist from the existing progress file when the new progress object
+ * does not contain those fields. New values always win on conflict —
+ * preserve only fills gaps.
+ *
+ * On any read/parse error the input `progress` is returned verbatim and a
+ * diagnostic is emitted to stderr (per CLAUDE.md no-console-log rule).
+ *
+ * Exported for unit testing (coordinator-progress-merge.test.ts).
+ *
+ * @param progress  The new progress object the caller wants to write.
+ * @param progressPath Path on disk where the existing progress file lives.
+ * @returns A shallow clone of `progress` with the allowlist filled in from
+ *          the existing file when applicable.
+ */
+export function preserveFromExisting(
+  progress: Record<string, unknown>,
+  progressPath: string,
+): Record<string, unknown> {
+  let existing: Record<string, unknown> | null = null;
+  try {
+    const raw = fs.readFileSync(progressPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // ENOENT (file doesn't exist) is normal first-write — skip the diagnostic.
+    const isMissing = (err as NodeJS.ErrnoException)?.code === 'ENOENT';
+    if (!isMissing) {
+      process.stderr.write(
+        `[Coordinator] writeProgressFile: existing file unreadable, writing fresh — ${errMsg}\n`,
+      );
+    }
+    return progress;
+  }
+
+  if (!existing) return progress;
+
+  // Shallow clone — never mutate the caller's progress object.
+  const merged: Record<string, unknown> = { ...progress };
+
+  for (const key of PROGRESS_PRESERVE_KEYS) {
+    if (merged[key] === undefined && existing[key] !== undefined) {
+      merged[key] = existing[key];
+    }
+  }
+
+  for (const [parentKey, childKey] of PROGRESS_PRESERVE_NESTED) {
+    const existingParent = existing[parentKey];
+    if (
+      existingParent &&
+      typeof existingParent === 'object' &&
+      !Array.isArray(existingParent) &&
+      (existingParent as Record<string, unknown>)[childKey] !== undefined
+    ) {
+      const newParent = merged[parentKey];
+      const newParentIsObject =
+        newParent && typeof newParent === 'object' && !Array.isArray(newParent);
+      if (!newParentIsObject) {
+        // No parent on new — synthesize one from the existing leaf.
+        merged[parentKey] = {
+          [childKey]: (existingParent as Record<string, unknown>)[childKey],
+        };
+      } else {
+        const newChild = (newParent as Record<string, unknown>)[childKey];
+        if (newChild === undefined) {
+          // Clone the parent so we don't mutate the caller's nested object.
+          merged[parentKey] = {
+            ...(newParent as Record<string, unknown>),
+            [childKey]: (existingParent as Record<string, unknown>)[childKey],
+          };
+        }
+      }
+    }
+  }
+
+  return merged;
+}
+
 export interface WorkflowDefinition {
   name: string;
   description: string;
@@ -574,7 +678,15 @@ export class CoordinatorAgent {
         }
       }
 
-      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
+      // Phase 42 Plan 02 — field-preserving merge against the existing file
+      // before the write. Matches the state-machine subscriber's allowlist so
+      // coordinator's "fat" progress writes no longer clobber state-machine-
+      // owned fields like stepPaused / mockLLM / singleStepMode. The existing
+      // in-method preservation (preservedDebugState + the FRESH re-read above)
+      // already covers the common cases; preserveFromExisting is a defensive
+      // backstop that closes the residual race window described in RESEARCH §2.
+      const merged = preserveFromExisting(progress as Record<string, unknown>, progressPath);
+      fs.writeFileSync(progressPath, JSON.stringify(merged, null, 2));
     } catch (error) {
       // Silently ignore progress file errors - this is non-critical
       log(`Failed to write progress file: ${error}`, 'debug');
@@ -726,7 +838,13 @@ export class CoordinatorAgent {
       progress.stepPaused = true;
       progress.pausedAtStep = stepName;
       progress.pausedAt = new Date().toISOString();
-      fs.writeFileSync(progressPath, JSON.stringify(progress, null, 2));
+      // Phase 42 Plan 02 — field-preserving merge mirrors the call in
+      // writeProgressFile. checkSingleStepPause already does its own
+      // read-modify-write of `progress`, so this is a defense-in-depth
+      // guard against concurrent writes between the read above (line ~699)
+      // and the writeFileSync here.
+      const merged = preserveFromExisting(progress as Record<string, unknown>, progressPath);
+      fs.writeFileSync(progressPath, JSON.stringify(merged, null, 2));
     } catch (initError) {
       // If we can't even read/write the file initially, log and return (don't pause)
       log(`Single-step mode: Initial file access failed, skipping pause: ${initError}`, 'warning');

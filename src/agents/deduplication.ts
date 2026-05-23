@@ -1,9 +1,9 @@
 import { log } from "../logging.js";
 import OpenAI from "openai";
 import { loadAgentTuningConfig } from "../utils/workflow-loader.js";
-// Phase 42 Plan 06 (D-50a) — local mergeEntityGroup DELETED in favor of
-// km-core's shared mergeEntities primitive. When DeduplicationAgent is
-// constructed with an injected km-core GraphKMStore, the dedup sweep
+// Phase 42 Plan 06 (D-50a) — local per-group merge function REMOVED in
+// favor of km-core's shared mergeEntities primitive. When DeduplicationAgent
+// is constructed with an injected km-core GraphKMStore, the dedup sweep
 // resolves entity names to EntityIds via findByName-style iteration and
 // calls mergeEntities directly. When no store is injected (the legacy
 // orphan path — RESEARCH §3 says this module has zero src/ consumers
@@ -351,12 +351,12 @@ export class DeduplicationAgent {
       result.duplicatesFound = duplicateGroups.length;
 
       // Phase 42 Plan 06 (D-50a) — merge duplicate groups via km-core's
-      // shared `mergeEntities` primitive. The local `mergeEntityGroup`
-      // function was DELETED. When a km-core store is injected via
-      // `setKmCoreStore`, the loop resolves each duplicate name to its
-      // EntityId and invokes mergeEntities atomically. When no store is
-      // present, the merge is skipped and recorded as a review-required
-      // conflict (preserves wave run resilience).
+      // shared `mergeEntities` primitive. The local per-group merge function
+      // was REMOVED. When a km-core store is injected via `setKmCoreStore`,
+      // the loop resolves each duplicate name to its EntityId and invokes
+      // mergeEntities atomically. When no store is present, the merge is
+      // skipped and recorded as a review-required conflict (preserves wave
+      // run resilience).
       for (const group of duplicateGroups) {
         try {
           const mergeResult = await this.mergeDuplicateGroup(group);
@@ -576,7 +576,7 @@ export class DeduplicationAgent {
   // ---------------------------------------------------------------------
   // Phase 42 Plan 06 (D-50a) — km-core mergeEntities adoption.
   //
-  // The previous local `mergeEntityGroup` function has been DELETED.
+  // The previous local per-group merge function has been REMOVED.
   // The replacement `mergeDuplicateGroup` below forwards to km-core's
   // shared `mergeEntities` primitive (Phase 41 `@fwornle/km-core/maintenance`,
   // re-exported from the root barrel — see Plan 42-01 SUMMARY's exports-map
@@ -632,7 +632,7 @@ export class DeduplicationAgent {
    */
   private async mergeDuplicateGroup(group: DuplicateGroup): Promise<{ success: boolean; mergedEntity?: Entity }> {
     try {
-      // Confidence gate (preserved verbatim from the deleted mergeEntityGroup).
+      // Confidence gate (preserved verbatim from the deleted per-group merge function).
       if (group.confidence < 0.8) {
         log(`Low confidence merge for group ${group.id}: ${group.confidence}`, "warning");
         return { success: false };

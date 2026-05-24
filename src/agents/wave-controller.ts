@@ -2243,6 +2243,68 @@ export class WaveController {
   }
 
   /**
+   * Phase 42.1 INT-02 — idempotent bootstrap of the Coding (Project) anchor.
+   *
+   * Queries km-core for an existing Project entity named 'Coding'. If present,
+   * returns early (idempotent re-run). If absent, mints a minimal Project entity
+   * via `kmCoreAdapter.storeEntity(...)` so the subsequent anchor pass has a
+   * valid fallback target for entities with no Component/SubComponent match.
+   *
+   * Failure is fail-soft: a thrown `storeEntity` increments a local counter
+   * and writes one stderr line; the next ukb full will retry the bootstrap.
+   *
+   * Caller: `persistWithKmCore` invokes this BEFORE the anchor-pass loop so
+   * the loop can rely on `findBestParent` returning 'Coding' as a fallback.
+   *
+   * Mirrors `_ensureProjectAnchor` from src/live-logging/ObservationConsolidator.js
+   * (the online-path equivalent) — same semantics, different storage adapter.
+   */
+  private async ensureProjectAnchor(runId: string): Promise<void> {
+    if (!this.kmCoreAdapter) {
+      // Guarded upstream by persistWithKmCore; this is defensive.
+      throw new Error('ensureProjectAnchor called without kmCoreAdapter bootstrapped');
+    }
+    try {
+      const existing = await this.kmCoreAdapter.queryEntities({ entityType: 'Project' });
+      if (existing.some((e) => e.name === 'Coding')) {
+        // Already present — idempotent re-run.
+        return;
+      }
+      await this.kmCoreAdapter.storeEntity(
+        {
+          name: 'Coding',
+          entityType: 'Project',
+          ontologyClass: 'Project',
+          observations: ['Coding project root entity (anchor for wave-analysis emissions).'],
+          significance: 10,
+          metadata: {
+            subsystem: 'wave-analysis',
+            source: 'wave-analysis',
+            runId,
+          },
+        },
+        { team: this.team },
+      );
+      // Track in the local persistedEntityNames set so the relation sweep
+      // (and any future caller within the same wave) does not skip Coding-targeted
+      // edges as "unknown target".
+      this.persistedEntityNames.add('Coding');
+      log(
+        `[WaveController] Coding Project anchor minted (cold-start) for runId=${runId}`,
+        'info',
+      );
+    } catch (err) {
+      process.stderr.write(
+        `[WaveController] ensureProjectAnchor failed (runId=${runId}): ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+      // Fail-soft: the anchor pass that follows will safely no-op for entities
+      // whose findBestParent returns null.
+    }
+  }
+
+  /**
    * Phase 42 Plan 06+07 — unconditional km-core write path.
    *
    * Iterates the wave-constraint-filtered entities + relationships and routes

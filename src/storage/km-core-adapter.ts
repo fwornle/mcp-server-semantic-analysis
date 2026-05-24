@@ -96,6 +96,20 @@ export interface KmCoreAdapter {
   getEntity(name: string, team: string): Promise<Entity | undefined>;
 
   /**
+   * Phase 42.1 INT-02 — list incoming relations for an entity (by name).
+   *
+   * Resolves `toName` to an EntityId via the name-scan + delegates to
+   * `store.findRelations({ to })`. Returns [] if the entity is not found
+   * (matches B's tolerant no-op pattern — the caller will treat absence as
+   * "no anchor known, proceed with insertion under storeRelationship try/catch").
+   *
+   * Used by wave-controller's post-sweep anchor pass to detect entities that
+   * already carry an incoming contains/parent-child edge from a previous
+   * wave-analysis run (Layer (b) of the two-layer idempotency check).
+   */
+  queryIncomingRelations(toName: string): Promise<Relation[]>;
+
+  /**
    * Delete one entity by name. If the entity is not found, returns silently
    * (matches B's no-op behavior at GraphDatabaseService.js:513-597).
    */
@@ -332,6 +346,19 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
   }
 
   // -------------------------------------------------------------------------
+  // queryIncomingRelations — Phase 42.1 INT-02
+  // -------------------------------------------------------------------------
+
+  async function queryIncomingRelations(toName: string): Promise<Relation[]> {
+    const target = await findEntityByName(toName);
+    if (!target) {
+      // Tolerant no-op — caller treats empty result as "no anchor known".
+      return [];
+    }
+    return store.findRelations({ to: target.id });
+  }
+
+  // -------------------------------------------------------------------------
   // Cold-path stubs — RESEARCH §3 closing recommendation
   // -------------------------------------------------------------------------
 
@@ -358,6 +385,7 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
     storeRelationship,
     getEntity,
     deleteEntity,
+    queryIncomingRelations,
     queryRelations,
     queryByOntologyClass,
     findRelated,

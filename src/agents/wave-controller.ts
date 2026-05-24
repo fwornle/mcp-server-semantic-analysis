@@ -2415,6 +2415,95 @@ export class WaveController {
       }
     }
 
+    // ---- Anchor pass (Phase 42.1 INT-02) ----
+    // Ported from persistence-agent.ts updateEntityRelationships post-sweep.
+    // Restores the contains-edge insertion the legacy persistence path performed
+    // after every batch; without this, wave-emitted entities arrive without any
+    // incoming contains/parent-child edge from a Component/SubComponent or the
+    // Coding Project root (forensic report 2026-05-24).
+    //
+    // Runs LAST so it can read the just-stored entities AND the just-stored
+    // relations. Two-layer idempotency check:
+    //   (a) in-wave Set of edges just stored (rel.to via 'contains'/'parent-child')
+    //   (b) km-core store query for existing incoming edges (second-run case)
+    // Layer (c) — km-core's addRelation is upsert-by-(from,to,type) — gives a
+    // third defense at the storage layer.
+    await this.ensureProjectAnchor(runId);
+
+    const alreadyAnchored = new Set<string>();
+
+    // Layer (a) — in-wave relations just stored above.
+    for (const rel of relationships) {
+      if (rel.type === 'contains' || rel.type === 'parent-child') {
+        alreadyAnchored.add(rel.to);
+      }
+    }
+
+    // Layer (b) — persisted store. Use the adapter's queryIncomingRelations
+    // (Phase 42.1 added). On adapter failure, fall through to the storeRelationship
+    // try/catch — duplicates are tolerated by km-core's upsert semantics.
+    for (const e of entities) {
+      if (alreadyAnchored.has(e.name)) continue;
+      try {
+        const inRels = await this.kmCoreAdapter.queryIncomingRelations(e.name);
+        if (inRels.some((r) => r.type === 'contains' || r.type === 'parent-child')) {
+          alreadyAnchored.add(e.name);
+        }
+      } catch {
+        // Adapter doesn't support the query OR it threw — fall through; the
+        // storeRelationship try/catch below absorbs duplicates.
+      }
+    }
+
+    // Walk the entities and insert a contains edge for every entity that needs one.
+    for (const e of entities) {
+      if (e.entityType === 'Project' || e.entityType === 'System') {
+        // These ARE the anchors / scaffolding; do NOT add incoming contains edges.
+        continue;
+      }
+      if (alreadyAnchored.has(e.name)) {
+        anchorEdgesSkipped += 1;
+        continue;
+      }
+      const parent = this.findBestParent(e.name, entities);
+      if (!parent) {
+        anchorEdgesSkipped += 1;
+        process.stderr.write(
+          `[WaveController] anchor pass: no parent found for ${e.name} (runId=${runId})\n`,
+        );
+        continue;
+      }
+      if (parent === e.name) {
+        // Pathological — self-named root. Guard defensively.
+        anchorEdgesSkipped += 1;
+        process.stderr.write(
+          `[WaveController] anchor pass: refusing self-edge for ${e.name} (runId=${runId})\n`,
+        );
+        continue;
+      }
+      try {
+        await this.kmCoreAdapter.storeRelationship(
+          parent,
+          e.name,
+          'contains',
+          { source: 'wave-analysis', runId },
+        );
+        anchorEdgesAdded += 1;
+      } catch (err) {
+        anchorEdgesFailed += 1;
+        process.stderr.write(
+          `[WaveController] anchor pass: storeRelationship failed for ${parent} -> ${e.name} (contains, runId=${runId}): ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    }
+
+    log(
+      `[WaveController] Project-anchor pass: added=${anchorEdgesAdded} skipped=${anchorEdgesSkipped} failed=${anchorEdgesFailed}`,
+      'info',
+    );
+
     return {
       entitiesStored,
       entityErrors,

@@ -2184,6 +2184,9 @@ export class WaveController {
       relationshipsStored: result.relationshipsStored,
       relationshipErrors: result.relationshipErrors,
       relationshipsSkipped: result.relationshipsSkipped,
+      anchorEdgesAdded: result.anchorEdgesAdded,
+      anchorEdgesFailed: result.anchorEdgesFailed,
+      anchorEdgesSkipped: result.anchorEdgesSkipped,
     });
 
     log(`[WaveController] Wave ${waveResult.wave} persistence complete`, 'info', {
@@ -2220,6 +2223,9 @@ export class WaveController {
     relationshipsStored: number;
     relationshipErrors: number;
     relationshipsSkipped: number;
+    anchorEdgesAdded: number;
+    anchorEdgesFailed: number;
+    anchorEdgesSkipped: number;
   }> {
     if (!this.kmCoreAdapter) {
       throw new Error('persistWithKmCore called without kmCoreAdapter bootstrapped');
@@ -2230,6 +2236,10 @@ export class WaveController {
     let relationshipsStored = 0;
     let relationshipErrors = 0;
     let relationshipsSkipped = 0;
+    // Phase 42.1 INT-02 — anchor-pass counters (wired into the post-sweep block by Task 4).
+    let anchorEdgesAdded = 0;
+    let anchorEdgesFailed = 0;
+    let anchorEdgesSkipped = 0;
 
     // ---- Entity sweep ----
     for (const e of entities) {
@@ -2302,6 +2312,9 @@ export class WaveController {
       relationshipsStored,
       relationshipErrors,
       relationshipsSkipped,
+      anchorEdgesAdded,
+      anchorEdgesFailed,
+      anchorEdgesSkipped,
     };
   }
 

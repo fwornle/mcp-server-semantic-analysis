@@ -2196,6 +2196,53 @@ export class WaveController {
   }
 
   /**
+   * Phase 42.1 INT-02 — find the best parent Component/SubComponent for an entity.
+   *
+   * Ported from `persistence-agent.ts:1043-1071` (Phase 42.1 — INT-02 anchor parity).
+   * DO NOT delete this method when persistence-agent.ts is retired in a follow-up phase —
+   * the post-sweep anchor pass in `persistWithKmCore` relies on it.
+   *
+   * Algorithm (mirror of persistence-agent.ts:1043-1071):
+   *   1. Filter to candidates whose entityType is Component or SubComponent.
+   *   2. Lowercase the target name; walk candidates.
+   *   3. If the target name (lowercased) contains the candidate name (lowercased) AND the
+   *      candidate name is longer than the current best match, prefer the candidate.
+   *      Ties broken toward SubComponent over Component (more specific).
+   *   4. Return the best match's name; otherwise fall back to 'Coding' (Project) if present.
+   *   5. Return null if no match AND no Coding project — caller decides to skip.
+   */
+  private findBestParent(entityName: string, allEntities: SharedMemoryEntity[]): string | null {
+    const candidates = allEntities.filter(
+      (e) => e.entityType === 'SubComponent' || e.entityType === 'Component',
+    );
+
+    const lowerName = entityName.toLowerCase();
+    let bestMatch: SharedMemoryEntity | null = null;
+    let bestLen = 0;
+
+    for (const c of candidates) {
+      const cLower = c.name.toLowerCase();
+      // Entity name contains the component/sub-component name
+      if (lowerName.includes(cLower) && cLower.length > bestLen) {
+        // Prefer SubComponent over Component (more specific)
+        if (!bestMatch || c.entityType === 'SubComponent' || cLower.length > bestLen) {
+          bestMatch = c;
+          bestLen = cLower.length;
+        }
+      }
+    }
+
+    // If a specific parent was found, use it. Otherwise fall back to "Coding" root.
+    if (bestMatch) return bestMatch.name;
+
+    // Check if 'Coding' project exists in allEntities
+    const codingProject = allEntities.find(
+      (e) => e.name === 'Coding' && e.entityType === 'Project',
+    );
+    return codingProject ? 'Coding' : null;
+  }
+
+  /**
    * Phase 42 Plan 06+07 — unconditional km-core write path.
    *
    * Iterates the wave-constraint-filtered entities + relationships and routes

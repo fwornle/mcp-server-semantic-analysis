@@ -65,6 +65,7 @@ const results = {
   sc3: { name: 'race-log (zero 0/0 race warnings)', status: 'unknown', detail: null },
   sc4: { name: 'dashboard terminal-state (status === completed)', status: 'unknown', detail: null },
   sc5: { name: 'registry (Component + Detail + SubComponent + Project loaded)', status: 'unknown', detail: null },
+  sc6: { name: 'project-anchor parity (zero in-phase orphans after wave-analysis)', status: 'unknown', detail: null },
 };
 
 // -----------------------------------------------------------------------
@@ -272,6 +273,92 @@ async function checkSC5() {
   }
 }
 
+/**
+ * SC#6 — Phase 42.1 project-anchor parity.
+ *
+ * Reads the graphology-serialized export at <DATA_DIR>/../exports/general.json
+ * and asserts that every IN-PHASE entity has at least one incoming
+ * contains/parent-child edge.
+ *
+ * IN-PHASE means:
+ *   - entityType ∉ {Project, System} — Project + System ARE the anchors
+ *   - legacyId?.id !== 'unknown'      — exclude the 802 pre-existing migrated
+ *                                       entities (Phase 42.1 CONTEXT.md
+ *                                       scope_fence: their back-fill is
+ *                                       deferred to Phase 42.2+)
+ *
+ * Export shape (committed; do NOT add r.to/r.from fallbacks — that hides bugs):
+ *   nodes: [{ key: <id>, attributes: { name, entityType, legacyId, ... } }]
+ *   edges: [{ key, source: <fromId>, target: <toId>,
+ *             attributes: { type: 'contains', ... } }]
+ */
+async function checkSC6() {
+  diag('SC#6: scanning IN-PHASE entities for missing project-anchor edges (entityType ∉ {Project,System} AND legacyId?.id !== "unknown" ⇒ ≥1 incoming contains/parent-child)');
+  try {
+    const exportPath = DATA_DIR.replace(/leveldb$/, 'exports') + '/general.json';
+    if (!existsSync(exportPath)) {
+      results.sc6.status = 'fail';
+      results.sc6.detail = `exports/general.json missing — cannot read graph: ${exportPath}`;
+      return;
+    }
+    const exportJson = JSON.parse(readFileSync(exportPath, 'utf8'));
+
+    if (!Array.isArray(exportJson.nodes) || !Array.isArray(exportJson.edges)) {
+      results.sc6.status = 'fail';
+      results.sc6.detail = 'exports/general.json missing nodes[] or edges[] — graphology shape expected';
+      return;
+    }
+
+    // Build incoming-anchor index by target node id.
+    const incomingAnchorOf = new Map();
+    for (const edge of exportJson.edges) {
+      const t = edge.attributes?.type;
+      if (t !== 'contains' && t !== 'parent-child') continue;
+      incomingAnchorOf.set(edge.target, (incomingAnchorOf.get(edge.target) || 0) + 1);
+    }
+
+    // Sweep IN-PHASE nodes only per CONTEXT.md scope_fence.
+    const orphans = [];
+    let inScopeTotal = 0;
+    let excludedLegacy = 0;
+    for (const node of exportJson.nodes) {
+      const attrs = node.attributes || {};
+      const etype = attrs.entityType || attrs.ontologyClass;
+      if (etype === 'Project' || etype === 'System') continue;
+      if (attrs.legacyId?.id === 'unknown') {
+        excludedLegacy += 1;
+        continue;
+      }
+      inScopeTotal += 1;
+      const hasAnchor = (incomingAnchorOf.get(node.key) || 0) > 0;
+      if (!hasAnchor) {
+        orphans.push({ id: node.key, name: attrs.name, entityType: etype });
+      }
+    }
+
+    if (orphans.length === 0) {
+      results.sc6.status = 'pass';
+      results.sc6.detail = {
+        inScopeEntities: inScopeTotal,
+        excludedLegacyEntities: excludedLegacy,
+        orphans: 0,
+        note: `Excluded ${excludedLegacy} pre-existing migrated entities (legacyId?.id === 'unknown') per CONTEXT.md scope_fence.`,
+      };
+    } else {
+      results.sc6.status = 'fail';
+      results.sc6.detail = {
+        inScopeEntities: inScopeTotal,
+        excludedLegacyEntities: excludedLegacy,
+        orphans: orphans.length,
+        sample: orphans.slice(0, 10),
+      };
+    }
+  } catch (err) {
+    results.sc6.status = 'fail';
+    results.sc6.detail = { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 async function main() {
   const store = await openStore();
   try {
@@ -280,6 +367,7 @@ async function main() {
     checkSC3();
     checkSC4();
     await checkSC5();
+    await checkSC6();
   } finally {
     try {
       await store.close();
@@ -296,6 +384,7 @@ async function main() {
     sc3: results.sc3.status,
     sc4: results.sc4.status,
     sc5: results.sc5.status,
+    sc6: results.sc6.status,
     detail: results,
     runAt: new Date().toISOString(),
   };

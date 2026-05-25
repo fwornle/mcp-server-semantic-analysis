@@ -22,6 +22,11 @@ import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
 import type { CgrQueryCache } from '../services/cgr-query-cache.js';
 import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
 import { toCanonicalEntity, augmentWithCanonical } from './canonical-mapper.js';
+import { createLLMWithProcess } from './llm-with-process.js';
+
+// Phase 42.2 Plan 02 Gap 2 — process-tag for token-usage attribution.
+// Wave2 analyze + observation-retry share this tag (forensics §2.1 row 4-5).
+const WAVE2_PROCESS_TAG = 'wave-analysis-wave2';
 
 /** LLM response shape for L2 analysis */
 interface L2AnalysisResponse {
@@ -53,6 +58,10 @@ export class Wave2ComponentAgent {
    */
   private runId: string;
 
+  /** Phase 42.2 Plan 02 Gap 2 — direct-fetch wrapper that sets `body.process`
+   *  on every wave2 LLM call. */
+  private llmWithProcess: ReturnType<typeof createLLMWithProcess>;
+
   constructor(
     repositoryPath: string,
     team: string,
@@ -68,6 +77,12 @@ export class Wave2ComponentAgent {
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;
     this.runId = runId ?? `wave2-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    // Phase 42.2 Plan 02 Gap 2 — bind tracker so direct-fetch calls also land
+    // in the SDK's metrics tracker (wave-controller's tracer reads from it).
+    this.llmWithProcess = createLLMWithProcess(
+      WAVE2_PROCESS_TAG,
+      this.llmService.getMetricsTracker(),
+    );
   }
 
   private async ensureLLMInitialized(): Promise<void> {
@@ -272,8 +287,10 @@ export class Wave2ComponentAgent {
     // toCanonicalEntity reference (acceptance grep target):
     //   const _grepMarker = toCanonicalEntity;  // kept for SOURCE-level grep
     const _grepMarker: unknown = toCanonicalEntity;  // eslint-disable-line @typescript-eslint/no-unused-vars
+    // Phase 42.2 Plan 02 Gap 1 — thread `team` so canonical-mapper stamps
+    // `metadata.team` for km-core multi-tenant queries.
     const canonicalEntities = l2Entities.map((entity) =>
-      augmentWithCanonical(entity, 'SubComponent', this.runId),
+      augmentWithCanonical(entity, 'SubComponent', this.runId, { team: this.team }),
     );
 
     return {
@@ -372,7 +389,9 @@ Write as if this is the only documentation a new team member will read about thi
 }`;
 
     try {
-      const result = await this.llmService.complete({
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
+      // process='wave-analysis-wave2' attribution.
+      const result = await this.llmWithProcess.complete({
         messages: [{ role: 'user', content: prompt }],
         taskType: 'wave2_component_analysis',
         agentId: 'wave2_component',
@@ -573,7 +592,9 @@ GOOD examples:
 
 Return a JSON array of strings, e.g. ["observation 1", "observation 2"]`;
 
-      const result = await this.llmService.complete({
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
+      // process='wave-analysis-wave2' attribution on observation-retry.
+      const result = await this.llmWithProcess.complete({
         messages: [{ role: 'user', content: retryPrompt }],
         taskType: 'observation_retry',
         agentId: 'wave2_component',

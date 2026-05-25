@@ -28,6 +28,13 @@ import type { CgrQueryCache } from '../services/cgr-query-cache.js';
 import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
 import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
 import { toCanonicalEntity, augmentWithCanonical } from './canonical-mapper.js';
+import { createLLMWithProcess } from './llm-with-process.js';
+
+// Phase 42.2 Plan 02 Gap 2 — process-tag for token-usage attribution.
+// Wave1 enrich + analyze + observation-retry all share this tag (forensics
+// report §2.1 row 1-3). The proxy reads `body.process` and stores it in
+// `.data/llm-proxy/token-usage.db` for operator per-step routing config.
+const WAVE1_PROCESS_TAG = 'wave-analysis-wave1';
 
 // ============================================================================
 // Wave1ProjectAgent
@@ -48,6 +55,12 @@ export class Wave1ProjectAgent {
    */
   private runId: string;
 
+  /** Phase 42.2 Plan 02 Gap 2 — direct-fetch wrapper that sets `body.process`
+   *  on every wave1 LLM call (the SDK's LLMService does not expose `process`).
+   *  Records into the same metrics tracker the SDK uses so trace
+   *  instrumentation (wave-controller.getDetailedCalls) is unaffected. */
+  private llmWithProcess: ReturnType<typeof createLLMWithProcess>;
+
   constructor(
     repositoryPath: string,
     team: string,
@@ -63,6 +76,12 @@ export class Wave1ProjectAgent {
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;
     this.runId = runId ?? `wave1-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    // Phase 42.2 Plan 02 Gap 2 — bind tracker so direct-fetch calls also land
+    // in the SDK's metrics tracker (wave-controller's tracer reads from it).
+    this.llmWithProcess = createLLMWithProcess(
+      WAVE1_PROCESS_TAG,
+      this.llmService.getMetricsTracker(),
+    );
   }
 
   private async ensureLLMInitialized(): Promise<void> {
@@ -245,7 +264,10 @@ ${cgrTagInstructions}
 Return a JSON object: { "observations": ["obs1", "obs2", ...] }
 IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
 
-          const enrichResult = await this.llmService.complete({
+          // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess so the
+          // proxy's token-usage telemetry attributes this call to
+          // process='wave-analysis-wave1' (no longer 'unknown').
+          const enrichResult = await this.llmWithProcess.complete({
             messages: [{ role: 'user', content: enrichPrompt }],
             taskType: 'semantic_analysis',
             agentId: 'wave1_project_enrich',
@@ -331,9 +353,12 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
     //
     // toCanonicalEntity reference (acceptance grep target):
     const _grepMarker: unknown = toCanonicalEntity;  // eslint-disable-line @typescript-eslint/no-unused-vars
+    // Phase 42.2 Plan 02 Gap 1 — thread `team` into the options bag so
+    // canonical-mapper stamps `metadata.team` for km-core multi-tenant queries.
+    // `this.team` is the workflow `parameters.team` injected at construction.
     const canonicalEntities = allEntities.map((entity) => {
       const ontologyClass = entity.level === 0 ? 'Project' : 'Component';
-      return augmentWithCanonical(entity, ontologyClass, this.runId);
+      return augmentWithCanonical(entity, ontologyClass, this.runId, { team: this.team });
     });
 
     return {
@@ -422,7 +447,9 @@ ANTI-HALLUCINATION RULES:
 IMPORTANT: Return ONLY the JSON object, no markdown code blocks or surrounding text.`;
 
     try {
-      const result = await this.llmService.complete({
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
+      // process='wave-analysis-wave1' attribution.
+      const result = await this.llmWithProcess.complete({
         messages: [{ role: 'user', content: prompt }],
         taskType: 'wave_component_analysis',
         agentId: 'wave1_project',
@@ -905,7 +932,9 @@ GOOD examples:
 
 Return a JSON array of strings, e.g. ["observation 1", "observation 2"]`;
 
-      const result = await this.llmService.complete({
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
+      // process='wave-analysis-wave1' attribution on observation-retry.
+      const result = await this.llmWithProcess.complete({
         messages: [{ role: 'user', content: retryPrompt }],
         taskType: 'observation_retry',
         agentId: 'wave1_project',

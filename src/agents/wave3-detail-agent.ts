@@ -20,6 +20,11 @@ import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
 import type { CgrQueryCache } from '../services/cgr-query-cache.js';
 import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
 import { toCanonicalEntity, augmentWithCanonical } from './canonical-mapper.js';
+import { createLLMWithProcess } from './llm-with-process.js';
+
+// Phase 42.2 Plan 02 Gap 2 — process-tag for token-usage attribution.
+// Wave3 discover + observation-retry share this tag (forensics §2.1 row 6-7).
+const WAVE3_PROCESS_TAG = 'wave-analysis-wave3';
 
 /** LLM response shape for L3 discovery */
 interface L3DiscoveryResponse {
@@ -45,6 +50,10 @@ export class Wave3DetailAgent {
    */
   private runId: string;
 
+  /** Phase 42.2 Plan 02 Gap 2 — direct-fetch wrapper that sets `body.process`
+   *  on every wave3 LLM call. */
+  private llmWithProcess: ReturnType<typeof createLLMWithProcess>;
+
   constructor(
     repositoryPath: string,
     team: string,
@@ -60,6 +69,12 @@ export class Wave3DetailAgent {
     this.cgrCache = cgrCache ?? null;
     this.cgrBuilder = cgrBuilder ?? null;
     this.runId = runId ?? `wave3-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    // Phase 42.2 Plan 02 Gap 2 — bind tracker so direct-fetch calls also land
+    // in the SDK's metrics tracker (wave-controller's tracer reads from it).
+    this.llmWithProcess = createLLMWithProcess(
+      WAVE3_PROCESS_TAG,
+      this.llmService.getMetricsTracker(),
+    );
   }
 
   private async ensureLLMInitialized(): Promise<void> {
@@ -249,8 +264,10 @@ export class Wave3DetailAgent {
     //
     // toCanonicalEntity reference (acceptance grep target):
     const _grepMarker: unknown = toCanonicalEntity;  // eslint-disable-line @typescript-eslint/no-unused-vars
+    // Phase 42.2 Plan 02 Gap 1 — thread `team` so canonical-mapper stamps
+    // `metadata.team` for km-core multi-tenant queries.
     const canonicalEntities = l3Entities.map((entity) =>
-      augmentWithCanonical(entity, 'Detail', this.runId),
+      augmentWithCanonical(entity, 'Detail', this.runId, { team: this.team }),
     );
 
     return {
@@ -367,7 +384,9 @@ Write as if this is the only documentation available about this detail.
 }`;
 
     try {
-      const result = await this.llmService.complete({
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
+      // process='wave-analysis-wave3' attribution.
+      const result = await this.llmWithProcess.complete({
         messages: [{ role: 'user', content: prompt }],
         taskType: 'wave3_detail_discovery',
         agentId: 'wave3_detail',
@@ -571,7 +590,9 @@ GOOD examples:
 
 Return a JSON array of strings, e.g. ["observation 1", "observation 2"]`;
 
-      const result = await this.llmService.complete({
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
+      // process='wave-analysis-wave3' attribution on observation-retry.
+      const result = await this.llmWithProcess.complete({
         messages: [{ role: 'user', content: retryPrompt }],
         taskType: 'observation_retry',
         agentId: 'wave3_detail',

@@ -75,6 +75,12 @@ export interface CanonicalMapperOptions {
    *  Production callers omit this (gets `new Date().toISOString()`); tests pass
    *  a fixed string to make assertions deterministic. */
   timestamp?: string;
+  /** Project/team identifier; stamped into `metadata.team` when set
+   *  (Phase 42.2 Plan 02 Gap 1 — restores the km-core multi-tenant attribution
+   *  signal that 42-06 dropped). Wave-agent callers thread this from
+   *  `this.team` (workflow `parameters.team`). Empty string is rejected
+   *  by the `length > 0` guard; omit the option to mean "no team". */
+  team?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +156,15 @@ export function toCanonicalEntity(
     descriptionSegments: [],
     legacyObservations: observations,
   };
+
+  // Phase 42.2 Plan 02 Gap 1 — stamp team identifier into metadata.team so
+  // km-core's per-team queries (`queryEntities({ team: 'coding' })`) match
+  // wave-emitted entities. The `length > 0` guard rejects empty-string and
+  // any non-string slip-through (the typeof check). Forensics report
+  // `report-42.2-00-canonical-emit.md` §1.3 locks this insertion point.
+  if (typeof options.team === 'string' && options.team.length > 0) {
+    baseMetadata.team = options.team;
+  }
 
   // Preserve significance + hierarchy fields in metadata (D-54 rows 5, 12-15).
   if (typeof raw.significance === 'number') baseMetadata.significance = raw.significance;

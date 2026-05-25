@@ -231,7 +231,7 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
 
   async function storeEntity(
     source: Record<string, unknown>,
-    _options: { team: string },
+    options: { team: string },
   ): Promise<{ id: string }> {
     const name = String(source.name ?? '');
     if (!name) throw new Error('km-core-adapter.storeEntity: entity.name is required');
@@ -261,6 +261,18 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
       ? (source.metadata as Record<string, unknown>)
       : {};
 
+    // Phase 42.2 Plan 02 Gap 4 — explicitly merge `team` from the options
+    // bag into the metadata literal. Defence-in-depth: the underscore-prefixed
+    // `_options` previously silently dropped the team value that wave-controller
+    // was already passing (`{ team: this.team }` at wave-controller.ts:2381).
+    // Forensics report `report-42.2-00-canonical-emit.md` §1.3 paragraph 2
+    // documents this leak; we close it here in addition to the canonical-mapper
+    // stamp (Gap 1) so both paths into km-core carry team consistently.
+    const teamFromOptions =
+      typeof options.team === 'string' && options.team.length > 0
+        ? options.team
+        : undefined;
+
     // Build the putEntity payload (id is minted by the store; createdAt /
     // updatedAt are stamped by the store on the strict path per D-31/D-32).
     const entity: Partial<Entity> & { name: string; entityType: string } = {
@@ -272,6 +284,14 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
       metadata: {
         ...sourceMetadata,
         subsystem: 'wave-analysis',
+        // Gap 4: prefer team from sourceMetadata when present (the
+        // canonical-mapper Gap 1 stamp), else fall back to the options bag.
+        ...(typeof (sourceMetadata as { team?: unknown }).team === 'string' &&
+        ((sourceMetadata as { team?: string }).team?.length ?? 0) > 0
+          ? { team: (sourceMetadata as { team: string }).team }
+          : teamFromOptions !== undefined
+          ? { team: teamFromOptions }
+          : {}),
         ...(typeof source.significance !== 'undefined' ? { significance: source.significance } : {}),
         ...(typeof source.source !== 'undefined' ? { source: source.source } : {}),
         // Operator-enriched fields ride along on metadata until Plan 5

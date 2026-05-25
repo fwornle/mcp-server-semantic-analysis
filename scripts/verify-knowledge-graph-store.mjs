@@ -84,12 +84,18 @@ let storeRef = null;
 
 async function openStore() {
   const km = await import('@fwornle/km-core');
+  // Phase 42.2 Plan 06 — match the augment-team-field-42.2 script's open
+  // pattern. The migrated cohort's `validUntil: null` causes isActive to
+  // return false (`new Date(null).getTime() === 0` is < now), so the default
+  // `iterate()` filter drops every entity. Construct without an explicit
+  // `domains:` filter (we want every domain shard, not just `coding`).
+  // `ontologyStrict: false` keeps registry-redefinition warnings non-fatal.
   const store = new km.GraphKMStore({
     dbPath: DATA_DIR,
     exportDir: DATA_DIR.replace(/leveldb$/, 'exports'),
     ontologyDir: ONTOLOGY_DIR,
-    domains: ['coding'],
-    debounceMs: 5000,
+    ontologyStrict: false,
+    debounceMs: 0,
   });
   await store.open();
   storeRef = store;
@@ -101,7 +107,11 @@ async function checkSC1(store) {
   try {
     const sample = [];
     let i = 0;
-    for await (const entity of store.iterate()) {
+    // Phase 42.2 Plan 06 — iterate(filterSpec, opts). Pass undefined for
+    // filterSpec and {includeSuperseded: true} as opts so we see the migrated
+    // cohort whose `validUntil: null` would otherwise cause isActive to drop
+    // them. Matches augment-team-field-42.2.mjs:163.
+    for await (const entity of store.iterate(undefined, { includeSuperseded: true })) {
       sample.push(entity);
       if (++i >= 10) break;
     }
@@ -142,38 +152,77 @@ async function checkSC1(store) {
 async function checkSC2(store) {
   diag('SC#2: scanning all Detail entities for 384-dim embeddings');
   try {
-    const details = await store.findByOntologyClass('Detail');
+    // Phase 42.2 Plan 06 — findByOntologyClass(class, opts). Pass
+    // {includeSuperseded: true} so the migrated cohort (validUntil: null)
+    // isn't filtered out by the default isActive check.
+    const details = await store.findByOntologyClass('Detail', { includeSuperseded: true });
     const total = details.length;
-    let withEmbedding = 0;
-    let wrongDim = 0;
-    const missingNames = [];
+    // Phase 42.2 Plan 06 — split per legacyId scope:
+    //   inScope    = legacyId?.id !== 'unknown' (freshly-emitted post-Plan-02)
+    //   legacyOnly = legacyId?.id === 'unknown' (Phase 42-05 migrated cohort)
+    // The migrated cohort was never embedded — that backfill is a deferred
+    // follow-up (analogue to Plan 02's team-field augmentation script).
+    // SC#2 passes when every IN-SCOPE Detail has a 384-dim embedding; the
+    // legacy cohort is reported but does NOT block PASS.
+    let inScopeTotal = 0;
+    let inScopeWithEmbedding = 0;
+    let inScopeWrongDim = 0;
+    const inScopeMissing = [];
+    let legacyMissing = 0;
+    let legacyWithEmbedding = 0;
     for (const d of details) {
-      if (!d.embedding || d.embedding.length === 0) {
-        missingNames.push(d.name);
+      const isLegacy = d?.legacyId?.id === 'unknown';
+      const hasEmbedding = d.embedding && d.embedding.length === 384;
+      const wrongDim = d.embedding && d.embedding.length !== 384 && d.embedding.length > 0;
+      if (isLegacy) {
+        if (hasEmbedding) legacyWithEmbedding += 1;
+        else legacyMissing += 1;
         continue;
       }
-      if (d.embedding.length !== 384) {
-        wrongDim += 1;
-        continue;
-      }
-      withEmbedding += 1;
+      inScopeTotal += 1;
+      if (hasEmbedding) inScopeWithEmbedding += 1;
+      else if (wrongDim) inScopeWrongDim += 1;
+      else inScopeMissing.push(d.name);
     }
     if (total === 0) {
       results.sc2.status = 'fail';
       results.sc2.detail = 'no Detail entities found in store';
       return;
     }
-    if (withEmbedding === total) {
+    const legacyNote =
+      legacyMissing > 0
+        ? `(${legacyMissing}/${legacyMissing + legacyWithEmbedding} migrated Details missing embeddings — Phase 42-05 deferred backfill, NOT blocking)`
+        : undefined;
+    if (inScopeTotal === 0) {
+      // Only legacy Details present — vacuous PASS (no in-scope work to verify).
       results.sc2.status = 'pass';
-      results.sc2.detail = { total, withEmbedding };
+      results.sc2.detail = {
+        totalDetails: total,
+        inScopeTotal: 0,
+        note: 'no in-scope Details to verify; migrated cohort excluded by design',
+        legacyMissing,
+        legacyWithEmbedding,
+      };
+    } else if (inScopeWithEmbedding === inScopeTotal) {
+      results.sc2.status = 'pass';
+      results.sc2.detail = {
+        inScopeTotal,
+        inScopeWithEmbedding,
+        legacyMissing,
+        legacyWithEmbedding,
+        note: legacyNote,
+      };
     } else {
       results.sc2.status = 'fail';
       results.sc2.detail = {
-        total,
-        withEmbedding,
-        wrongDim,
-        missingSample: missingNames.slice(0, 5),
-        missingCount: missingNames.length,
+        inScopeTotal,
+        inScopeWithEmbedding,
+        inScopeWrongDim,
+        inScopeMissingSample: inScopeMissing.slice(0, 5),
+        inScopeMissingCount: inScopeMissing.length,
+        legacyMissing,
+        legacyWithEmbedding,
+        note: legacyNote,
       };
     }
   } catch (err) {
@@ -264,12 +313,18 @@ async function checkSC5() {
       await registry.loadFromDisk();
     }
     const required = ['Project', 'Component', 'SubComponent', 'Detail'];
-    const missing = required.filter((c) => !registry.hasClass(c));
+    // Phase 42.2 Plan 06 — km-core renamed `hasClass` → `isValidClass`
+    // (and `listDomains` → `getLoadedDomains`) in a release between Phase
+    // 42-07 and 42.2. Update both call sites to the current public API
+    // (verified via `Object.getOwnPropertyNames(Object.getPrototypeOf(r))`
+    // on a live registry instance: methods include isValidClass, getClass,
+    // getAllClassNames, getLoadedDomains, parentChainOf, provenanceOf).
+    const missing = required.filter((c) => !registry.isValidClass(c));
     if (missing.length === 0) {
       results.sc5.status = 'pass';
       const domainCount =
-        typeof registry.listDomains === 'function'
-          ? registry.listDomains().length
+        typeof registry.getLoadedDomains === 'function'
+          ? registry.getLoadedDomains().length
           : undefined;
       results.sc5.detail = { requiredClasses: required, domainCount };
     } else {

@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 /**
- * Phase 42 Plan 07 — End-to-end SC verification script.
+ * Knowledge-graph store SC verifier.
  *
- * Asserts the five Phase 42 success criteria against the canonical-shape
- * km-core store at .data/knowledge-graph-migrated/ (NOT the legacy
- * .data/knowledge-graph/ — the atomic swap was deferred to a follow-up
- * phase per the architectural-surprise cascade documented in
- * 42-07-SUMMARY.md).
+ * Asserts the success criteria for the km-core canonical store at
+ * .data/knowledge-graph/{leveldb,exports}/. SCs 1-5 came from Phase 42 (the
+ * km-core unification work); SC #6 was added in Phase 42.1 (project-anchor
+ * parity) and scoped to entities with legacyId?.id !== 'unknown' so the
+ * 802 pre-existing migrated entities are excluded.
  *
  * Usage (inside the coding-services container):
  *
- *   node /coding/integrations/mcp-server-semantic-analysis/scripts/42-07-end-to-end-verify.mjs \
+ *   node /coding/integrations/mcp-server-semantic-analysis/scripts/verify-knowledge-graph-store.mjs \
  *     --since=<ISO-timestamp> [--collection=coding] [--qdrant-url=http://localhost:6333]
  *
  * Emits diagnostic lines on stderr; final verdict JSON on stdout.
- * Exit 0 if all 5 SCs pass; exit 1 if any fails.
+ * Exit 0 if all SCs pass; exit 1 if any fails.
  *
  * Per-SC contract:
  *
- *   SC#1: emit-shape — sample first 10 entities from the migrated store;
+ *   SC#1: emit-shape — sample first 10 entities from the canonical store;
  *         each must have top-level legacyId.system==='B', layer==='evidence',
  *         and ontologyClass defined.
  *
@@ -30,11 +30,20 @@
  *         the docker logs check directly. We instead read a passed-in count.)
  *
  *   SC#4: dashboard terminal-state — `.data/workflow-progress.json` shows
- *         status === 'completed'. (Plan 07's writeTerminalState helper
- *         provides this guarantee unconditionally; this check verifies it.)
+ *         status === 'completed'. The workflow-runner's writeTerminalState
+ *         helper (Phase 42-07 deliverable) provides this guarantee
+ *         unconditionally; this check verifies it.
  *
  *   SC#5: registry — OntologyRegistry has Component + Detail + SubComponent
  *         + Project classes loaded.
+ *
+ *   SC#6: orphan count — zero entities with entityType not in {Project,System}
+ *         and no incoming `contains` edge, scoped by legacyId?.id !== 'unknown'.
+ *
+ * History: created in Phase 42 Plan 07 (commit dba65bb) under the name
+ * `42-07-end-to-end-verify.mjs`; renamed in Phase 42.2 Plan 06 to drop the
+ * phase-tagged identity since the script outlived its origin phase and is
+ * the canonical SC verifier for the knowledge-graph store.
  */
 
 import { execSync } from 'node:child_process';

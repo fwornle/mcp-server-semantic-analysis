@@ -94,8 +94,31 @@ export interface LLMWithProcessResponse {
   latencyMs: number;
 }
 
-const DEFAULT_PROXY_URL = 'http://localhost:3033/api/complete';
+// Phase 42.2 Plan 06 follow-up — port 3033 is the health-API, NOT the LLM
+// proxy. The real rapid-llm-proxy `/api/complete` endpoint is served by the
+// `rapid-llm-proxy` daemon at port 12435 (host) reached from inside the
+// coding-services container via `host.docker.internal`. The container is
+// pre-configured with the `LLM_CLI_PROXY_URL=http://host.docker.internal:12435`
+// env var by docker/docker-compose.yml.
+//
+// Resolution order matches the SDK's `cli-provider-base.ts` convention:
+//   1. RAPID_LLM_PROXY_URL (explicit override for this wrapper)
+//   2. LLM_CLI_PROXY_URL (container/host-wide env, set in docker-compose.yml)
+//   3. LLM_PROXY_URL (alternate name used by `proxy-provider.ts`)
+//   4. `http://localhost:<LLM_CLI_PROXY_PORT>` (port-only override; default 12435)
+//
+// Every consumer URL gets `/api/complete` appended exactly once.
+const DEFAULT_PROXY_PORT = '12435';
 const DEFAULT_TIMEOUT_MS = 60_000;
+
+function resolveProxyCompleteUrl(): string {
+  const explicit =
+    process.env.RAPID_LLM_PROXY_URL ??
+    process.env.LLM_CLI_PROXY_URL ??
+    process.env.LLM_PROXY_URL;
+  const base = explicit ?? `http://localhost:${process.env.LLM_CLI_PROXY_PORT ?? DEFAULT_PROXY_PORT}`;
+  return base.endsWith('/api/complete') ? base : `${base.replace(/\/+$/, '')}/api/complete`;
+}
 
 /**
  * Call the rapid-llm-proxy `/api/complete` endpoint with an explicit `process`
@@ -112,7 +135,7 @@ export async function llmWithProcessComplete(
   request: LLMWithProcessRequest,
   metricsTracker?: MetricsTrackerLike,
 ): Promise<LLMWithProcessResponse> {
-  const url = process.env.RAPID_LLM_PROXY_URL ?? DEFAULT_PROXY_URL;
+  const url = resolveProxyCompleteUrl();
   const timeoutMs = request.timeout ?? DEFAULT_TIMEOUT_MS;
 
   // Body honors the CLAUDE.md `/api/complete` shape exactly:

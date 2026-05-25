@@ -8,14 +8,21 @@ import { WebSearchAgent } from "./web-search.js";
 import { InsightGenerationAgent } from "./insight-generation-agent.js";
 import { ObservationGenerationAgent, StructuredObservation } from "./observation-generation-agent.js";
 import { QualityAssuranceAgent } from "./quality-assurance-agent.js";
-import { PersistenceAgent } from "./persistence-agent.js";
 import { DeduplicationAgent } from "./deduplication.js";
 import { ContentValidationAgent } from "./content-validation-agent.js";
 import { OntologyClassificationAgent } from "./ontology-classification-agent.js";
 import { CodeGraphAgent } from "./code-graph-agent.js";
 import { DocumentationLinkerAgent } from "./documentation-linker-agent.js";
 import { HierarchyClassifierAgent } from "./hierarchy-classifier.js";
-import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
+// Phase 42.2 Plan 04 — legacy persistence trio retired.
+// PersistenceAgent + GraphDatabaseAdapter deleted; consumer call sites
+// rewired to the km-core adapter (Phase 42-01 strangler surface).
+import { createKmCoreAdapter, type KmCoreAdapter } from "../storage/km-core-adapter.js";
+import {
+  saveSuccessfulWorkflowCompletion as saveCompletionMarker,
+  linkInsightDocuments as linkInsightsViaAdapter,
+  exportKnowledgeToJSON,
+} from "../storage/legacy-consumer-helpers.js";
 import { WorkflowReportAgent, type StepReport } from "./workflow-report-agent.js";
 import { loadAllWorkflows, loadWorkflowFromYAML, getConfigDir, loadOrchestratorConfig } from "../utils/workflow-loader.js";
 import { BatchScheduler, getBatchScheduler, type BatchWindow, type BatchStats } from "./batch-scheduler.js";
@@ -225,7 +232,11 @@ export class CoordinatorAgent {
   private running: boolean = true;
   private repositoryPath: string;
   private team: string;
-  private graphDB: GraphDatabaseAdapter;
+  // Phase 42.2 Plan 04 — km-core adapter replaces the legacy GraphDatabaseAdapter.
+  // Constructed lazily inside doInitializeAgents() so we can use the same
+  // GraphKMStore bootstrap path as wave-controller.ts (matching dbPath +
+  // ontologyDir + exportDir).
+  private adapter: KmCoreAdapter | null = null;
   private initializationPromise: Promise<void> | null = null;
   private isInitializing: boolean = false;
   private monitorIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -236,7 +247,11 @@ export class CoordinatorAgent {
   constructor(repositoryPath: string = '.', team: string = 'coding') {
     this.repositoryPath = repositoryPath;
     this.team = team;
-    this.graphDB = new GraphDatabaseAdapter();
+    // Phase 42.2 Plan 04 — km-core adapter bootstrapped lazily during
+    // doInitializeAgents() so we can `await store.open()` (which the
+    // constructor cannot do synchronously). this.adapter starts null and
+    // is assigned before the first agent that needs it (PersistenceAgent
+    // and ContentValidationAgent wiring at line ~1706).
     this.reportAgent = new WorkflowReportAgent(repositoryPath);
     const orchConfig = loadOrchestratorConfig().orchestrator;
     this.smartOrchestrator = createSmartOrchestrator({
@@ -1630,7 +1645,7 @@ export class CoordinatorAgent {
     }
 
     // Already initialized
-    if (this.agents.size > 0 && this.graphDB.initialized) {
+    if (this.agents.size > 0 && this.adapter !== null) {
       log("Agents already initialized, skipping", "debug");
       return;
     }
@@ -1661,14 +1676,36 @@ export class CoordinatorAgent {
 
   private async doInitializeAgents(): Promise<void> {
     try {
-      log("Initializing 10-agent semantic analysis system with GraphDB", "info");
+      log("Initializing 10-agent semantic analysis system with km-core adapter", "info");
 
       // Set the repository path for SemanticAnalyzer mock mode detection
       SemanticAnalyzer.setRepositoryPath(this.repositoryPath);
 
-      // Initialize the graph database adapter
-      await this.graphDB.initialize();
-      log("GraphDB initialized successfully", "info");
+      // Phase 42.2 Plan 04 — bootstrap the km-core adapter (replaces the
+      // legacy GraphDatabaseAdapter). Mirrors the wave-controller.ts
+      // construction path at lines ~510-525 — same dbPath / ontologyDir /
+      // exportDir / domains, so both readers see the same canonical store.
+      try {
+        const km = await import('@fwornle/km-core');
+        const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'leveldb');
+        const exportDir = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'exports');
+        const ontologyDir = path.join(this.repositoryPath, '.data', 'ontologies');
+        const store = new km.GraphKMStore({
+          dbPath,
+          exportDir,
+          ontologyDir,
+          domains: [this.team],
+          debounceMs: 5000,
+        });
+        await store.open();
+        this.adapter = createKmCoreAdapter({ store, team: this.team });
+        log('km-core adapter initialized', 'info', { dbPath, exportDir, ontologyDir });
+      } catch (e) {
+        log('km-core adapter bootstrap failed (fatal — no legacy fallback)', 'error', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+        throw e;
+      }
 
       // Core workflow agents
       const gitHistoryAgent = new GitHistoryAgent(this.repositoryPath);
@@ -1700,14 +1737,19 @@ export class CoordinatorAgent {
       const qualityAssuranceAgent = new QualityAssuranceAgent();
       this.agents.set("quality_assurance", qualityAssuranceAgent);
 
-      // Initialize PersistenceAgent with GraphDB adapter
-      // NOTE: No initializeOntology() — persistence does NOT classify entities.
-      // Classification is handled by the upstream classify_with_ontology step.
-      const persistenceAgent = new PersistenceAgent(this.repositoryPath, this.graphDB);
-      this.agents.set("persistence", persistenceAgent);
+      // Phase 42.2 Plan 04 — register the km-core adapter under the "persistence"
+      // key. Downstream consumers (post-workflow checkpoint marker, insight
+      // linking, JSON export, rollback removeEntity) call adapter methods
+      // directly via `agents.get('persistence')` casting to KmCoreAdapter.
+      // The legacy PersistenceAgent class was deleted in this plan; its
+      // file-system-heavy helpers were ported to legacy-consumer-helpers.ts.
+      if (!this.adapter) {
+        throw new Error('km-core adapter not bootstrapped before agent registration');
+      }
+      this.agents.set("persistence", this.adapter);
 
-      // SynchronizationAgent REMOVED - GraphDatabaseService handles persistence automatically
-      // Direct persistence to Graphology+LevelDB via PersistenceAgent
+      // SynchronizationAgent REMOVED - km-core handles persistence atomically.
+      // Direct persistence to km-core canonical store via wave-controller.
 
       const dedupAgent = new DeduplicationAgent();
       this.agents.set("deduplication", dedupAgent);
@@ -1718,14 +1760,19 @@ export class CoordinatorAgent {
         enableDeepValidation: true,
         team: this.team
       });
-      contentValidationAgent.setGraphDB(this.graphDB);
-      contentValidationAgent.setPersistenceAgent(persistenceAgent);
+      contentValidationAgent.setKmCoreAdapter(this.adapter);
       contentValidationAgent.setInsightGenerationAgent(insightGenerationAgent);
       this.agents.set("content_validation", contentValidationAgent);
 
-      // Register other agents with deduplication for access to knowledge graph
-      dedupAgent.registerAgent("knowledge_graph", persistenceAgent);
-      dedupAgent.registerAgent("persistence", persistenceAgent);
+      // Phase 42.2 Plan 04 — DeduplicationAgent registration retired.
+      // The dedup agent's `knowledge_graph` slot expected PersistenceAgent's
+      // `getSharedMemory()` / `.entities` Map surface, which km-core does
+      // not expose. With the wave-controller path replacing the legacy
+      // batch-analysis dedup (Phase 42-06 D-50a), no live caller invokes
+      // `dedupAgent.detectDuplicates()` through the coordinator anymore.
+      // Leaving the registration out is a deliberate behavior change; the
+      // dedup agent's setKmCoreStore(...) injector (Phase 42-06) is the
+      // forward-compatible path.
 
       // Code Graph Agent for AST-based code analysis (integrates with code-graph-rag)
       // Compute the code-graph-rag directory - it's in the coding repo's integrations folder
@@ -2138,10 +2185,18 @@ export class CoordinatorAgent {
       // Save successful workflow completion checkpoint ONLY if there were actual content changes
       if (hasContentChanges) {
         try {
-          const persistenceAgent = this.agents.get('persistence') as PersistenceAgent;
-          if (persistenceAgent && persistenceAgent.saveSuccessfulWorkflowCompletion) {
-            await persistenceAgent.saveSuccessfulWorkflowCompletion(workflowName, execution.endTime);
+          // Phase 42.2 Plan 04 — file-only operator marker (no graph mutation).
+          // Replaces PersistenceAgent.saveSuccessfulWorkflowCompletion which
+          // wrote to the legacy shared-memory.json.
+          const completionResult = await saveCompletionMarker(
+            this.repositoryPath,
+            workflowName,
+            execution.endTime,
+          );
+          if (completionResult.success) {
             log('Workflow completion checkpoint saved (content changes detected)', 'info', { workflow: workflowName });
+          } else {
+            log('Workflow completion checkpoint write returned error', 'warning', { errors: completionResult.errors });
           }
         } catch (checkpointError) {
           log('Failed to save workflow completion checkpoint', 'warning', checkpointError);
@@ -4126,8 +4181,11 @@ export class CoordinatorAgent {
       }
 
       // Post-insight: Link insight documents to entities in the knowledge graph
-      const persistenceAgentForLinking = this.agents.get('persistence') as PersistenceAgent | undefined;
-      if (persistenceAgentForLinking) {
+      // Phase 42.2 Plan 04 — adapter now backs the "persistence" slot; the
+      // file-system-heavy linkInsightDocuments helper was ported to
+      // legacy-consumer-helpers.ts.
+      const adapterForLinking = this.agents.get('persistence') as KmCoreAdapter | undefined;
+      if (adapterForLinking) {
         try {
           const linkStartTime = new Date();
           const team = parameters.team || this.team;
@@ -4139,7 +4197,7 @@ export class CoordinatorAgent {
             batchId: 'finalization-link-insights'
           });
 
-          const linkResult = await persistenceAgentForLinking.linkInsightDocuments({ team, insightDir });
+          const linkResult = await linkInsightsViaAdapter(adapterForLinking, { team, insightDir });
           const linkEndTime = new Date();
 
           execution.results['link_insight_docs'] = this.wrapWithTiming(linkResult, linkStartTime, linkEndTime);
@@ -4213,17 +4271,24 @@ export class CoordinatorAgent {
       }
 
       // Export knowledge base to JSON for git tracking
+      // Phase 42.2 Plan 04 — exportKnowledgeToJSON helper iterates the
+      // km-core store via the adapter and writes the snapshot. Replaces the
+      // legacy GraphDatabaseAdapter.exportToJSON path.
       try {
-        const persistenceAgent = this.agents.get('persistence') as PersistenceAgent;
-        if (persistenceAgent && (persistenceAgent as any).graphDB) {
+        const adapterForExport = this.agents.get('persistence') as KmCoreAdapter | undefined;
+        if (adapterForExport) {
           const exportPath = path.join(
             parameters.repositoryPath || this.repositoryPath,
             '.data',
             'knowledge-export',
             `${parameters.team || this.team}.json`
           );
-          await (persistenceAgent as any).graphDB.exportToJSON(exportPath);
-          log('Knowledge base exported to JSON', 'info', { exportPath });
+          const exportResult = await exportKnowledgeToJSON(
+            adapterForExport,
+            exportPath,
+            parameters.team || this.team,
+          );
+          log('Knowledge base exported to JSON', 'info', { exportPath: exportResult.path, entities: exportResult.entitiesExported });
         }
       } catch (exportError) {
         log('Failed to export knowledge base to JSON (non-critical)', 'warning', {
@@ -4570,10 +4635,12 @@ export class CoordinatorAgent {
             break;
             
           case 'entity_created':
-            // Remove entity from shared memory (requires persistence agent)
-            const persistenceAgent = this.agents.get('persistence');
-            if (persistenceAgent && typeof persistenceAgent.removeEntity === 'function') {
-              await persistenceAgent.removeEntity(action.target);
+            // Phase 42.2 Plan 04 — rollback uses adapter.deleteEntity directly.
+            // Legacy PersistenceAgent.removeEntity is gone; deleteEntity has
+            // the same no-op-on-missing semantics that the rollback relied on.
+            const adapterForRollback = this.agents.get('persistence') as KmCoreAdapter | undefined;
+            if (adapterForRollback) {
+              await adapterForRollback.deleteEntity(action.target, this.team);
               log(`Rollback: Removed entity ${action.target}`, 'info');
             }
             break;
@@ -5208,12 +5275,14 @@ Expected locations for generated files:
       this.monitorIntervalId = null;
     }
 
-    // Close graph database connection
+    // Close graph database connection (Phase 42.2 Plan 04 — km-core adapter)
     try {
-      await this.graphDB.close();
-      log("GraphDB connection closed", "info");
+      if (this.adapter) {
+        await this.adapter.close();
+        log("km-core adapter closed", "info");
+      }
     } catch (error) {
-      log("Failed to close GraphDB connection", "error", error);
+      log("Failed to close km-core adapter", "error", error);
     }
 
     // Clear agents

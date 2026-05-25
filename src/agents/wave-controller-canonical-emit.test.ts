@@ -232,13 +232,17 @@ describe('Phase 42 Plan 06 — wave-controller persistWithKmCore + dedup rewire 
   });
 
   // -------------------------------------------------------------------------
-  // Test 8 (Phase 42 Plan 07 Phase B1 rewrite): the KM_CORE_PERSISTENCE flag
-  // has been removed; the legacy persistenceAgent.persistEntities branch was
-  // deleted from wave-controller.ts. Assert the inverse:
+  // Test 8 (Phase 42 Plan 07 Phase B1 rewrite + Phase 42.2 Plan 04 update):
+  // the KM_CORE_PERSISTENCE flag has been removed; the legacy
+  // persistenceAgent.persistEntities branch was deleted from wave-controller.ts;
+  // the SharedMemoryEntity type-only import has been MOVED to
+  // ../types/shared-memory-types.js (the persistence-agent.ts source file
+  // was deleted in Phase 42.2 Plan 04). Assert:
   //   - wave-controller.ts has NO `getPersistenceBackend` reference.
   //   - wave-controller.ts has NO `persistenceAgent.persistEntities` call site.
   //   - wave-controller.ts no longer imports PersistenceAgent as a runtime
-  //     class (the SharedMemoryEntity type-only import is allowed).
+  //     class AND no longer imports anything from the retired
+  //     persistence-agent module (Phase 42.2 Plan 04 grep gate).
   // -------------------------------------------------------------------------
   it('Test 8: KM_CORE_PERSISTENCE flag + legacy persistEntities path removed from wave-controller.ts', () => {
     const src = readWaveControllerSource();
@@ -256,6 +260,17 @@ describe('Phase 42 Plan 06 — wave-controller persistWithKmCore + dedup rewire 
       src,
       /^import\s+\{[^}]*\bPersistenceAgent\b[^}]*\}/m,
       'wave-controller must not import PersistenceAgent as a runtime symbol',
+    );
+    // Phase 42.2 Plan 04 grep-gate parity: no import from the retired trio.
+    assert.doesNotMatch(
+      src,
+      /^import[^;]*from\s+['"][^'"]*persistence-agent['"]/m,
+      'wave-controller must have no `import ... from "...persistence-agent..."` line',
+    );
+    assert.doesNotMatch(
+      src,
+      /^import[^;]*from\s+['"][^'"]*graph-database-adapter['"]/m,
+      'wave-controller must have no `import ... from "...graph-database-adapter..."` line',
     );
   });
 

@@ -33,6 +33,8 @@
  * top-level Entity (NOT inside metadata). The adapter respects this.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import type {
   Entity,
   Relation,
@@ -46,6 +48,29 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface KmCoreAdapter {
+  /**
+   * Phase 42.2 Plan 04 — legacy compatibility surface.
+   *
+   * The legacy `GraphDatabaseAdapter` exposed `.initialize()` (which opened
+   * the LevelDB store) and `.initialized` (a boolean flag). km-core's
+   * `GraphKMStore` opens the store at construction time, so `initialize`
+   * is a no-op and `initialized` always returns true. The members are
+   * retained for drop-in compatibility with the rewired consumer call sites
+   * in coordinator.ts / tools.ts / content-validation-agent.ts.
+   */
+  initialize(): Promise<void>;
+  readonly initialized: boolean;
+
+  /**
+   * Phase 42.2 Plan 04 — legacy compatibility surface.
+   * Legacy `GraphDatabaseAdapter.close()` closed the LevelDB handle. km-core
+   * stores are managed by the caller (the wave-controller / tools handler
+   * owns the GraphKMStore lifecycle); this method is a no-op forwarded to
+   * the underlying store if the store exposes one. Retained for drop-in
+   * compatibility.
+   */
+  close(): Promise<void>;
+
   /**
    * Operator-enriched bulk write — phase 10 anchor.
    *
@@ -115,6 +140,49 @@ export interface KmCoreAdapter {
    */
   deleteEntity(name: string, team: string, options?: Record<string, unknown>): Promise<void>;
 
+  /**
+   * Phase 42.2 Plan 04 — port of the legacy
+   * `PersistenceAgent.renameEntity(...)` semantics, decomposed into km-core
+   * primitives. Order honors threat model T-42.2-04-01 (get → store(new) →
+   * delete(old) — new exists before old is removed so no window of absence).
+   *
+   * Migrates entity files (insight markdown, PUML, PNG) when migrateFiles
+   * is true (default). File migration is best-effort and matches the legacy
+   * helper's behavior at persistence-agent.ts:3175-3232.
+   */
+  renameEntity(params: {
+    oldName: string;
+    newName: string;
+    team: string;
+    migrateFiles?: boolean;
+    insightsDir?: string;
+  }): Promise<{
+    success: boolean;
+    migratedFiles: string[];
+    deletedFiles: string[];
+    details: string;
+  }>;
+
+  /**
+   * Phase 42.2 Plan 04 — port of the legacy
+   * `PersistenceAgent.updateEntityObservations(...)` semantics. Loads the
+   * entity, filters out observations matched by `removeObservations`
+   * (substring match for flexibility, matching legacy behavior),
+   * appends `newObservations`, and writes back via `mergeAttributes`.
+   */
+  updateEntityObservations(params: {
+    entityName: string;
+    team: string;
+    removeObservations: string[];
+    newObservations?: Array<string | { content: string; type?: string; metadata?: Record<string, unknown> }>;
+  }): Promise<{
+    success: boolean;
+    updatedEntity: Entity | null;
+    removedCount: number;
+    addedCount: number;
+    details: string;
+  }>;
+
   // Cold-path stubs — throw NotImplementedError. Fill in when a caller appears.
   queryRelations(options?: Record<string, unknown>): Promise<never>;
   queryByOntologyClass(options?: Record<string, unknown>): Promise<never>;
@@ -178,6 +246,91 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
   async function resolveByNodeId(nodeId: string): Promise<Entity | undefined> {
     const name = nodeId.includes(':') ? nodeId.split(':').slice(1).join(':') : nodeId;
     return findEntityByName(name);
+  }
+
+  /**
+   * File-rename helper for `renameEntity` — ports the legacy
+   * `PersistenceAgent.migrateEntityFiles(...)` logic to a free function.
+   * Best-effort; returns {migrated, deleted} arrays.
+   */
+  function migrateLegacyEntityFiles(
+    oldName: string,
+    newName: string,
+    insightsDir: string,
+  ): { migrated: string[]; deleted: string[] } {
+    const result = { migrated: [] as string[], deleted: [] as string[] };
+    const pumlDir = path.join(insightsDir, 'puml');
+    const imagesDir = path.join(insightsDir, 'images');
+
+    const toKebabCase = (s: string): string =>
+      s
+        .replace(/([a-z])([A-Z])/g, '$1-$2')
+        .replace(/[\s_]+/g, '-')
+        .toLowerCase();
+
+    const oldKebab = toKebabCase(oldName);
+    const newKebab = toKebabCase(newName);
+
+    // Migrate insight markdown
+    const oldInsightPath = path.join(insightsDir, `${oldName}.md`);
+    const newInsightPath = path.join(insightsDir, `${newName}.md`);
+    if (fs.existsSync(oldInsightPath)) {
+      fs.renameSync(oldInsightPath, newInsightPath);
+      result.migrated.push(newInsightPath);
+      result.deleted.push(oldInsightPath);
+    }
+
+    // Migrate PUML files (kebab-prefix match)
+    if (fs.existsSync(pumlDir)) {
+      const pumlFiles = fs
+        .readdirSync(pumlDir)
+        .filter((f) => f.startsWith(`${oldKebab}-`));
+      for (const f of pumlFiles) {
+        const oldPath = path.join(pumlDir, f);
+        const newPath = path.join(pumlDir, f.replace(oldKebab, newKebab));
+        fs.renameSync(oldPath, newPath);
+        result.migrated.push(newPath);
+        result.deleted.push(oldPath);
+      }
+    }
+
+    // Migrate PNG files (kebab-prefix match)
+    if (fs.existsSync(imagesDir)) {
+      const pngFiles = fs
+        .readdirSync(imagesDir)
+        .filter((f) => f.startsWith(`${oldKebab}-`));
+      for (const f of pngFiles) {
+        const oldPath = path.join(imagesDir, f);
+        const newPath = path.join(imagesDir, f.replace(oldKebab, newKebab));
+        fs.renameSync(oldPath, newPath);
+        result.migrated.push(newPath);
+        result.deleted.push(oldPath);
+      }
+    }
+
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
+  // initialize / close / initialized — Phase 42.2 Plan 04 compat shims
+  //
+  // The legacy GraphDatabaseAdapter exposed these for the LevelDB handle
+  // lifecycle. km-core's GraphKMStore opens the store at construction time,
+  // so initialize is a no-op and initialized is always true. close forwards
+  // to store.close() if the store exposes one (it currently does not as of
+  // km-core 0.1.x, so close is also effectively a no-op).
+  // -------------------------------------------------------------------------
+
+  async function initialize(): Promise<void> {
+    // No-op — km-core opens at construction time.
+  }
+
+  async function close(): Promise<void> {
+    // No-op — caller owns store lifecycle.
+    const maybeClose = (store as unknown as { close?: () => Promise<void> }).close;
+    if (typeof maybeClose === 'function') {
+      await maybeClose.call(store);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -366,6 +519,175 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
   }
 
   // -------------------------------------------------------------------------
+  // renameEntity — Phase 42.2 Plan 04
+  // -------------------------------------------------------------------------
+
+  async function renameEntity(params: {
+    oldName: string;
+    newName: string;
+    team: string;
+    migrateFiles?: boolean;
+    insightsDir?: string;
+  }): Promise<{
+    success: boolean;
+    migratedFiles: string[];
+    deletedFiles: string[];
+    details: string;
+  }> {
+    const migrateFiles = params.migrateFiles ?? true;
+    const result = {
+      success: false,
+      migratedFiles: [] as string[],
+      deletedFiles: [] as string[],
+      details: '',
+    };
+
+    // Step 1: Load existing entity
+    const existing = await findEntityByName(params.oldName);
+    if (!existing) {
+      result.details = `Entity '${params.oldName}' not found`;
+      return result;
+    }
+
+    // Step 2: Write the new-named entity FIRST (T-42.2-04-01 mitigation —
+    // new exists before old is deleted, so there is no window of absence).
+    const oldMetadata = (existing.metadata ?? {}) as Record<string, unknown>;
+    const newSource: Record<string, unknown> = {
+      name: params.newName,
+      entityType: existing.entityType,
+      ontologyClass: existing.ontologyClass,
+      description: existing.description,
+      observations: [],
+      metadata: {
+        ...oldMetadata,
+        renamedFrom: params.oldName,
+        renamedAt: new Date().toISOString(),
+      },
+    };
+
+    try {
+      await storeEntity(newSource, { team: params.team });
+    } catch (err) {
+      result.details = `Rename failed at store-new step: ${err instanceof Error ? err.message : String(err)}`;
+      return result;
+    }
+
+    // Step 3: Migrate files if requested (best-effort, matches legacy)
+    if (migrateFiles && params.insightsDir) {
+      try {
+        const fileResults = migrateLegacyEntityFiles(
+          params.oldName,
+          params.newName,
+          params.insightsDir,
+        );
+        result.migratedFiles = fileResults.migrated;
+        result.deletedFiles = fileResults.deleted;
+      } catch (fileErr) {
+        // File migration is best-effort — log via stderr but continue
+        process.stderr.write(
+          `[km-core-adapter.renameEntity] File migration warning: ${
+            fileErr instanceof Error ? fileErr.message : String(fileErr)
+          }\n`,
+        );
+      }
+    }
+
+    // Step 4: Delete the old-named entity
+    try {
+      await deleteEntity(params.oldName, params.team);
+    } catch (err) {
+      result.details = `Rename succeeded at store-new + migrate-files but delete-old failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      return result;
+    }
+
+    result.success = true;
+    result.details = `Successfully renamed '${params.oldName}' to '${params.newName}'`;
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
+  // updateEntityObservations — Phase 42.2 Plan 04
+  // -------------------------------------------------------------------------
+
+  async function updateEntityObservations(params: {
+    entityName: string;
+    team: string;
+    removeObservations: string[];
+    newObservations?: Array<string | { content: string; type?: string; metadata?: Record<string, unknown> }>;
+  }): Promise<{
+    success: boolean;
+    updatedEntity: Entity | null;
+    removedCount: number;
+    addedCount: number;
+    details: string;
+  }> {
+    const result = {
+      success: false,
+      updatedEntity: null as Entity | null,
+      removedCount: 0,
+      addedCount: 0,
+      details: '',
+    };
+
+    const entity = await findEntityByName(params.entityName);
+    if (!entity) {
+      result.details = `Entity '${params.entityName}' not found in team '${params.team}'`;
+      return result;
+    }
+
+    // Existing observations may be stored either in description (joined) or
+    // in metadata.observations (array). Read both shapes for robustness.
+    const existingMetadata = (entity.metadata ?? {}) as Record<string, unknown>;
+    const existingObs: Array<string | { content?: string; type?: string }> =
+      Array.isArray((existingMetadata as { observations?: unknown }).observations)
+        ? ((existingMetadata as { observations: Array<string | { content?: string; type?: string }> }).observations)
+        : [];
+
+    const originalCount = existingObs.length;
+
+    // Remove stale observations (substring match for flexibility, matches
+    // legacy persistence-agent.ts:2932-2941).
+    let remaining = existingObs;
+    if (params.removeObservations.length > 0) {
+      remaining = existingObs.filter((obs) => {
+        const obsContent = typeof obs === 'string' ? obs : (obs.content ?? '');
+        const shouldRemove = params.removeObservations.some((toRemove) =>
+          obsContent.includes(toRemove) || toRemove.includes(obsContent.substring(0, 50)),
+        );
+        return !shouldRemove;
+      });
+      result.removedCount = originalCount - remaining.length;
+    }
+
+    // Append new observations
+    if (params.newObservations && params.newObservations.length > 0) {
+      remaining = [...remaining, ...params.newObservations];
+      result.addedCount = params.newObservations.length;
+    }
+
+    // Persist via mergeAttributes
+    try {
+      await store.mergeAttributes(entity.id, {
+        metadata: {
+          ...existingMetadata,
+          observations: remaining,
+          last_updated: new Date().toISOString(),
+        },
+      } as Partial<Entity>);
+    } catch (err) {
+      result.details = `Failed to persist observation update: ${err instanceof Error ? err.message : String(err)}`;
+      return result;
+    }
+
+    result.success = true;
+    result.updatedEntity = entity;
+    result.details = `Removed ${result.removedCount}, added ${result.addedCount} observations`;
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
   // queryIncomingRelations — Phase 42.1 INT-02
   // -------------------------------------------------------------------------
 
@@ -399,12 +721,19 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
   }
 
   return {
+    initialize,
+    get initialized(): boolean {
+      return true;
+    },
+    close,
     mergeAttributes,
     queryEntities,
     storeEntity,
     storeRelationship,
     getEntity,
     deleteEntity,
+    renameEntity,
+    updateEntityObservations,
     queryIncomingRelations,
     queryRelations,
     queryByOntologyClass,

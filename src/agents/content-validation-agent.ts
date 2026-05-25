@@ -14,9 +14,13 @@
 import * as fs from "fs";
 import * as fsPromises from "fs/promises";
 import * as path from "path";
-import { GraphDatabaseAdapter } from "../storage/graph-database-adapter.js";
+// Phase 42.2 Plan 04 — legacy persistence trio retired.
+// GraphDatabaseAdapter + PersistenceAgent type imports replaced with the
+// km-core adapter surface (Phase 42-01 strangler) plus the file-system
+// helpers from legacy-consumer-helpers.ts.
+import type { KmCoreAdapter } from "../storage/km-core-adapter.js";
+import { cleanupEntityFiles as cleanupEntityFilesViaAdapter } from "../storage/legacy-consumer-helpers.js";
 import { SemanticAnalyzer } from "./semantic-analyzer.js";
-import type { PersistenceAgent } from "./persistence-agent.js";
 import type { InsightGenerationAgent } from "./insight-generation-agent.js";
 import { GitHistoryAgent } from "./git-history-agent.js";
 import { VibeHistoryAgent } from "./vibe-history-agent.js";
@@ -155,9 +159,15 @@ export class ContentValidationAgent {
   private insightsDirectory: string;
   private enableDeepValidation: boolean;
   private stalenessThresholdDays: number;
-  private graphDB: GraphDatabaseAdapter | null = null;
+  // Phase 42.2 Plan 04 — both legacy slots collapsed into a single
+  // km-core adapter handle. The pre-existing graphDB / persistenceAgent
+  // field names are preserved (typed as KmCoreAdapter) to minimize the
+  // call-site diff downstream — graphDB.queryEntities, graphDB.initialized,
+  // persistenceAgent.renameEntity, persistenceAgent.updateEntityObservations
+  // all exist on the adapter surface as of this plan.
+  private graphDB: KmCoreAdapter | null = null;
   private semanticAnalyzer: SemanticAnalyzer;
-  private persistenceAgent: PersistenceAgent | null = null;
+  private persistenceAgent: KmCoreAdapter | null = null;
   private insightGenerationAgent: InsightGenerationAgent | null = null;
   private gitHistoryAgent: GitHistoryAgent | null = null;
   private vibeHistoryAgent: VibeHistoryAgent | null = null;
@@ -224,19 +234,16 @@ export class ContentValidationAgent {
   }
 
   /**
-   * Set the GraphDatabaseAdapter for querying entities
+   * Phase 42.2 Plan 04 — single setter that collapses the legacy
+   * setGraphDB + setPersistenceAgent pair. The km-core adapter exposes
+   * both the read surface (queryEntities, getEntity) and the mutation
+   * surface (renameEntity, updateEntityObservations) needed downstream,
+   * so one handle suffices.
    */
-  setGraphDB(graphDB: GraphDatabaseAdapter): void {
-    this.graphDB = graphDB;
-    log('GraphDatabaseAdapter set for ContentValidationAgent', 'info');
-  }
-
-  /**
-   * Set the PersistenceAgent for updating entities
-   */
-  setPersistenceAgent(persistenceAgent: PersistenceAgent): void {
-    this.persistenceAgent = persistenceAgent;
-    log('PersistenceAgent set for ContentValidationAgent', 'info');
+  setKmCoreAdapter(adapter: KmCoreAdapter): void {
+    this.graphDB = adapter;
+    this.persistenceAgent = adapter;
+    log('km-core adapter set for ContentValidationAgent (collapsed graphDB + persistenceAgent slots)', 'info');
   }
 
   /**
@@ -403,16 +410,16 @@ export class ContentValidationAgent {
     };
 
     try {
-      // Get all entities from the graph database
+      // Phase 42.2 Plan 04 — adapter must be set via setKmCoreAdapter() before
+      // calling this method. Lazy-init is no longer possible because the
+      // km-core GraphKMStore needs an ontologyDir / dbPath that this class
+      // cannot synthesize standalone (the legacy GraphDatabaseAdapter had no
+      // such requirement). Coordinator + tools handlers wire the adapter
+      // upstream before calling here.
       if (!this.graphDB) {
-        // Initialize graphDB if not set
-        this.graphDB = new GraphDatabaseAdapter();
-        await this.graphDB.initialize();
-        log('GraphDatabaseAdapter initialized for content validation', 'info');
-      } else if (!this.graphDB.initialized) {
-        // graphDB was set but not initialized
-        await this.graphDB.initialize();
-        log('GraphDatabaseAdapter re-initialized for content validation', 'info');
+        const errorMsg = 'km-core adapter not set on ContentValidationAgent. Call setKmCoreAdapter() before validation methods.';
+        log(errorMsg, 'error');
+        throw new Error(errorMsg);
       }
 
       const allEntities = await this.graphDB.queryEntities({}) || [];
@@ -1339,24 +1346,28 @@ export class ContentValidationAgent {
         const entities = await this.graphDB.queryEntities({
           searchTerm: entityName
         });
-        // Find exact match and normalize field names
-        const exactMatch = entities?.find((e: any) =>
-          (e.name || e.entity_name) === entityName
+        // Find exact match and normalize field names (Phase 42.2 Plan 04 —
+        // km-core Entity uses `name`/`entityType` directly; legacy entity_name
+        // fields no longer occur but the cast preserves robustness against any
+        // legacy fallback paths still feeding through `searchTerm`).
+        const exactMatch = (entities as unknown as Array<Record<string, unknown>>)?.find((e) =>
+          (e.name as string | undefined) === entityName
         );
         if (exactMatch) {
-          // Normalize API field names (entity_name/entity_type -> name/entityType)
+          const meta = (exactMatch.metadata ?? {}) as Record<string, unknown>;
           return {
-            name: exactMatch.name || exactMatch.entity_name,
-            entityType: exactMatch.entityType || exactMatch.entity_type,
-            observations: exactMatch.observations || [],
+            name: exactMatch.name as string,
+            entityType: exactMatch.entityType as string | undefined,
+            observations: (meta.observations as unknown[]) ?? (exactMatch.observations as unknown[]) ?? [],
             significance: exactMatch.significance,
-            relationships: exactMatch.relationships || [],
+            relationships: (exactMatch.relationships as unknown[]) ?? [],
             metadata: {
-              ...exactMatch.metadata,
-              source: exactMatch.source,
-              team: exactMatch.team || team,
-              created_at: exactMatch.created_at || exactMatch.extracted_at,
-              last_updated: exactMatch.last_modified || exactMatch.last_updated
+              ...meta,
+              team: (meta.team as string | undefined) ?? team,
+              last_updated:
+                (meta.last_updated as string | undefined) ??
+                (exactMatch.updatedAt as string | undefined) ??
+                (exactMatch.validFrom as string | undefined),
             }
           };
         }
@@ -1979,9 +1990,9 @@ export class ContentValidationAgent {
         return result;
       }
 
-      // Step 2: Check if PersistenceAgent is available
+      // Step 2: Check if km-core adapter is available
       if (!this.persistenceAgent) {
-        result.error = 'PersistenceAgent not set. Call setPersistenceAgent() first.';
+        result.error = 'km-core adapter not set. Call setKmCoreAdapter() first.';
         log(result.error, 'error');
         return result;
       }
@@ -2003,11 +2014,13 @@ export class ContentValidationAgent {
             reason: nameCheck.reason
           });
 
-          // Rename the entity
+          // Rename the entity (Phase 42.2 Plan 04 — adapter.renameEntity
+          // takes insightsDir as a param since the adapter is repo-agnostic).
           const renameResult = await this.persistenceAgent.renameEntity({
             oldName: params.entityName,
             newName: nameCheck.normalizedName,
-            team: params.team
+            team: params.team,
+            insightsDir: this.insightsDirectory,
           });
 
           if (renameResult.success) {
@@ -2557,12 +2570,14 @@ Respond with a JSON array:
         }
       }
 
-      // Check for key service/component files
+      // Phase 42.2 Plan 04 — legacy persistence trio retired; the components
+      // listed here are checked against the live tree, so the entries point
+      // at the km-core adapter (Phase 42-01) and the canonical km-core store
+      // surface that now replaces the trio.
       const componentPaths = [
-        { name: 'GraphDatabaseService', path: 'src/knowledge-management/GraphDatabaseService.js' },
-        { name: 'GraphKnowledgeExporter', path: 'src/knowledge-management/GraphKnowledgeExporter.js' },
-        { name: 'GraphDatabaseAdapter', path: 'integrations/mcp-server-semantic-analysis/src/storage/graph-database-adapter.ts' },
-        { name: 'PersistenceAgent', path: 'integrations/mcp-server-semantic-analysis/src/agents/persistence-agent.ts' },
+        { name: 'KmCoreAdapter', path: 'integrations/mcp-server-semantic-analysis/src/storage/km-core-adapter.ts' },
+        { name: 'LegacyConsumerHelpers', path: 'integrations/mcp-server-semantic-analysis/src/storage/legacy-consumer-helpers.ts' },
+        { name: 'GraphKMStore', path: 'lib/km-core/src/store/GraphKMStore.ts' },
         { name: 'VkbApiClient', path: 'lib/ukb-unified/core/VkbApiClient.js' }
       ];
 
@@ -2823,19 +2838,23 @@ Respond with a JSON array:
     }
 
     // SPECIFIC: Knowledge/Persistence entities
+    // Phase 42.2 Plan 04 — refers to the post-trio-retirement component
+    // names. The legacy GraphDatabaseService / GraphKnowledgeExporter
+    // observations were removed because those components are no longer
+    // part of the runtime persistence path.
     if (lowerName.includes('persistence') || lowerName.includes('knowledge')) {
-      if (codebaseState.existingComponents?.includes('GraphDatabaseService')) {
+      if (codebaseState.existingComponents?.includes('KmCoreAdapter')) {
         observations.push({
           type: 'implementation',
-          content: `Knowledge persistence uses GraphDatabaseService (Graphology in-memory + LevelDB persistence)`,
+          content: `Knowledge persistence routes through KmCoreAdapter (Phase 42-01 strangler) backed by @fwornle/km-core GraphKMStore (LevelDB + JSON exports)`,
           date: now,
           metadata: { confidence: 0.95, source: 'codebase-scan', refreshedAt: now }
         });
       }
-      if (codebaseState.existingComponents?.includes('GraphKnowledgeExporter')) {
+      if (codebaseState.existingComponents?.includes('GraphKMStore')) {
         observations.push({
           type: 'workflow',
-          content: `GraphKnowledgeExporter listens to entity:stored events and auto-exports to JSON at .data/knowledge-export`,
+          content: `GraphKMStore (km-core) exports the canonical entity snapshot to .data/knowledge-graph-migrated/exports on debounce; .data/knowledge-export/<team>.json is regenerated at workflow completion via exportKnowledgeToJSON`,
           date: now,
           metadata: { confidence: 0.95, source: 'codebase-scan', refreshedAt: now }
         });
@@ -3027,7 +3046,7 @@ Respond with a JSON array:
       }> = [];
 
       for (const entity of entities) {
-        // Handle different field names from GraphDatabaseService (entity_name) vs normalized (name)
+        // Handle different field names from legacy storage (entity_name) vs normalized (name)
         const entityName = entity.name || entity.entityName || entity.entity_name;
         const entityTeam = entity.team || params.team || 'coding';
 

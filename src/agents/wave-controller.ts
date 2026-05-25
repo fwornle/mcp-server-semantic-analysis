@@ -19,7 +19,8 @@ import * as crypto from 'crypto';
 import { log } from '../logging.js';
 import { loadComponentManifest, flattenManifestEntries, writeManifestDiscoveries } from '../types/component-manifest.js';
 import type { DiscoveredManifestEntry } from '../types/component-manifest.js';
-import { GraphDatabaseAdapter } from '../storage/graph-database-adapter.js';
+// Phase 42.2 Plan 04 — legacy GraphDatabaseAdapter retired.
+// All persistence (read + write) routes through the km-core adapter.
 import { createKmCoreAdapter, type KmCoreAdapter } from '../storage/km-core-adapter.js';
 // Phase 42 Plan 07 Phase B1 — KM_CORE_PERSISTENCE feature flag REMOVED.
 // km-core is now the unconditional persistence backend. Legacy graphDB writes
@@ -28,8 +29,9 @@ import { Wave1ProjectAgent } from './wave1-project-agent.js';
 import { InsightGenerationAgent } from './insight-generation-agent.js';
 import { OntologyClassificationAgent } from './ontology-classification-agent.js';
 import type { CrossReferenceContext } from './insight-generation-agent.js';
-import type { GraphEntity } from '../storage/graph-database-adapter.js';
-import type { SharedMemoryEntity, EntityRelationship } from './persistence-agent.js';
+// Phase 42.2 Plan 04 — type-only imports moved from the retired trio to
+// the dependency-free `shared-memory-types.ts` module.
+import type { GraphEntity, SharedMemoryEntity, EntityRelationship } from '../types/shared-memory-types.js';
 import { createKGOperators } from './kg-operators.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
 import { WorkflowReportAgent } from './workflow-report-agent.js';
@@ -86,11 +88,11 @@ export class WaveController {
   private progressFile: string;
   private maxAgentsPerWave: number;
   private failFast: boolean;
-  private graphDB: GraphDatabaseAdapter;
   /**
-   * km-core strangler adapter (Phase 42 D-51). Constructed only when
-   * KM_CORE_PERSISTENCE=km-core; remains undefined on the legacy path so
-   * the legacy graphDB.mergeAttributes branch runs verbatim.
+   * km-core strangler adapter (Phase 42 D-51).
+   * Phase 42.2 Plan 04 — formerly optional alongside a legacy graphDB
+   * fallback; now the unconditional persistence backend (the trio was
+   * retired). Bootstrapped in execute() before any wave runs.
    */
   private kmCoreAdapter?: KmCoreAdapter;
   private reportAgent: WorkflowReportAgent;
@@ -131,9 +133,9 @@ export class WaveController {
     this.maxAgentsPerWave = config.maxAgentsPerWave ?? 4;
     this.failFast = config.failFast ?? true;
 
-    // Derive the knowledge-graph DB path from the repository
-    const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph');
-    this.graphDB = new GraphDatabaseAdapter(dbPath, this.team);
+    // Phase 42.2 Plan 04 — km-core adapter is bootstrapped inside execute()
+    // (it requires an async store.open()). this.kmCoreAdapter is undefined
+    // until then; no legacy GraphDatabaseAdapter exists anymore.
     this.reportAgent = new WorkflowReportAgent(this.repositoryPath);
     this.qaAgent = new QualityAssuranceAgent(this.repositoryPath, this.team);
   }
@@ -489,24 +491,17 @@ export class WaveController {
     };
 
     try {
-      // Initialize graph database
-      await this.graphDB.initialize();
-      log('[WaveController] GraphDatabaseAdapter initialized', 'info');
-
       // === Phase 42 Plan 07 Phase B1 — km-core adapter unconditional ===
-      // The KM_CORE_PERSISTENCE feature flag has been REMOVED. km-core is now
-      // the only persistence backend. Bootstrap a GraphKMStore-backed adapter
-      // against the canonical-shape migrated store; if bootstrap throws, the
-      // wave run aborts (km-core is no longer optional).
+      // === Phase 42.2 Plan 04 — legacy GraphDatabaseAdapter retired ===
+      // The KM_CORE_PERSISTENCE feature flag was removed in Phase 42-07 B1
+      // and the legacy graphDB read-path was retired in Phase 42.2 Plan 04.
+      // km-core is now the only persistence backend; bootstrap is mandatory
+      // and any failure aborts the wave run.
       //
       // dbPath/exportDir point at .data/knowledge-graph-migrated/{leveldb,exports}
       // — the canonical-shape store produced by Plan 5's migration script.
-      // The legacy graphDB (this.graphDB) continues to back the still-deferred
-      // read paths (content-validation-agent + various callers) until a
-      // follow-up phase completes the read-side migration. The two LevelDB
-      // dirs (.data/knowledge-graph/ + .data/knowledge-graph-migrated/) will
-      // drift after each ukb full until that follow-up phase merges them
-      // (documented as a deviation in 42-07-SUMMARY.md).
+      // After Plan 42.2 Plan 05's dir-swap, both dirs will collapse into the
+      // single .data/knowledge-graph/ canonical location.
       try {
         const km = await import('@fwornle/km-core');
         const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'leveldb');
@@ -2198,11 +2193,11 @@ export class WaveController {
   /**
    * Phase 42.1 INT-02 — find the best parent Component/SubComponent for an entity.
    *
-   * Ported from `persistence-agent.ts:1043-1071` (Phase 42.1 — INT-02 anchor parity).
-   * DO NOT delete this method when persistence-agent.ts is retired in a follow-up phase —
+   * Ported (Phase 42.1 — INT-02 anchor parity) from the legacy persistence
+   * agent (lines 1043-1071 of the retired module). DO NOT delete this method —
    * the post-sweep anchor pass in `persistWithKmCore` relies on it.
    *
-   * Algorithm (mirror of persistence-agent.ts:1043-1071):
+   * Algorithm (mirror of the legacy implementation at lines 1043-1071):
    *   1. Filter to candidates whose entityType is Component or SubComponent.
    *   2. Lowercase the target name; walk candidates.
    *   3. If the target name (lowercased) contains the candidate name (lowercased) AND the
@@ -2416,7 +2411,8 @@ export class WaveController {
     }
 
     // ---- Anchor pass (Phase 42.1 INT-02) ----
-    // Ported from persistence-agent.ts updateEntityRelationships post-sweep.
+    // Ported (Phase 42.1 INT-02) from the legacy persistence agent's
+    // updateEntityRelationships post-sweep.
     // Restores the contains-edge insertion the legacy persistence path performed
     // after every batch; without this, wave-emitted entities arrive without any
     // incoming contains/parent-child edge from a Component/SubComponent or the
@@ -2824,17 +2820,28 @@ export class WaveController {
             dispatch({ type: 'substep-update', substepId: 'wave4_insights', wave: 4, totalWaves: 4 });
 
             // Update entity metadata with insight document path
+            // Phase 42.2 Plan 04 — route through the km-core adapter
+            // (replaces the legacy graphDB.storeEntity call). storeEntity
+            // upserts when an entity with the same name already exists,
+            // preserving the existing behavior of this metadata stamp.
             try {
-              await this.graphDB.storeEntity({
-                name: entity.name,
-                entityType: entity.type,
-                observations: entity.observations,
-                significance: entity.significance,
-                metadata: {
-                  validated_file_path: result.filePath,
-                  has_insight_document: true,
-                },
-              });
+              if (this.kmCoreAdapter) {
+                await this.kmCoreAdapter.storeEntity(
+                  {
+                    name: entity.name,
+                    entityType: entity.type,
+                    observations: entity.observations,
+                    significance: entity.significance,
+                    metadata: {
+                      validated_file_path: result.filePath,
+                      has_insight_document: true,
+                    },
+                  },
+                  { team: this.team },
+                );
+              } else {
+                log(`[WaveController] km-core adapter not bootstrapped; cannot stamp insight metadata for ${entity.name}`, 'warning');
+              }
             } catch (updateErr) {
               log(`[WaveController] Failed to update metadata for ${entity.name}: ${updateErr}`, 'warning');
             }
@@ -3186,11 +3193,25 @@ export class WaveController {
 
   /**
    * Load existing KG entities from the graph database.
-   * Maps GraphEntity format to KGEntity format for context enrichment.
+   * Phase 42.2 Plan 04 — reads via the km-core adapter (which iterates the
+   * canonical-shape store) instead of the retired GraphDatabaseAdapter.
+   * GraphEntity cast is kept as the loose intermediate shape for the field
+   * normalization below.
    */
   private async loadExistingEntities(): Promise<KGEntity[]> {
     try {
-      const graphEntities = await this.graphDB.queryEntities();
+      if (!this.kmCoreAdapter) {
+        log('[WaveController] km-core adapter not bootstrapped; loadExistingEntities returns empty', 'warning');
+        return [];
+      }
+      const entities = await this.kmCoreAdapter.queryEntities();
+      const graphEntities: GraphEntity[] = entities.map((e) => ({
+        name: e.name,
+        entityType: e.entityType,
+        observations: (e.metadata as { observations?: unknown[] } | undefined)?.observations,
+        significance: (e.metadata as { significance?: number } | undefined)?.significance,
+        metadata: (e.metadata ?? {}) as Record<string, unknown>,
+      }));
 
       return graphEntities.map((ge: GraphEntity): KGEntity => ({
         id: ge.name,

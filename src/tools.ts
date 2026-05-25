@@ -7,10 +7,15 @@ import { CoordinatorAgent } from "./agents/coordinator.js";
 import { InsightGenerationAgent } from "./agents/insight-generation-agent.js";
 import { DeduplicationAgent } from "./agents/deduplication.js";
 import { WebSearchAgent } from "./agents/web-search.js";
-import { PersistenceAgent } from "./agents/persistence-agent.js";
+// Phase 42.2 Plan 04 — legacy PersistenceAgent retired. Tool handlers
+// now construct the km-core adapter directly and use its surface (plus
+// legacy-consumer-helpers for the file-system-only operations).
 import { ContentValidationAgent, type EntityRefreshResult } from "./agents/content-validation-agent.js";
 import { CodeGraphAgent } from "./agents/code-graph-agent.js";
-import { GraphDatabaseAdapter } from "./storage/graph-database-adapter.js";
+// Phase 42.2 Plan 04 — GraphDatabaseAdapter retired in favor of the
+// km-core adapter (Phase 42-01 strangler surface).
+import { createKmCoreAdapter, type KmCoreAdapter } from "./storage/km-core-adapter.js";
+import { cleanupEntityFiles as cleanupEntityFilesViaAdapter } from "./storage/legacy-consumer-helpers.js";
 import {
   OntologyConfigManager,
   ExtendedOntologyConfig,
@@ -968,31 +973,51 @@ async function handleCreateUkbEntity(args: any): Promise<any> {
     tags,
   });
 
-  // Use GraphDatabaseAdapter for direct LevelDB persistence (NO SharedMemory)
-  const { GraphDatabaseAdapter } = await import('./storage/graph-database-adapter.js');
-  const graphDB = new GraphDatabaseAdapter();
-  await graphDB.initialize();
-
-  const knowledgeManager = new PersistenceAgent('.', graphDB);
-  await knowledgeManager.initializeOntology();
-
-  // Use persistEntities (which uses storeEntityToGraph directly) instead of legacy createUkbEntity
-  const result = await knowledgeManager.persistEntities({
-    entities: [{
-      name: entity_name,
-      entityType: entity_type,
-      observations: [insights, ...(tags?.map((t: string) => `Tag: ${t}`) || [])],
-      significance: significance || 5,
-    }],
-    team: 'coding',
+  // Phase 42.2 Plan 04 — direct km-core persistence via the strangler adapter
+  // (Phase 42-01). Replaces the legacy GraphDatabaseAdapter + PersistenceAgent
+  // pair. Constructs a GraphKMStore with the canonical-shape dbPath +
+  // ontologyDir (CLAUDE.md mandate) and writes a single entity via
+  // adapter.storeEntity.
+  const repositoryPath = process.env.REPOSITORY_PATH || process.cwd();
+  const km = await import('@fwornle/km-core');
+  const dbPath = path.join(repositoryPath, '.data', 'knowledge-graph-migrated', 'leveldb');
+  const exportDir = path.join(repositoryPath, '.data', 'knowledge-graph-migrated', 'exports');
+  const ontologyDir = path.join(repositoryPath, '.data', 'ontologies');
+  const store = new km.GraphKMStore({
+    dbPath,
+    exportDir,
+    ontologyDir,
+    domains: ['coding'],
+    debounceMs: 5000,
   });
+  await store.open();
+  const adapter = createKmCoreAdapter({ store, team: 'coding' });
 
-  const success = result.created > 0;
+  let success = false;
+  let details = '';
+  try {
+    const result = await adapter.storeEntity(
+      {
+        name: entity_name,
+        entityType: entity_type,
+        observations: [insights, ...(tags?.map((t: string) => `Tag: ${t}`) || [])],
+        significance: significance || 5,
+      },
+      { team: 'coding' },
+    );
+    success = !!result.id;
+    details = `Entity id: ${result.id}`;
+  } catch (err) {
+    details = `storeEntity failed: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    await adapter.close();
+  }
+
   return {
     content: [
       {
         type: "text",
-        text: `# UKB Entity Created\n\n**Name:** ${entity_name}\n**Type:** ${entity_type}\n**Significance:** ${significance || 5}/10\n\n## Status\n${success ? '✅ Successfully created' : '❌ Failed to create'}\n\n## Details\n${result.details}`,
+        text: `# UKB Entity Created\n\n**Name:** ${entity_name}\n**Type:** ${entity_type}\n**Significance:** ${significance || 5}/10\n\n## Status\n${success ? '✅ Successfully created' : '❌ Failed to create'}\n\n## Details\n${details}`,
       },
     ],
   };
@@ -2546,16 +2571,26 @@ async function handleRefreshEntity(args: any): Promise<any> {
       team: team === '*' ? 'coding' : team
     });
 
-    // Initialize GraphDB adapter
-    const graphDBPath = path.join(repositoryPath, '.data', 'knowledge-graph');
-    const graphDB = new GraphDatabaseAdapter(graphDBPath, team === '*' ? 'coding' : team);
-    await graphDB.initialize();
-    contentValidationAgent.setGraphDB(graphDB);
-
-    // Initialize PersistenceAgent for updates
-    const persistenceAgent = new PersistenceAgent(repositoryPath, graphDB);
-    await persistenceAgent.initializeOntology();
-    contentValidationAgent.setPersistenceAgent(persistenceAgent);
+    // Phase 42.2 Plan 04 — initialize the km-core adapter (replaces the
+    // legacy GraphDatabaseAdapter + PersistenceAgent pair). Same dbPath +
+    // ontologyDir + exportDir as wave-controller / coordinator. The single
+    // setKmCoreAdapter call replaces the legacy setGraphDB + setPersistenceAgent
+    // pair (collapsed in Phase 42.2 Plan 04 Task 3).
+    const teamForAdapter = team === '*' ? 'coding' : team;
+    const km = await import('@fwornle/km-core');
+    const dbPath = path.join(repositoryPath, '.data', 'knowledge-graph-migrated', 'leveldb');
+    const exportDir = path.join(repositoryPath, '.data', 'knowledge-graph-migrated', 'exports');
+    const ontologyDir = path.join(repositoryPath, '.data', 'ontologies');
+    const store = new km.GraphKMStore({
+      dbPath,
+      exportDir,
+      ontologyDir,
+      domains: [teamForAdapter],
+      debounceMs: 5000,
+    });
+    await store.open();
+    const adapter: KmCoreAdapter = createKmCoreAdapter({ store, team: teamForAdapter });
+    contentValidationAgent.setKmCoreAdapter(adapter);
 
     // Single entity refresh vs batch refresh
     if (entity_name === '*') {
@@ -2663,9 +2698,13 @@ async function handleRefreshEntity(args: any): Promise<any> {
         });
 
         // Optional: Clean up orphaned files after refresh
+        // Phase 42.2 Plan 04 — adapter-backed cleanup via free-function helper
+        // (file-system-only operation with one optional adapter query for
+        // orphan detection). insightsDir defaults to the project convention.
         let cleanupResult: { deletedFiles: string[]; errors: string[] } | undefined;
-        if (cleanup_stale_files && persistenceAgent) {
-          cleanupResult = await persistenceAgent.cleanupEntityFiles({
+        if (cleanup_stale_files) {
+          const insightsDir = path.join(repositoryPath, 'knowledge-management', 'insights');
+          cleanupResult = await cleanupEntityFilesViaAdapter(adapter, insightsDir, {
             entityName: entity_name === '*' ? undefined : entity_name,
             team: team,
             cleanOrphans: entity_name === '*'

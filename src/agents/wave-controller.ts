@@ -498,14 +498,15 @@ export class WaveController {
       // km-core is now the only persistence backend; bootstrap is mandatory
       // and any failure aborts the wave run.
       //
-      // dbPath/exportDir point at .data/knowledge-graph-migrated/{leveldb,exports}
-      // — the canonical-shape store produced by Plan 5's migration script.
-      // After Plan 42.2 Plan 05's dir-swap, both dirs will collapse into the
-      // single .data/knowledge-graph/ canonical location.
+      // dbPath/exportDir point at .data/knowledge-graph/{leveldb,exports}
+      // — the canonical store after Phase 42.2 Plan 05's atomic dir-swap.
+      // (Pre-swap, this pointed at .data/knowledge-graph-migrated/ as a
+      // Phase 42-07 Phase A transitional measure; Plan 05 collapsed the two
+      // dirs into the single canonical location and reverted this path.)
       try {
         const km = await import('@fwornle/km-core');
-        const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'leveldb');
-        const exportDir = path.join(this.repositoryPath, '.data', 'knowledge-graph-migrated', 'exports');
+        const dbPath = path.join(this.repositoryPath, '.data', 'knowledge-graph', 'leveldb');
+        const exportDir = path.join(this.repositoryPath, '.data', 'knowledge-graph', 'exports');
         const ontologyDir = path.join(this.repositoryPath, '.data', 'ontologies');
         const store = new km.GraphKMStore({
           dbPath,

@@ -246,6 +246,21 @@ export class WaveController {
     this.touchProgress();
   }
 
+  /**
+   * Patch a substep's `outputs` field in-place — merges with existing
+   * outputs, preserves the running tally of llmCalls/tokensUsed that
+   * captureStepMetrics will write at substep completion. Use this for
+   * in-flight progress emissions (e.g. wave4 insight generation
+   * ticking "12/51 generated" upward) — calling captureStepMetrics
+   * incrementally would discard the running LLM metric counters.
+   */
+  private updateStepOutputs(stepName: string, outputs: Record<string, unknown>): void {
+    const existing = this.stepMetrics.get(stepName) ?? {};
+    const mergedOutputs = { ...((existing as any).outputs ?? {}), ...outputs };
+    this.stepMetrics.set(stepName, { ...existing, outputs: mergedOutputs });
+    this.touchProgress();
+  }
+
   /** Capture LLM metrics directly from a wave agent's getLLMMetrics() */
   private captureAgentMetrics(stepName: string, agentMetrics: { providers: string[]; totalTokens: number; totalCalls: number }, outputs?: Record<string, unknown>): void {
     this.stepMetrics.set(stepName, {
@@ -2764,6 +2779,18 @@ export class WaveController {
     let generated = 0;
     let failed = 0;
     let skippedDiagrams = 0;
+    const planned = allEntities.length;
+
+    // Emit the plan upfront so the dashboard's Insight Generation panel
+    // can render "0/<planned>" instead of waiting until wave completion.
+    // captureStepMetrics at the end of the wave will overwrite this with
+    // the authoritative tally (which is the same numbers in steady state).
+    this.updateStepOutputs('wave4_insights', {
+      planned,
+      generated: 0,
+      failed: 0,
+      skippedDiagrams: 0,
+    });
 
     // Build insight generation tasks (one per entity)
     const insightTasks = allEntities.map(entity => {
@@ -2819,6 +2846,9 @@ export class WaveController {
 
             // Emit progress event per entity to keep lastUpdate fresh (prevents stale detection)
             dispatch({ type: 'substep-update', substepId: 'wave4_insights', wave: 4, totalWaves: 4 });
+            // Tick the live counter so the dashboard's Insight Generation
+            // panel can render "N/<planned>" while wave4 is running.
+            this.updateStepOutputs('wave4_insights', { planned, generated, failed, skippedDiagrams });
 
             // Update entity metadata with insight document path
             // Phase 42.2 Plan 04 — route through the km-core adapter
@@ -2848,10 +2878,12 @@ export class WaveController {
             }
           } else {
             failed++;
+            this.updateStepOutputs('wave4_insights', { planned, generated, failed, skippedDiagrams });
           }
         } catch (entityErr) {
           log(`[WaveController] Insight generation failed for ${entity.name}: ${entityErr}`, 'warning');
           failed++;
+          this.updateStepOutputs('wave4_insights', { planned, generated, failed, skippedDiagrams });
         }
       };
     });

@@ -236,7 +236,17 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
    * <1000x per `ukb full` (one merge per entity), so O(n) per call is OK.
    */
   async function findEntityByName(name: string): Promise<Entity | undefined> {
-    for await (const e of store.iterate()) {
+    // Phase 42.2 Plan 06 bugfix — pass {includeSuperseded: true} so we see
+    // the Phase 42-05 migrated cohort whose `validUntil: null` would
+    // otherwise cause km-core's default isActive filter to drop them
+    // (`new Date(null).getTime() === 0` is < now ⇒ isActive=false).
+    // Without this, the anchor pass's `storeRelationship('Coding', …)` call
+    // throws "from-entity 'Coding' not found" because the migrated Coding
+    // Project entity has `validUntil: null`, and every wave-emitted
+    // Component/SubComponent gets orphaned. Caught silently by the anchor
+    // pass try/catch → SC#6 fails with 18+ orphans. See augment-team-field-
+    // 42.2.mjs:163 for the same pattern.
+    for await (const e of store.iterate(undefined, { includeSuperseded: true })) {
       if (e.name === name) return e;
     }
     return undefined;

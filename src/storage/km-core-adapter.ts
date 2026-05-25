@@ -405,7 +405,16 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
     // ID handling: existing legacy id → top-level legacyId.id. The canonical
     // EntityId is minted by km-core's putEntity (D-10) and returned from
     // the call. Per Phase 39 CF-D37, legacyId lives at the top level.
-    const incomingId = source.id ? String(source.id) : undefined;
+    //
+    // Phase 42.2 Plan 06 follow-up — fall back to source.name when source.id
+    // is absent. Wave-controller's persistWithKmCore passes raw KGEntities
+    // without an explicit `id` field; previously this left legacyId undefined,
+    // which caused those entities to appear in general.json with
+    // `legacyId: null` (ghost entities — visible to graphology export but not
+    // to km-core iterate's isActive filter when validUntil is set). Mirrors
+    // canonical-mapper.ts:192-194 which uses `raw.id ?? raw.name`. The
+    // `validFrom` stamp below ensures isActive returns true for these too.
+    const incomingId = source.id ? String(source.id) : (name || undefined);
     const legacyId = incomingId ? ({ system: 'B' as const, id: incomingId }) : undefined;
 
     // Description: prefer explicit description; else join observations.

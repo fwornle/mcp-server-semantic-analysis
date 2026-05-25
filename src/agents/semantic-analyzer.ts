@@ -43,6 +43,13 @@ export interface AnalysisOptions {
   provider?: "groq" | "gemini" | "anthropic" | "openai" | "ollama" | "custom" | "auto";
   tier?: ModelTier;
   taskType?: TaskType;
+  /** Phase 42.2 Plan 06 follow-up — per-call timeout in milliseconds.
+   *  Threaded into `llmService.complete()` so the underlying fetch aborts
+   *  via AbortSignal.timeout when the proxy stalls. Without this, the
+   *  insights wave hangs indefinitely on a stalled LLM call (no SDK
+   *  default timeout). Mirrors the 60s default in `llm-with-process.ts`
+   *  used by waves 1-3. */
+  timeout?: number;
 }
 
 export interface CodeAnalysisOptions {
@@ -380,7 +387,7 @@ export class SemanticAnalyzer {
   // --- Core Analysis Methods ---
 
   async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
-    const { context, analysisType = "general", tier, taskType } = options;
+    const { context, analysisType = "general", tier, taskType, timeout } = options;
 
     await this.ensureInitialized();
 
@@ -425,6 +432,10 @@ export class SemanticAnalyzer {
         tier: effectiveTier,
         taskType: taskType,
         agentId: SemanticAnalyzer.currentAgentId || undefined,
+        // Phase 42.2 Plan 06 follow-up — forward caller-supplied timeout so a
+        // stalled proxy connection aborts via AbortSignal.timeout instead of
+        // hanging the wave forever (Wave 4 insights regression root cause).
+        ...(typeof timeout === 'number' ? { timeout } : {}),
       });
 
       const analysisResult = this.toAnalysisResult(result);

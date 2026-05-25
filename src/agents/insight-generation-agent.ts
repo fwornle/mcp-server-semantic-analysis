@@ -633,7 +633,8 @@ Best practices, rules, and conventions for using this correctly. What should dev
         analysisType: 'architecture',
         context: `Deep insight generation for ${entityName}`,
         provider: 'auto',
-        taskType: 'insight_generation'  // Uses premium tier for better quality
+        taskType: 'insight_generation',  // Uses premium tier for better quality
+        timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
       });
 
       if (result && result.insights) {
@@ -2504,7 +2505,8 @@ Best practices, rules, and conventions for using this correctly. What should dev
       const analysisResult = await this.semanticAnalyzer.analyzeContent(diagramPrompt, {
         analysisType: 'diagram',
         context: `PlantUML ${type} diagram generation`,
-        provider: 'auto'
+        provider: 'auto',
+        timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
       });
 
       // 🔍 TRACE: Log the LLM response
@@ -2759,7 +2761,8 @@ Return the fixed PlantUML code now:`;
       const repairResult = await this.semanticAnalyzer.analyzeContent(repairPrompt, {
         analysisType: 'code',  // Use 'code' for syntax-focused task
         context: `PlantUML ${diagramType} diagram repair`,
-        provider: 'auto'
+        provider: 'auto',
+        timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
       });
 
       if (repairResult?.insights) {
@@ -4332,7 +4335,8 @@ OUTPUT FORMAT (respond with JSON array):
         {
           analysisType: 'patterns',
           context: 'Git commit history analysis - extract specific architectural patterns with meaningful names',
-          provider: 'auto'
+          provider: 'auto',
+          timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
         }
       );
 
@@ -5106,7 +5110,8 @@ OUTPUT FORMAT (respond with JSON array):
         const analysisResult = await this.semanticAnalyzer.analyzeContent(documentationPrompt, {
           analysisType: 'architecture',
           context: `Documentation generation for ${title}`,
-          provider: 'auto'
+          provider: 'auto',
+          timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
         });
         
         if (analysisResult?.insights && analysisResult.insights.length > 500) {
@@ -5444,7 +5449,8 @@ ${llmInsights.substring(0, 3000)}`;
           const retryResult = await this.semanticAnalyzer.analyzeContent(formatHintPrompt, {
             analysisType: 'patterns',
             provider: 'auto',
-            taskType: 'pattern_recognition'
+            taskType: 'pattern_recognition',
+            timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
           });
 
           // Parse retry result using same Strategy 1 (JSON) logic

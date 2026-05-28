@@ -232,17 +232,26 @@ export async function llmWithProcessComplete(
  *  Pass the agent's `llmService.getMetricsTracker()` so SDK-side
  *  `getDetailedCalls()` consumers still see the calls — Phase 42.2-02 Gap 2
  *  preserves the trace-instrumentation contract.
+ *
+ *  Phase 52 D-06 — the returned `complete()` accepts an optional per-call
+ *  `process` override that, when set, supersedes the construction-time
+ *  `processTag` default. This unlocks per-sub-step process tag granularity
+ *  (e.g. wave-1 enrich vs analyze vs observation-retry) without breaking
+ *  any existing wave-level caller (they simply don't pass `process` and
+ *  inherit the bound default). The override flows through to
+ *  `llmWithProcessComplete` body.process verbatim, so the proxy stores the
+ *  call under the sub-step tag instead of the wave-level tag.
  */
 export function createLLMWithProcess(
   processTag: string,
   metricsTracker?: MetricsTrackerLike,
 ): {
   complete: (
-    req: Omit<LLMWithProcessRequest, 'process'>,
+    req: Omit<LLMWithProcessRequest, 'process'> & { process?: string },
   ) => Promise<LLMWithProcessResponse>;
 } {
   return {
     complete: (req) =>
-      llmWithProcessComplete({ ...req, process: processTag }, metricsTracker),
+      llmWithProcessComplete({ ...req, process: req.process ?? processTag }, metricsTracker),
   };
 }

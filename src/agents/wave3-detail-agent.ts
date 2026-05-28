@@ -21,9 +21,14 @@ import type { CgrQueryCache } from '../services/cgr-query-cache.js';
 import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js';
 import { toCanonicalEntity, augmentWithCanonical } from './canonical-mapper.js';
 import { createLLMWithProcess } from './llm-with-process.js';
+import { PROCESS_TAGS } from './process-tags.js';
 
 // Phase 42.2 Plan 02 Gap 2 — process-tag for token-usage attribution.
 // Wave3 discover + observation-retry share this tag (forensics §2.1 row 6-7).
+//
+// Phase 52 D-05/D-06 — kept as the wave-level safety-net default bound at
+// construction time. Each .complete() call below now passes a per-call
+// `process: PROCESS_TAGS.WAVE3_DETAIL_EXTRACT` override.
 const WAVE3_PROCESS_TAG = 'wave-analysis-wave3';
 
 /** LLM response shape for L3 discovery */
@@ -384,9 +389,11 @@ Write as if this is the only documentation available about this detail.
 }`;
 
     try {
-      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
-      // process='wave-analysis-wave3' attribution.
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for tagged
+      // process attribution.
+      // Phase 52 D-05 — per-call PROCESS_TAGS.WAVE3_DETAIL_EXTRACT override.
       const result = await this.llmWithProcess.complete({
+        process: PROCESS_TAGS.WAVE3_DETAIL_EXTRACT,
         messages: [{ role: 'user', content: prompt }],
         taskType: 'wave3_detail_discovery',
         agentId: 'wave3_detail',
@@ -590,9 +597,12 @@ GOOD examples:
 
 Return a JSON array of strings, e.g. ["observation 1", "observation 2"]`;
 
-      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
-      // process='wave-analysis-wave3' attribution on observation-retry.
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for tagged
+      // process attribution on observation-retry.
+      // Phase 52 D-05 — per-call PROCESS_TAGS.WAVE3_DETAIL_EXTRACT override
+      // (same sub-step as the discover path; retry is a recovery path).
       const result = await this.llmWithProcess.complete({
+        process: PROCESS_TAGS.WAVE3_DETAIL_EXTRACT,
         messages: [{ role: 'user', content: retryPrompt }],
         taskType: 'observation_retry',
         agentId: 'wave3_detail',

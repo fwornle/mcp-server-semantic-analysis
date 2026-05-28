@@ -3,6 +3,7 @@ import * as path from 'path';
 import { spawnSync, execSync } from 'child_process';
 import { log } from '../logging.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
+import { PROCESS_TAGS } from './process-tags.js';
 import { FilenameTracer } from '../utils/filename-tracer.js';
 import { ContentAgnosticAnalyzer } from '../utils/content-agnostic-analyzer.js';
 import { RepositoryContextManager } from '../utils/repository-context.js';
@@ -635,6 +636,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         provider: 'auto',
         taskType: 'insight_generation',  // Uses premium tier for better quality
         timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
+        process: PROCESS_TAGS.WAVE4_INSIGHT,  // Phase 52 D-09 — closes wave-4 'unknown' bucket
       });
 
       if (result && result.insights) {
@@ -2507,6 +2509,7 @@ Best practices, rules, and conventions for using this correctly. What should dev
         context: `PlantUML ${type} diagram generation`,
         provider: 'auto',
         timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
+        process: PROCESS_TAGS.WAVE4_DIAGRAM,  // Phase 52 D-09
       });
 
       // 🔍 TRACE: Log the LLM response
@@ -2763,6 +2766,7 @@ Return the fixed PlantUML code now:`;
         context: `PlantUML ${diagramType} diagram repair`,
         provider: 'auto',
         timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
+        process: PROCESS_TAGS.WAVE4_DIAGRAM_REPAIR,  // Phase 52 D-09
       });
 
       if (repairResult?.insights) {
@@ -4337,6 +4341,7 @@ OUTPUT FORMAT (respond with JSON array):
           context: 'Git commit history analysis - extract specific architectural patterns with meaningful names',
           provider: 'auto',
           timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
+          process: PROCESS_TAGS.WAVE4_PATTERN_EXTRACT,  // Phase 52 D-09
         }
       );
 
@@ -5112,6 +5117,7 @@ OUTPUT FORMAT (respond with JSON array):
           context: `Documentation generation for ${title}`,
           provider: 'auto',
           timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
+          process: PROCESS_TAGS.WAVE4_DOCS,  // Phase 52 D-09
         });
         
         if (analysisResult?.insights && analysisResult.insights.length > 500) {
@@ -5451,6 +5457,7 @@ ${llmInsights.substring(0, 3000)}`;
             provider: 'auto',
             taskType: 'pattern_recognition',
             timeout: 60000,  // Phase 42.2 Plan 06 follow-up — prevent Wave 4 hang on stalled proxy
+            process: PROCESS_TAGS.WAVE4_PATTERN_EXTRACT,  // Phase 52 D-09 (same as primary site)
           });
 
           // Parse retry result using same Strategy 1 (JSON) logic

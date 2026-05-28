@@ -29,11 +29,17 @@ import type { CgrObservationBuilder } from '../utils/cgr-observation-builder.js'
 import { SemanticAnalysisAgent } from './semantic-analysis-agent.js';
 import { toCanonicalEntity, augmentWithCanonical } from './canonical-mapper.js';
 import { createLLMWithProcess } from './llm-with-process.js';
+import { PROCESS_TAGS } from './process-tags.js';
 
 // Phase 42.2 Plan 02 Gap 2 — process-tag for token-usage attribution.
 // Wave1 enrich + analyze + observation-retry all share this tag (forensics
 // report §2.1 row 1-3). The proxy reads `body.process` and stores it in
 // `.data/llm-proxy/token-usage.db` for operator per-step routing config.
+//
+// Phase 52 D-05/D-06 — kept as the wave-level safety-net default bound at
+// construction time. Each .complete() call below now passes a per-call
+// `process: PROCESS_TAGS.<sub-step>` override so token-usage telemetry
+// attributes the call to the sub-step tag instead of the wave-level tag.
 const WAVE1_PROCESS_TAG = 'wave-analysis-wave1';
 
 // ============================================================================
@@ -265,9 +271,11 @@ Return a JSON object: { "observations": ["obs1", "obs2", ...] }
 IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
 
           // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess so the
-          // proxy's token-usage telemetry attributes this call to
-          // process='wave-analysis-wave1' (no longer 'unknown').
+          // proxy's token-usage telemetry attributes this call to a tagged
+          // sub-step (no longer 'unknown').
+          // Phase 52 D-05 — per-call PROCESS_TAGS.WAVE1_L1_EMIT override.
           const enrichResult = await this.llmWithProcess.complete({
+            process: PROCESS_TAGS.WAVE1_L1_EMIT,
             messages: [{ role: 'user', content: enrichPrompt }],
             taskType: 'semantic_analysis',
             agentId: 'wave1_project_enrich',
@@ -447,9 +455,11 @@ ANTI-HALLUCINATION RULES:
 IMPORTANT: Return ONLY the JSON object, no markdown code blocks or surrounding text.`;
 
     try {
-      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
-      // process='wave-analysis-wave1' attribution.
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for tagged
+      // process attribution.
+      // Phase 52 D-05 — per-call PROCESS_TAGS.WAVE1_L1_EMIT override.
       const result = await this.llmWithProcess.complete({
+        process: PROCESS_TAGS.WAVE1_L1_EMIT,
         messages: [{ role: 'user', content: prompt }],
         taskType: 'wave_component_analysis',
         agentId: 'wave1_project',
@@ -932,9 +942,13 @@ GOOD examples:
 
 Return a JSON array of strings, e.g. ["observation 1", "observation 2"]`;
 
-      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for
-      // process='wave-analysis-wave1' attribution on observation-retry.
+      // Phase 42.2 Plan 02 Gap 2 — route through llmWithProcess for tagged
+      // process attribution on observation-retry.
+      // Phase 52 D-05 — per-call PROCESS_TAGS.WAVE1_L1_EMIT override (same
+      // sub-step as enrich + analyze; observation-retry is a recovery path
+      // for the same emission boundary).
       const result = await this.llmWithProcess.complete({
+        process: PROCESS_TAGS.WAVE1_L1_EMIT,
         messages: [{ role: 'user', content: retryPrompt }],
         taskType: 'observation_retry',
         agentId: 'wave1_project',

@@ -22,6 +22,7 @@ import { OntologyClassifier } from '../ontology/OntologyClassifier.js';
 import { createHeuristicClassifier } from '../ontology/heuristics/index.js';
 import type { OntologyClassification } from '../ontology/types.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
+import { PROCESS_TAGS } from './process-tags.js';
 // km-core OntologyRegistry — single-level directory walk, atomic reload.
 // The root-barrel import is used (not the '/ontology' sub-path) because the
 // submodule's tsconfig uses `moduleResolution: node` which does not honor
@@ -227,6 +228,7 @@ export class OntologyClassificationAgent {
             const result = await this.semanticAnalyzer.analyzeContent(prompt, {
               analysisType: 'classification', // Pass prompt through unchanged for JSON response
               taskType: 'ontology_classification', // Routes to groq via task_provider_priority
+              process: PROCESS_TAGS.WAVE3_ONTOLOGY_CLASSIFY,  // Phase 52 D-05 unconditional tagging
             });
 
             // The SemanticAnalyzer returns insights - extract the classification

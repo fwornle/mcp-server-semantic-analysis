@@ -7,6 +7,7 @@ import { isMockLLMEnabled, mockSemanticAnalysis, getLLMMode, type LLMMode } from
 import { LLMService } from "@rapid/llm-proxy";
 import type { LLMCompletionResult, MockServiceInterface } from "@rapid/llm-proxy";
 import { attachTokenLogger } from "../utils/token-usage-logger.js";
+import { llmWithProcessComplete } from "./llm-with-process.js";
 
 // ES module compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -50,6 +51,18 @@ export interface AnalysisOptions {
    *  default timeout). Mirrors the 60s default in `llm-with-process.ts`
    *  used by waves 1-3. */
   timeout?: number;
+  /** Phase 52 D-09 — per-call process tag for token-usage attribution.
+   *  When set, `analyzeContent` strangler-routes the call through
+   *  `llmWithProcessComplete` (the direct-fetch wrapper that sets
+   *  `body.process` on `/api/complete`) so the proxy stores the call
+   *  under the sub-step tag instead of the default 'unknown' bucket.
+   *  When undefined, the existing SDK direct path (`llmService.complete`)
+   *  fires — preserves backward compatibility for orphan callers that
+   *  haven't been migrated yet. Closes the deferred 42.2-06 wave-4
+   *  InsightGenerationAgent unknown gap (the 5 insight-generation call
+   *  sites + the single ontology-classification call site all set this
+   *  field in Phase 52). */
+  process?: string;
 }
 
 export interface CodeAnalysisOptions {
@@ -387,7 +400,7 @@ export class SemanticAnalyzer {
   // --- Core Analysis Methods ---
 
   async analyzeContent(content: string, options: AnalysisOptions = {}): Promise<AnalysisResult> {
-    const { context, analysisType = "general", tier, taskType, timeout } = options;
+    const { context, analysisType = "general", tier, taskType, timeout, process: processTag } = options;
 
     await this.ensureInitialized();
 
@@ -423,6 +436,55 @@ export class SemanticAnalyzer {
           this.scheduleBatch();
         }
       });
+    }
+
+    // Phase 52 D-09 strangler swap — when the caller supplies a `process`
+    // tag, route through llmWithProcessComplete (the direct-fetch wrapper
+    // that sets body.process on /api/complete) so token-usage telemetry
+    // attributes the call to a named sub-step instead of the default
+    // 'unknown' bucket. The SDK's MetricsTracker is passed through so
+    // wave-controller.getDetailedCalls() / getLLMMetrics() consumers
+    // (lines 622, 645, 812, 992, 1762) keep seeing every call uniformly.
+    // SDK direct path (below) is preserved as fallback for orphan callers
+    // not yet migrated.
+    if (typeof processTag === 'string' && processTag.length > 0) {
+      try {
+        const proxyResult = await llmWithProcessComplete(
+          {
+            process: processTag,
+            messages: [{ role: 'user', content: prompt }],
+            tier: effectiveTier,
+            ...(typeof taskType === 'string' ? { taskType } : {}),
+            ...(SemanticAnalyzer.currentAgentId ? { agentId: SemanticAnalyzer.currentAgentId } : {}),
+            ...(typeof timeout === 'number' ? { timeout } : {}),
+          },
+          this.llmService.getMetricsTracker(),
+        );
+
+        // Normalize the wrapper's response into the SDK's LLMCompletionResult
+        // shape so toAnalysisResult() works unchanged. The wrapper's tokens
+        // field already matches the SDK's {total, input?, output?} structure.
+        const completionShape: LLMCompletionResult = {
+          content: proxyResult.content,
+          model: proxyResult.model,
+          provider: proxyResult.provider,
+          tokens: {
+            total: proxyResult.tokens.total,
+            input: proxyResult.tokens.input ?? 0,
+            output: proxyResult.tokens.output ?? 0,
+          },
+          // The proxy fetch path is by definition not the SDK's mock or local
+          // path — wave-analysis production traffic only. recordActualMode
+          // will mark this as 'public' inside toAnalysisResult.
+        } as LLMCompletionResult;
+
+        const analysisResult = this.toAnalysisResult(completionShape);
+        SemanticAnalyzer.recordCallMetrics(analysisResult, prompt?.slice(0, 500), proxyResult.content?.slice(0, 500));
+        return analysisResult;
+      } catch (error: any) {
+        log('All LLM providers failed', 'error', { error: error?.message ?? String(error) });
+        throw new Error(`All LLM providers failed. Errors: ${error?.message ?? String(error)}`);
+      }
     }
 
     // Single request: delegate to LLM service

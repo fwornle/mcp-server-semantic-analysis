@@ -419,25 +419,6 @@ export class SemanticAnalyzer {
       taskType,
     });
 
-    // PERFORMANCE OPTIMIZATION: Use batching for non-urgent requests
-    const shouldBatch = analysisType === "diagram" || analysisType === "patterns";
-
-    if (shouldBatch) {
-      return new Promise<AnalysisResult>((resolve, reject) => {
-        this.batchQueue.push({ prompt, options, resolve, reject });
-
-        if (this.batchQueue.length >= this.BATCH_SIZE) {
-          if (this.batchTimer) {
-            clearTimeout(this.batchTimer);
-            this.batchTimer = null;
-          }
-          this.processBatch();
-        } else {
-          this.scheduleBatch();
-        }
-      });
-    }
-
     // Phase 52 D-09 strangler swap — when the caller supplies a `process`
     // tag, route through llmWithProcessComplete (the direct-fetch wrapper
     // that sets body.process on /api/complete) so token-usage telemetry
@@ -447,6 +428,14 @@ export class SemanticAnalyzer {
     // (lines 622, 645, 812, 992, 1762) keep seeing every call uniformly.
     // SDK direct path (below) is preserved as fallback for orphan callers
     // not yet migrated.
+    //
+    // IMPORTANT: the strangler MUST fire BEFORE the batching short-circuit
+    // below, otherwise diagram/pattern calls (analysisType === 'diagram'
+    // or 'patterns') route to `analyzeContentDirectly` which does NOT read
+    // `options.process` and falls through to `llmService.complete()`,
+    // landing in token_usage.db as `process='unknown'`. Phase 52 Task 5
+    // acceptance-gate failure (27 unknown rows from wave-4 diagram path)
+    // diagnosed this ordering bug.
     if (typeof processTag === 'string' && processTag.length > 0) {
       try {
         const proxyResult = await llmWithProcessComplete(
@@ -485,6 +474,28 @@ export class SemanticAnalyzer {
         log('All LLM providers failed', 'error', { error: error?.message ?? String(error) });
         throw new Error(`All LLM providers failed. Errors: ${error?.message ?? String(error)}`);
       }
+    }
+
+    // PERFORMANCE OPTIMIZATION: Use batching for non-urgent requests.
+    // Reached only when no process tag is supplied — process-tagged calls
+    // were strangler-routed above to preserve sub-step token attribution
+    // (Phase 52 Task 5 acceptance-gate fix).
+    const shouldBatch = analysisType === "diagram" || analysisType === "patterns";
+
+    if (shouldBatch) {
+      return new Promise<AnalysisResult>((resolve, reject) => {
+        this.batchQueue.push({ prompt, options, resolve, reject });
+
+        if (this.batchQueue.length >= this.BATCH_SIZE) {
+          if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+          }
+          this.processBatch();
+        } else {
+          this.scheduleBatch();
+        }
+      });
     }
 
     // Single request: delegate to LLM service

@@ -261,6 +261,34 @@ export class WaveController {
     this.touchProgress();
   }
 
+  private lastProgressEmitTs = 0;
+  private progressItemsSinceEmit = 0;
+  private readonly PROGRESS_EMIT_EVERY_N = 5;
+  private readonly PROGRESS_EMIT_MIN_MS = 2000;
+
+  /**
+   * Throttled per-item progress emission (D-13).
+   * Routes through wave-controller's OWN writer path (updateStepOutputs → touchProgress → fs.writeFileSync).
+   * Does NOT touch coordinator's existing-progress preservation (Phase 42.2-02 single-writer invariant).
+   * See workflow-runner.ts:469-530 for the Phase 10 race-condition zone this bypasses.
+   */
+  private maybeEmitItemProgress(stepName: string, completed: number, total: number): void {
+    this.progressItemsSinceEmit += 1;
+    const now = Date.now();
+    const dueByCount = this.progressItemsSinceEmit >= this.PROGRESS_EMIT_EVERY_N;
+    const dueByTime = now - this.lastProgressEmitTs >= this.PROGRESS_EMIT_MIN_MS;
+    if (dueByCount || dueByTime || completed === total) {
+      this.updateStepOutputs(stepName, { itemsCompleted: completed, itemsTotal: total });
+      this.progressItemsSinceEmit = 0;
+      this.lastProgressEmitTs = now;
+    }
+  }
+
+  private resetItemProgressThrottle(): void {
+    this.lastProgressEmitTs = 0;
+    this.progressItemsSinceEmit = 0;
+  }
+
   /** Capture LLM metrics directly from a wave agent's getLLMMetrics() */
   private captureAgentMetrics(stepName: string, agentMetrics: { providers: string[]; totalTokens: number; totalCalls: number }, outputs?: Record<string, unknown>): void {
     this.stepMetrics.set(stepName, {
@@ -763,9 +791,13 @@ export class WaveController {
         // Sub-step 2: LLM classification
         await this.checkSingleStepPause('onto_llm_classify', true);
         dispatch({ type: 'substep-update', substepId: 'onto_llm_classify', wave: 1, totalWaves: 4 });
+        let w1ClassifyIdx = 0;
         const wave1ClassifyTasks = wave1Entities.map(entity => async () => {
           await this.classifyEntity(entity);
+          w1ClassifyIdx++;
+          this.maybeEmitItemProgress('wave1_classify', w1ClassifyIdx, wave1Entities.length);
         });
+        this.resetItemProgressThrottle();
         await this.runWithConcurrency(wave1ClassifyTasks, 2);
 
         // Sub-step 3: Apply classification results
@@ -946,9 +978,13 @@ export class WaveController {
 
         await this.checkSingleStepPause('onto_llm_classify', true);
         dispatch({ type: 'substep-update', substepId: 'onto_llm_classify', wave: 2, totalWaves: 4 });
+        let w2ClassifyIdx = 0;
         const wave2ClassifyTasks = wave2Entities.map(entity => async () => {
           await this.classifyEntity(entity);
+          w2ClassifyIdx++;
+          this.maybeEmitItemProgress('wave2_classify', w2ClassifyIdx, wave2Entities.length);
         });
+        this.resetItemProgressThrottle();
         await this.runWithConcurrency(wave2ClassifyTasks, 2);
 
         await this.checkSingleStepPause('onto_apply_results', true);
@@ -1123,9 +1159,13 @@ export class WaveController {
 
         await this.checkSingleStepPause('onto_llm_classify', true);
         dispatch({ type: 'substep-update', substepId: 'onto_llm_classify', wave: 3, totalWaves: 4 });
+        let w3ClassifyIdx = 0;
         const wave3ClassifyTasks = wave3Entities.map(entity => async () => {
           await this.classifyEntity(entity);
+          w3ClassifyIdx++;
+          this.maybeEmitItemProgress('wave3_classify', w3ClassifyIdx, wave3Entities.length);
         });
+        this.resetItemProgressThrottle();
         await this.runWithConcurrency(wave3ClassifyTasks, 2);
 
         await this.checkSingleStepPause('onto_apply_results', true);
@@ -1759,8 +1799,10 @@ export class WaveController {
 
       // Run agents with bounded concurrency, flushing progress after each completes
       let w2CompletedCount = 0;
+      this.resetItemProgressThrottle();
       const outputs = await this.runWithConcurrency(agentTasks, this.maxAgentsPerWave, (idx, output) => {
         w2CompletedCount++;
+        this.maybeEmitItemProgress('wave2_analyze', w2CompletedCount, agentTasks.length);
         // Capture agent instance incrementally
         const agent = createdAgents[idx] as WaveAgentWithMetrics | undefined;
         this.captureAgentInstance('wave2_analyze', {
@@ -1912,8 +1954,10 @@ export class WaveController {
 
       // Run agents with bounded concurrency, flushing progress after each completes
       let w3CompletedCount = 0;
+      this.resetItemProgressThrottle();
       const outputs = await this.runWithConcurrency(agentTasks, this.maxAgentsPerWave, (idx, output) => {
         w3CompletedCount++;
+        this.maybeEmitItemProgress('wave3_analyze', w3CompletedCount, agentTasks.length);
         // Capture agent instance incrementally
         const agent = createdAgents[idx] as WaveAgentWithMetrics | undefined;
         this.captureAgentInstance('wave3_analyze', {
@@ -2793,6 +2837,7 @@ export class WaveController {
     });
 
     // Build insight generation tasks (one per entity)
+    this.resetItemProgressThrottle();
     const insightTasks = allEntities.map(entity => {
       return async (): Promise<void> => {
         try {
@@ -2848,7 +2893,7 @@ export class WaveController {
             dispatch({ type: 'substep-update', substepId: 'wave4_insights', wave: 4, totalWaves: 4 });
             // Tick the live counter so the dashboard's Insight Generation
             // panel can render "N/<planned>" while wave4 is running.
-            this.updateStepOutputs('wave4_insights', { planned, generated, failed, skippedDiagrams });
+            this.updateStepOutputs('wave4_insights', { planned, generated, failed, skippedDiagrams, itemsCompleted: generated + failed, itemsTotal: planned });
 
             // Update entity metadata with insight document path
             // Phase 42.2 Plan 04 — route through the km-core adapter
@@ -2878,12 +2923,12 @@ export class WaveController {
             }
           } else {
             failed++;
-            this.updateStepOutputs('wave4_insights', { planned, generated, failed, skippedDiagrams });
+            this.updateStepOutputs('wave4_insights', { planned, generated, failed, skippedDiagrams, itemsCompleted: generated + failed, itemsTotal: planned });
           }
         } catch (entityErr) {
           log(`[WaveController] Insight generation failed for ${entity.name}: ${entityErr}`, 'warning');
           failed++;
-          this.updateStepOutputs('wave4_insights', { planned, generated, failed, skippedDiagrams });
+          this.updateStepOutputs('wave4_insights', { planned, generated, failed, skippedDiagrams, itemsCompleted: generated + failed, itemsTotal: planned });
         }
       };
     });

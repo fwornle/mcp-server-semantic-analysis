@@ -6,9 +6,11 @@
  * can connect to via HTTP/SSE transport. Designed for containerized deployments.
  */
 
-import express from 'express';
+import express, { Router } from 'express';
 import type { Request, Response } from 'express';
+import path from 'node:path';
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { createKmCoreRouter, GraphKMStore } from '@fwornle/km-core';
 import { createServer } from "./server.js";
 import { log, logError } from "./logging.js";
 import { setServerInstance } from "./tools.js";
@@ -20,6 +22,65 @@ const PORT = parseInt(process.env.SEMANTIC_ANALYSIS_PORT || '3848', 10);
 // Express app with SSE transport
 const app = express();
 app.use(express.json());
+
+// ---------------------------------------------------------------------------
+// Phase 44 Plan 08: km-core /api/v1 REST mount (same-port strategy)
+//
+// Mount the canonical /api/v1 surface alongside the existing SSE routes
+// (/health, /sse, /workflow-events, /messages). km-core ships
+// `createKmCoreRouter` as the framework-agnostic factory (44-CONTEXT R-1/R-2);
+// consumer constructs its own express Router and attaches it.
+//
+// Hydration gate (44-RESEARCH Open Q5): 503-until-ready middleware mirrors
+// A's pattern (`scripts/observations-api-server.mjs:1178-1183`), so requests
+// hitting /api/v1/* before the kmStore finishes opening get a typed error
+// instead of crashing.
+//
+// Restart command: snapshot/restore returns `restartRequired: true` per
+// CONTEXT S-2 (no in-process restart — SSE long-lived connections must not
+// be killed by snapshot restore). Operator restarts the container via the
+// documented `docker-compose restart coding-services` command.
+//
+// CLAUDE.md mandatory rule: km-core construction MUST pass `ontologyDir`,
+// otherwise default-class resolution throws
+// `opts.classes omitted but store has no ontology registry`. Paths follow
+// the canonical wave-controller convention (.data/knowledge-graph/{leveldb,
+// exports} + .data/ontologies inside the container at /coding/).
+// ---------------------------------------------------------------------------
+const REPOSITORY_PATH = process.env.REPOSITORY_PATH || '/coding';
+const kmStore = new GraphKMStore({
+  dbPath: path.join(REPOSITORY_PATH, '.data', 'knowledge-graph', 'leveldb'),
+  exportDir: path.join(REPOSITORY_PATH, '.data', 'knowledge-graph', 'exports'),
+  ontologyDir: path.join(REPOSITORY_PATH, '.data', 'ontologies'),
+  domains: ['coding'],
+  debounceMs: 5000,
+});
+let kmStoreReady = false;
+
+const kmRouter = Router();
+kmRouter.use((_req: Request, res: Response, next: express.NextFunction) => {
+  // 44-RESEARCH Open Q5 + Pitfall 4: gate behind store-open + presence of
+  // the in-memory graph. `kmStore.graph` is the durable indicator that
+  // `open()` has finished hydrating from LevelDB/JSON; combined with the
+  // local `kmStoreReady` flag flipped after `await kmStore.open()`.
+  if (!kmStoreReady || !(kmStore as unknown as { graph?: unknown }).graph) {
+    res.status(503).json({ error: 'Knowledge graph store not ready' });
+    return;
+  }
+  next();
+});
+// km-core's RouterLike declares handler params as `never` (an over-restrictive
+// contravariant shape that makes the express.Router type technically incompatible
+// at the TS-checker level even though the runtime contract is identical).
+// Cast through unknown to bridge the two -- functionally a no-op, declaratively
+// satisfies the framework-agnostic Router contract.
+createKmCoreRouter(kmStore, kmRouter as unknown as Parameters<typeof createKmCoreRouter>[1], {
+  ontologyRegistry: kmStore.ontology,
+  snapshotDir: path.join(REPOSITORY_PATH, '.data', 'knowledge-graph', 'exports'),
+  restartCommand: 'docker-compose restart coding-services',
+});
+app.use('/api/v1', kmRouter);
+process.stderr.write('[sse-server] km-core /api/v1 routes mounted on port ' + PORT + '\n');
 
 // Store transports by session ID
 const transports: Record<string, SSEServerTransport> = {};
@@ -165,13 +226,30 @@ app.post('/messages', async (req: Request, res: Response) => {
   }
 });
 
-// Start server
-app.listen(PORT, () => {
-  log(`Semantic Analysis SSE Server listening on port ${PORT}`, 'info');
-  log(`Health check: http://localhost:${PORT}/health`, 'info');
-  log(`SSE endpoint: http://localhost:${PORT}/sse`, 'info');
-  log(`Workflow events: http://localhost:${PORT}/workflow-events`, 'info');
-});
+// Start server -- km-core store opens FIRST so the /api/v1 mount is
+// usable as soon as `listen` accepts connections. Per CLAUDE.md mandatory
+// rule: `ontologyDir` is required (set above) and `open()` hydrates the
+// in-memory graph from LevelDB (or JSON fallback per Phase 37 D-22).
+(async () => {
+  try {
+    await kmStore.open();
+    kmStoreReady = true;
+    log('[sse-server] km-core GraphKMStore opened (REST /api/v1 ready)', 'info');
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    log(`[sse-server] km-core GraphKMStore open failed: ${errorMsg}`, 'error');
+    // Continue serving SSE even if km-core fails -- the 503 gate keeps
+    // /api/v1/* requests safe until an operator fixes the underlying issue.
+  }
+
+  app.listen(PORT, () => {
+    log(`Semantic Analysis SSE Server listening on port ${PORT}`, 'info');
+    log(`Health check: http://localhost:${PORT}/health`, 'info');
+    log(`SSE endpoint: http://localhost:${PORT}/sse`, 'info');
+    log(`Workflow events: http://localhost:${PORT}/workflow-events`, 'info');
+    log(`km-core REST: http://localhost:${PORT}/api/v1/stats`, 'info');
+  });
+})();
 
 // Handle shutdown
 process.on('SIGINT', async () => {

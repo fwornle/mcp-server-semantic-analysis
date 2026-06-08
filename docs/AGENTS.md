@@ -1,14 +1,14 @@
-# B — Agent Details
+# mcp-server-semantic-analysis — Agent Details
 
 > Long-form companion to [../README.md](../README.md). The README answers "where do I edit config?" in 5 minutes; this file answers "how does each agent actually work?" and contains the operational depth (per-agent enhancement narratives, MCP tool catalog, use-case walkthroughs, project structure).
 
-The B system orchestrates **14 intelligent agents** across three role groups (8 LLM-enhanced, 2 infrastructure, 4 orchestration/persistence/coordination). The README's Architecture section lists each agent with a 1-line role; this file expands each into its operational contract.
+The `mcp-server-semantic-analysis` system orchestrates **14 intelligent agents** across three role groups (8 LLM-enhanced, 2 infrastructure, 4 orchestration/persistence/coordination). The README's Architecture section lists each agent with a 1-line role; this file expands each into its operational contract.
 
 ## Agent Catalog — Per-Agent Enhancement Detail
 
 ### 🧠 LLM-Enhanced Agents (8)
 
-Five core agents leverage advanced LLM capabilities through the `SemanticAnalyzer` service, giving B its "semantic" depth beyond pattern-matching.
+Five core agents leverage advanced LLM capabilities through the `SemanticAnalyzer` service, giving `mcp-server-semantic-analysis` its "semantic" depth beyond pattern-matching.
 
 #### 1. VibeHistoryAgent — Session Analysis
 
@@ -154,7 +154,7 @@ const persistenceAgent = new PersistenceAgent(repoPath, graphDB, {
 
 ## MCP Tools (12 Available)
 
-These tools are exposed by B over the MCP protocol (stdio in local mode, HTTP/SSE in Docker mode on port 3848). All tool definitions live in `src/tools.ts`.
+These tools are exposed by `mcp-server-semantic-analysis` over the MCP protocol (stdio in local mode, HTTP/SSE in Docker mode on port 3848). All tool definitions live in `src/tools.ts`.
 
 ### Connection & Health
 

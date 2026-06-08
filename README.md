@@ -1,10 +1,10 @@
-# B: mcp-server-semantic-analysis
+# mcp-server-semantic-analysis
 
 > MCP server driving the **wave-analysis** workflow, ingest, and ontology classification for the coding knowledge graph — 14 agents (8 LLM-enhanced, 2 infrastructure, orchestration + persistence) writing through `@fwornle/km-core`.
 
 ## Configurations Owned
 
-- **Ontology:** — (owned by A — B READS `.data/ontologies/coding-ontology.json` for classification, but does not own it)
+- **Ontology:** — (owned by `coding` — this server READS `.data/ontologies/coding-ontology.json` for classification, but does not own it)
 - **LLM providers:** `lib/llm/` (6-tier provider chain: Groq → Gemini → Custom → Anthropic → OpenAI → Ollama) + `config/agents/*.json` (per-agent prompts) + `config/workflows/*.json` (wave-analysis `processOverrides` routing — see `scripts/configure-wave-analysis-routing.sh`)
 - **Ingest adapters:** `src/agents/*.ts` — each agent ingests via `PersistenceAgent`, which writes through `@fwornle/km-core`'s REST router (`POST /api/v1/entities`)
 - **Domain dedup:** `src/agents/dedup-agent.ts` — OpenAI `text-embedding-3-small` + cosine similarity overlay on top of km-core's baseline `LayeredDeduplicator` (with Jaccard text-similarity fallback)
@@ -13,7 +13,7 @@
 
 ![B architecture](../../docs/images/b-architecture.png)
 
-B exposes 12 MCP tools over stdio (local) or HTTP/SSE on port `3848` (Docker mode). The `CoordinatorAgent` orchestrates the 14-agent pipeline via workflow definitions in `config/workflows/*.json`; `WaveController` drives the multi-wave analysis flow (extract → analyze → classify → persist → dedup → predict → merge). The 8 LLM-enhanced agents share a `SemanticAnalyzer` service with automatic provider failover; the 2 infrastructure agents handle embedding-based dedup and stale-entity detection. All persistence converges on `PersistenceAgent`, which writes through km-core's REST contract — B owns no graph storage itself.
+This server exposes 12 MCP tools over stdio (local) or HTTP/SSE on port `3848` (Docker mode). The `CoordinatorAgent` orchestrates the 14-agent pipeline via workflow definitions in `config/workflows/*.json`; `WaveController` drives the multi-wave analysis flow (extract → analyze → classify → persist → dedup → predict → merge). The 8 LLM-enhanced agents share a `SemanticAnalyzer` service with automatic provider failover; the 2 infrastructure agents handle embedding-based dedup and stale-entity detection. All persistence converges on `PersistenceAgent`, which writes through km-core's REST contract — `mcp-server-semantic-analysis` owns no graph storage itself.
 
 **14-Agent Catalog** (names + 1-line roles):
 
@@ -46,9 +46,9 @@ For per-agent enhancement detail, the 6-tier LLM provider chain, ontology classi
 
 ## Related Systems
 
-- [KM-Core](../../lib/km-core/README.md) — shared store + REST contracts B writes through (Phase 44 wire-shape lock)
-- [A: coding](../../README.md) — host runtime + observation source (obs-api at `localhost:12436`)
-- [C: OKM (BMW GHE)](https://bmw.ghe.com/adpnext-apps/operational-knowledge-management) — sister-system consuming the same km-core core for RaaS / KPI-FW / business ontologies
+- [KM-Core](../../lib/km-core/README.md) — shared store + REST contracts this server writes through (Phase 44 wire-shape lock)
+- [coding](../../README.md) — host runtime + observation source (obs-api at `localhost:12436`)
+- [operational-knowledge-management](https://bmw.ghe.com/adpnext-apps/operational-knowledge-management) — sister system consuming the same km-core core for RaaS / KPI-FW / business ontologies ("OKM" for short, external BMW GHE repo)
 
 ## Tests / Verify
 

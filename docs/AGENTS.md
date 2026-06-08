@@ -269,7 +269,7 @@ src/
 
 ### Docker / HTTP-SSE Mode
 
-For containerized deployments, B exposes HTTP/SSE transport:
+For containerized deployments, this server exposes HTTP/SSE transport:
 
 - **Port**: `3848` (configurable via `SEMANTIC_ANALYSIS_SSE_PORT`)
 - **Endpoints**: `GET /health`, `GET /sse`, `POST /messages`
@@ -328,5 +328,5 @@ See the parent [Docker Deployment Guide](../../../docker/README.md) for full con
 ## See Also
 
 - [../README.md](../README.md) — 6-section quick-reference (Configurations Owned, Where to Edit, Related Systems)
-- [../../../lib/km-core/README.md](../../../lib/km-core/README.md) — Shared persistence + REST contract layer that B writes through
-- [../../../README.md](../../../README.md) — A (coding) — host runtime and observation source
+- [../../../lib/km-core/README.md](../../../lib/km-core/README.md) — Shared persistence + REST contract layer that this server writes through
+- [../../../README.md](../../../README.md) — `coding` — host runtime and observation source

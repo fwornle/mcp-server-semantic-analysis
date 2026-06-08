@@ -46,7 +46,7 @@ For per-agent enhancement detail, the 6-tier LLM provider chain, ontology classi
 
 ## Related Systems
 
-- [KM-Core](../../lib/km-core/README.md) — shared store + REST contracts this server writes through (Phase 44 wire-shape lock)
+- [KM-Core](../../lib/km-core/README.md) — shared store + REST contracts this server writes through (`/api/v1/` wire-shape lock)
 - [coding](../../README.md) — host runtime + observation source (obs-api at `localhost:12436`)
 - [operational-knowledge-management](https://bmw.ghe.com/adpnext-apps/operational-knowledge-management) — sister system consuming the same km-core core for RaaS / KPI-FW / business ontologies ("OKM" for short, external BMW GHE repo)
 
@@ -58,4 +58,4 @@ npm run build
 npm test
 ```
 
-> **Submodule build pipeline:** B is a git submodule. After any TypeScript source change, BOTH `npm run build` (inside this submodule) AND a Docker rebuild of `coding-services` are required for the change to take effect at runtime. See the **Rebuilding After Code Changes** section in the parent repo's [CLAUDE.md](../../CLAUDE.md) for the full two-step recipe. The README + `docs/AGENTS.md` rewrite in Phase 46 does NOT require a rebuild (docs-only).
+> **Submodule build pipeline:** This server is a git submodule of the `coding` parent repo. After any TypeScript source change, BOTH `npm run build` (inside this submodule) AND a Docker rebuild of `coding-services` are required for the change to take effect at runtime. See the **Rebuilding After Code Changes** section in the parent repo's [CLAUDE.md](../../CLAUDE.md) for the full two-step recipe. Documentation-only changes do not require a rebuild.

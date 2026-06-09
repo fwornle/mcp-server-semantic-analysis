@@ -21,6 +21,26 @@ const PORT = parseInt(process.env.SEMANTIC_ANALYSIS_PORT || '3848', 10);
 
 // Express app with SSE transport
 const app = express();
+
+// CORS middleware — required by browser clients consuming the km-core /api/v1
+// REST mount and the /workflow-events SSE endpoint from a different origin
+// (Vite dev server at :5173, system-health-dashboard at :3032, browser direct
+// access at :3848). Without these headers the browser blocks the response per
+// the same-origin policy even when the request succeeds server-side.
+// Pre-route placement: must run before app.use(express.json()) so OPTIONS
+// preflight requests (which have no body) short-circuit without touching the
+// JSON parser.
+app.use((req: Request, res: Response, next: express.NextFunction) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
 app.use(express.json());
 
 // ---------------------------------------------------------------------------

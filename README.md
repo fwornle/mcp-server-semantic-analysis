@@ -11,7 +11,7 @@
 
 ## Architecture
 
-![B architecture](../../docs/images/b-architecture.png)
+![mcp-server-semantic-analysis architecture](../../docs/images/mcp-server-semantic-analysis-architecture.png)
 
 This server exposes 12 MCP tools over stdio (local) or HTTP/SSE on port `3848` (Docker mode). The `CoordinatorAgent` orchestrates the 14-agent pipeline via workflow definitions in `config/workflows/*.json`; `WaveController` drives the multi-wave analysis flow (extract → analyze → classify → persist → dedup → predict → merge). The 8 LLM-enhanced agents share a `SemanticAnalyzer` service with automatic provider failover; the 2 infrastructure agents handle embedding-based dedup and stale-entity detection. All persistence converges on `PersistenceAgent`, which writes through km-core's REST contract — `mcp-server-semantic-analysis` owns no graph storage itself.
 

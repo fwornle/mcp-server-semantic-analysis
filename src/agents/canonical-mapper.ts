@@ -48,8 +48,10 @@
 import {
   mintEntityId,
   mergeDescriptionSegment,
+  isProject,
   type Entity,
   type DescriptionSegment,
+  type Project,
 } from '@fwornle/km-core';
 import type { KGEntity } from './kg-operators.js';
 
@@ -81,6 +83,15 @@ export interface CanonicalMapperOptions {
    *  `this.team` (workflow `parameters.team`). Empty string is rejected
    *  by the `length > 0` guard; omit the option to mean "no team". */
   team?: string;
+  /** Closed-set project tag (Phase 57 D-03/D-04); stamped into
+   *  `metadata.project` when the value passes the `isProject()` runtime
+   *  guard. Accepts `Project | string` so callers that have not yet been
+   *  re-typed (mixed transitional state) still compile; the typeguard at
+   *  the stamp site narrows it. Wave-agent callers thread `this.team`
+   *  here (defaults to `'coding'` in this container per CLAUDE.md submodule
+   *  mapping). Phase 60+ will plumb a dedicated `parameters.project` once
+   *  okm/cap teams come online. */
+  project?: Project | string;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +175,17 @@ export function toCanonicalEntity(
   // `report-42.2-00-canonical-emit.md` §1.3 locks this insertion point.
   if (typeof options.team === 'string' && options.team.length > 0) {
     baseMetadata.team = options.team;
+  }
+
+  // Phase 57 D-04 — stamp the closed-set `metadata.project` tag for every
+  // canonical entity. Uses `isProject()` from km-core as the runtime
+  // typeguard (D-03) — closed-set vocabulary, NOT a `length > 0` string
+  // check. The legacy `metadata.team` stamp above is preserved verbatim
+  // (D-02 — Phase 57 adds project NEXT TO team, never instead of it).
+  // Defence-in-depth dual-stamp at km-core-adapter.ts:storeEntity mirrors
+  // Phase 42.2 Plan 02 Gap 4's team pattern.
+  if (isProject(options.project)) {
+    baseMetadata.project = options.project;
   }
 
   // Preserve significance + hierarchy fields in metadata (D-54 rows 5, 12-15).

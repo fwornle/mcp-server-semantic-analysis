@@ -364,9 +364,15 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks.`;
     // Phase 42.2 Plan 02 Gap 1 — thread `team` into the options bag so
     // canonical-mapper stamps `metadata.team` for km-core multi-tenant queries.
     // `this.team` is the workflow `parameters.team` injected at construction.
+    // Phase 57 D-04 — also pass `project: this.team` so canonical-mapper
+    // stamps the closed-set `metadata.project` tag. `this.team` defaults to
+    // `'coding'` in this container per CLAUDE.md mapping; `isProject(this.team)`
+    // gates the actual stamp inside canonical-mapper.
+    // TODO(phase-60-or-later): plumb a dedicated `parameters.project` once
+    // okm/cap teams come online so project and team can diverge.
     const canonicalEntities = allEntities.map((entity) => {
       const ontologyClass = entity.level === 0 ? 'Project' : 'Component';
-      return augmentWithCanonical(entity, ontologyClass, this.runId, { team: this.team });
+      return augmentWithCanonical(entity, ontologyClass, this.runId, { team: this.team, project: this.team });
     });
 
     return {

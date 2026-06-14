@@ -294,8 +294,12 @@ export class Wave2ComponentAgent {
     const _grepMarker: unknown = toCanonicalEntity;  // eslint-disable-line @typescript-eslint/no-unused-vars
     // Phase 42.2 Plan 02 Gap 1 — thread `team` so canonical-mapper stamps
     // `metadata.team` for km-core multi-tenant queries.
+    // Phase 57 D-04 — also pass `project: this.team` so canonical-mapper
+    // stamps the closed-set `metadata.project` tag (defaults to `'coding'`
+    // in this container; `isProject(this.team)` gates the actual stamp).
+    // TODO(phase-60-or-later): plumb dedicated `parameters.project`.
     const canonicalEntities = l2Entities.map((entity) =>
-      augmentWithCanonical(entity, 'SubComponent', this.runId, { team: this.team }),
+      augmentWithCanonical(entity, 'SubComponent', this.runId, { team: this.team, project: this.team }),
     );
 
     return {

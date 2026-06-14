@@ -35,12 +35,14 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type {
-  Entity,
-  Relation,
-  GraphKMStore,
-  BatchOp,
-  ProvenanceStamp,
+import {
+  isProject,
+  type Entity,
+  type Relation,
+  type GraphKMStore,
+  type BatchOp,
+  type ProvenanceStamp,
+  type Project,
 } from '@fwornle/km-core';
 
 // ---------------------------------------------------------------------------
@@ -96,10 +98,15 @@ export interface KmCoreAdapter {
    * Write a new entity (or upsert by id when caller supplies one). Translates
    * B's SharedMemoryEntity-ish shape into the canonical km-core Entity per
    * D-54. Returns `{ id }` matching B's existing return contract.
+   *
+   * Phase 57 D-04 — `options.project` (optional) carries the closed-set
+   * project tag. When set and valid per `isProject()`, it is stamped into
+   * `metadata.project` as a defence-in-depth dual stamp alongside the
+   * canonical-mapper's primary stamp.
    */
   storeEntity(
     entity: Record<string, unknown>,
-    options: { team: string },
+    options: { team: string; project?: Project | string },
   ): Promise<{ id: string }>;
 
   /**
@@ -394,7 +401,7 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
 
   async function storeEntity(
     source: Record<string, unknown>,
-    options: { team: string },
+    options: { team: string; project?: Project | string },
   ): Promise<{ id: string }> {
     const name = String(source.name ?? '');
     if (!name) throw new Error('km-core-adapter.storeEntity: entity.name is required');
@@ -445,6 +452,18 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
         ? options.team
         : undefined;
 
+    // Phase 57 D-04 — defence-in-depth dual stamp for the closed-set
+    // `metadata.project` tag. Mirrors the Gap 4 team dual-stamp above:
+    // the canonical-mapper has the PRIMARY stamp; here at the actual
+    // putEntity call site we also stamp project so any writer path that
+    // bypasses canonical-mapper (e.g., renameEntity / direct ad-hoc calls)
+    // still emits the project tag. `isProject()` from km-core is the
+    // closed-set typeguard (D-03). Defaulting to 'coding' is intentionally
+    // NOT done here — the canonical-mapper / wave-controller boundary owns
+    // the default; stamping a hardcoded value here would silently mask
+    // upstream bugs (per Plan 57-03 Task 2 action).
+    const projectFromOptions = isProject(options.project) ? options.project : undefined;
+
     // Build the putEntity payload (id is minted by the store; createdAt /
     // updatedAt are stamped by the store on the strict path per D-31/D-32).
     const entity: Partial<Entity> & { name: string; entityType: string } = {
@@ -463,6 +482,20 @@ export function createKmCoreAdapter(opts: CreateKmCoreAdapterOptions): KmCoreAda
           ? { team: (sourceMetadata as { team: string }).team }
           : teamFromOptions !== undefined
           ? { team: teamFromOptions }
+          : {}),
+        // Phase 57 D-04 — defence-in-depth project dual-stamp ternary.
+        // Prefer sourceMetadata.project (canonical-mapper primary stamp from
+        // Task 1) when set AND valid per isProject(); fall back to the
+        // options bag's project (also isProject-gated above); else no-op.
+        // Mirrors the team ternary directly above so team and project both
+        // appear in the merged metadata whenever both are supplied. Closed-
+        // set typeguard means a misspelled project ('codeing') is silently
+        // dropped here — surfaces upstream stamping bugs at backfill grep
+        // time rather than letting bad data flow into the export.
+        ...(isProject((sourceMetadata as { project?: unknown }).project)
+          ? { project: (sourceMetadata as { project: string }).project }
+          : projectFromOptions !== undefined
+          ? { project: projectFromOptions }
           : {}),
         ...(typeof source.significance !== 'undefined' ? { significance: source.significance } : {}),
         ...(typeof source.source !== 'undefined' ? { source: source.source } : {}),

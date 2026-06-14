@@ -30,6 +30,122 @@ import { PROCESS_TAGS } from './process-tags.js';
 // deviation #2). Functionally equivalent — OntologyRegistry is re-exported
 // from the root barrel.
 import { OntologyRegistry } from '@fwornle/km-core';
+import type { ResolvedClass } from '@fwornle/km-core';
+
+// Phase 57 Plan 04 D-10 — L2 refinement helpers.
+//
+// The refinement step turns a generic L1 classification (Component / SubComponent
+// / Detail) into a more specific L2 class declared in `.data/ontologies/
+// coding.lower.json` (LiveLoggingSystem, ConstraintMonitor, OnlineObservation,
+// ...). When the LLM declines all L2 options OR the lower-onto file is absent
+// from disk, we fall back to the L1 parent — no forced L2 classification, no
+// synthetic emissions. This preserves the existing `'Unclassified'` fallback
+// (line 523) intact.
+//
+// All three helpers are pure functions exported for unit testing; the agent
+// class uses them via the instance field `this.l2Classes` populated at
+// initialize() time.
+
+/**
+ * The L1 parent classes that can be refined to a more specific L2 in
+ * coding.lower.json. Plan 02 D-09 locks this set: the 10 L2 classes extend
+ * exactly these three carriers (6 Component + 3 Detail + 1 SubComponent).
+ */
+export const REFINABLE_L1_PARENTS: readonly string[] = [
+  'Component',
+  'SubComponent',
+  'Detail',
+];
+
+/**
+ * Filter a registry to classes whose `extends` chain anchors at one of the
+ * REFINABLE_L1_PARENTS. Returns ResolvedClass[] (name + description + extends
+ * + relationships + optional properties), ready for prompt rendering.
+ *
+ * Empty array when coding.lower.json is absent from the ontology directory —
+ * the registry loads `upper.json` + `coding-ontology.json` without throwing,
+ * and the L1 carriers themselves do NOT match this filter (Component extends
+ * nothing in coding-ontology.json).
+ */
+export function loadL2Classes(registry: OntologyRegistry): ResolvedClass[] {
+  const out: ResolvedClass[] = [];
+  for (const cls of registry.classCatalog.values()) {
+    // Skip the L1 carrier classes themselves (e.g. `Detail extends SubComponent`
+    // in coding-ontology.json). Only TRUE L2 classes shipped in a *.lower.json
+    // file should populate the refinement prompt.
+    if (REFINABLE_L1_PARENTS.includes(cls.name)) continue;
+    if (cls.extends && REFINABLE_L1_PARENTS.includes(cls.extends)) {
+      out.push(cls);
+    }
+  }
+  return out;
+}
+
+/**
+ * Render the refinement-step prompt addendum for a given L1 class.
+ * Returns the empty string when refinement is not applicable:
+ *   - L1 class is not in REFINABLE_L1_PARENTS (e.g. Project, File, Service)
+ *   - L2 class list is empty (coding.lower.json absent — graceful no-op)
+ *
+ * Wording matches Plan 04 Task 1 step 2 (planner-locked). Descriptions are
+ * sourced from `cls.description` at render-time so prompt + JSON file stay
+ * in sync — editing coding.lower.json's description propagates without code
+ * change.
+ */
+export function buildL2RefinementPrompt(
+  l1Class: string,
+  l2Classes: readonly ResolvedClass[],
+): string {
+  if (!REFINABLE_L1_PARENTS.includes(l1Class)) return '';
+  if (l2Classes.length === 0) return '';
+
+  const lines: string[] = [];
+  lines.push('');
+  lines.push(
+    'REFINEMENT STEP — if the L1 class is one of [Component, SubComponent, Detail], ' +
+      'try to refine to a more specific L2 class from this list, otherwise return the ' +
+      'L1 class unchanged. Decline (return L1) if none of these L2 classes fit the ' +
+      'observation:',
+  );
+  for (const cls of l2Classes) {
+    lines.push(`- ${cls.name}: ${cls.description}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Parse the LLM's refinement response and validate against the registered L2
+ * class set. Rejects hallucinated class names (not in `validL2Names`) and
+ * falls back to the L1 parent in three cases:
+ *   - empty / whitespace-only response
+ *   - response equal to (or matching) the L1 parent itself
+ *   - response not matching any registered L2 name
+ *
+ * Embedded matches are tolerated: the LLM may wrap the class name in a
+ * sentence (e.g. "After consideration the class is EtmDaemon.") — the
+ * first valid L2 name discovered wins. This preserves the no-forced-L2
+ * invariant (D-10).
+ */
+export function extractL2FromLLMResponse(
+  rawText: string,
+  validL2Names: readonly string[],
+  l1Fallback: string,
+): string {
+  const text = (rawText ?? '').trim();
+  if (text.length === 0) return l1Fallback;
+
+  // Token-boundary scan so 'EtmDaemon' inside a sentence resolves but
+  // 'SuperEtmDaemonX' (a hallucinated near-miss) does not.
+  for (const name of validL2Names) {
+    const re = new RegExp(`(^|[^A-Za-z0-9_])${escapeRegex(name)}([^A-Za-z0-9_]|$)`);
+    if (re.test(text)) return name;
+  }
+  return l1Fallback;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /**
  * Ontology metadata to be attached to entities
@@ -135,6 +251,10 @@ export class OntologyClassificationAgent {
   private team: string;
   private basePath: string;
   private initialized: boolean = false;
+  // Phase 57 Plan 04 D-10 — L2 classes loaded from coding.lower.json via
+  // OntologyRegistry. Empty array when the lower-onto file is absent (graceful
+  // degrade — L2 refinement is silently skipped, L1 emission preserved).
+  private l2Classes: ResolvedClass[] = [];
 
   constructor(team: string = 'coding', repositoryPath?: string) {
     this.team = team;
@@ -203,6 +323,23 @@ export class OntologyClassificationAgent {
       const ontologyDir = path.join(this.basePath, '.data/ontologies');
       const registry = new OntologyRegistry({ ontologyDir });
       this.ontology = new LegacyOntologyAdapter(registry);
+
+      // Phase 57 Plan 04 D-10 — load the 10 L2 classes from coding.lower.json
+      // (auto-discovered by the registry alongside upper.json + coding-ontology.json).
+      // Empty array when coding.lower.json is absent — refinement is silently
+      // skipped and L1 emission is preserved. Log the count to stderr so
+      // operators can spot a regression (file missing / file malformed).
+      this.l2Classes = loadL2Classes(registry);
+      if (this.l2Classes.length === 0) {
+        process.stderr.write(
+          '[ontology-classification-agent] coding.lower.json not loaded — L2 refinement disabled\n',
+        );
+      } else {
+        log('Phase 57-04: L2 refinement classes loaded', 'info', {
+          count: this.l2Classes.length,
+          names: this.l2Classes.map((c) => c.name),
+        });
+      }
 
       // Create validator and classifier (signatures unchanged — both now accept
       // LegacyOntologyAdapter where they used to accept the deleted legacy class).
@@ -558,6 +695,18 @@ export class OntologyClassificationAgent {
 
   /**
    * Build classification input string from observation
+   *
+   * Phase 57 Plan 04 D-10 — append the L2 refinement instruction as a separate
+   * step after the observation content. The LLM sees both the L1 class catalog
+   * (via OntologyClassifier.buildClassificationPrompt's `entityClasses`
+   * enumeration) AND this REFINEMENT STEP instruction with one-line L2
+   * descriptions. The model is instructed to decline (return L1) when no L2
+   * class fits — no forced L2 classification (D-10 invariant).
+   *
+   * When `this.l2Classes` is empty (coding.lower.json absent or malformed),
+   * buildL2RefinementPrompt returns the empty string and the input is unchanged
+   * from the pre-Phase-57 behaviour — L1 emission preserved as a graceful
+   * degradation.
    */
   private buildClassificationInput(observation: any): string {
     const parts: string[] = [];
@@ -587,6 +736,16 @@ export class OntologyClassificationAgent {
     // Add tags
     if (observation.tags && Array.isArray(observation.tags)) {
       parts.push(`Tags: ${observation.tags.join(', ')}`);
+    }
+
+    // Phase 57 Plan 04 D-10 — append the L2 refinement step. The helper
+    // self-gates on the refinable-L1 set; we pass 'Component' here as a
+    // probe-class so the L1 check passes whenever L2 classes are loaded.
+    // The actual L1 → L2 decision happens inside the LLM's response to the
+    // REFINEMENT STEP instruction.
+    const refinement = buildL2RefinementPrompt('Component', this.l2Classes);
+    if (refinement.length > 0) {
+      parts.push(refinement);
     }
 
     return parts.join('\n');

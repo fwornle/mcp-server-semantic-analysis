@@ -31,6 +31,17 @@ import { PROCESS_TAGS } from './process-tags.js';
 // from the root barrel.
 import { OntologyRegistry } from '@fwornle/km-core';
 import type { ResolvedClass } from '@fwornle/km-core';
+// Phase 60 D-14 — closed-set hierarchy roots (CK + 4 project anchors)
+// whose ontologyClass is hard-locked. The writer-side guard below
+// short-circuits LLM re-classification for these names so an adversarial
+// LLM verdict cannot drift CK back to 'Detail' (D-12 root cause). Pattern
+// source: quality-assurance-agent.ts:1921 exemptNodes Set, narrowed to 5.
+import { HIERARCHY_ROOTS, HIERARCHY_ROOT_CLASS, isHierarchyRoot } from '@fwornle/km-core';
+// Surface witness — touching the named exports at runtime forces the import
+// to be retained by tree-shakers. HIERARCHY_ROOTS itself is referenced by
+// the test file so it cannot be dead-code-eliminated; this constant keeps
+// the runtime guard happy under strict bundlers.
+void HIERARCHY_ROOTS;
 
 // Phase 57 Plan 04 D-10 — L2 refinement helpers.
 //
@@ -161,7 +172,10 @@ export interface OntologyMetadata {
   classificationConfidence: number;
 
   /** Method used for classification */
-  classificationMethod: 'heuristic' | 'llm' | 'hybrid' | 'auto-assigned' | 'unclassified';
+  // Phase 60 D-14 — widen with 'hard-root-guard' so the writer-side guard's
+  // short-circuit path can surface in telemetry (byMethod aggregation in
+  // classifyObservations + dashboard sub-step badges).
+  classificationMethod: 'heuristic' | 'llm' | 'hybrid' | 'auto-assigned' | 'unclassified' | 'hard-root-guard';
 
   /** Source ontology (upper or lower name) */
   ontologySource: 'upper' | 'lower';
@@ -640,6 +654,39 @@ export class OntologyClassificationAgent {
   ): Promise<ClassifiedObservation> {
     if (!this.classifier) {
       throw new Error('Classifier not initialized');
+    }
+
+    // Phase 60 D-14 — hard-root guard: closed-set of system + project
+    // anchors (CollectiveKnowledge + Coding/DynArch/Timeline/Normalisa)
+    // are immutable. The LLM re-classifier MUST NOT overwrite their
+    // ontologyClass regardless of LLM verdict. Short-circuit BEFORE the
+    // classifier is invoked so:
+    //   (a) no LLM cost is incurred for hierarchy roots,
+    //   (b) no LLM verdict can drift the class (D-12 root cause is the
+    //       drift back to ontologyClass='Detail' on CollectiveKnowledge),
+    //   (c) telemetry surfaces the short-circuit via the new
+    //       'hard-root-guard' classificationMethod literal.
+    //
+    // Source of truth: HIERARCHY_ROOTS + HIERARCHY_ROOT_CLASS exported
+    // from `@fwornle/km-core` (lib/km-core/src/types/hierarchy-roots.ts).
+    // Pattern source: quality-assurance-agent.ts:1921 exemptNodes Set.
+    const obsName = (observation as { name?: unknown } | null | undefined)?.name;
+    if (isHierarchyRoot(obsName)) {
+      const lockedClass = HIERARCHY_ROOT_CLASS[obsName];
+      const ontologyMetadata: OntologyMetadata = {
+        ontologyClass: lockedClass,
+        ontologyVersion: '1.0.0',
+        classificationConfidence: 1.0,
+        classificationMethod: 'hard-root-guard',
+        ontologySource: 'upper',
+        properties: {},
+        classifiedAt: new Date().toISOString(),
+      };
+      return {
+        original: observation,
+        ontologyMetadata,
+        classified: true,
+      };
     }
 
     // Build classification input from observation

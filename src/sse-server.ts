@@ -100,6 +100,19 @@ createKmCoreRouter(kmStore, kmRouter as unknown as Parameters<typeof createKmCor
   restartCommand: 'docker-compose restart coding-services',
 });
 app.use('/api/v1', kmRouter);
+// JSON 404 fallback for unmatched /api/v1/* paths. Without this, an unknown
+// path (e.g. a diagnostic typo like /api/v1/health/orphans — the canonical
+// orphan route is /api/v1/graph/orphans) falls through to Express's default
+// HTML 404, which makes downstream `jq` pipelines fail to parse. Returning a
+// typed JSON 404 keeps any curl|jq diagnostic parseable regardless of path.
+app.use('/api/v1', (req: Request, res: Response) => {
+  res.status(404).json({
+    success: false,
+    error: 'Not Found',
+    path: req.originalUrl,
+    hint: 'Unknown /api/v1 route. Orphan diagnostics use /api/v1/graph/orphans (list) and /api/v1/stats (orphanCount).',
+  });
+});
 process.stderr.write('[sse-server] km-core /api/v1 routes mounted on port ' + PORT + '\n');
 
 // Store transports by session ID

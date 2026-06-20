@@ -37,6 +37,9 @@ import type { ResolvedClass } from '@fwornle/km-core';
 // LLM verdict cannot drift CK back to 'Detail' (D-12 root cause). Pattern
 // source: quality-assurance-agent.ts:1921 exemptNodes Set, narrowed to 5.
 import { HIERARCHY_ROOTS, HIERARCHY_ROOT_CLASS, isHierarchyRoot } from '@fwornle/km-core';
+// Phase 60 Plan 09 — deterministic L2 refinement (SC#5 / LOWERONTO-03). Shared
+// closed-vocabulary keyword mapper, also imported by the backfill migration.
+import { classifyL2 } from './l2-subsystem-classifier.js';
 // Surface witness — touching the named exports at runtime forces the import
 // to be retained by tree-shakers. HIERARCHY_ROOTS itself is referenced by
 // the test file so it cannot be dead-code-eliminated; this constant keeps
@@ -732,6 +735,25 @@ export class OntologyClassificationAgent {
       // Include LLM usage if available (for llm or hybrid classifications)
       llmUsage: classificationResult.llmUsage,
     };
+
+    // Phase 60 Plan 09 (SC#5 / LOWERONTO-03) — deterministic L2 refinement.
+    // When the classifier lands on a refinable L1 carrier (Component/SubComponent/
+    // Detail), apply the closed-vocabulary keyword mapper to assign a parent-
+    // consistent L2 sub-class. Local + deterministic (no LLM): supersedes the
+    // Phase 57-04 LLM L2-refinement step for the L2 outcome. Hierarchy roots are
+    // already short-circuited above (hard-root-guard) and never reach here.
+    if (REFINABLE_L1_PARENTS.includes(ontologyMetadata.ontologyClass)) {
+      const l2 = classifyL2(
+        (observation as { name?: string } | null | undefined)?.name,
+        (observation as { description?: string } | null | undefined)?.description,
+        ontologyMetadata.ontologyClass,
+      );
+      if (l2) {
+        ontologyMetadata.ontologyClass = l2;
+        ontologyMetadata.ontologySource = 'lower';
+        ontologyMetadata.classificationMethod = 'heuristic';
+      }
+    }
 
     return {
       original: observation,

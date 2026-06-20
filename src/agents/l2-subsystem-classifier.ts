@@ -128,15 +128,18 @@ export function classifyL2(
   const nameLower = (name ?? '').toLowerCase();
   const descLower = (description ?? '').toLowerCase();
 
-  // Iterate the closed vocabulary in table order (first-match-wins).
-  for (const [className, entry] of Object.entries(L2_KEYWORD_MAP)) {
-    if (entry.parent !== l1Parent) continue; // parent-consistency
-    // Name first, then description.
-    for (const kw of entry.keywords) {
-      if (keywordMatches(nameLower, kw) || keywordMatches(descLower, kw)) {
-        return className;
-      }
-    }
+  const eligible = Object.entries(L2_KEYWORD_MAP).filter(([, e]) => e.parent === l1Parent);
+
+  // NAME is the authoritative signal: a full pass over the name (table order)
+  // wins before the description is ever consulted. Otherwise a subsystem whose
+  // DESCRIPTION references a sibling subsystem (e.g. SemanticAnalysis's desc
+  // mentioning session-logging) would mis-route by table position. Only when no
+  // class matches the name do we fall back to a description pass.
+  for (const [className, entry] of eligible) {
+    if (entry.keywords.some((kw) => keywordMatches(nameLower, kw))) return className;
+  }
+  for (const [className, entry] of eligible) {
+    if (entry.keywords.some((kw) => keywordMatches(descLower, kw))) return className;
   }
   return null;
 }

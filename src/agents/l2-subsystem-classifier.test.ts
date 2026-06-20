@@ -54,6 +54,29 @@ describe('classifyL2 — representative real-entity mappings', () => {
   });
 });
 
+describe('classifyL2 — name dominates description', () => {
+  it('routes by the entity NAME even when the description references a sibling subsystem', () => {
+    // SemanticAnalysis's real description mentions session-logging-ish terms; the
+    // NAME must still win -> BatchSemanticAnalysis, not LiveLoggingSystem.
+    assert.equal(
+      classifyL2('SemanticAnalysis', 'agents capture session logging and lsl transcripts', 'Component'),
+      'BatchSemanticAnalysis',
+    );
+    // DockerizedServices desc mentioning constraint-monitor must not override the name.
+    assert.equal(
+      classifyL2('DockerizedServices', 'hosts the constraint monitor and no-console-log enforcement', 'Component'),
+      'DockerizedServices',
+    );
+  });
+
+  it('falls back to the description only when the name carries no signal', () => {
+    assert.equal(
+      classifyL2('Some Generic Intent Entity', 'documents the online observation pipeline / observationwriter', 'Detail'),
+      'OnlineObservation',
+    );
+  });
+});
+
 describe('classifyL2 — parent-consistency invariant', () => {
   it('returns null when an L2 keyword matches but the parent edge mismatches', () => {
     // OnlineObservation.parent === 'Detail'; an entity whose L1 is Component must NOT refine to it.

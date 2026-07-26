@@ -122,9 +122,19 @@ export class GitStalenessDetector {
     // It will be lazily initialized on first use via ensureLLMInitialized()
 
     // Initialize OpenAI for embeddings (TIER 2) - kept as direct client
-    // since LLMService doesn't support embedding generation
+    // since LLMService doesn't support embedding generation.
+    // T2 egress lockdown: inside the container there is no raw OPENAI_API_KEY;
+    // embeddings route through the host proxy's /v1/embeddings passthrough.
+    const proxyUrl = process.env.LLM_CLI_PROXY_URL;
     const openaiKey = process.env.OPENAI_API_KEY;
-    if (openaiKey && openaiKey !== "your-openai-api-key") {
+    if (proxyUrl) {
+      this.openaiClient = new OpenAI({
+        apiKey: openaiKey || "proxy-routed",
+        baseURL: `${proxyUrl.replace(/\/$/, "")}/v1`,
+        timeout: 30000,
+      });
+      log("GitStalenessDetector: OpenAI client initialized for embeddings (via llm-cli-proxy)", "info");
+    } else if (openaiKey && openaiKey !== "your-openai-api-key") {
       this.openaiClient = new OpenAI({
         apiKey: openaiKey,
         timeout: 30000,

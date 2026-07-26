@@ -95,7 +95,20 @@ export class DeduplicationAgent {
 
   private async initializeEmbeddingModel(): Promise<void> {
     try {
+      // T2 egress lockdown: inside the container there is no raw OPENAI_API_KEY;
+      // embeddings route through the host proxy's /v1/embeddings passthrough.
+      const proxyUrl = process.env.LLM_CLI_PROXY_URL;
       const openaiKey = process.env.OPENAI_API_KEY;
+      if (proxyUrl) {
+        this.openaiClient = new OpenAI({
+          apiKey: openaiKey || "proxy-routed",
+          baseURL: `${proxyUrl.replace(/\/$/, "")}/v1`,
+          timeout: DeduplicationAgent.EMBEDDING_TIMEOUT_MS,
+        });
+        this.embeddingModel = "text-embedding-3-small";
+        log("OpenAI embedding client initialized (via llm-cli-proxy)", "info");
+        return;
+      }
       if (openaiKey && openaiKey !== "your-openai-api-key") {
         this.openaiClient = new OpenAI({
           apiKey: openaiKey,

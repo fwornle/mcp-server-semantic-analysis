@@ -114,12 +114,12 @@ agents:
     name: Code Graph
     shortName: Code
     icon: Code
-    description: "Builds AST-based knowledge graph using Tree-sitter parsing. Uses external LLM (via code-graph-rag MCP) for Cypher query generation and RAG orchestration. Indexes functions, classes, imports, and call relationships into Memgraph. Runs in FINALIZATION phase after all batches complete."
+    description: "Reads the graphify code graph (tree-sitter AST -> static graph.json) to surface functions, classes, imports, and call relationships. Uses an LLM only to synthesize insights over the graph. Runs in FINALIZATION phase after all batches complete."
     usesLLM: true
-    llmModel: "External: code-graph-rag (OpenAI/Anthropic/Ollama)"
+    llmModel: "Insight synthesis via SemanticAnalyzer (graph read is deterministic)"
     tier: standard
     defaultLLMMode: public  # mock | local | public
-    techStack: "Tree-sitter + Memgraph + pydantic_ai"
+    techStack: "graphify (tree-sitter graph.json)"
     phase: 6       # FINALIZATION phase (after batch loop)
     row: 6         # After checkpoint (row 5), before persistence (row 7)
     col: 0.6       # Centered like other finalization nodes

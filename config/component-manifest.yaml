@@ -50,7 +50,7 @@ components:
 
   - name: DockerizedServices
     level: 1
-    description: "Docker containerization layer for all coding services including semantic analysis MCP, constraint monitor, code-graph-rag, and supporting databases."
+    description: "Docker containerization layer for all coding services including semantic analysis MCP, constraint monitor, graphify, and supporting databases."
     aliases:
       - docker
       - containers
@@ -61,7 +61,7 @@ components:
       - compose
       - service
       - deployment
-      - memgraph
+      - graphify
       - redis
     children: []
 

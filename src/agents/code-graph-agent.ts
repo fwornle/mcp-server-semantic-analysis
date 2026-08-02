@@ -1,20 +1,23 @@
 /**
- * CodeGraphAgent - AST-based code knowledge graph construction
+ * CodeGraphAgent - AST-based code knowledge graph reader
  *
- * Integrates with code-graph-rag MCP server to:
- * - Index repositories using Tree-sitter AST parsing
- * - Query the Memgraph knowledge graph for code entities
- * - Provide semantic code search capabilities
+ * Reads a static graphify `graph.json` (NetworkX node-link JSON, maintained by
+ * the graphify service) to:
+ * - Report code entities (functions, classes, methods, files) and relationships
+ * - Provide entity / similarity / call-graph lookups over the graph
+ * - Feed LLM-based insight synthesis with entity + dependency context
+ *
+ * This replaces the former code-graph-rag + Memgraph/Cypher backend. All graph
+ * access now goes through {@link GraphifyGraph}; the public class surface (every
+ * interface + method signature/return shape) is preserved for existing callers.
  */
 
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as net from 'net';
-import * as os from 'os';
 import { log } from '../logging.js';
 import { SemanticAnalyzer } from './semantic-analyzer.js';
-import { loadAgentTuningConfig } from '../utils/workflow-loader.js';
+import { GraphifyGraph, type GraphNode } from './graphify-graph.js';
 
 export interface CodeEntity {
   id: string;
@@ -115,95 +118,68 @@ export interface IntelligentQueryResult {
 export class CodeGraphAgent {
   private codeGraphRagDir: string;
   private repositoryPath: string;
-  private memgraphHost: string;
-  private memgraphPort: number;
+  private graph: GraphifyGraph;
 
   constructor(
     repositoryPath: string = '.',
     options: {
       codeGraphRagDir?: string;
+      // Retained for backwards-compatible construction; graphify has no Memgraph.
       memgraphHost?: string;
       memgraphPort?: number;
     } = {}
   ) {
     this.repositoryPath = path.resolve(repositoryPath);
 
-    // Compute code-graph-rag directory with better defaults
+    // Compute (legacy) code-graph-rag directory. Kept only for diagnostics; the
+    // graph is now sourced from graphify's graph.json (see GraphifyGraph).
     const codingRepoPath = process.env.CODING_REPO || process.env.CODING_TOOLS_PATH || process.env.CODING_ROOT;
     if (options.codeGraphRagDir) {
       this.codeGraphRagDir = path.resolve(options.codeGraphRagDir);
     } else if (codingRepoPath) {
       this.codeGraphRagDir = path.join(codingRepoPath, 'integrations/code-graph-rag');
     } else {
-      // Default to sibling directory pattern (mcp-server-semantic-analysis -> code-graph-rag)
       const currentDir = path.dirname(new URL(import.meta.url).pathname);
       this.codeGraphRagDir = path.resolve(currentDir, '../../../code-graph-rag');
     }
 
-    this.memgraphHost = options.memgraphHost || process.env.MEMGRAPH_HOST || 'localhost';
-    this.memgraphPort = options.memgraphPort || parseInt(process.env.MEMGRAPH_PORT || '7687');
+    this.graph = new GraphifyGraph();
 
-    // Validate path exists
-    if (!fs.existsSync(this.codeGraphRagDir)) {
-      log(`[CodeGraphAgent] WARNING: codeGraphRagDir not found: ${this.codeGraphRagDir}`, 'warning');
-    } else {
-      log(`[CodeGraphAgent] Initialized with repo: ${this.repositoryPath}, codeGraphRagDir: ${this.codeGraphRagDir}`, 'info');
-    }
+    log(`[CodeGraphAgent] Initialized with repo: ${this.repositoryPath}, graph: ${this.graph.path()}`, 'info');
   }
 
   /**
-   * Check if Memgraph is reachable via TCP
+   * Convert a graphify node into a CodeEntity, attaching mapped relationships.
+   */
+  private nodeToCodeEntity(node: GraphNode, withRelationships = false): CodeEntity {
+    const kind = this.graph.kindOf(node);
+    // GraphifyGraph kinds: function|class|method|file|variable.
+    // CodeEntity.type: function|class|module|method|variable|import.
+    const type: CodeEntity['type'] = kind === 'file' ? 'module' : kind;
+    return {
+      id: String(node.id),
+      name: this.graph.nameOf(node),
+      type,
+      filePath: node.source_file || '',
+      lineNumber: this.graph.lineOf(node),
+      language: this.graph.languageOf(node),
+      relationships: withRelationships
+        ? (this.graph.neighborsAsRelationships(String(node.id)) as CodeRelationship[])
+        : [],
+    };
+  }
+
+  /**
+   * "Connection" check for the graphify backend: reports connected=true when a
+   * graph.json exists and loads with at least one node. Preserves the historical
+   * shape so existing `if (!connectionCheck.connected) ...` guards still work
+   * (they now mean "no graph available yet").
    */
   private async checkMemgraphConnection(): Promise<{ connected: boolean; error?: string }> {
-    return new Promise((resolve) => {
-      const socket = new net.Socket();
-      const timeout = loadAgentTuningConfig().code_graph.memgraph_check_timeout_ms;
-
-      socket.setTimeout(timeout);
-
-      socket.on('connect', () => {
-        socket.destroy();
-        resolve({ connected: true });
-      });
-
-      socket.on('timeout', () => {
-        socket.destroy();
-        resolve({ connected: false, error: `Connection timeout after ${timeout}ms` });
-      });
-
-      socket.on('error', (err) => {
-        socket.destroy();
-        resolve({ connected: false, error: err.message });
-      });
-
-      socket.connect(this.memgraphPort, this.memgraphHost);
-    });
-  }
-
-  /**
-   * Check if uv CLI is available
-   */
-  private async checkUvAvailable(): Promise<{ available: boolean; path?: string; error?: string }> {
-    return new Promise((resolve) => {
-      const which = spawn('which', ['uv']);
-      let stdout = '';
-
-      which.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      which.on('close', (code) => {
-        if (code === 0 && stdout.trim()) {
-          resolve({ available: true, path: stdout.trim() });
-        } else {
-          resolve({ available: false, error: 'uv not found in PATH' });
-        }
-      });
-
-      which.on('error', (err) => {
-        resolve({ available: false, error: err.message });
-      });
-    });
+    if (this.graph.available()) {
+      return { connected: true };
+    }
+    return { connected: false, error: `graphify graph.json not available at ${this.graph.path()}` };
   }
 
   /**
@@ -219,16 +195,8 @@ export class CodeGraphAgent {
     const projectName = path.basename(targetPath);
 
     try {
-      // Query Memgraph for total node count (no project filter - code-graph-rag doesn't set project property)
-      const result = await this.runCypherQuery(
-        `MATCH (n) RETURN count(n) as nodeCount`
-      );
-
-      // Parse nodeCount - handle both string and number responses
-      const rawCount = result?.nodeCount;
-      const nodeCount = typeof rawCount === 'string' ? parseInt(rawCount, 10) : (rawCount || 0);
+      const nodeCount = this.graph.nodeCount();
       log(`[CodeGraphAgent] Existing index check for ${projectName}: ${nodeCount} nodes found`, 'info');
-
       return {
         hasData: nodeCount > 0,
         nodeCount,
@@ -241,89 +209,30 @@ export class CodeGraphAgent {
   }
 
   /**
-   * Get statistics from existing Memgraph data without re-indexing
-   * Note: code-graph-rag doesn't set project property on nodes, so we query all entities.
-   * For multi-project support, nodes would need a project/repo_path property during indexing.
+   * Get statistics from the graphify graph.json without re-indexing.
+   * The graphify service is authoritative for the graph; this reads its stats.
    */
   async getExistingStats(repoPath?: string): Promise<CodeGraphAnalysisResult> {
     const targetPath = repoPath || this.repositoryPath;
     const projectName = path.basename(targetPath);
 
-    // Helper to parse numeric value (handles string/number and array results)
-    const parseNum = (val: any): number => {
-      if (val === null || val === undefined) return 0;
-      if (typeof val === 'number') return val;
-      if (typeof val === 'string') return parseInt(val, 10) || 0;
-      return 0;
-    };
-
-    // Helper to extract first row from query result (runCypherQuery may return array or object)
-    const getFirstRow = (result: any): any => {
-      if (Array.isArray(result) && result.length > 0) return result[0];
-      return result;
-    };
-
     try {
-      // Query for entity counts by type (no project filter - code-graph-rag doesn't set project property)
-      // Include all nodes since they don't have project property set
-      const statsRaw = await this.runCypherQuery(`
-        MATCH (n)
-        RETURN
-          count(n) as totalEntities,
-          count(CASE WHEN n:Function THEN 1 END) as functions,
-          count(CASE WHEN n:Class THEN 1 END) as classes,
-          count(CASE WHEN n:Method THEN 1 END) as methods,
-          count(CASE WHEN n:Module THEN 1 END) as modules
-      `);
-      const statsResult = getFirstRow(statsRaw);
+      const stats = this.graph.stats();
 
-      // Query for relationship count
-      const relRaw = await this.runCypherQuery(`
-        MATCH (n)-[r]->(m)
-        RETURN count(r) as totalRelationships
-      `);
-      const relResult = getFirstRow(relRaw);
-
-      // Query for language distribution (use label as proxy for language if property not set)
-      const langResult = await this.runCypherQuery(`
-        MATCH (n)
-        WHERE n.language IS NOT NULL
-        RETURN n.language as language, count(n) as count
-      `);
-
-      const languageDistribution: Record<string, number> = {};
-      if (Array.isArray(langResult)) {
-        langResult.forEach((row: any) => {
-          if (row.language) {
-            languageDistribution[row.language] = parseNum(row.count);
-          }
-        });
-      }
-
-      const entityTypeDistribution: Record<string, number> = {
-        function: parseNum(statsResult?.functions),
-        class: parseNum(statsResult?.classes),
-        method: parseNum(statsResult?.methods),
-        module: parseNum(statsResult?.modules),
-      };
-
-      const totalEntities = parseNum(statsResult?.totalEntities);
-      const totalRelationships = parseNum(relResult?.totalRelationships);
-
-      log(`[CodeGraphAgent] getExistingStats for ${projectName}: ${totalEntities} entities, ${totalRelationships} relationships`, 'info');
+      log(`[CodeGraphAgent] getExistingStats for ${projectName}: ${stats.totalEntities} entities, ${stats.totalRelationships} relationships`, 'info');
 
       return {
         entities: [], // Don't load all entities, just stats
         relationships: [],
         statistics: {
-          totalEntities,
-          totalRelationships,
-          languageDistribution,
-          entityTypeDistribution,
+          totalEntities: stats.totalEntities,
+          totalRelationships: stats.totalRelationships,
+          languageDistribution: stats.languageDistribution,
+          entityTypeDistribution: stats.entityTypeDistribution,
         },
         indexedAt: new Date().toISOString(),
         repositoryPath: targetPath,
-        warning: 'Using existing Memgraph data (no re-indexing performed)',
+        warning: 'Using existing graphify graph.json (no re-indexing performed)',
         skipped: false, // Not skipped, just reused
       };
     } catch (error) {
@@ -346,235 +255,253 @@ export class CodeGraphAgent {
   }
 
   /**
-   * Execute a Cypher query against Memgraph using mgconsole
-   * Uses CSV output format and parses into JSON objects
-   * Can be called directly for explicit Cypher queries
+   * Best-effort Cypher shim over the graphify graph.json.
+   *
+   * There is no Cypher engine any more. This recognizes the handful of literal
+   * Cypher patterns issued by this file and its callers (cgr-query-cache, wave
+   * agents, wave-controller) and answers them from {@link GraphifyGraph} with
+   * the SAME row shape each caller expects. Count-style queries return a single
+   * object (as the old mgconsole path collapsed single count rows); everything
+   * else returns an array. Unrecognized queries (e.g. LLM-generated Cypher) log
+   * at debug and return [] for graceful degradation.
    */
   async runCypherQuery(query: string): Promise<any> {
-    const host = this.memgraphHost || 'coding-memgraph';
-    const port = this.memgraphPort || 7687;
+    if (!this.graph.available()) {
+      return [];
+    }
+    const q = query.replace(/\s+/g, ' ').trim();
+    const literals = this.cypherLiterals(query);
+    const first = literals[0] || '';
+    const limit = this.cypherLimit(query);
 
-    // Use Python mgclient from CGR venv (available in Docker container)
-    // Falls back to mgconsole or docker exec for host-machine usage
-    const cgrVenvPython = '/coding/integrations/code-graph-rag/.venv/bin/python';
-    const hasCgrVenv = fs.existsSync(cgrVenvPython);
-
-    if (hasCgrVenv) {
-      return this.runCypherViaPython(query, host, port, cgrVenvPython);
+    // --- count / stats queries (return a single object) -------------------
+    if (/count\(n\)\s+as\s+nodeCount/i.test(q)) {
+      return { nodeCount: this.graph.stats().totalEntities };
+    }
+    if (/as\s+totalEntities/i.test(q) && /as\s+functions/i.test(q)) {
+      const s = this.graph.stats();
+      return {
+        totalEntities: s.totalEntities,
+        functions: s.functions,
+        classes: s.classes,
+        methods: s.methods,
+        modules: s.modules,
+      };
+    }
+    if (/count\(r\)\s+as\s+totalRelationships/i.test(q)) {
+      return { totalRelationships: this.graph.stats().totalRelationships };
     }
 
-    // Fallback: mgconsole (host machine or container with it installed)
-    return this.runCypherViaMgconsole(query, host, port);
-  }
+    // --- language distribution -------------------------------------------
+    if (/n\.language\s+as\s+language/i.test(q)) {
+      const dist = this.graph.stats().languageDistribution;
+      return Object.entries(dist).map(([language, count]) => ({ language, count }));
+    }
 
-  private async runCypherViaPython(query: string, host: string, port: number, pythonPath: string): Promise<any> {
-    return new Promise((resolve) => {
-      // Escape single quotes in query for Python string
-      const escapedQuery = query.replace(/'/g, "\\'");
-      const script = `
-import mgclient, json, sys
-try:
-    conn = mgclient.connect(host='${host}', port=${port})
-    cursor = conn.cursor()
-    cursor.execute('${escapedQuery}')
-    cols = [d.name for d in cursor.description] if cursor.description else []
-    rows = cursor.fetchall()
-    result = [dict(zip(cols, [str(v) if v is not None else None for v in row])) for row in rows]
-    print(json.dumps(result))
-    conn.close()
-except Exception as e:
-    print(json.dumps({"error": str(e)}), file=sys.stderr)
-    sys.exit(1)
-`;
-      const proc = spawn(pythonPath, ['-c', script]);
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
-      proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-      proc.on('close', (code: number | null) => {
-        if (code !== 0) {
-          log(`[CodeGraphAgent] Python Cypher query failed: ${stderr.trim()}`, 'warning');
-          resolve(null);
-          return;
-        }
-        try {
-          const results = JSON.parse(stdout.trim());
-          if (Array.isArray(results) && results.length === 1) {
-            const keys = Object.keys(results[0]);
-            if (keys.some(k => k.includes('count') || k.includes('Count'))) {
-              resolve(results[0]);
-              return;
-            }
-          }
-          resolve(results);
-        } catch (e) {
-          log(`[CodeGraphAgent] Failed to parse Python Cypher result: ${e}`, 'warning');
-          resolve(null);
-        }
+    // --- synthesizeInsights: significant entities of given types ----------
+    if (/as\s+qualifiedName/i.test(q)) {
+      const wantedKinds = this.entityKindsFromLabels(query);
+      const nodes = this.graph.codeNodes()
+        .filter(n => wantedKinds.size === 0 || wantedKinds.has(this.graph.kindOf(n)))
+        .map(n => {
+          const id = String(n.id);
+          const degree = this.graph.outEdges(id).length + this.graph.inEdges(id).length;
+          return { node: n, degree };
+        })
+        .sort((a, b) => b.degree - a.degree)
+        .slice(0, limit || 20);
+      return nodes.map(({ node, degree }) => {
+        const kind = this.graph.kindOf(node);
+        return {
+          qualifiedName: this.graph.nameOf(node),
+          name: this.graph.nameOf(node),
+          entityType: kind.charAt(0).toUpperCase() + kind.slice(1),
+          docstring: null,
+          comments: null,
+          relationshipCount: degree,
+        };
       });
+    }
 
-      proc.on('error', (err: Error) => {
-        log(`[CodeGraphAgent] Python process failed: ${err.message}`, 'warning');
-        resolve(null);
-      });
-    });
-  }
-
-  private async runCypherViaMgconsole(query: string, host: string, port: number): Promise<any> {
-    return new Promise((resolve) => {
-      let proc: ReturnType<typeof spawn>;
-      const hasMgconsole = fs.existsSync('/usr/bin/mgconsole') || fs.existsSync('/usr/local/bin/mgconsole');
-
-      if (hasMgconsole) {
-        proc = spawn('mgconsole', ['--host', host, '--port', String(port), '--output-format=csv']);
-      } else {
-        const containerName = process.env.MEMGRAPH_CONTAINER || 'coding-memgraph';
-        proc = spawn('docker', ['exec', '-i', containerName, 'mgconsole', '--output-format=csv']);
+    // --- synthesizeInsights: CALLS (out), calledBy (in) -------------------
+    if (/\(n\)-\[:CALLS\]->\(target\)/i.test(q)) {
+      const cg = this.graph.callGraph(first, 1);
+      return cg.callees.map(name => ({ qn: name, type: '' }));
+    }
+    if (/\(caller\)-\[:CALLS\]->\(n\)/i.test(q)) {
+      const cg = this.graph.callGraph(first, 1);
+      return cg.callers.map(name => ({ qn: name, type: '' }));
+    }
+    if (/\[:INHERITS\]->\(parent\)/i.test(q)) {
+      const roots = this.graph.findByName(first);
+      const parents: Array<{ qn: string }> = [];
+      for (const r of roots) {
+        for (const e of this.graph.outEdges(String(r.id), ['inherits', 'extends'])) {
+          const p = this.graph.getNode(String(e.target));
+          if (p) parents.push({ qn: this.graph.nameOf(p) });
+        }
       }
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
-      proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-      proc.on('close', (code: number | null) => {
-        if (code !== 0) {
-          log(`[CodeGraphAgent] Cypher query failed: ${stderr}`, 'warning');
-          resolve(null);
-          return;
+      return parents;
+    }
+    if (/\[:DEFINES_METHOD\]->\(method\)/i.test(q)) {
+      const roots = this.graph.findByName(first);
+      const methods: Array<{ name: string }> = [];
+      for (const r of roots) {
+        for (const e of this.graph.outEdges(String(r.id), ['method', 'contains', 'defines'])) {
+          const m = this.graph.getNode(String(e.target));
+          if (m && this.graph.kindOf(m) === 'method') methods.push({ name: this.graph.nameOf(m) });
         }
-        try {
-          const lines = stdout.trim().split('\n').filter(l => l.trim());
-          if (lines.length === 0) { resolve([]); return; }
-          const headers = this.parseCSVLine(lines[0]);
-          const results: any[] = [];
-          for (let i = 1; i < lines.length; i++) {
-            const values = this.parseCSVLine(lines[i]);
-            const row: Record<string, any> = {};
-            for (let j = 0; j < headers.length; j++) {
-              row[headers[j]] = values[j] || null;
-            }
-            results.push(row);
-          }
-          if (results.length === 1 && headers.some(h => h.includes('count') || h.includes('Count'))) {
-            resolve(results[0]);
-          } else {
-            resolve(results);
-          }
-        } catch (e) {
-          log(`[CodeGraphAgent] Failed to parse Cypher result: ${e}`, 'warning');
-          resolve(null);
+      }
+      return methods.slice(0, limit || 15);
+    }
+
+    // --- cgr-query-cache: files -[:DEFINES]-> entities --------------------
+    if (/\(f:File\)-\[:DEFINES\]->\(e\)/i.test(q)) {
+      const needle = first.toLowerCase();
+      const rows = this.graph.codeNodes()
+        .filter(n => this.graph.kindOf(n) !== 'file' && (n.source_file || '').toLowerCase().includes(needle))
+        .slice(0, limit || 50)
+        .map(n => ({ e: this.nodeToCypherRow(n) }));
+      return rows;
+    }
+
+    // --- cgr-query-cache: call path (e)-[:CALLS*1..D]->(callee) -----------
+    if (/\[:CALLS\*1\.\./i.test(q)) {
+      const depthMatch = query.match(/\[:CALLS\*1\.\.(\d+)\]/i);
+      const depth = depthMatch ? parseInt(depthMatch[1], 10) : 2;
+      const cg = this.graph.callGraph(first, depth);
+      // Represent each callee as a chain row rooted at the queried entity.
+      return cg.callees.slice(0, limit || 50).map(name => ({
+        caller: first,
+        callee: name,
+        callerQN: first,
+        calleeQN: name,
+      }));
+    }
+
+    // --- cgr-query-cache: callees / imports by entity name ----------------
+    if (/\(e\)-\[:CALLS\]->\(callee\)/i.test(q)) {
+      const cg = this.graph.callGraph(first, 1);
+      return cg.callees.slice(0, limit || 20).map(name => ({ name }));
+    }
+    if (/\(e\)-\[:IMPORTS\]->\(imp\)/i.test(q)) {
+      const roots = this.graph.findByName(first);
+      const names = new Set<string>();
+      for (const r of roots) {
+        for (const e of this.graph.outEdges(String(r.id), ['imports', 'imports_from', 're_exports'])) {
+          const t = this.graph.getNode(String(e.target));
+          if (t) names.add(this.graph.nameOf(t));
         }
-      });
+      }
+      return [...names].slice(0, limit || 20).map(name => ({ name }));
+    }
 
-      proc.on('error', (err: Error) => {
-        log(`[CodeGraphAgent] Query process failed: ${err.message}`, 'warning');
-        resolve(null);
-      });
+    // --- cgr-query-cache: entity by exact name (RETURN e) -----------------
+    if (/MATCH\s*\(e\)\s*WHERE\s*toLower\(e\.name\)/i.test(q)) {
+      return this.graph.findByName(first)
+        .slice(0, limit || 10)
+        .map(n => ({ e: this.nodeToCypherRow(n) }));
+    }
 
-      proc.stdin?.write(query + ';\n');
-      proc.stdin?.end();
-    });
+    // --- wave agents / wave-controller: files by path substring ----------
+    if (/\(f:File\)/i.test(q) && /f\.file_path\s+AS\s+path/i.test(q)) {
+      const needles = literals.map(l => l.toLowerCase()).filter(Boolean);
+      const files = this.graph.files().filter(fp => {
+        const low = fp.toLowerCase();
+        return needles.length === 0 ? true : needles.some(nd => low.includes(nd));
+      });
+      return files.slice(0, limit || 50).map(path => ({ path }));
+    }
+
+    log(`[CodeGraphAgent] Unrecognized Cypher query (returning []): ${q.slice(0, 160)}`, 'debug');
+    return [];
+  }
+
+  /** Extract all single-quoted string literals from a Cypher query. */
+  private cypherLiterals(query: string): string[] {
+    const out: string[] = [];
+    const re = /'((?:[^'\\]|\\.)*)'/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(query)) !== null) {
+      out.push(m[1].replace(/\\'/g, "'").replace(/\\\\/g, '\\'));
+    }
+    return out;
+  }
+
+  /** Extract a LIMIT value from a Cypher query, if present. */
+  private cypherLimit(query: string): number | null {
+    const m = query.match(/LIMIT\s+(\d+)/i);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  /** Extract entity kinds from `n:Label` tokens in a WHERE clause. */
+  private entityKindsFromLabels(query: string): Set<string> {
+    const kinds = new Set<string>();
+    const re = /\bn:(\w+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(query)) !== null) {
+      switch (m[1].toLowerCase()) {
+        case 'function': kinds.add('function'); break;
+        case 'class': kinds.add('class'); break;
+        case 'method': kinds.add('method'); break;
+        case 'module':
+        case 'file': kinds.add('file'); break;
+        default: break;
+      }
+    }
+    return kinds;
+  }
+
+  /** Produce a Memgraph-style (snake_case) node row for RETURN e results. */
+  private nodeToCypherRow(node: GraphNode): Record<string, any> {
+    const kind = this.graph.kindOf(node);
+    return {
+      id: String(node.id),
+      name: this.graph.nameOf(node),
+      type: kind === 'file' ? 'module' : kind,
+      file_path: node.source_file || '',
+      line_number: this.graph.lineOf(node),
+      language: this.graph.languageOf(node),
+      signature: undefined,
+    };
   }
 
   /**
-   * Parse a CSV line, handling quoted values
-   */
-  private parseCSVLine(line: string): string[] {
-    const result: string[] = [];
-    let current = '';
-    let inQuotes = false;
-
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"') {
-        inQuotes = !inQuotes;
-      } else if (char === ',' && !inQuotes) {
-        result.push(current.trim());
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-    result.push(current.trim());
-    return result;
-  }
-
-  /**
-   * Index a repository using code-graph-rag CLI
-   * Uses: uv run python -m codebase_rag.main start --repo-path <path> --update-graph --no-confirm
+   * "Index" a repository.
    *
-   * Options:
-   * - forceReindex: Force re-indexing even if Memgraph has existing data (default: false)
-   * - minNodeThreshold: Minimum nodes required to consider existing data valid (default: 100)
+   * The graphify service owns and maintains graph.json, so indexing here is a
+   * no-op: we simply read the current graph stats. The signature and return
+   * shape are preserved for callers. When no graph is available yet, a graceful
+   * `skipped: true` result is returned (workflow continues).
+   *
+   * Options (forceReindex / minNodeThreshold) are accepted for compatibility but
+   * do not trigger any external indexing process.
    */
   async indexRepository(targetPath?: string | { target_path?: string; forceReindex?: boolean; minNodeThreshold?: number }): Promise<CodeGraphAnalysisResult> {
     // Handle both direct path and wrapped parameter object from coordinator
     let repoPath: string;
     let forceReindex = false;
-    let minNodeThreshold = 100;
 
     if (typeof targetPath === 'object' && targetPath !== null) {
       repoPath = targetPath.target_path || this.repositoryPath;
       forceReindex = targetPath.forceReindex || false;
-      minNodeThreshold = targetPath.minNodeThreshold || 100;
     } else if (typeof targetPath === 'string') {
       repoPath = targetPath;
     } else {
       repoPath = this.repositoryPath;
     }
 
-    log(`[CodeGraphAgent] Indexing repository: ${repoPath} (forceReindex: ${forceReindex})`, 'info');
+    log(`[CodeGraphAgent] Index request for: ${repoPath} (forceReindex: ${forceReindex}) -- graphify graph.json is authoritative, no external indexing performed`, 'info');
 
-    // Check for existing Memgraph data before re-indexing (unless forced)
-    if (!forceReindex) {
-      const existingIndex = await this.hasExistingIndex(repoPath);
-      if (existingIndex.hasData && existingIndex.nodeCount >= minNodeThreshold) {
-        log(`[CodeGraphAgent] Found existing index with ${existingIndex.nodeCount} nodes for ${existingIndex.projectName}, skipping re-index`, 'info');
-        log(`[CodeGraphAgent] To force re-indexing, use forceReindex: true`, 'info');
-        return this.getExistingStats(repoPath);
-      } else if (existingIndex.hasData) {
-        log(`[CodeGraphAgent] Existing index has only ${existingIndex.nodeCount} nodes (threshold: ${minNodeThreshold}), will re-index`, 'info');
-      }
-    }
+    const diagnostics = {
+      graphPath: this.graph.path(),
+      graphAvailable: this.graph.available(),
+      builtAtCommit: this.graph.builtAtCommit(),
+      repositoryExists: fs.existsSync(repoPath),
+    };
 
-    // Collect diagnostics for better error reporting
-    const diagnostics: {
-      memgraphConnection?: { connected: boolean; error?: string };
-      uvAvailable?: { available: boolean; path?: string; error?: string };
-      codeGraphRagDirExists?: boolean;
-      pyprojectExists?: boolean;
-      repositoryExists?: boolean;
-    } = {};
-
-    // Pre-flight checks
-    diagnostics.codeGraphRagDirExists = fs.existsSync(this.codeGraphRagDir);
-    diagnostics.pyprojectExists = fs.existsSync(path.join(this.codeGraphRagDir, 'pyproject.toml'));
-    diagnostics.repositoryExists = fs.existsSync(repoPath);
-
-    // Check Memgraph connection
-    diagnostics.memgraphConnection = await this.checkMemgraphConnection();
-    if (!diagnostics.memgraphConnection.connected) {
-      log(`[CodeGraphAgent] Memgraph not reachable at ${this.memgraphHost}:${this.memgraphPort}: ${diagnostics.memgraphConnection.error}`, 'warning');
-    }
-
-    // Check uv availability
-    diagnostics.uvAvailable = await this.checkUvAvailable();
-    if (!diagnostics.uvAvailable.available) {
-      log(`[CodeGraphAgent] uv CLI not available: ${diagnostics.uvAvailable.error}`, 'warning');
-    }
-
-    // Report pre-flight status
-    log(`[CodeGraphAgent] Pre-flight checks: codeGraphRagDir=${diagnostics.codeGraphRagDirExists}, pyproject=${diagnostics.pyprojectExists}, repo=${diagnostics.repositoryExists}, memgraph=${diagnostics.memgraphConnection.connected}, uv=${diagnostics.uvAvailable.available}`, 'info');
-
-    // If critical components are missing, return early with diagnostics
-    if (!diagnostics.codeGraphRagDirExists || !diagnostics.pyprojectExists) {
-      const reason = !diagnostics.codeGraphRagDirExists
-        ? `code-graph-rag directory not found: ${this.codeGraphRagDir}`
-        : `pyproject.toml not found in ${this.codeGraphRagDir}`;
+    if (!diagnostics.graphAvailable) {
+      const reason = `graphify graph.json not available at ${this.graph.path()}`;
       log(`[CodeGraphAgent] Skipping indexing: ${reason}`, 'warning');
       return {
         entities: [],
@@ -593,79 +520,11 @@ except Exception as e:
       } as CodeGraphAnalysisResult & { diagnostics: typeof diagnostics };
     }
 
-    if (!diagnostics.memgraphConnection.connected) {
-      log(`[CodeGraphAgent] Skipping indexing: Memgraph not reachable. Start with: docker start memgraph`, 'warning');
-      return {
-        entities: [],
-        relationships: [],
-        statistics: {
-          totalEntities: 0,
-          totalRelationships: 0,
-          languageDistribution: {},
-          entityTypeDistribution: {},
-        },
-        indexedAt: new Date().toISOString(),
-        repositoryPath: repoPath,
-        warning: `Memgraph not reachable at ${this.memgraphHost}:${this.memgraphPort}. Start with: docker start memgraph`,
-        skipped: true,
-        diagnostics,
-      } as CodeGraphAnalysisResult & { diagnostics: typeof diagnostics };
-    }
-
-    try {
-      // Call code-graph-rag CLI to index the repository
-      const result = await this.runCodeGraphCommand('index', [repoPath]);
-
-      // Parse the result from code-graph-rag
-      // The CLI outputs protobuf files and logs stats to stderr
-      const indexingStats = result.indexingStats || {};
-
-      const analysisResult: CodeGraphAnalysisResult = {
-        entities: result.entities || [],
-        relationships: result.relationships || [],
-        statistics: {
-          totalEntities: indexingStats.entitiesIndexed || result.entities?.length || 0,
-          totalRelationships: result.relationships?.length || 0,
-          languageDistribution: this.calculateLanguageDistribution(result.entities || []),
-          entityTypeDistribution: this.calculateEntityTypeDistribution(result.entities || []),
-        },
-        indexedAt: new Date().toISOString(),
-        repositoryPath: repoPath,
-      };
-
-      // Include indexing stats and diagnostics in result for reporting
-      if (indexingStats.protoFilesGenerated > 0) {
-        (analysisResult as any).indexingStats = indexingStats;
-      }
-      (analysisResult as any).diagnostics = diagnostics;
-
-      log(`[CodeGraphAgent] Indexed repository - ${indexingStats.filesProcessed || 0} files, ${indexingStats.protoFilesGenerated || 0} proto files generated`, 'info');
-      return analysisResult;
-    } catch (error) {
-      // Return empty result instead of throwing - allows workflow to continue
-      // The code-graph-rag CLI may not be properly configured or available
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      log(`[CodeGraphAgent] Failed to index repository: ${errorMessage}`, 'warning');
-      log(`[CodeGraphAgent] Full error: ${error}`, 'debug');
-
-      // Return valid result WITHOUT error field to not break workflow dependencies
-      // The 'warning' field is informational and won't trigger dependency failures
-      return {
-        entities: [],
-        relationships: [],
-        statistics: {
-          totalEntities: 0,
-          totalRelationships: 0,
-          languageDistribution: {},
-          entityTypeDistribution: {},
-        },
-        indexedAt: new Date().toISOString(),
-        repositoryPath: repoPath,
-        warning: `Code graph indexing failed: ${errorMessage}`,
-        skipped: true,
-        diagnostics,
-      } as CodeGraphAnalysisResult & { diagnostics: typeof diagnostics };
-    }
+    const result = await this.getExistingStats(repoPath);
+    (result as any).diagnostics = diagnostics;
+    result.message = `Using graphify graph.json (${result.statistics.totalEntities} entities, commit ${diagnostics.builtAtCommit || 'unknown'}). Indexing is maintained by the graphify service.`;
+    log(`[CodeGraphAgent] ${result.message}`, 'info');
+    return result;
   }
 
   /**
@@ -722,21 +581,21 @@ except Exception as e:
 
     log(`[CodeGraphAgent] Incremental indexing for ${projectName}`, 'info');
 
-    // Check Memgraph connection first
+    // Check graph availability first
     const connectionCheck = await this.checkMemgraphConnection();
     if (!connectionCheck.connected) {
-      log(`[CodeGraphAgent] Memgraph not reachable, skipping incremental indexing`, 'warning');
+      log(`[CodeGraphAgent] graphify graph.json not available, skipping incremental indexing`, 'warning');
       return this.getExistingStats(targetPath);
     }
 
     try {
-      // First check if we already have substantial data in Memgraph
+      // First check if we already have substantial data in the graph
       const existingStats = await this.getExistingStats(targetPath);
       const existingNodeCount = existingStats.statistics?.totalEntities || 0;
 
       if (!forceReindex && existingNodeCount >= minExistingNodes) {
         // We have substantial existing data
-        log(`[CodeGraphAgent] Found ${existingNodeCount} existing nodes in Memgraph, checking for changes...`, 'info');
+        log(`[CodeGraphAgent] Found ${existingNodeCount} existing nodes in graphify graph, checking for changes...`, 'info');
 
         // Get list of changed files using git
         const changedFiles = await this.getChangedFiles(targetPath, sinceCommit, sinceDays);
@@ -930,174 +789,104 @@ except Exception as e:
   }
 
   /**
-   * Run a code-graph-rag CLI command
-   * The CLI uses: graph-code index --repo-path <path> --output-proto-dir <dir>
-   * It outputs protobuf files and logs to stderr, returning summary stats
+   * Execute a code-graph operation against the graphify graph.json.
+   *
+   * Supported commands (previously shelled out to the codebase_rag CLI):
+   *  - 'query'      : findByName + type/language filter -> { matches, scores, queryTime }
+   *  - 'similar'    : token-overlap name match          -> { similar }
+   *  - 'call-graph' : BFS over calls/indirect_call      -> { root, calls, calledBy }
+   *  - 'index'      : no-op (graphify owns the graph)   -> { entities, relationships, indexingStats }
+   *  - 'export'     : read graph.json                   -> parsed JSON
    */
   private async runCodeGraphCommand(command: string, args: string[]): Promise<any> {
-    return new Promise((resolve, reject) => {
-      // Create temp directory for protobuf output
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'code-graph-'));
+    const getArg = (flag: string): string | undefined => {
+      const i = args.indexOf(flag);
+      return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+    };
 
-      // Build proper CLI arguments based on command
-      let cliArgs: string[];
-      let targetRepoPath: string = this.repositoryPath;
+    if (!this.graph.available() && command !== 'export') {
+      log(`[CodeGraphAgent] runCodeGraphCommand('${command}'): graphify graph.json not available`, 'warning');
+      if (command === 'query') return { matches: [], scores: {}, queryTime: 0 };
+      if (command === 'similar') return { similar: [] };
+      if (command === 'call-graph') return { root: null, calls: [], calledBy: [] };
+      return { skipped: true, warning: `graphify graph.json not available at ${this.graph.path()}` };
+    }
 
-      if (command === 'index') {
-        // For index: use `python -m codebase_rag.main start --update-graph --repo-path <path>`
-        // The CLI doesn't have an 'index' command - indexing is done via `start --update-graph`
-        targetRepoPath = args[0] || this.repositoryPath;
-        cliArgs = [
-          'run',
-          '--directory', this.codeGraphRagDir,
-          'python', '-m', 'codebase_rag.main',
-          'start',
-          '--repo-path', targetRepoPath,
-          '--update-graph',
-          '--no-confirm',  // Non-interactive mode
-        ];
-      } else if (command === 'export') {
-        // For export: use `python -m codebase_rag.main export --output <path> --json`
-        const outputPath = args[0] || path.join(tmpDir, 'graph-export.json');
-        cliArgs = [
-          'run',
-          '--directory', this.codeGraphRagDir,
-          'python', '-m', 'codebase_rag.main',
-          'export',
-          '--output', outputPath,
-          '--json',
-        ];
-      } else {
-        // Query and other commands - the CLI doesn't support direct queries
-        // Use runCypherQuery() instead for Memgraph queries
-        log(`[CodeGraphAgent] Command '${command}' not supported via CLI - use runCypherQuery() for Memgraph queries`, 'warning');
-        resolve({
-          error: `Command '${command}' is not available in the codebase_rag CLI. Available commands: index (via start --update-graph), export. For queries, use runCypherQuery() directly.`,
-          skipped: true,
-          availableCommands: ['index', 'export']
-        });
-        return;
+    const t0 = Date.now();
+
+    switch (command) {
+      case 'query': {
+        const query = getArg('--query') || '';
+        const types = getArg('--types')?.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        const languages = getArg('--languages')?.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        const limit = parseInt(getArg('--limit') || '0', 10) || 25;
+
+        let entities = this.graph.findByName(query).map(n => this.nodeToCodeEntity(n, true));
+        if (types && types.length) entities = entities.filter(e => types.includes(e.type.toLowerCase()));
+        if (languages && languages.length) entities = entities.filter(e => languages.includes(e.language.toLowerCase()));
+        const matches = entities.slice(0, limit);
+
+        const scores: Record<string, number> = {};
+        matches.forEach((m, i) => { scores[m.id] = matches.length > 1 ? 1 - i / matches.length : 1; });
+        return { matches, scores, queryTime: Date.now() - t0 };
       }
 
-      log(`[CodeGraphAgent] Running: uv ${cliArgs.join(' ')}`, 'info');
-      log(`[CodeGraphAgent] Working directory: ${this.codeGraphRagDir}`, 'debug');
+      case 'similar': {
+        const code = getArg('--code') || '';
+        const topK = parseInt(getArg('--top-k') || '10', 10) || 10;
+        const tokens = [...new Set((code.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) || []).map(t => t.toLowerCase()))];
 
-      const TIMEOUT_MS = loadAgentTuningConfig().code_graph.uv_process_timeout_ms;
-      let timedOut = false;
-
-      const uvProcess = spawn('uv', cliArgs, {
-        cwd: this.codeGraphRagDir, // Set working directory to code-graph-rag
-        env: {
-          ...process.env,
-          MEMGRAPH_HOST: this.memgraphHost,
-          MEMGRAPH_PORT: this.memgraphPort.toString(),
-          TARGET_REPO_PATH: targetRepoPath, // Pass target repo as env var too
-          CODING_REPO: process.env.CODING_REPO || '', // Pass through CODING_REPO if set
-        },
-      });
-
-      // Manual timeout implementation (spawn doesn't support timeout option)
-      const timeoutHandle = setTimeout(() => {
-        timedOut = true;
-        log(`[CodeGraphAgent] Process timeout after ${TIMEOUT_MS}ms - killing`, 'warning');
-        uvProcess.kill('SIGTERM');
-        // Force kill after 5 seconds if SIGTERM didn't work
-        setTimeout(() => {
-          if (!uvProcess.killed) {
-            uvProcess.kill('SIGKILL');
-          }
-        }, 5000);
-      }, TIMEOUT_MS);
-
-      let stdout = '';
-      let stderr = '';
-
-      uvProcess.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      uvProcess.stderr.on('data', (data) => {
-        stderr += data.toString();
-        // Log progress from stderr (CLI logs there)
-        const lines = data.toString().trim().split('\n');
-        for (const line of lines) {
-          if (line.includes('INFO') || line.includes('SUCCESS') || line.includes('ERROR')) {
-            log(`[CodeGraphAgent] ${line}`, line.includes('ERROR') ? 'warning' : 'debug');
+        const scoreMap = new Map<string, { node: GraphNode; score: number }>();
+        for (const tok of tokens) {
+          for (const n of this.graph.findByName(tok)) {
+            const id = String(n.id);
+            const prev = scoreMap.get(id);
+            if (prev) prev.score++;
+            else scoreMap.set(id, { node: n, score: 1 });
           }
         }
-      });
+        const ranked = [...scoreMap.values()].sort((a, b) => b.score - a.score).slice(0, topK);
+        return { similar: ranked.map(r => this.nodeToCodeEntity(r.node, true)) };
+      }
 
-      uvProcess.on('close', (code) => {
-        clearTimeout(timeoutHandle); // Clear timeout on process completion
+      case 'call-graph': {
+        const entity = getArg('--entity') || '';
+        const depth = parseInt(getArg('--depth') || '3', 10) || 3;
+        const roots = this.graph.findByName(entity);
+        const root = roots.length ? this.nodeToCodeEntity(roots[0], true) : null;
+        const cg = this.graph.callGraph(entity, depth);
+        const calls: CodeRelationship[] = cg.callees.map(name => ({ type: 'calls', source: entity, target: name }));
+        const calledBy: CodeRelationship[] = cg.callers.map(name => ({ type: 'calls', source: name, target: entity }));
+        return { root, calls, calledBy };
+      }
 
-        // Handle timeout case
-        if (timedOut) {
-          log(`[CodeGraphAgent] Process was killed due to timeout`, 'warning');
-          reject(new Error(`Process timeout after ${TIMEOUT_MS}ms - code-graph indexing took too long`));
-          return;
+      case 'index': {
+        // graphify maintains the graph; report current stats as a no-op result.
+        const stats = this.graph.stats();
+        return {
+          entities: [],
+          relationships: [],
+          indexingStats: {
+            entitiesIndexed: stats.totalEntities,
+            filesProcessed: stats.modules,
+            protoFilesGenerated: 0,
+          },
+        };
+      }
+
+      case 'export': {
+        try {
+          const raw = fs.readFileSync(this.graph.path(), 'utf8');
+          return JSON.parse(raw);
+        } catch (e) {
+          return { error: String(e), skipped: true };
         }
+      }
 
-        if (code === 0) {
-          try {
-            // For index command, read protobuf output files and parse stats
-            if (command === 'index') {
-              const protoFiles = fs.readdirSync(tmpDir).filter((f: string) => f.endsWith('.pb') || f.endsWith('.proto'));
-              log(`[CodeGraphAgent] Generated ${protoFiles.length} protobuf files in ${tmpDir}`, 'info');
-
-              // Parse entity counts from stderr output - try multiple patterns
-              const entitiesMatch = stderr.match(/Indexed (\d+) entities/i) ||
-                                    stderr.match(/(\d+) entities? indexed/i) ||
-                                    stderr.match(/entities:\s*(\d+)/i);
-              const filesMatch = stderr.match(/Processed (\d+) files/i) ||
-                                 stderr.match(/(\d+) files? processed/i) ||
-                                 stderr.match(/files:\s*(\d+)/i);
-
-              // Return structured result with indexing stats
-              resolve({
-                entities: [], // Would need protobuf parsing to extract actual entities
-                relationships: [],
-                indexingStats: {
-                  entitiesIndexed: entitiesMatch ? parseInt(entitiesMatch[1]) : 0,
-                  filesProcessed: filesMatch ? parseInt(filesMatch[1]) : 0,
-                  protoFilesGenerated: protoFiles.length,
-                  outputDir: tmpDir,
-                },
-                raw: { stdout, stderr },
-              });
-            } else {
-              // Try to parse as JSON for other commands
-              try {
-                const result = JSON.parse(stdout);
-                resolve(result);
-              } catch (e) {
-                resolve({ raw: stdout, stderr });
-              }
-            }
-          } catch (e) {
-            resolve({ raw: stdout, stderr, error: String(e) });
-          }
-        } else {
-          // Enhanced error logging - include full stderr for debugging
-          log(`[CodeGraphAgent] Command failed with code ${code}`, 'error');
-          log(`[CodeGraphAgent] STDOUT: ${stdout.slice(0, 500)}`, 'debug');
-          log(`[CodeGraphAgent] STDERR: ${stderr.slice(0, 1000)}`, 'error');
-
-          const errorMsg = stderr.includes('ModuleNotFoundError')
-            ? `Missing Python module: ${stderr.match(/ModuleNotFoundError: No module named '([^']+)'/)?.[1] || 'unknown'}`
-            : stderr.includes('not found')
-              ? `Command not found in PATH: ${stderr.slice(0, 200)}`
-              : `code-graph-rag command failed (code ${code}): ${stderr.slice(0, 800)}`;
-
-          reject(new Error(errorMsg));
-        }
-      });
-
-      uvProcess.on('error', (error) => {
-        clearTimeout(timeoutHandle); // Clear timeout on error
-        log(`[CodeGraphAgent] Process spawn error: ${error.message}`, 'error');
-        reject(new Error(`Failed to spawn uv process: ${error.message}`));
-      });
-    });
+      default:
+        log(`[CodeGraphAgent] Unsupported command '${command}'`, 'warning');
+        return { error: `Unsupported command '${command}'`, skipped: true };
+    }
   }
 
   /**
@@ -1147,10 +936,10 @@ except Exception as e:
 
     const results: SynthesisResult[] = [];
 
-    // Check Memgraph connection
+    // Check graph availability
     const connectionCheck = await this.checkMemgraphConnection();
     if (!connectionCheck.connected) {
-      log(`[CodeGraphAgent] Memgraph not connected, skipping synthesis`, 'warning');
+      log(`[CodeGraphAgent] graphify graph.json not available, skipping synthesis`, 'warning');
       return results;
     }
 
@@ -1558,66 +1347,56 @@ Relationship Types:
 `;
 
   /**
-   * Query the code graph using natural language
-   * Uses SemanticAnalyzer to translate natural language to Cypher
+   * Query the code graph using natural language.
+   *
+   * There is no Cypher engine any more, so this performs a best-effort keyword
+   * search over the graphify graph (findByName over keywords extracted from the
+   * question). `generatedCypher` is returned empty; `provider` is 'graphify'.
    */
   async queryNaturalLanguage(question: string): Promise<NaturalLanguageQueryResult> {
     const startTime = Date.now();
     log(`[CodeGraphAgent] Natural language query: ${question}`, 'info');
 
-    // Check Memgraph connection first
+    // Check graph availability first
     const connectionCheck = await this.checkMemgraphConnection();
     if (!connectionCheck.connected) {
-      throw new Error(`Memgraph not reachable: ${connectionCheck.error}`);
+      throw new Error(`graphify graph.json not available: ${connectionCheck.error}`);
     }
 
-    // Initialize SemanticAnalyzer for NL→Cypher translation
-    const semanticAnalyzer = new SemanticAnalyzer();
-
-    const cypherPrompt = `You are a Cypher query generator for a code knowledge graph stored in Memgraph.
-
-${this.GRAPH_SCHEMA}
-
-IMPORTANT RULES:
-1. Return ONLY the Cypher query, no explanations or markdown formatting
-2. Do NOT use backticks or code blocks
-3. Always use LIMIT to avoid returning too many results (default LIMIT 25)
-4. For text matching, use CONTAINS for partial matches or = for exact matches
-5. Property names are lowercase with underscores (file_path, line_number)
-6. Node labels are PascalCase (Function, Class, Method, Module, File, Folder)
-
-User Question: ${question}
-
-Cypher Query:`;
-
     try {
-      // Use SemanticAnalyzer with auto provider fallback (Groq → Gemini → Anthropic → OpenAI)
-      const result = await semanticAnalyzer.analyzeContent(cypherPrompt, {
-        analysisType: 'code',
-        provider: 'auto'
-      });
+      // Extract candidate keywords and search the graph by (stripped) name.
+      const keywords = this.extractKeywordsFromCommits([question]);
+      const seen = new Set<string>();
+      const results: any[] = [];
+      const LIMIT = 25;
 
-      // Extract Cypher from response
-      const cypher = this.extractCypher(result.insights);
-
-      if (!cypher) {
-        throw new Error('Failed to extract valid Cypher query from LLM response');
+      for (const kw of keywords) {
+        for (const n of this.graph.findByName(kw)) {
+          const id = String(n.id);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const entity = this.nodeToCodeEntity(n);
+          results.push({
+            name: entity.name,
+            type: entity.type,
+            file_path: entity.filePath,
+            line_number: entity.lineNumber,
+            language: entity.language,
+          });
+          if (results.length >= LIMIT) break;
+        }
+        if (results.length >= LIMIT) break;
       }
 
-      log(`[CodeGraphAgent] Generated Cypher: ${cypher}`, 'info');
-
-      // Execute the generated Cypher query
-      const queryResult = await this.runCypherQuery(cypher);
-
       const queryTime = Date.now() - startTime;
-      log(`[CodeGraphAgent] NL query completed in ${queryTime}ms`, 'info');
+      log(`[CodeGraphAgent] NL query completed in ${queryTime}ms (${results.length} results)`, 'info');
 
       return {
         question,
-        generatedCypher: cypher,
-        results: Array.isArray(queryResult) ? queryResult : queryResult ? [queryResult] : [],
+        generatedCypher: '',
+        results,
         queryTime,
-        provider: result.provider || 'auto'
+        provider: 'graphify',
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1644,51 +1423,47 @@ Cypher Query:`;
       vibePatterns: context.vibePatterns?.length || 0,
     })}`, 'info');
 
-    // Check connection first
+    // Check graph availability first
     const connectionCheck = await this.checkMemgraphConnection();
     if (!connectionCheck.connected) {
-      log(`[CodeGraphAgent] Memgraph not connected, returning empty result`, 'warning');
+      log(`[CodeGraphAgent] graphify graph.json not available, returning empty result`, 'warning');
       return this.emptyIntelligentResult(Date.now() - startTime);
     }
 
-    // Generate context-aware questions
-    const questions = this.generateContextAwareQuestions(context, maxQueries);
-    log(`[CodeGraphAgent] Generated ${questions.length} questions`, 'info');
-
-    // Execute queries and collect results
-    const rawQueries: Array<{ question: string; cypher: string; results: any[] }> = [];
-    const hotspots: Array<{ name: string; type: string; connections: number }> = [];
-    const circularDeps: Array<{ from: string; to: string }> = [];
-    const inheritanceTree: Array<{ parent: string; children: string[] }> = [];
-    const changeImpact: Array<{ changed: string; affected: string[] }> = [];
+    // Derive structured insights DIRECTLY from the graphify graph.
+    const hotspots = this.graph.hotspots(20);
+    const inheritanceTree = this.graph.inheritanceTree();
+    const circularDeps = this.detectCircularDeps(200);
+    const changeImpact = this.computeChangeImpact(context.changedFiles || []);
     const architecturalPatterns: Array<{ pattern: string; evidence: string[] }> = [];
     const correlations: string[] = [];
 
-    // Execute queries sequentially to avoid overwhelming the LLM API
+    if (hotspots.length > 0) {
+      correlations.push(`Top hotspot: ${hotspots[0].name} (${hotspots[0].connections} connections)`);
+    }
+    correlations.push(circularDeps.length > 0
+      ? `Found ${circularDeps.length} potential circular dependencies`
+      : 'No circular dependencies detected');
+    correlations.push(`Found ${inheritanceTree.length} inheritance relationships`);
+    if (changeImpact.length > 0) {
+      correlations.push(`${changeImpact.length} changed file(s) have downstream dependents`);
+    }
+
+    // Best-effort transparency: run keyword lookups for the generated questions.
+    const questions = this.generateContextAwareQuestions(context, maxQueries);
+    const rawQueries: Array<{ question: string; cypher: string; results: any[] }> = [];
     for (const question of questions) {
       try {
         const result = await this.queryNaturalLanguage(question);
-        rawQueries.push({
-          question,
-          cypher: result.generatedCypher,
-          results: result.results,
-        });
-
-        // Process results based on question type
-        this.categorizeQueryResults(
-          question,
-          result.results,
-          { hotspots, circularDeps, inheritanceTree, changeImpact, architecturalPatterns, correlations }
-        );
+        rawQueries.push({ question, cypher: result.generatedCypher, results: result.results });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         log(`[CodeGraphAgent] Query failed: "${question}" - ${errorMsg}`, 'warning');
-        correlations.push(`Query failed: ${question}`);
       }
     }
 
     const queryTime = Date.now() - startTime;
-    log(`[CodeGraphAgent] Intelligent query completed in ${queryTime}ms with ${rawQueries.length} successful queries`, 'info');
+    log(`[CodeGraphAgent] Intelligent query completed in ${queryTime}ms (hotspots=${hotspots.length}, inheritance=${inheritanceTree.length}, circular=${circularDeps.length}, changeImpact=${changeImpact.length})`, 'info');
 
     return {
       hotspots,
@@ -1700,6 +1475,76 @@ Cypher Query:`;
       rawQueries,
       queryTime,
     };
+  }
+
+  /**
+   * Best-effort circular dependency detection over calls/imports edges.
+   * Finds reciprocal (2-cycle) relationships between distinct nodes, bounded
+   * to `limit` results to keep it cheap on a 60k-node graph.
+   */
+  private detectCircularDeps(limit: number = 200): Array<{ from: string; to: string }> {
+    const RELS = ['calls', 'indirect_call', 'imports', 'imports_from'];
+    const edgeSet = new Set<string>();
+    const nodesInvolved = new Set<string>();
+    // Collect directed edges of interest.
+    for (const n of this.graph.codeNodes()) {
+      const id = String(n.id);
+      for (const e of this.graph.outEdges(id, RELS)) {
+        edgeSet.add(`${id} ${String(e.target)}`);
+        nodesInvolved.add(id);
+        nodesInvolved.add(String(e.target));
+      }
+    }
+    const result: Array<{ from: string; to: string }> = [];
+    const seenPair = new Set<string>();
+    for (const key of edgeSet) {
+      const [a, b] = key.split(' ');
+      if (a === b) continue;
+      const reverse = `${b} ${a}`;
+      if (!edgeSet.has(reverse)) continue;
+      const pairKey = a < b ? `${a} ${b}` : `${b} ${a}`;
+      if (seenPair.has(pairKey)) continue;
+      seenPair.add(pairKey);
+      const na = this.graph.getNode(a);
+      const nb = this.graph.getNode(b);
+      result.push({
+        from: na ? this.graph.nameOf(na) : a,
+        to: nb ? this.graph.nameOf(nb) : b,
+      });
+      if (result.length >= limit) break;
+    }
+    return result;
+  }
+
+  /**
+   * Compute change impact: for each changed file, the names of entities that
+   * depend on (call/import/reference) entities defined in that file.
+   */
+  private computeChangeImpact(changedFiles: string[]): Array<{ changed: string; affected: string[] }> {
+    if (!changedFiles || changedFiles.length === 0) return [];
+    const DEP_RELS = ['calls', 'indirect_call', 'imports', 'imports_from', 're_exports', 'references', 'uses'];
+    const out: Array<{ changed: string; affected: string[] }> = [];
+
+    for (const file of changedFiles.slice(0, 20)) {
+      const base = file.toLowerCase();
+      const affected = new Set<string>();
+      for (const n of this.graph.codeNodes()) {
+        if (!(n.source_file || '').toLowerCase().endsWith(base) && !base.endsWith((n.source_file || '').toLowerCase())) {
+          if (!(n.source_file || '').toLowerCase().includes(base)) continue;
+        }
+        // Inbound dependents of this entity.
+        for (const e of this.graph.inEdges(String(n.id), DEP_RELS)) {
+          const dep = this.graph.getNode(String(e.source));
+          if (dep && (dep.source_file || '') !== (n.source_file || '')) {
+            affected.add(this.graph.nameOf(dep));
+          }
+        }
+      }
+      if (affected.size > 0) {
+        out.push({ changed: file, affected: [...affected].slice(0, 25) });
+      }
+    }
+    return out;
   }
 
   /**

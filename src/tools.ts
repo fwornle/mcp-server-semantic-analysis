@@ -671,7 +671,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "analyze_code_graph",
-    description: "Index and query code using AST-based analysis via code-graph-rag. Requires Memgraph database running.",
+    description: "Index and query code using AST-based analysis over the graphify code graph. Reads a static graph.json maintained by the graphify service -- no database required.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3421,7 +3421,7 @@ async function handleSuggestOntologyExtension(args: {
 
 
 /**
- * Handle analyze_code_graph tool - AST-based code analysis via code-graph-rag
+ * Handle analyze_code_graph tool - AST-based code analysis over the graphify code graph
  */
 async function handleAnalyzeCodeGraph(args: {
   action: 'index' | 'query' | 'similar' | 'call_graph' | 'nl_query';
@@ -3465,7 +3465,7 @@ ${Object.entries(result.statistics.entityTypeDistribution)
   .map(([type, count]) => `- ${type}: ${count}`)
   .join('\n')}
 
-⚠️ Note: Requires Memgraph database running (docker-compose up -d in integrations/code-graph-rag)`
+Source: the graphify service's static graph.json. Rebuild it with \`graphify update\` when it drifts behind HEAD.`
           }],
           metadata: {
             repository_path: result.repositoryPath,
@@ -3617,23 +3617,21 @@ ${nlResult.results.length > 0
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     
-    // Check if it's a Memgraph connection error
-    if (errorMessage.includes('ECONNREFUSED') || errorMessage.includes('Memgraph')) {
+    // The graph is a file, not a service, so the failure that matters is a missing
+    // or unreadable graph.json -- not a refused connection.
+    if (errorMessage.includes('ENOENT') || errorMessage.includes('graph.json')) {
       return {
         content: [{
           type: "text",
           text: `# Code Graph Analysis Failed
 
-⚠️ **Memgraph database not running**
+**The graphify code graph is missing or unreadable.**
 
-To use code graph analysis, start the Memgraph database:
+Expected at \`.data/graphify/graphify-out/graph.json\`. Build or refresh it with:
 
 \`\`\`bash
-cd integrations/code-graph-rag
-docker-compose up -d
+graphify update
 \`\`\`
-
-Then access Memgraph Lab at http://localhost:3100
 
 **Error**: ${errorMessage}`
         }],

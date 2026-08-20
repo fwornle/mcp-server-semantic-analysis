@@ -1612,8 +1612,8 @@ export class CoordinatorAgent {
         ],
         config: {
           timeout: 600, // 10 minutes total
-          requires_memgraph: true,
-          description: "Requires Memgraph database running (docker-compose up -d in integrations/code-graph-rag)"
+          requires_memgraph: false,
+          description: "Reads the graphify service's static graph.json; no database required"
         },
       },
     ];

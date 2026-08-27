@@ -13,7 +13,17 @@
 
 ![mcp-server-semantic-analysis architecture](../../docs/images/mcp-server-semantic-analysis-architecture.png)
 
-This server exposes 12 MCP tools over stdio (local) or HTTP/SSE on port `3848` (Docker mode). The `CoordinatorAgent` orchestrates the 14-agent pipeline via workflow definitions in `config/workflows/*.json`; `WaveController` drives the multi-wave analysis flow (extract → analyze → classify → persist → dedup → predict → merge). The 8 LLM-enhanced agents share a `SemanticAnalyzer` service with automatic provider failover; the 2 infrastructure agents handle embedding-based dedup and stale-entity detection. All persistence converges on `PersistenceAgent`, which writes through km-core's REST contract — `mcp-server-semantic-analysis` owns no graph storage itself.
+This server exposes 19 tools on port `3848`. **They are no longer registered as MCP tools for
+coding agents** — 12.6 KB of tool schema in every context window, of every session, subagent and
+fork, bought nothing for tools that are only ever invoked deliberately (12 of the 19 were never
+invoked at all). The agent-facing entry point is now the `semantic` CLI (`bin/semantic` +
+the `/semantic` skill), which POSTs to `/tool/<name>`; `GET /tools` enumerates them. The MCP
+transports (`/sse`, `/messages`, and the stdio `dist/index.js`) still work for any external
+client that wants them.
+
+Invocation must stay in THIS process rather than a one-shot CLI: `execute_workflow` dispatches
+into an in-process workflow state machine whose broadcaster feeds the dashboard's
+`/workflow-events` view. The `CoordinatorAgent` orchestrates the 14-agent pipeline via workflow definitions in `config/workflows/*.json`; `WaveController` drives the multi-wave analysis flow (extract → analyze → classify → persist → dedup → predict → merge). The 8 LLM-enhanced agents share a `SemanticAnalyzer` service with automatic provider failover; the 2 infrastructure agents handle embedding-based dedup and stale-entity detection. All persistence converges on `PersistenceAgent`, which writes through km-core's REST contract — `mcp-server-semantic-analysis` owns no graph storage itself.
 
 **14-Agent Catalog** (names + 1-line roles):
 

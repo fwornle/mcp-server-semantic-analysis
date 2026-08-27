@@ -246,7 +246,7 @@ export class VibeHistoryAgent {
     try {
       // Sort files by modification time descending to get most recent first
       let files = fs.readdirSync(this.specstoryPath)
-        .filter(file => file.endsWith('.md'))
+        .filter(file => file.endsWith('.jsonl') || file.endsWith('.md'))
         .map(file => ({
           name: file,
           path: path.join(this.specstoryPath, file),
@@ -321,7 +321,7 @@ export class VibeHistoryAgent {
     try {
       // Get all session files and filter by date range
       const allFiles = fs.readdirSync(this.specstoryPath)
-        .filter(file => file.endsWith('.md'))
+        .filter(file => file.endsWith('.jsonl') || file.endsWith('.md'))
         .map(file => {
           const filePath = path.join(this.specstoryPath, file);
           const stats = fs.statSync(filePath);
@@ -524,7 +524,8 @@ export class VibeHistoryAgent {
   private extractSessionMetadata(filename: string, content: string): any {
     // Parse filename: YYYY-MM-DD_HHMM-HHMM_hash.md (LSL format)
     // Also support legacy format: YYYY-MM-DD_HH-MM-SS_project-session.md
-    const lslMatch = filename.match(/^(\d{4}-\d{2}-\d{2})_(\d{4})-(\d{4})_(.+)\.md$/);
+    // Accept both LSL extensions: pi-format `.jsonl` (current) and legacy `.md`.
+    const lslMatch = filename.match(/^(\d{4}-\d{2}-\d{2})_(\d{4})-(\d{4})_(.+)\.(?:jsonl|md)$/);
     const legacyMatch = filename.match(/^(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})_(.+)-session\.md$/);
 
     let datePart, startTime, endTime, identifier, timestamp;

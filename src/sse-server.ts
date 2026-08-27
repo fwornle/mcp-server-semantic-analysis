@@ -13,7 +13,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { createKmCoreRouter, GraphKMStore } from '@fwornle/km-core';
 import { createServer } from "./server.js";
 import { log, logError } from "./logging.js";
-import { setServerInstance } from "./tools.js";
+import { setServerInstance, handleToolCall, TOOLS } from "./tools.js";
 import { createSSEBroadcaster } from "./workflow-sse-broadcaster.js";
 import { subscribe, getState } from "./workflow-state-machine.js";
 
@@ -142,6 +142,53 @@ app.get('/health', (_req: Request, res: Response) => {
     uptime: Math.floor((Date.now() - serverStartTime) / 1000),
     workflowEventClients: broadcaster.clientCount,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Plain-JSON tool invocation -- the transport behind `bin/semantic`.
+//
+// The MCP surface these handlers used to sit behind cost ~12.6 KB of tool schema
+// in EVERY context window, for tools that are only ever invoked deliberately.
+// The handlers themselves are unchanged; only the way an agent reaches them is.
+//
+// This must stay in the SSE server process rather than becoming a standalone
+// CLI: handleExecuteWorkflow dispatches into the in-process workflow state
+// machine that `createSSEBroadcaster()` above is subscribed to, and that
+// broadcaster is what feeds the dashboard's /workflow-events view. Running the
+// same handler in a one-shot process would start the workflow but leave the UI
+// blind to it.
+// ---------------------------------------------------------------------------
+app.get('/tools', (_req: Request, res: Response) => {
+  res.json({ tools: TOOLS.map((t) => ({ name: t.name, description: t.description })) });
+});
+
+app.post('/tool/:name', async (req: Request, res: Response) => {
+  // Express 5 types route params as string | string[]; this one is always scalar.
+  const name = String(req.params.name);
+
+  if (!TOOLS.find((t) => t.name === name)) {
+    res.status(404).json({
+      error: `Unknown tool: ${name}`,
+      available: TOOLS.map((t) => t.name),
+    });
+    return;
+  }
+
+  try {
+    const result = await handleToolCall(name, req.body ?? {});
+
+    // handleToolCall returns MCP content blocks; unwrap the text so a CLI can
+    // print it directly instead of teaching every caller the MCP envelope.
+    const text = Array.isArray(result?.content)
+      ? result.content.map((c: any) => (c?.type === 'text' ? c.text : JSON.stringify(c))).join('\n')
+      : JSON.stringify(result);
+
+    res.status(result?.isError ? 500 : 200).json({ tool: name, isError: !!result?.isError, text });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logError(error instanceof Error ? error : new Error(message), `POST /tool/${name}`);
+    res.status(500).json({ tool: name, isError: true, text: `Error: ${message}` });
+  }
 });
 
 // Workflow state event SSE endpoint -- typed state snapshots on every transition

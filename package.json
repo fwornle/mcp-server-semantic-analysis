@@ -1,13 +1,13 @@
 {
-  "name": "@coding/mcp-server-semantic-analysis",
+  "name": "@coding/semantic-analysis",
   "version": "1.0.0",
-  "description": "MCP server for semantic analysis and knowledge management",
+  "description": "Wave-analysis, ingest and ontology classification for the coding knowledge graph (semantic CLI + MCP transports)",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "mcp-server-semantic-analysis": "dist/index.js",
-    "mcp-server-semantic-analysis-sse": "dist/sse-server.js",
-    "mcp-server-semantic-analysis-proxy": "dist/stdio-proxy.js"
+    "semantic-analysis": "dist/index.js",
+    "semantic-analysis-sse": "dist/sse-server.js",
+    "semantic-analysis-proxy": "dist/stdio-proxy.js"
   },
   "files": [
     "dist",

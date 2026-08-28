@@ -9,7 +9,7 @@
  *
  * Usage (inside the coding-services container):
  *
- *   node /coding/integrations/mcp-server-semantic-analysis/scripts/42-07-sync-qdrant.mjs \
+ *   node /coding/integrations/semantic-analysis/scripts/42-07-sync-qdrant.mjs \
  *     [--collection=kg_entities] [--qdrant-url=http://coding-qdrant:6333] \
  *     [--data-dir=/coding/.data/knowledge-graph-migrated/leveldb] \
  *     [--ontology-dir=/coding/.data/ontologies] \

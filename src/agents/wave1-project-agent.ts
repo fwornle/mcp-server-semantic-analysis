@@ -749,7 +749,7 @@ IMPORTANT: Return ONLY the JSON object, no markdown code blocks or surrounding t
 
     // Common source directories to search
     const searchDirs = [
-      path.join(repoPath, 'integrations', 'mcp-server-semantic-analysis', 'src'),
+      path.join(repoPath, 'integrations', 'semantic-analysis', 'src'),
       path.join(repoPath, 'integrations', 'system-health-dashboard', 'src'),
       path.join(repoPath, 'integrations', 'code-graph-rag'),
       path.join(repoPath, 'lib'),

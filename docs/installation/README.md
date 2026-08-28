@@ -72,7 +72,7 @@ For standalone deployment of just the MCP server:
 
 ```bash
 # Clone or navigate to the server directory
-cd integrations/mcp-server-semantic-analysis
+cd integrations/semantic-analysis
 
 # Install dependencies
 npm install
@@ -122,7 +122,7 @@ The server automatically integrates with MCP-compatible coding agents through co
   "mcpServers": {
     "semantic-analysis": {
       "command": "node",
-      "args": ["/path/to/mcp-server-semantic-analysis/dist/index.js"],
+      "args": ["/path/to/semantic-analysis/dist/index.js"],
       "env": {
         "GROQ_API_KEY": "your-groq-key",
         "GOOGLE_API_KEY": "your-google-key",
@@ -260,10 +260,10 @@ cat ~/.claude.json | jq .mcpServers
 
 # Check Claude Code can find the server
 which node
-ls -la /path/to/mcp-server-semantic-analysis/dist/index.js
+ls -la /path/to/semantic-analysis/dist/index.js
 
 # Test server directly
-node /path/to/mcp-server-semantic-analysis/dist/index.js
+node /path/to/semantic-analysis/dist/index.js
 ```
 
 #### Tools Not Available

@@ -10,7 +10,7 @@
  *
  * Usage (inside the coding-services container):
  *
- *   node /coding/integrations/mcp-server-semantic-analysis/scripts/verify-knowledge-graph-store.mjs \
+ *   node /coding/integrations/semantic-analysis/scripts/verify-knowledge-graph-store.mjs \
  *     --since=<ISO-timestamp> [--collection=coding] [--qdrant-url=http://localhost:6333]
  *
  * Emits diagnostic lines on stderr; final verdict JSON on stdout.

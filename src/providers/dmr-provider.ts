@@ -97,7 +97,7 @@ function loadDMRConfig(): DMRConfig {
     path.join(
       process.cwd(),
       "integrations",
-      "mcp-server-semantic-analysis",
+      "semantic-analysis",
       "config",
       "dmr-config.yaml"
     ),

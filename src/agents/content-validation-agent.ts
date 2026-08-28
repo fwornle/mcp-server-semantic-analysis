@@ -2575,8 +2575,8 @@ Respond with a JSON array:
       // at the km-core adapter (Phase 42-01) and the canonical km-core store
       // surface that now replaces the trio.
       const componentPaths = [
-        { name: 'KmCoreAdapter', path: 'integrations/mcp-server-semantic-analysis/src/storage/km-core-adapter.ts' },
-        { name: 'LegacyConsumerHelpers', path: 'integrations/mcp-server-semantic-analysis/src/storage/legacy-consumer-helpers.ts' },
+        { name: 'KmCoreAdapter', path: 'integrations/semantic-analysis/src/storage/km-core-adapter.ts' },
+        { name: 'LegacyConsumerHelpers', path: 'integrations/semantic-analysis/src/storage/legacy-consumer-helpers.ts' },
         { name: 'GraphKMStore', path: 'lib/km-core/src/store/GraphKMStore.ts' },
         { name: 'VkbApiClient', path: 'lib/ukb-unified/core/VkbApiClient.js' }
       ];

@@ -41,7 +41,7 @@
  *
  * @remarks
  * `WAVE3_RELATION_DISCOVERY` is intentionally OMITTED from this registry.
- * Inventory of `integrations/mcp-server-semantic-analysis/src/agents/kg-operators.ts`
+ * Inventory of `integrations/semantic-analysis/src/agents/kg-operators.ts`
  * (lines 562-648, the `edgePrediction()` method that is the only "relation
  * discovery" path in the codebase) confirms that relation prediction is a
  * pure score-based computation (cosine similarity + Adamic-Adar +

@@ -1062,7 +1062,7 @@ async function handleExecuteWorkflow(args: any): Promise<any> {
 
   // Resolve repository path
   let repositoryPath = resolvedParameters?.repository_path || resolvedParameters?.repositoryPath || '.';
-  if (repositoryPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {
+  if (repositoryPath === '.' && process.cwd().includes('semantic-analysis')) {
     repositoryPath = path.join(process.cwd(), '../..');
   } else if (repositoryPath && !path.isAbsolute(repositoryPath)) {
     repositoryPath = path.resolve(repositoryPath);
@@ -1548,7 +1548,7 @@ async function handleGetWorkflowStatus(args: any): Promise<any> {
   // Fall back to progress file for detached (async) workflows
   // Resolve repository path
   let repoPath = repository_path || '.';
-  if (repoPath === '.' && process.cwd().includes('mcp-server-semantic-analysis')) {
+  if (repoPath === '.' && process.cwd().includes('semantic-analysis')) {
     repoPath = path.join(process.cwd(), '../..');
   } else if (repoPath && !path.isAbsolute(repoPath)) {
     repoPath = path.resolve(repoPath);

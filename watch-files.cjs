@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// Derive coding root from this file's location (2 levels up from integrations/mcp-server-semantic-analysis)
+// Derive coding root from this file's location (2 levels up from integrations/semantic-analysis)
 const codingRoot = process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../..');
 const insightsDir = path.join(codingRoot, 'knowledge-management', 'insights');
 

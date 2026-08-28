@@ -26,7 +26,7 @@ Frequently encountered problems and their solutions.
 
 3. Rebuild the server:
    ```bash
-   cd integrations/mcp-server-semantic-analysis
+   cd integrations/semantic-analysis
    npm run build
    ```
 

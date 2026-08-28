@@ -10,7 +10,7 @@ Common issues and solutions for the MCP semantic analysis server.
 
 **Solution**:
 ```bash
-cd integrations/mcp-server-semantic-analysis
+cd integrations/semantic-analysis
 npm install
 npm run build
 ```

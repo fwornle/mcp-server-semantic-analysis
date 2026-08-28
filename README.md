@@ -1,6 +1,6 @@
-# mcp-server-semantic-analysis
+# semantic-analysis
 
-> MCP server driving the **wave-analysis** workflow, ingest, and ontology classification for the coding knowledge graph — 14 agents (8 LLM-enhanced, 2 infrastructure, orchestration + persistence) writing through `@fwornle/km-core`.
+> Service driving the **wave-analysis** workflow, ingest, and ontology classification for the coding knowledge graph — 14 agents (8 LLM-enhanced, 2 infrastructure, orchestration + persistence) writing through `@fwornle/km-core`. Reached by the `semantic` CLI; MCP transports remain for external clients.
 
 ## Configurations Owned
 
@@ -11,7 +11,7 @@
 
 ## Architecture
 
-![mcp-server-semantic-analysis architecture](../../docs/images/mcp-server-semantic-analysis-architecture.png)
+![semantic-analysis architecture](../../docs/images/semantic-analysis-architecture.png)
 
 This server exposes 19 tools on port `3848`. **They are no longer registered as MCP tools for
 coding agents** — 12.6 KB of tool schema in every context window, of every session, subagent and
@@ -23,7 +23,7 @@ client that wants them.
 
 Invocation must stay in THIS process rather than a one-shot CLI: `execute_workflow` dispatches
 into an in-process workflow state machine whose broadcaster feeds the dashboard's
-`/workflow-events` view. The `CoordinatorAgent` orchestrates the 14-agent pipeline via workflow definitions in `config/workflows/*.json`; `WaveController` drives the multi-wave analysis flow (extract → analyze → classify → persist → dedup → predict → merge). The 8 LLM-enhanced agents share a `SemanticAnalyzer` service with automatic provider failover; the 2 infrastructure agents handle embedding-based dedup and stale-entity detection. All persistence converges on `PersistenceAgent`, which writes through km-core's REST contract — `mcp-server-semantic-analysis` owns no graph storage itself.
+`/workflow-events` view. The `CoordinatorAgent` orchestrates the 14-agent pipeline via workflow definitions in `config/workflows/*.json`; `WaveController` drives the multi-wave analysis flow (extract → analyze → classify → persist → dedup → predict → merge). The 8 LLM-enhanced agents share a `SemanticAnalyzer` service with automatic provider failover; the 2 infrastructure agents handle embedding-based dedup and stale-entity detection. All persistence converges on `PersistenceAgent`, which writes through km-core's REST contract — `semantic-analysis` owns no graph storage itself.
 
 **14-Agent Catalog** (names + 1-line roles):
 
@@ -43,7 +43,7 @@ into an in-process workflow state machine whose broadcaster feeds the dashboard'
   11. `CoordinatorAgent` — workflow orchestration, `{{step}}` templating
   12. `WaveController` — wave-analysis driver, sub-step events for dashboard progress
 
-For per-agent enhancement detail, the 6-tier LLM provider chain, ontology classification internals, MCP tool reference, use cases, and project structure, see [docs/AGENTS.md](docs/AGENTS.md).
+For per-agent enhancement detail, the 6-tier LLM provider chain, ontology classification internals, MCP tool reference, use cases, and project structure, see [docs/agent-details.md](docs/agent-details.md).
 
 ## Where to Edit
 
@@ -63,7 +63,7 @@ For per-agent enhancement detail, the 6-tier LLM provider chain, ontology classi
 ## Tests / Verify
 
 ```bash
-cd integrations/mcp-server-semantic-analysis
+cd integrations/semantic-analysis
 npm run build
 npm test
 ```

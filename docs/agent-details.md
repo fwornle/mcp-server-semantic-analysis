@@ -1,14 +1,14 @@
-# mcp-server-semantic-analysis — Agent Details
+# semantic-analysis — Agent Details
 
 > Long-form companion to [../README.md](../README.md). The README answers "where do I edit config?" in 5 minutes; this file answers "how does each agent actually work?" and contains the operational depth (per-agent enhancement narratives, MCP tool catalog, use-case walkthroughs, project structure).
 
-The `mcp-server-semantic-analysis` system orchestrates **14 intelligent agents** across three role groups (8 LLM-enhanced, 2 infrastructure, 4 orchestration/persistence/coordination). The README's Architecture section lists each agent with a 1-line role; this file expands each into its operational contract.
+The `semantic-analysis` system orchestrates **14 intelligent agents** across three role groups (8 LLM-enhanced, 2 infrastructure, 4 orchestration/persistence/coordination). The README's Architecture section lists each agent with a 1-line role; this file expands each into its operational contract.
 
 ## Agent Catalog — Per-Agent Enhancement Detail
 
 ### 🧠 LLM-Enhanced Agents (8)
 
-Five core agents leverage advanced LLM capabilities through the `SemanticAnalyzer` service, giving `mcp-server-semantic-analysis` its "semantic" depth beyond pattern-matching.
+Five core agents leverage advanced LLM capabilities through the `SemanticAnalyzer` service, giving `semantic-analysis` its "semantic" depth beyond pattern-matching.
 
 #### 1. VibeHistoryAgent — Session Analysis
 
@@ -152,9 +152,13 @@ const persistenceAgent = new PersistenceAgent(repoPath, graphDB, {
 
 **Note:** No more boolean enable/disable toggles. Use `validationMode: 'disabled'` to disable validation.
 
-## MCP Tools (12 Available)
+## Tools (19 Available)
 
-These tools are exposed by `mcp-server-semantic-analysis` over the MCP protocol (stdio in local mode, HTTP/SSE in Docker mode on port 3848). All tool definitions live in `src/tools.ts`.
+These tools are served on port 3848. The agent-facing entry point is the `semantic` CLI
+(`bin/semantic` + the `/semantic` skill), which POSTs to `/tool/<name>`; `GET /tools` enumerates
+them. They also remain reachable over the MCP protocol (stdio in local mode, HTTP/SSE in Docker
+mode) for any external client that wants them — that surface is simply no longer registered for
+coding agents. All tool definitions live in `src/tools.ts`.
 
 ### Connection & Health
 
@@ -273,7 +277,7 @@ For containerized deployments, this server exposes HTTP/SSE transport:
 
 - **Port**: `3848` (configurable via `SEMANTIC_ANALYSIS_SSE_PORT`)
 - **Endpoints**: `GET /health`, `GET /sse`, `POST /messages`
-- **Health Check**: `curl http://localhost:3848/health` → `{"status":"ok","server":"mcp-server-semantic-analysis"}`
+- **Health Check**: `curl http://localhost:3848/health` → `{"status":"ok","server":"semantic-analysis"}`
 
 Claude Code connects via a lightweight stdio proxy:
 

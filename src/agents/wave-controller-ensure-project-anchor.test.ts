@@ -34,7 +34,7 @@
  *   - DOES NOT use vitest / jest / mocha. Built-in `node:test` only.
  *
  * Run via:
- *   cd integrations/mcp-server-semantic-analysis && npm run build && \
+ *   cd integrations/semantic-analysis && npm run build && \
  *     node --test dist/agents/wave-controller-ensure-project-anchor.test.js
  */
 

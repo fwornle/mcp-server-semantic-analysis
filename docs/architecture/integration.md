@@ -13,7 +13,7 @@ Add to your coding agent MCP settings (e.g., `~/.config/claude-code/mcp.json`):
   "mcpServers": {
     "semantic-analysis": {
       "command": "node",
-      "args": ["/path/to/coding/integrations/mcp-server-semantic-analysis/build/index.js"],
+      "args": ["/path/to/coding/integrations/semantic-analysis/dist/index.js"],
       "env": {
         "ANTHROPIC_API_KEY": "your-key-here"
       }

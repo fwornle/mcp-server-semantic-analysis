@@ -3,7 +3,7 @@
  * migration script (Phase 42 Plan 05).
  *
  * The script under test is a .mjs ESM file at:
- *   integrations/mcp-server-semantic-analysis/scripts/migrate-leveldb-to-kmcore.mjs
+ *   integrations/semantic-analysis/scripts/migrate-leveldb-to-kmcore.mjs
  *
  * Tests use `child_process.spawn` to drive the real script against per-test
  * fixture LevelDB directories. Each test seeds a fresh tmpdir LevelDB with a
@@ -11,7 +11,7 @@
  * target km-core store AND the exit code / stderr summary line.
  *
  * Run via:
- *   cd integrations/mcp-server-semantic-analysis
+ *   cd integrations/semantic-analysis
  *   npm run build
  *   node --test --test-timeout=60000 dist/migration/migrate-leveldb-to-kmcore.test.js
  *
@@ -58,7 +58,7 @@ const __filename = fileURLToPath(import.meta.url);
 // dist/migration/migrate-leveldb-to-kmcore.test.js — go up 2 levels to submodule root
 const SUBMODULE_ROOT = path.resolve(path.dirname(__filename), '..', '..');
 const SCRIPT_PATH = path.join(SUBMODULE_ROOT, 'scripts', 'migrate-leveldb-to-kmcore.mjs');
-// Coding repo root: submodule is at integrations/mcp-server-semantic-analysis
+// Coding repo root: submodule is at integrations/semantic-analysis
 const CODING_ROOT = path.resolve(SUBMODULE_ROOT, '..', '..');
 const ONTOLOGY_DIR = path.join(CODING_ROOT, '.data', 'ontologies');
 

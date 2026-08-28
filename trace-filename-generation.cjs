@@ -4,7 +4,7 @@ const path = require('path');
 // Enable tracing
 process.env.SEMANTIC_ANALYSIS_DEBUG = 'true';
 
-// Derive coding root from this file's location (2 levels up from integrations/mcp-server-semantic-analysis)
+// Derive coding root from this file's location (2 levels up from integrations/semantic-analysis)
 const codingRoot = process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../..');
 
 console.log('🔍 TRACING: Loading insight generation agent...');

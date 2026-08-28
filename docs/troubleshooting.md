@@ -21,7 +21,7 @@ For comprehensive troubleshooting, see the [detailed troubleshooting guide](trou
 ### MCP Server Not Connecting
 ```bash
 # Verify build
-cd integrations/mcp-server-semantic-analysis
+cd integrations/semantic-analysis
 npm run build
 ls build/
 

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 // Derive the coding repo root from this file's location
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-// This file is at: integrations/mcp-server-semantic-analysis/
+// This file is at: integrations/semantic-analysis/
 // Coding root is 2 levels up
 const codingRoot = process.env.CODING_TOOLS_PATH || process.env.CODING_REPO || path.resolve(__dirname, '../..');
 

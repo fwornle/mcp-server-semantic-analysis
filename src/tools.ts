@@ -833,7 +833,7 @@ function handleTestConnection(): any {
     content: [
       {
         type: "text",
-        text: `✅ Semantic Analysis MCP Server Connection Test\n\nServer Status: CONNECTED\nTimestamp: ${timestamp}\nNode.js Version: ${nodeVersion}\nPlatform: ${platform}\nPID: ${process.pid}\n\nAll systems operational!`,
+        text: `✅ Semantic Analysis Service Connection Test\n\nServer Status: CONNECTED\nTimestamp: ${timestamp}\nNode.js Version: ${nodeVersion}\nPlatform: ${platform}\nPID: ${process.pid}\n\nAll systems operational!`,
       },
     ],
   };
